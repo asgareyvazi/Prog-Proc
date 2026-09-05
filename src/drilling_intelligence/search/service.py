@@ -71,7 +71,12 @@ class SearchResult:
     locator_ref: str
     provenance: dict[str, Any]
     citation: str
+    #: True when a location (page, cell, lines) was recorded for this chunk at all.
     cited: bool
+    #: True when the chunk text *is* what the extractor read at that location.  The two flags
+    #: differ for a view - a table row rendered with its caption, a field rendered as
+    #: ``name = value unit`` - and the difference decides what ``verify=True`` can honestly claim.
+    verbatim: bool
     #: The registry facts a result is labelled with (filename, type, revision, status, well,
     #: project, company, dates, page/sheet/word counts, sha256, and the extraction's own
     #: diagnostics).  Called ``metadata`` because that is what it is: the search layer copies
@@ -98,6 +103,7 @@ class SearchResult:
             "provenance": dict(self.provenance),
             "citation": self.citation,
             "cited": self.cited,
+            "verbatim": self.verbatim,
             "metadata": dict(self.metadata),
             "matched_terms": list(self.matched_terms),
             "term_scores": dict(self.term_scores),
@@ -345,6 +351,7 @@ class SearchService:
         snippet, spans = highlight(chunk.text, list(hit.matched_terms), context=self.snippet_context)
         provenance = dict(chunk.provenance or {})
         cited = bool(chunk.provenance)
+        verbatim = _is_verbatim(chunk.text, str(provenance.get("excerpt") or ""))
         if not cited:
             # A chunk without a recorded location is reported against the document itself, and
             # says so, rather than being dressed up as a quotation.
@@ -372,6 +379,7 @@ class SearchService:
             provenance=provenance,
             citation=_citation(chunk, document, cited=cited),
             cited=cited,
+            verbatim=verbatim,
             metadata={
                 "filename": document.filename,
                 "identity_path": document.identity_path,
@@ -405,6 +413,25 @@ class SearchService:
         if verify:
             return _with_verification(result, hit, repository=repository)
         return result
+
+
+def _is_verbatim(text: str, excerpt: str) -> bool:
+    """Can this chunk be read as a quotation of what the extractor recorded at its location?
+
+    True when the chunk *contains* the excerpt of the cited region - a paragraph, or a whole table
+    unit whose excerpt is the top of that table.  False when the chunk is a *view* carved out of a
+    larger region (one row of a table, one field of a key/value pair), because there is then no
+    text at that location that reads as this chunk, and an excerpt comparison would report a
+    correct citation as broken.  Whitespace-insensitive, and deliberately one-directional: the
+    excerpt has to appear in what we return, because that is what "quotation" means to a reader.
+    """
+    if not excerpt:
+        return False
+    left = " ".join(str(text or "").split()).casefold()
+    right = " ".join(excerpt.split()).casefold()
+    if not left or not right:
+        return False
+    return left == right or right in left
 
 
 def _citation(chunk: Any, document: Any, *, cited: bool) -> str:
@@ -446,12 +473,40 @@ def _with_verification(result: SearchResult, hit: Hit, *, repository: DocumentRe
         return replace(result, verification={"status": "NOT_CHECKABLE", "detail": f"stored provenance unreadable: {exc}"})
     if provenance is None:
         return replace(result, verification={"status": "NOT_CHECKABLE", "detail": "chunk has no recorded location to verify"})
+    if not result.verbatim:
+        # A view of a larger region has nothing at its location that reads as this chunk, so the
+        # excerpt comparison cannot apply to it.  What *can* be established - and what such a
+        # chunk actually claims - is that the file behind the citation is still the file the
+        # extraction was made from.  Weaker, and labelled as such rather than hidden.
+        from ..core.hashing import sha256_file
+
+        current_hash = sha256_file(Path(path))
+        matches = bool(chunk.source_sha256) and current_hash == chunk.source_sha256
+        return replace(
+            result,
+            verification={
+                "status": "MATCH" if matches else "MISMATCH",
+                "ok": matches,
+                "check": "source",
+                "detail": (
+                    f"view of a larger cited region ({chunk.kind}): the excerpt recorded for the region is "
+                    "not this chunk's text, so the source file's hash was compared with the hash this "
+                    "version was indexed under"
+                    if matches
+                    else "source file changed since this version was extracted - re-extract and rebuild"
+                ),
+                "source": str(path),
+                "expected_sha256": chunk.source_sha256,
+                "actual_sha256": current_hash,
+            },
+        )
     outcome = verify_provenance(Path(path), provenance)
     return replace(
         result,
         verification={
             "status": outcome.status,
             "ok": bool(outcome.ok),
+            "check": "excerpt",
             "detail": outcome.detail,
             "source": str(path),
             "current_excerpt": outcome.current_excerpt[:400] if outcome.current_excerpt else "",

@@ -100,10 +100,17 @@ class WellRepository:
         return self.session.get(Well, well_id)
 
     def find_well(self, name: str, *, project_id: str | None = None) -> Well | None:
+        """Look a well up by name.
+
+        The ``limit`` belongs on the statement: ``Result`` has no ``.limit()``, so asking for
+        one after ``execute`` raised ``AttributeError`` at the first caller that ever reached
+        this path with more than zero rows.  Ordering makes the answer deterministic when two
+        projects share a well name, which is a thing that happens on real portfolios.
+        """
         stmt = select(Well).where(Well.name == name)
         if project_id:
             stmt = stmt.where(Well.project_id == project_id)
-        return self.session.execute(stmt).limit(1).scalar_one_or_none()
+        return self.session.execute(stmt.order_by(Well.created_at, Well.id).limit(1)).scalar_one_or_none()
 
     def list_wells(self, *, project_id: str | None = None, status: str | None = None, limit: int = 500) -> list[Well]:
         stmt = select(Well)

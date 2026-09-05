@@ -190,6 +190,27 @@ def test_the_better_cited_field_survives_into_storage(ingested, workspace) -> No
         assert len(fields) == 1, "the same number must not be stored twice under one name"
 
 
+def test_a_limited_run_does_not_report_the_rest_of_the_folder_as_missing(ingested) -> None:
+    """``limit`` bounds the work of one run; it says nothing about what exists.
+
+    Removal detection compares the registry against the *scan*.  Compare it against the truncated
+    work list instead - which is what this used to do - and a capped run over a folder of 400
+    files reports 399 documents as missing.
+    """
+    pipeline, corpus, (workspace_id, _well_id) = ingested
+    pipeline.run(root=corpus, workspace_id=workspace_id)
+
+    capped = pipeline.run(root=corpus, workspace_id=workspace_id, limit=2)
+    assert capped.counts["TO_PROCESS"] <= 2, capped.counts
+    assert capped.removed == [], f"a capped run must not invent missing files: {capped.removed}"
+
+    # And the reconciliation still works: a file that really is gone is reported even when the
+    # run only touches one of the remaining five.
+    (corpus / "npt_summary_2025-06.csv").unlink()
+    after = pipeline.run(root=corpus, workspace_id=workspace_id, limit=1)
+    assert [item["filename"] for item in after.removed] == ["npt_summary_2025-06.csv"], after.removed
+
+
 def test_removed_file_is_reported_but_never_deleted(ingested, workspace) -> None:
     pipeline, corpus, ids = ingested
     run(pipeline, corpus, ids)

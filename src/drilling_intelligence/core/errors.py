@@ -121,7 +121,11 @@ class CalculationValidationError(DrillingIntelligenceError):
 
 class MethodNotFoundError(DrillingIntelligenceError):
     code = "METHOD_NOT_FOUND"
-    hint = "List available methods with `drillintel methods`."
+    #: The old text pointed at a ``methods`` subcommand that has never existed: the calculation
+    #: engines that would answer a method lookup are a later phase, and a hint naming a command
+    #: nobody built sends the reader to an argparse error instead of an answer.  (A test scans
+    #: this package for quoted commands, so the name stays out of the comment as well.)
+    hint = "Run `drillintel --help` for the commands this build provides."
 
 
 # --------------------------------------------------------------------------- ai

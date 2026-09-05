@@ -21,8 +21,19 @@ from drilling_intelligence.search.chunking import (
     page_fallback_chunks,
     uncited_chunks,
 )
-from drilling_intelligence.search.ranking import DEFAULT_KIND_WEIGHTS, IndexStatistics, phrase_present, rank_chunks
-from drilling_intelligence.search.tokenize import STOPWORDS, highlight, parse_query, term_counts, tokenize
+from drilling_intelligence.search.ranking import (
+    DEFAULT_KIND_WEIGHTS,
+    IndexStatistics,
+    phrase_present,
+    rank_chunks,
+)
+from drilling_intelligence.search.tokenize import (
+    STOPWORDS,
+    highlight,
+    parse_query,
+    term_counts,
+    tokenize,
+)
 
 
 class TestTokenizer:

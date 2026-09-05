@@ -148,6 +148,11 @@ class IngestionPlanner:
         #: every file NEW on run 1 and REMOVED on run 2.  Passing the workspace root
         #: here (and using the registry's own function) makes that impossible.
         identity_root: Any = None,
+        #: Files the scan found but this run was told not to touch (a per-run ``limit``).  Their
+        #: identities still count as present: removal detection compares the registry with *the
+        #: scan*, and a capped run that compares it with its own work list reports every file
+        #: beyond the cap as missing.
+        seen_but_not_processed: list[ScannedFile] | None = None,
     ) -> ScanPlan:
         import time
 
@@ -217,6 +222,9 @@ class IngestionPlanner:
             if on_progress is not None:
                 on_progress(index, file.relative_path)
 
+        for file in seen_but_not_processed or ():
+            if not file.excluded_reason:
+                identities_in_scan.add(self._identity(file, identity_root))
         plan.removed = self._detect_removed(workspace_id, identities_in_scan)
         plan.duration_ms = (time.perf_counter() - started) * 1000.0
         log.event(

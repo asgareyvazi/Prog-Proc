@@ -41,7 +41,6 @@ from sqlalchemy import (
     func,
     insert,
     select,
-    update,
 )
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import text as sa_text
@@ -721,12 +720,22 @@ class SqliteSearchIndex:
         return str(row[0]) if row else default
 
     def _set_meta(self, key: str, value: str) -> None:
+        """Stamp the sidecar without losing to a concurrent rebuild.
+
+        An ``INSERT .. ON CONFLICT DO UPDATE`` upsert, because the previous select-then-insert
+        let two rebuilds race into a ``UNIQUE constraint failed: search_meta.key`` on the table
+        whose only job is to record which registry revision the index was built against: the
+        loser's transaction rolled back, and a rebuild that had just finished reported the index
+        as stale.  A stamp table is written by whoever finishes last, so "last write wins" *is*
+        the semantics, which is what an upsert states.  ``sqlite.insert`` is the one
+        backend-specific statement in this module - the sidecar is a SQLite database by ADR-0003,
+        and PostgreSQL, the eventual other backend, speaks the same upsert.
+        """
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+
         with self.engine.begin() as connection:
-            found = connection.execute(select(search_meta_table.c.key).where(search_meta_table.c.key == key)).first()
-            if found is None:
-                connection.execute(insert(search_meta_table).values(key=key, value=value))
-            else:
-                connection.execute(update(search_meta_table).where(search_meta_table.c.key == key).values(value=value))
+            statement = dialect_insert(search_meta_table).values(key=key, value=value)
+            connection.execute(statement.on_conflict_do_update(index_elements=["key"], set_={"value": statement.excluded.value}))
 
     # -- writes -------------------------------------------------------------
     def upsert(self, document_id: str, version_id: str, *, repository: DocumentRepository | None = None) -> int:

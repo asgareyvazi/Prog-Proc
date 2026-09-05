@@ -14,8 +14,9 @@ casing tallies, well-control drills, cost workbooks.  Rules implemented here:
     also emitted as fields with their number format recorded;
 *   provenance is at cell or range level: ``DDR.xlsx > Sheet: Daily Report > Range: B14:F18``.
 
-openpyxl does the reading (docs/DEPENDENCIES.md); pandas is used only for
-optional numeric summaries, never for the provenance path.
+openpyxl does all the reading (docs/DECISIONS.md ADR-0006): no dataframe library is
+involved, and no numeric summary is computed here - the extractor reports cells, and
+anything that aggregates them is a different layer with its own provenance rules.
 
 Limits, and what happens when one bites
 ---------------------------------------
@@ -301,7 +302,12 @@ class ExcelExtractor:
                 block=0,
                 heading_level=1,
                 style="sheet",
-                provenance=provenance.excel(sheet=report.name, cell="A1", excerpt=f"Sheet: {report.name}"),
+                # The locator says where this sheet starts; the *excerpt* stays empty because
+                # "Sheet: Summary" is our own label, not a sentence the workbook contains.  A
+                # recorded excerpt is a quotation - verification re-reads the cell and compares -
+                # and quoting cell A1 ("ACME DRILLING - ...") as "Sheet: Summary" made every
+                # workbook report a broken citation on a file nobody had touched.
+                provenance=provenance.excel(sheet=report.name, cell="A1", excerpt=""),
             )
             document.paragraphs.append(title)
             paragraph_index += 1

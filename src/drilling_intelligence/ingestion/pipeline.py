@@ -223,6 +223,7 @@ class IngestionPipeline:
             result.warnings.extend(scan.warnings)
             candidates = scan.candidates
             files = candidates[:limit] if limit and limit > 0 else candidates
+            deferred = candidates[len(files) :] if len(files) < len(candidates) else []
             plan: ScanPlan = planner.plan(
                 workspace_id=workspace_id,
                 files=files,
@@ -230,6 +231,9 @@ class IngestionPipeline:
                 identity_root=self.workspace_root,
                 force_reprocess=force,
                 cancel=cancel,
+                # A limit bounds the *work*, not the knowledge: the scanner saw the rest of the
+                # folder, so the rest of the folder is present, not gone.
+                seen_but_not_processed=deferred,
             )
             result.counts = plan.counts()
             result.removed = [item.to_dict() for item in plan.removed]
