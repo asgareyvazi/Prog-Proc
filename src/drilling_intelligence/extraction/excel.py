@@ -16,6 +16,29 @@ casing tallies, well-control drills, cost workbooks.  Rules implemented here:
 
 openpyxl does the reading (docs/DEPENDENCIES.md); pandas is used only for
 optional numeric summaries, never for the provenance path.
+
+Limits, and what happens when one bites
+---------------------------------------
+
+A drilling workbook can be enormous (a twelve-month DDR stack in one file), so the
+reader is bounded by three settings.  Each one leaves a *diagnostic* rather than a
+silent gap, because "this document has 40 rows of data" and "this document had 90 000
+cells and we stopped at 60 000" must never look the same downstream:
+
+*   ``excel_max_sheets`` - sheets past the limit are skipped and reported as
+    ``EXTRACTION_TRUNCATED: max_sheets=60 (12 of 72 sheets skipped)``;
+*   ``excel_max_cells`` - per sheet; the remaining cells are not read and the sheet is
+    flagged ``truncated``, so a missing value is understood as "not read", not "absent";
+*   ``excel_max_bytes`` - a workbook bigger than this is read **once**.
+
+The last one is the memory trade-off worth stating plainly: reading formulas as well as
+values means loading the workbook a second time (openpyxl cannot give both views from one
+load), which roughly doubles peak memory for the duration of the extraction.  Formulas
+are a bonus - the cached value is the record - so for a huge workbook the second pass is
+skipped and the decision is recorded as a diagnostic instead of being paid for in RAM.
+
+No workbook object is touched after ``close()``; every number the report needs is
+captured while it is still open.
 """
 
 from __future__ import annotations
@@ -34,6 +57,11 @@ from .fields import canonical_field_name
 from .interfaces import DocumentComplexity, ExtractionContext, ProvenanceBuilder
 from .normalized import ExtractionMetadata, NormalizedDocument, Page, Paragraph, Table, clean_text
 
+#: Default ceiling on non-empty cells read per sheet.  Overridable by the
+#: ``excel_max_cells`` extractor option (settings ``[extraction] excel_max_cells``).
+DEFAULT_MAX_CELLS_PER_SHEET = 60_000
+#: Default workbook size above which the second (formula) pass is skipped, in bytes.
+DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 #: Maximum words in a cell that may still be read as a key rather than as prose.
 _MAX_LABEL_WORDS = 4
 #: A key/value row may carry a units column and a remark column and still be a
@@ -43,6 +71,23 @@ _MAX_KEY_VALUE_COLUMNS = 5
 _LABEL = re.compile(r"^[A-Z][A-Za-z0-9 /()\-\u00b0]{1,60}?[:\u2014-]?$")
 _UNIT_IN_TEXT = re.compile(r"(?P<value>-?\d+(?:[.,]\d+)?)\s*(?P<unit>ppg|kg/m3|g/cm3|SG|psi|bar|kPa|MPa|m|ft|m3|bbl|gal|l/s|gpm|m/hr|ft/hr|h|hr|min|d|deg|in)\b", re.IGNORECASE)
 _TIME_TEXT = re.compile(r"^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$")
+
+
+def _positive_int(value: Any, default: int, name: str) -> int:
+    """A limit of zero or less would mean "read nothing", which is never intended.
+
+    Settings are user input: a typo like ``excel_max_cells = 0`` must degrade to the
+    documented default with a visible reason instead of silently producing empty
+    extractions that look like empty documents.
+    """
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    del name  # kept for callers' error messages; the fallback itself is the policy
+    return parsed
 
 
 @dataclass
@@ -82,6 +127,17 @@ class SheetReport:
     cells: list[CellRecord] = field(default_factory=list)
     #: Repeated header blocks detected inside one sheet (very common in DDRs).
     repeated_headers: list[str] = field(default_factory=list)
+    #: Cells present in the sheet but *not read* because the per-sheet limit was reached.
+    #: Non-zero means this report is partial: a missing value is "not read", not "absent".
+    cells_skipped: int = 0
+    #: Populated cells counted before the limit stopped us (== len(cells)).
+    cells_read: int = 0
+    #: Rows in the sheet's used range, whether or not they were read.
+    rows_seen: int = 0
+
+    @property
+    def truncated(self) -> bool:
+        return self.cells_skipped > 0
 
 
 class ExcelExtractor:
@@ -127,7 +183,13 @@ class ExcelExtractor:
 
         read_formulas = bool(context.option("excel_read_formulas", True))
         read_hidden = bool(context.option("excel_read_hidden", True))
-        max_sheets = int(context.option("excel_max_sheets", 60) or 60)
+        max_sheets = _positive_int(context.option("excel_max_sheets", 60), 60, "excel_max_sheets")
+        max_cells = _positive_int(
+            context.option("excel_max_cells", DEFAULT_MAX_CELLS_PER_SHEET),
+            DEFAULT_MAX_CELLS_PER_SHEET,
+            "excel_max_cells",
+        )
+        max_bytes = _positive_int(context.option("excel_max_bytes", DEFAULT_MAX_BYTES), DEFAULT_MAX_BYTES, "excel_max_bytes")
 
         document = NormalizedDocument(
             metadata=ExtractionMetadata(
@@ -140,6 +202,19 @@ class ExcelExtractor:
                 engine=f"openpyxl {_openpyxl_version()}",
             )
         )
+        # The size gate is decided *before* the second load, not after: the whole point of
+        # the limit is to avoid holding two full workbooks in memory at once.
+        try:
+            workbook_bytes = context.path.stat().st_size
+        except OSError:  # pragma: no cover - the router already read the file
+            workbook_bytes = int(context.size_bytes or 0)
+        if read_formulas and workbook_bytes > max_bytes:
+            document.diagnostics.append(
+                f"EXTRACTION_TRUNCATED: formula_pass_skipped (workbook is {workbook_bytes} bytes, "
+                f"excel_max_bytes={max_bytes}); values only, to avoid loading the workbook twice"
+            )
+            read_formulas = False
+
         try:
             values_book = load_workbook(context.path, data_only=True, read_only=False)
         except Exception as exc:
@@ -152,24 +227,51 @@ class ExcelExtractor:
                 document.diagnostics.append(f"formula read unavailable: {type(exc).__name__}: {exc}")
 
         reports: list[SheetReport] = []
-        total_sheets = len(values_book.worksheets)
         try:
+            # Everything the report needs is measured here, while the books are open:
+            # nothing below touches a closed workbook (openpyxl tolerates it, but a
+            # structure read after close is exactly the kind of accident that turns into
+            # a confusing empty document later).
+            total_sheets = len(values_book.worksheets)
             for worksheet in values_book.worksheets[:max_sheets]:
-                report = self._read_sheet(worksheet, formula_book, get_column_letter, read_hidden)
-                reports.append(report)
+                reports.append(self._read_sheet(worksheet, formula_book, get_column_letter, read_hidden, max_cells=max_cells))
         finally:
             values_book.close()
             if formula_book is not None:
                 formula_book.close()
 
         if total_sheets > max_sheets:
-            document.diagnostics.append(f"workbook has more sheets than excel_max_sheets={max_sheets}; {len(values_book.worksheets) - max_sheets} skipped")
+            document.diagnostics.append(
+                f"EXTRACTION_TRUNCATED: max_sheets={max_sheets} ({total_sheets - max_sheets} of {total_sheets} sheets skipped)"
+            )
+        for report in reports:
+            if report.truncated:
+                document.diagnostics.append(
+                    f"EXTRACTION_TRUNCATED: max_cells={max_cells} in sheet {report.name} "
+                    f"({report.cells_skipped} populated cells not read after {report.cells_read})"
+                )
 
         document.metadata.page_count = len(reports)
         document.metadata.extra["workbook"] = {
+            # Read this first: a truncated extraction must never be mistaken for a
+            # complete one, and the limits that caused it belong next to the data.
+            "limits": {
+                "max_sheets": max_sheets,
+                "max_cells_per_sheet": max_cells,
+                "max_bytes": max_bytes,
+                "sheets_total": total_sheets,
+                "sheets_read": len(reports),
+                "sheets_skipped": max(0, total_sheets - max_sheets),
+                "cells_skipped": sum(report.cells_skipped for report in reports),
+                "formula_pass": read_formulas,
+            },
+            "truncated": bool(total_sheets > max_sheets) or any(report.truncated for report in reports),
             "sheets": [
                 {
                     "name": r.name,
+                    "truncated": r.truncated,
+                    "cells_read": r.cells_read,
+                    "cells_skipped": r.cells_skipped,
                     "visible": r.visible,
                     "dimensions": r.dimensions,
                     "rows": r.rows,
@@ -237,7 +339,15 @@ class ExcelExtractor:
         return document
 
     # ------------------------------------------------------------------ sheets
-    def _read_sheet(self, worksheet: Any, formula_book: Any, get_column_letter: Any, read_hidden: bool) -> SheetReport:
+    def _read_sheet(
+        self,
+        worksheet: Any,
+        formula_book: Any,
+        get_column_letter: Any,
+        read_hidden: bool,
+        *,
+        max_cells: int = DEFAULT_MAX_CELLS_PER_SHEET,
+    ) -> SheetReport:
         report = SheetReport(
             name=worksheet.title,
             index=worksheet.sheet_index if hasattr(worksheet, "sheet_index") else 0,
@@ -267,14 +377,28 @@ class ExcelExtractor:
         if formula_book is not None and worksheet.title in formula_book.sheetnames:
             formula_sheet = formula_book[worksheet.title]
 
-        max_cells = 60000
+        # A sheet's used range can be far bigger than its populated area, so the row
+        # count is recorded before the budget is applied: "8231 rows, 60000 cells read"
+        # is a different statement from "8231 rows, 8231 cells read".
+        report.rows_seen = int(worksheet.max_row or 0)
         count = 0
+        skipped = 0
+        truncated = False
         for row in worksheet.iter_rows():
+            if truncated:
+                # Past the budget the remaining rows are only *counted*: no text
+                # rendering, no number-format work, no formula lookup.  The workbook is
+                # already in memory, so counting is cheap, and the count is what tells a
+                # reviewer how much of the sheet they are not seeing.
+                skipped += sum(1 for cell in row if cell.value is not None and not (isinstance(cell.value, str) and not cell.value.strip()))
+                continue
             for cell in row:
                 value = cell.value
                 if value is None or (isinstance(value, str) and not value.strip()):
                     continue
                 if count >= max_cells:
+                    truncated = True
+                    skipped += 1
                     break
                 coordinate = cell.coordinate
                 text = render_cell(value, cell.number_format or "")
@@ -304,18 +428,20 @@ class ExcelExtractor:
                         pass
                 report.cells.append(record)
                 count += 1
+        report.cells_read = count
+        report.cells_skipped = skipped
         return report
 
     # ------------------------------------------------------------------ tables
     def _tables_from_report(self, report: SheetReport, provenance: ProvenanceBuilder, page: int) -> list[Table]:
-        from openpyxl.utils import get_column_letter as _letter
-
         """Split a sheet into table regions separated by empty rows/columns.
 
         Drilling workbooks stack several tables on one sheet (rig summary above a
         trip sheet).  Splitting on blank bands keeps each region rectangular,
         which is what the QA checks and the program comparison need.
         """
+        from openpyxl.utils import get_column_letter as _letter
+
         if not report.cells:
             return []
         by_row: dict[int, dict[int, CellRecord]] = {}

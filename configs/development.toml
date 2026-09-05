@@ -74,9 +74,12 @@ pdf_max_pages = 4000
 pdf_extract_tables = true
 pdf_min_table_rows = 2
 excel_max_sheets = 60
+excel_max_cells = 60000                    # per sheet; hitting it emits EXTRACTION_TRUNCATED
+excel_max_bytes = 67108864                 # above this the formula (second) pass is skipped
 excel_read_formulas = true
 excel_read_hidden = true              # hidden rows/cols are data, not noise
 text_max_bytes = 8388608
+pdf_probe_pages = 12                       # pages sampled to route MinerU vs PyMuPDF
 cache_enabled = true                    # reuse extraction keyed by (sha256, extractor version)
 
 [ingestion]

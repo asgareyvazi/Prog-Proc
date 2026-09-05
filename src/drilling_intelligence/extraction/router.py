@@ -98,7 +98,12 @@ class DocumentRouter:
         return [{"name": e.name, "version": e.version, "description": getattr(e, "description", "")} for e in self.extractors]
 
     def probe(self, context: ExtractionContext) -> Any:
-        """Ask the first extractor that supports the file for a cheap complexity probe."""
+        """Ask the first extractor that supports the file for a cheap complexity probe.
+
+        "Cheap" is the contract: page/sheet counts and text-layer presence, never a full
+        parse.  The numbers are advisory routing input and are also recorded in the
+        router decision, so a reviewer can see what the choice was based on.
+        """
         from .interfaces import DocumentComplexity
 
         for extractor in self.extractors:
@@ -119,6 +124,34 @@ class DocumentRouter:
         return DocumentComplexity()
 
     # -- selection ----------------------------------------------------------
+    def route(self, context: ExtractionContext, *, options: dict[str, Any] | None = None) -> ExtractorChoice:
+        """Decide which extractor *would* read this file, without reading it.
+
+        This is the cheap half of :meth:`extract`: an extension check per candidate plus
+        one structural probe (page count, text-layer presence, table count, sheet count).
+        It costs milliseconds on a 600-page PDF because the probe only touches metadata
+        and short text spans, and the result is enough to answer the cache question
+        "which artefact would this file produce?" - so a duplicate file never runs a
+        parser at all.
+
+        Raises ``ParserUnavailableError`` when no candidate supports the file, which is
+        the same decision ``extract()`` would have made, so routing failures are reported
+        before any work is spent.
+        """
+        if options:
+            context.options = {**context.options, **options}
+        context.complexity = self.ensure_complexity(context)
+        return self.select(context)
+
+    def ensure_complexity(self, context: ExtractionContext) -> DocumentComplexity:
+        """The file's structural facts, probed once per context (``None`` is tolerated)."""
+        complexity = context.complexity
+        if complexity is None or not complexity.probed:
+            complexity = self.probe(context) or DocumentComplexity()
+            complexity.probed = True
+            context.complexity = complexity
+        return complexity
+
     def select(self, context: ExtractionContext) -> ExtractorChoice:
         extension = context.extension.lower()
         preferred: list[tuple[DocumentExtractor, str]] = []
@@ -201,15 +234,27 @@ class DocumentRouter:
         return False, f"simple PDF ({complexity.pages} pages, text layer present, {complexity.table_count} tables)"
 
     # -- extraction ---------------------------------------------------------
-    def extract(self, context: ExtractionContext, *, options: dict[str, Any] | None = None) -> tuple[NormalizedDocument, ExtractorChoice, Any]:
+    def extract(
+        self,
+        context: ExtractionContext,
+        *,
+        options: dict[str, Any] | None = None,
+        decision: ExtractorChoice | None = None,
+    ) -> tuple[NormalizedDocument, ExtractorChoice, Any]:
         """Return ``(document, decision, extractor)``.
 
         The extractor is returned too, so the caller can stamp version info and
         so tests can assert which one actually produced the content.
+
+        ``decision`` lets a caller that already routed the file (to look something up in
+        the cache, say) pass its choice in instead of paying for the probe and the
+        candidate scan twice.
         """
         if options:
             context.options = {**context.options, **options}
-        decision = self.select(context)
+        if decision is None:
+            context.complexity = self.ensure_complexity(context)
+            decision = self.select(context)
         by_name = {extractor.name: extractor for extractor in self.extractors}
         order = [decision.extractor] + [r.extractor for r in decision.considered if r.supported and r.extractor != decision.extractor]
         errors: list[str] = []

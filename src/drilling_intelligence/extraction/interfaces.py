@@ -41,6 +41,11 @@ class DocumentComplexity:
     sheet_count: int = 0
     #: Why the document looks complex, in plain words - surfaced in the UI.
     reasons: list[str] = field(default_factory=list)
+    #: True once a real probe produced this object.  ``ExtractionContext`` has to carry a
+    #: complexity value even for a file nobody has probed yet, so "was this measured?"
+    #: cannot be inferred from the fields - and skipping the probe silently would route a
+    #: 600-page scan as if it were a one-page text PDF.
+    probed: bool = False
 
     @property
     def looks_structured_pdf(self) -> bool:

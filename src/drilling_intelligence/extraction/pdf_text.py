@@ -48,17 +48,30 @@ class PdfTextExtractor:
         return True, "PDF: text-layer extraction available"
 
     def probe(self, context: ExtractionContext) -> DocumentComplexity:
+        """Read the PDF header and a bounded sample of pages - never the content.
+
+        The counts below drive routing only (MinerU or not) and the "is this a scan"
+        warning, so they are sampled: ``pdf_probe_pages`` pages, first and evenly spread
+        being overkill - the first pages of a drilling report carry the header block and
+        the summary tables, which is exactly what distinguishes a text-layer PDF from a
+        scan.  ``pages`` stays the true page count, because the header gives that for
+        free.  Sampling is stated in the reasons so nobody reads ``table_count`` as a
+        census of the whole document.
+        """
         complexity = DocumentComplexity()
         try:
             import pymupdf
 
+            probe_pages = max(1, int(context.option("pdf_probe_pages", 12) or 12))
             with pymupdf.open(context.path) as doc:
                 complexity.pages = doc.page_count
                 complexity.encrypted = bool(doc.is_encrypted)
                 table_count = 0
                 text_chars = 0
                 scanned_pages = 0
-                for page in doc:
+                sampled = min(doc.page_count, probe_pages)
+                for index in range(sampled):
+                    page = doc[index]
                     page_text = page.get_text() or ""
                     text_chars += len(page_text)
                     try:
@@ -67,14 +80,23 @@ class PdfTextExtractor:
                         pass
                     if len(page_text.strip()) < 25:
                         scanned_pages += 1
-                complexity.text_chars_per_page = text_chars / max(1, doc.page_count)
+                complexity.text_chars_per_page = text_chars / max(1, sampled)
                 complexity.table_count = table_count
                 complexity.has_text_layer = text_chars > 0
-                complexity.is_scanned = doc.page_count > 0 and scanned_pages >= max(1, int(doc.page_count * 0.6))
+                # Sampled, so the ratio is what generalises: six of the sampled pages
+                # having no text means the document is a scan, whether it has 6 or 600
+                # pages.  A document with more pages than the sample is judged on the
+                # sample and says so.
+                complexity.is_scanned = sampled > 0 and scanned_pages >= max(1, int(sampled * 0.6))
+                if doc.page_count > sampled:
+                    complexity.reasons.append(
+                        f"probed the first {sampled} of {doc.page_count} pages (pdf_probe_pages={probe_pages}); "
+                        f"table and density counts describe that sample"
+                    )
                 if complexity.is_scanned:
-                    complexity.reasons.append(f"{scanned_pages}/{doc.page_count} pages have no usable text layer")
+                    complexity.reasons.append(f"{scanned_pages}/{sampled} sampled pages have no usable text layer")
                 if table_count:
-                    complexity.reasons.append(f"{table_count} table(s) detected")
+                    complexity.reasons.append(f"{table_count} table(s) detected in the sampled pages")
                 if complexity.text_chars_per_page < 400:
                     complexity.reasons.append("low text density (complex layout or images)")
         except Exception as exc:  # noqa: BLE001 - probing must never raise

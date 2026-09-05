@@ -105,13 +105,32 @@ class MineruSettings:
 
 @dataclass
 class ExtractionSettings:
+    """Limits that bound a single document's extraction.
+
+    Every one of them is a *safety* limit, so the validator below rejects zero, negative
+    and nonsensical values: ``pdf_max_pages = 0`` would silently extract an empty
+    document that looks identical to a genuinely empty one, which is the worst possible
+    failure mode for this product (master spec section 5).
+    """
+
     pdf_max_pages: int = 4000
     pdf_extract_tables: bool = True
     pdf_min_table_rows: int = 2
     excel_max_sheets: int = 60
+    #: Populated cells read per sheet.  When it is reached the extractor says so
+    #: (``EXTRACTION_TRUNCATED: max_cells=...``) instead of quietly returning a partial
+    #: sheet, so a missing value can never be read as an absent one.
+    excel_max_cells: int = 60000
+    #: Above this workbook size the *second* (formula) load is skipped: values and
+    #: formulas cannot both come from one openpyxl load, and doubling peak memory for a
+    #: bonus is a bad trade on a laptop with a year of DDRs in one file.
+    excel_max_bytes: int = 64 * 1024 * 1024
     excel_read_formulas: bool = True
     excel_read_hidden: bool = True
     text_max_bytes: int = 8 * 1024 * 1024
+    #: How many pages a PDF complexity probe inspects before deciding (routing input
+    #: only - it must stay cheap even for a 600-page compilation).
+    pdf_probe_pages: int = 12
     cache_enabled: bool = True
 
 
@@ -210,6 +229,7 @@ class Settings:
         settings._apply(raw)
         if apply_env:
             settings.apply_env(os.environ)
+        settings.validate()
         return settings
 
     @staticmethod
@@ -273,6 +293,53 @@ class Settings:
         for part in parts[:-1]:
             obj = getattr(obj, part)
         setattr(obj, parts[-1], value)
+
+    # -- validation ---------------------------------------------------------
+    def validate(self) -> None:
+        """Reject settings that would silently corrupt extraction or burn retries.
+
+        This is a table of range checks, not a validation framework: a config value that
+        is out of range is a *typo with consequences*, and the consequence here is
+        usually an empty or truncated document being stored as if it were complete.  So
+        the check is loud and happens at load time, naming the dotted key the user has to
+        edit (``[extraction] excel_max_cells``), and it reports every problem at once
+        rather than one per edit-and-restart cycle.
+        """
+        flat = _flatten(self)
+        problems: list[str] = []
+        for dotted, minimum in _MINIMUMS:
+            value = flat.get(dotted)
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue  # a bool or a string here is a type error, reported by _coerce
+            if value < minimum:
+                problems.append(f"{dotted} must be >= {minimum}, got {value!r}")
+        for dotted, low, high in _RANGES:
+            value = flat.get(dotted)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and not low <= value <= high:
+                problems.append(f"{dotted} must be between {low} and {high}, got {value!r}")
+        for dotted, allowed in _CHOICES.items():
+            value = flat.get(dotted)
+            if value is None:
+                continue
+            text_value = str(value).strip().lower()
+            if text_value not in allowed:
+                problems.append(f"{dotted} must be one of {', '.join(sorted(allowed))}, got {value!r}")
+        # Lists that must not be empty or duplicated: the authority ladder decides
+        # conflicts, so a gap or a repeat there is a correctness bug, not a style issue.
+        hierarchy = list(self.authority.hierarchy or [])
+        if not hierarchy:
+            problems.append("authority.hierarchy must list at least one tier")
+        duplicates = sorted({tier for tier in hierarchy if hierarchy.count(tier) > 1})
+        if duplicates:
+            problems.append(f"authority.hierarchy repeats tiers: {', '.join(duplicates)}")
+        if problems:
+            raise ConfigurationError(
+                "invalid configuration: " + "; ".join(problems),
+                problems=problems,
+                config_path=self.source_path or "(defaults and environment)",
+            )
 
     # -- derived ------------------------------------------------------------
     def data_dir_for(self, workspace_root: Path) -> Path:
@@ -408,6 +475,59 @@ def _flatten(obj: Any, prefix: str = "") -> dict[str, Any]:
         else:
             out[key] = value
     return out
+
+
+# --------------------------------------------------------------------------- validation table
+#: ``>= 0`` for things that are allowed to be zero (a zero backoff, a zero probe
+#: threshold), and ``>= 1`` for limits where zero or less means "produce nothing" -
+#: which must never be confused with "there was nothing there".
+_MINIMUMS: tuple[tuple[str, float], ...] = (
+    ("database.sqlite_busy_timeout_ms", 0),
+    ("ai.timeout_seconds", 0.001),
+    ("ai.retries", 0),
+    ("ai.retry_backoff_seconds", 0),
+    ("ai.max_context_tokens", 1),
+    ("ai.max_output_tokens", 1),
+    ("ai.embedding_dimensions", 0),
+    ("mineru.timeout_seconds", 0.001),
+    ("mineru.prefer_when_pages_above", 0),
+    ("mineru.prefer_when_table_rows_above", 0),
+    ("mineru.prefer_when_text_chars_per_page_below", 0),
+    ("extraction.pdf_max_pages", 1),
+    ("extraction.pdf_min_table_rows", 1),
+    ("extraction.excel_max_sheets", 1),
+    ("extraction.excel_max_cells", 1),
+    ("extraction.excel_max_bytes", 1),
+    ("extraction.text_max_bytes", 1),
+    ("extraction.pdf_probe_pages", 1),
+    ("ingestion.max_file_size_mb", 1),
+    ("ingestion.hash_chunk_bytes", 1),
+    ("search.keyword_results", 1),
+    ("search.semantic_results", 1),
+    ("search.hybrid_results", 1),
+    ("ui.window_width", 100),
+    ("ui.window_height", 100),
+    ("ui.progress_interval_ms", 1),
+)
+
+#: Values that are only meaningful inside a band.  Temperature above 2 makes the
+#: structured extraction wander; a percentage outside 0-100 is a unit mistake.
+_RANGES: tuple[tuple[str, float, float], ...] = (
+    ("ai.temperature", 0.0, 2.0),
+    ("mineru.prefer_when_text_chars_per_page_below", 0, 100000),
+)
+
+#: Enumerated switches.  Compared case-insensitively, because ``Mode = "CLI"`` in a TOML
+#: file is a person typing what the README said, not a request to disable the parser.
+_CHOICES: dict[str, frozenset[str]] = {
+    "ai.provider": frozenset({"ollama", "openai-compatible", "none"}),
+    "mineru.mode": frozenset({"auto", "cli", "http", "disabled", "off", "none"}),
+    "mineru.backend": frozenset({"pipeline", "hybrid", "hybrid-engine", "vlm-engine", "vlm-transformers", "vlm-vllm-engine", "omniparse", "olmocr"}),
+    "search.vector_store": frozenset({"auto", "sqlite-vec", "memory", "none"}),
+    "logging.level": frozenset({"debug", "info", "warning", "error", "critical"}),
+    "logging.format": frozenset({"text", "json"}),
+    "ui.theme": frozenset({"dark", "light", "system"}),
+}
 
 
 def _toml_value(value: Any) -> str:

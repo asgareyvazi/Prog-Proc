@@ -8,7 +8,16 @@ deterministic calculation records - while staying portable across dialects.
 Invariants enforced here rather than "by convention" in service code:
 
 *   every document belongs to a workspace and is optionally linked to a well;
-*   a document has exactly one current version;
+*   a document has **exactly one** current version: the partial unique index
+    ``uq_document_version_one_current`` refuses a second ``is_current`` row per
+    document, ``document.current_version_id`` is a real (deferred) foreign key to
+    ``document_version.id``, and :mod:`drilling_intelligence.database.integrity`
+    checks the whole-graph rule - "exactly one current, the pointer names it, and no
+    superseded version still claims to be current" - which no relational schema can
+    express as a column constraint;
+*   the extraction cache is content-addressed and unique: one ``extraction_cache``
+    row per ``(content_sha256, extractor, extractor_version, config_hash)``;
+*   ``audit_event`` is append-only, enforced by ORM guards (see ``AuditEvent``);
 *   content hash uniqueness is *not* enforced on documents (duplicates across
     wells are legitimate) but *is* enforced per version to keep dedupe cheap;
 *   extracted knowledge always carries a source and provenance payload;
@@ -31,6 +40,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -201,8 +211,16 @@ class Document(Base, TimestampMixin):
     size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: Hash of the *current* content (also carried per version for history).
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    #: Genuine creation time only, i.e. where the platform reports one (macOS/BSD
+    #: ``st_birthtime``, Windows ``st_ctime``).  On Linux this stays ``NULL`` rather
+    #: than pretending the inode change time is a creation date - see
+    #: :mod:`drilling_intelligence.core.filesystem`.
     file_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     file_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: ``st_ctime`` under its real name: when the *inode* last changed (metadata,
+    #: rename, link count) on POSIX.  Recorded for forensics, never presented as a
+    #: creation or revision date.
+    fs_metadata_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     #: Document-level metadata that survives a revision change.
     classification: Mapped[str] = mapped_column(String(40), default="OTHER", nullable=False)
@@ -219,18 +237,27 @@ class Document(Base, TimestampMixin):
     interval_to: Mapped[str | None] = mapped_column(String(40))
     processing_status: Mapped[str] = mapped_column(String(24), default="DISCOVERED", nullable=False)
     processing_error: Mapped[str | None] = mapped_column(Text)
-    #: Which version the registry currently points at.
-    current_version_id: Mapped[str | None] = mapped_column(String(36))
+    #: Which version the registry currently points at.  A real foreign key, deferred
+    #: because document <-> document_version is a cycle: the pointer is written after
+    #: the version row exists, and deleting the version nulls the pointer instead of
+    #: deleting the document.  Deferred constraints are standard SQL (SQLite >= 3.6.19
+    #: and PostgreSQL both enforce them at COMMIT), so this is not a SQLite-only trick.
+    current_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL", deferrable=True, initially="DEFERRED")
+    )
     #: Number of times this slot was seen with different content.
     change_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tags: Mapped[list | None] = mapped_column(JSON, default=list)
     notes: Mapped[str | None] = mapped_column(Text)
 
     well: Mapped[Well | None] = relationship(back_populates="documents")
+    #: ``foreign_keys`` is required because the cycle gives the two tables two
+    #: join paths; the *history* link is ``document_version.document_id``.
     versions: Mapped[list[DocumentVersion]] = relationship(
         back_populates="document",
         cascade="all, delete-orphan",
         order_by="DocumentVersion.version_number",
+        foreign_keys="DocumentVersion.document_id",
     )
 
 
@@ -241,6 +268,17 @@ class DocumentVersion(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("document_id", "version_number", name="uq_document_version_number"),
         Index("ix_document_version_sha", "sha256"),
+        # At most one "current" version per document, at the database level.  A
+        # partial unique index is the portable way to say that: SQLite and
+        # PostgreSQL both support it (MySQL would simply ignore the predicate and
+        # keep a plain unique index, which is the same rule with the same meaning).
+        Index(
+            "uq_document_version_one_current",
+            "document_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+            postgresql_where=text("is_current"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -251,7 +289,13 @@ class DocumentVersion(Base, TimestampMixin):
     revision_key: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     revision_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), default="UNKNOWN", nullable=False)
+    #: Absolute path as recorded on the machine that scanned it.  Convenient, not
+    #: durable - a workspace folder that is moved or copied makes it stale.
     source_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    #: The durable citation: path inside the workspace, forward slashes, no drive
+    #: letter.  Resolved against whichever workspace root is open now, which is what
+    #: keeps provenance readable after a relocation (section 85).
+    source_relative_path: Mapped[str | None] = mapped_column(String(1024))
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     file_modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -277,16 +321,26 @@ class DocumentVersion(Base, TimestampMixin):
     duplicate_of_version_id: Mapped[str | None] = mapped_column(ForeignKey("document_version.id", ondelete="SET NULL"))
     metadata_json: Mapped[dict | None] = mapped_column(JSON, default=dict)
 
-    document: Mapped[Document] = relationship(back_populates="versions")
+    document: Mapped[Document] = relationship(back_populates="versions", foreign_keys="DocumentVersion.document_id")
     extractions: Mapped[list[Extraction]] = relationship(back_populates="version", cascade="all, delete-orphan")
 
 
 class Extraction(Base, TimestampMixin):
-    """Normalised content produced by one extractor for one document version."""
+    """Normalised content produced by one extractor for one document version.
+
+    One row *per version* - deliberately not one row per cache key.  A version's
+    artefact is immutable history: what this version was read as, with what parser,
+    at what time.  Several versions may legitimately hold the same content (a copied
+    file, a document that moved, a reprocess after a parser fix), and each keeps its
+    own row.  The *cache* - the "identify and reuse this artefact" part - is the
+    unique :class:`ExtractionCache` row, which is keyed by content and never by
+    version.  So uniqueness lives where it belongs, and history stays intact.
+    """
 
     __tablename__ = "extraction"
     __table_args__ = (
-        # Cache key: identical bytes + identical extractor => reuse, never reprocess.
+        # Speeds the "which artefacts exist for these bytes" lookup.  Not unique:
+        # uniqueness of the cache key is the job of extraction_cache.
         Index("ix_extraction_cache", "content_sha256", "extractor", "extractor_version", "config_hash"),
         Index("ix_extraction_version", "document_version_id"),
     )
@@ -311,6 +365,44 @@ class Extraction(Base, TimestampMixin):
     text_blob: Mapped[str | None] = mapped_column(Text)
 
     version: Mapped[DocumentVersion] = relationship(back_populates="extractions")
+
+
+class ExtractionCache(Base, TimestampMixin):
+    """Content-addressed extraction cache: one row per extraction *key*, never per version.
+
+    ``uq_extraction_cache_key`` is the whole point of this table: ``(content_sha256,
+    extractor, extractor_version, config_hash)`` identifies exactly one artefact, so
+    two concurrent ingestion runs cannot both claim to be the keeper of that artefact
+    (the loser hits the unique constraint and re-reads the winner).  ``document_version_id``
+    is *not* part of the key - the same bytes read by the same extractor under the same
+    options are the same artefact no matter how many document versions cite it - and it
+    is not part of this table at all.
+
+    ``extraction_id`` points at the artefact row that *produced* the cached result (the
+    first producer), so the payload is read through it rather than copied.  If that row
+    is deleted the entry goes with it (``ON DELETE CASCADE``) and the next ingestion
+    re-extracts - a stale pointer is never served.
+    """
+
+    __tablename__ = "extraction_cache"
+    __table_args__ = (
+        UniqueConstraint("content_sha256", "extractor", "extractor_version", "config_hash", name="uq_extraction_cache_key"),
+        Index("ix_extraction_cache_sha", "content_sha256"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    extractor: Mapped[str] = mapped_column(String(48), nullable=False)
+    extractor_version: Mapped[str] = mapped_column(String(48), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    #: The stored artefact this key resolves to.
+    extraction_id: Mapped[str | None] = mapped_column(ForeignKey("extraction.id", ondelete="CASCADE"))
+    #: How many versions have reused this artefact instead of re-parsing it.
+    hits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: The first version this artefact was produced for (provenance of the cache entry).
+    produced_by_version_id: Mapped[str | None] = mapped_column(ForeignKey("document_version.id", ondelete="SET NULL"))
+    #: True when the entry was written by a forced re-extraction replacing an older one.
+    refreshed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 # --------------------------------------------------------------------------- knowledge
@@ -539,7 +631,14 @@ class IngestionRun(Base):
 
 
 class AuditEvent(Base):
-    """Append-only trail of every transformation (section 85)."""
+    """Append-only trail of every transformation (section 85).
+
+    The append-only rule is *enforced*, not just documented: SQLAlchemy mapper events
+    refuse UPDATE and DELETE on this table (see
+    :mod:`drilling_intelligence.database.audit`), so no repository, service or future
+    UI can rewrite or erase history by accident.  Editing what happened is a schema
+    migration with an explicit reason, never an ORM write.
+    """
 
     __tablename__ = "audit_event"
     __table_args__ = (Index("ix_audit_subject", "subject_type", "subject_id"),)
@@ -562,6 +661,7 @@ __all__ = [
     "Document",
     "DocumentVersion",
     "Extraction",
+    "ExtractionCache",
     "Field",
     "IngestionRun",
     "KnowledgeConflict",

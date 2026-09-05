@@ -57,7 +57,11 @@ class ScannedFile:
     extension: str
     size_bytes: int
     modified_at: datetime
+    #: Genuine creation time only: ``None`` on platforms whose ``stat`` has no birth
+    #: time (see :mod:`drilling_intelligence.core.filesystem`) - never an inode change time.
     created_at: datetime | None = None
+    #: ``st_ctime``: when the inode last changed.  Recorded, never presented as creation.
+    metadata_changed_at: datetime | None = None
     mime_type: str = ""
     #: Set when the file was excluded but still reported (auditable skips).
     excluded_reason: str = ""
@@ -75,6 +79,7 @@ class ScannedFile:
             "size_bytes": self.size_bytes,
             "modified_at": self.modified_at.isoformat(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
+            "metadata_changed_at": self.metadata_changed_at.isoformat() if self.metadata_changed_at else None,
             "mime_type": self.mime_type,
             "excluded_reason": self.excluded_reason,
         }

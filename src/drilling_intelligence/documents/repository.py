@@ -3,20 +3,54 @@
 Repositories are the only place that touches SQLAlchemy sessions.  They contain
 no engineering logic, no extraction logic and no formatting - just queries,
 uniqueness handling and integrity checks.  Services compose them.
+
+Three concurrency/integrity rules are implemented here rather than in the callers,
+because every caller must get them:
+
+*   **version numbers are allocated under the unique constraint, not in Python.**
+    ``max(version_number) + 1`` is only a *guess*; the ``uq_document_version_number``
+    constraint is the arbiter.  A collision (another session that inserted a version
+    for the same document since the read) rolls back to a savepoint and retries - so
+    two ingestion runs can never both write "version 1" - and the numbers stay
+    sequential (1, 2, 3 ...) with the gaps that a loser retries closing.
+*   **the supersede/pointer write is ordered**, so the partial unique index on
+    ``document_version.is_current`` and the deferred foreign key on
+    ``document.current_version_id`` are satisfied by every statement, not just by the
+    final state of the transaction.
+*   **``get_or_create_source`` and the extraction cache upsert are race-safe**: the
+    select-then-insert window is closed with a savepoint and a re-read on
+    IntegrityError, so a concurrent writer produces a reuse, never a duplicate row
+    and never a failed run.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.enums import DocumentClassification, FileChangeKind, ProcessingStatus
+from ..core.errors import DrillingIntelligenceError
+from ..core.filesystem import candidate_source_paths, first_existing
 from ..core.hashing import filename_identity
 from ..core.ids import new_id
-from ..database.models import AuditEvent, Document, DocumentVersion, Extraction, Source
+from ..database.audit import AuditLog
+from ..database.models import (
+    AuditEvent,
+    Document,
+    DocumentVersion,
+    Extraction,
+    ExtractionCache,
+    Source,
+)
+
+#: How many times a version-number collision is retried before giving up.  Concurrent
+#: ingestion of the *same document* is rare; the loop is for correctness, not throughput.
+MAX_VERSION_NUMBER_ATTEMPTS = 5
 
 # --------------------------------------------------------------------------- identity
 #: Fields that belong to the *document slot*, not to one version.  A change here
@@ -50,6 +84,12 @@ class DocumentRepository:
 
     def __init__(self, session: Session) -> None:
         self.session = session
+        #: The audit trail is append-only and this is the only handle on it that the
+        #: repository offers: ``repository.audit(...)`` records, ``audit_trail(...)``
+        #: reads.  There is deliberately no update or delete path - the ORM guards in
+        #: :mod:`drilling_intelligence.database.audit` reject those even for a session
+        #: that goes around this class.
+        self.audit_log = AuditLog(session)
 
     # -- lookup -------------------------------------------------------------
     def get(self, document_id: str) -> Document | None:
@@ -137,6 +177,7 @@ class DocumentRepository:
         sha256: str,
         file_created_at: datetime | None = None,
         file_modified_at: datetime | None = None,
+        fs_metadata_changed_at: datetime | None = None,
         well_id: str | None = None,
         project_id: str | None = None,
         classification: DocumentClassification | str = DocumentClassification.OTHER,
@@ -160,6 +201,7 @@ class DocumentRepository:
             sha256=sha256,
             file_created_at=file_created_at,
             file_modified_at=file_modified_at,
+            fs_metadata_changed_at=fs_metadata_changed_at,
             imported_at=datetime.now(UTC),
             classification=str(getattr(classification, "value", classification)),
             status=str(getattr(status, "value", status)),
@@ -197,45 +239,139 @@ class DocumentRepository:
         page_count: int | None = None,
         sheet_count: int | None = None,
         word_count: int | None = None,
+        source_relative_path: str | None = None,
     ) -> DocumentVersion:
-        existing = self.versions_for(document.id)
-        version = DocumentVersion(
-            id=new_id("ver"),
+        """Create the next immutable version of ``document`` and make it current.
+
+        The version number is allocated *inside* a savepoint and re-derived when the
+        unique constraint rejects it, so a concurrent writer can neither fail this call
+        nor produce two rows numbered the same.  The sibling rows are re-read on each
+        attempt for the same reason: a snapshot taken before the loop goes stale
+        exactly when it matters.
+
+        The writes are ordered deliberately: the previous current row must stop claiming
+        to be current before the new row is inserted (the partial unique index is a
+        per-statement check), while ``document.current_version_id`` can only be written
+        after the version row exists (the deferred foreign key).  Every statement in
+        between therefore leaves the database in a state the schema accepts, which is
+        what makes the savepoint retry below safe.
+        """
+        last_error: Exception | None = None
+        for _attempt in range(MAX_VERSION_NUMBER_ATTEMPTS):
+            next_number = self.next_version_number(document.id)
+            savepoint = self.session.begin_nested()
+            try:
+                siblings = self.versions_for(document.id)
+                version = DocumentVersion(
+                    id=new_id("ver"),
+                    document_id=document.id,
+                    version_number=next_number,
+                    revision=revision,
+                    revision_key=revision_key,
+                    status=status or document.status,
+                    source_path=source_path,
+                    source_relative_path=source_relative_path,
+                    sha256=sha256,
+                    size_bytes=size_bytes,
+                    file_modified_at=file_modified_at,
+                    mime_type=mime_type,
+                    parser=parser,
+                    parser_version=parser_version,
+                    extraction_version=extraction_version,
+                    origin=str(getattr(origin, "value", origin)),
+                    supersedes_version_id=supersedes_version_id,
+                    duplicate_of_version_id=duplicate_of_version_id,
+                    metadata_json=metadata_json or {},
+                    page_count=page_count,
+                    sheet_count=sheet_count,
+                    word_count=word_count,
+                    is_current=True,
+                )
+                # Release the "current" slot *before* the new row claims it.  A unique
+                # index - partial or not - is checked per statement, not deferred to
+                # commit, and a flush always emits INSERTs before UPDATEs of the same
+                # table, so writing the flag flips after the insert would collide with
+                # the row it is meant to replace.  The separate flush is the fix, and it
+                # is inside the savepoint so a retry undoes it too.
+                for previous in siblings:
+                    previous.is_current = False
+                self.session.flush()
+
+                if version.supersedes_version_id is None:
+                    # The chain is the repository's business, not the caller's: whoever
+                    # adds a version gets it linked to the version that was current
+                    # before, or the supersede chain has a hole in it and "what did this
+                    # revision replace?" stops having an answer.
+                    predecessor = max(
+                        (row for row in siblings if row.is_current or row.version_number < next_number),
+                        key=lambda row: row.version_number,
+                        default=None,
+                    )
+                    if predecessor is not None:
+                        version.supersedes_version_id = predecessor.id
+                self.session.add(version)
+                self.session.flush()
+                for previous in siblings:
+                    if previous.superseded_by_version_id is None:
+                        previous.superseded_by_version_id = version.id
+                document.current_version_id = version.id
+                document.change_count = next_number
+                self.session.flush()
+            except IntegrityError as exc:
+                # Roll back only this attempt: the version row, the pointer and the flag
+                # flips are discarded together, so the retry starts from clean state and
+                # the surrounding transaction (the rest of the ingestion run) stays alive.
+                savepoint.rollback()
+                last_error = exc
+                continue
+            savepoint.commit()
+            return version
+        raise DrillingIntelligenceError(
+            f"could not allocate a version number for document {document.id} after {MAX_VERSION_NUMBER_ATTEMPTS} attempts",
             document_id=document.id,
-            version_number=len(existing) + 1,
-            revision=revision,
-            revision_key=revision_key,
-            status=status or document.status,
-            source_path=source_path,
-            sha256=sha256,
-            size_bytes=size_bytes,
-            file_modified_at=file_modified_at,
-            mime_type=mime_type,
-            parser=parser,
-            parser_version=parser_version,
-            extraction_version=extraction_version,
-            origin=str(getattr(origin, "value", origin)),
-            supersedes_version_id=supersedes_version_id,
-            duplicate_of_version_id=duplicate_of_version_id,
-            metadata_json=metadata_json or {},
-            page_count=page_count,
-            sheet_count=sheet_count,
-            word_count=word_count,
-            is_current=True,
+            last_error=str(last_error),
         )
-        self.session.add(version)
-        # The pointer to the new row is a foreign key, so the version has to exist in
-        # the transaction first: writing it before the flush makes SQLite fail the
-        # constraint mid-transaction and the whole ingestion run rolls back.
-        self.session.flush()
-        for previous in existing:
-            previous.is_current = False
-            if previous.id != version.id and previous.superseded_by_version_id is None:
-                previous.superseded_by_version_id = version.id
-        document.current_version_id = version.id
-        document.change_count = len(existing) + 1
-        self.session.flush()
-        return version
+
+    def next_version_number(self, document_id: str) -> int:
+        """``max`` rather than ``count``: a document must never reuse a version number."""
+        current = self.session.execute(
+            select(func.max(DocumentVersion.version_number)).where(DocumentVersion.document_id == document_id)
+        ).scalar_one_or_none()
+        return int(current or 0) + 1
+
+    def resolve_source_path(
+        self,
+        version: DocumentVersion,
+        document: Document | None = None,
+        *,
+        workspace_root: Path | str | None = None,
+    ) -> Path | None:
+        """Where this version's file is *now*, or ``None`` if it cannot be found.
+
+        The absolute path recorded at scan time is tried first, then the durable
+        workspace-relative path against the workspace that is open right now - which is
+        what makes provenance survive a moved or renamed workspace folder.
+        """
+        candidates = candidate_source_paths(
+            recorded_path=version.source_path or "",
+            workspace_root=workspace_root,
+            relative_path=version.source_relative_path or (document.identity_path if document is not None else ""),
+            filename=document.filename if document is not None else "",
+        )
+        return first_existing(candidates)
+
+    def current_version(self, document: Document) -> DocumentVersion | None:
+        """The version the registry points at, via the pointer (not "the newest row").
+
+        Reading the pointer rather than the newest row matters: a repair, an approval
+        rollback or an import can legitimately make those differ, and the registry must
+        then report what it actually points at instead of hiding the disagreement.
+        """
+        if document.current_version_id:
+            pointed = self.version(document.current_version_id)
+            if pointed is not None:
+                return pointed
+        return next((version for version in self.versions_for(document.id) if version.is_current), None)
 
     def touch_document_from_version(self, document: Document, version: DocumentVersion) -> None:
         """Keep the registry row consistent with its current version.
@@ -278,19 +414,97 @@ class DocumentRepository:
 
     # -- extraction storage -------------------------------------------------
     def find_cached_extraction(self, *, content_sha256: str, extractor: str, extractor_version: str, config_hash: str) -> Extraction | None:
-        """Extraction cache lookup: identical bytes + identical extractor = reuse."""
-        stmt = (
-            select(Extraction)
-            .where(
-                Extraction.content_sha256 == content_sha256,
-                Extraction.extractor == extractor,
-                Extraction.extractor_version == extractor_version,
-                Extraction.config_hash == (config_hash or ""),
-            )
-            .order_by(Extraction.created_at.desc())
-            .limit(1)
+        """Extraction cache lookup: identical bytes + identical extractor = reuse.
+
+        The cache table is the *index*; the artefact it points at is a normal
+        ``extraction`` row, so a hit costs one indexed lookup plus one primary-key read -
+        no parsing, and no copy of the document JSON.  A pointer whose artefact was
+        deleted (document removal cascades) is cleaned up here rather than served, so a
+        stale entry degrades into a fresh extraction instead of a crash.
+        """
+        entry = self.cache_entry(
+            content_sha256=content_sha256,
+            extractor=extractor,
+            extractor_version=extractor_version,
+            config_hash=config_hash,
         )
-        return self.session.execute(stmt).scalar_one_or_none()
+        if entry is None:
+            return None
+        artefact = self.session.get(Extraction, entry.extraction_id) if entry.extraction_id else None
+        if artefact is None or not artefact.document_json:
+            self.session.delete(entry)
+            self.session.flush()
+            return None
+        return artefact
+
+    def cache_entry(self, *, content_sha256: str, extractor: str, extractor_version: str, config_hash: str) -> ExtractionCache | None:
+        return self.session.execute(
+            select(ExtractionCache).where(
+                ExtractionCache.content_sha256 == content_sha256,
+                ExtractionCache.extractor == extractor,
+                ExtractionCache.extractor_version == extractor_version,
+                ExtractionCache.config_hash == (config_hash or ""),
+            )
+        ).scalar_one_or_none()
+
+    def cache_hit(self, *, content_sha256: str, extractor: str, extractor_version: str, config_hash: str) -> None:
+        """Count a reuse.  Best-effort: the count is diagnostics, never correctness."""
+        entry = self.cache_entry(
+            content_sha256=content_sha256,
+            extractor=extractor,
+            extractor_version=extractor_version,
+            config_hash=config_hash,
+        )
+        if entry is not None:
+            entry.hits = int(entry.hits or 0) + 1
+            self.session.flush()
+
+    def remember_extraction_in_cache(
+        self,
+        extraction: Extraction,
+        *,
+        content_sha256: str,
+        extractor: str,
+        extractor_version: str,
+        config_hash: str,
+        document_version_id: str | None,
+    ) -> ExtractionCache:
+        """Publish ``extraction`` as the artefact for its cache key.
+
+        Upsert under the unique constraint ``uq_extraction_cache_key``: two runs that
+        extract the same bytes at the same time must not both create an entry, so the
+        insert happens in a savepoint and an IntegrityError is answered by re-reading the
+        winner and pointing at this row instead.  The entry then records *this* artefact
+        (a refresh after a parser fix legitimately replaces what the cache serves) while
+        the superseded artefact row itself stays on disk untouched - history is never
+        rewritten, only what the cache points at moves forward.
+        """
+        key = {
+            "content_sha256": content_sha256,
+            "extractor": extractor,
+            "extractor_version": extractor_version,
+            "config_hash": config_hash or "",
+        }
+        last_error: Exception | None = None
+        for _attempt in range(2):
+            savepoint = self.session.begin_nested()
+            try:
+                entry = self.cache_entry(**key)
+                if entry is None:
+                    entry = ExtractionCache(id=new_id("extcache"), hits=0, **key)
+                    self.session.add(entry)
+                else:
+                    entry.refreshed = entry.extraction_id is not None and entry.extraction_id != extraction.id
+                entry.extraction_id = extraction.id
+                entry.produced_by_version_id = document_version_id
+                self.session.flush()
+            except IntegrityError as exc:
+                savepoint.rollback()
+                last_error = exc
+                continue
+            savepoint.commit()
+            return entry
+        raise DrillingIntelligenceError("could not publish the extraction to the cache", error=str(last_error))
 
     def save_extraction(
         self,
@@ -308,6 +522,7 @@ class DocumentRepository:
         status: str = "OK",
         error: str | None = None,
         duration_ms: float | None = None,
+        cache: bool = True,
     ) -> Extraction:
         extraction = Extraction(
             id=new_id("ext"),
@@ -331,6 +546,18 @@ class DocumentRepository:
         version.extraction_version = extractor_version
         version.extracted_at = datetime.now(UTC)
         self.session.flush()
+        # Only a *produced* artefact joins the cache: a CACHE_HIT row is a pointer to an
+        # artefact that is already there, and re-publishing it would make the cache entry
+        # point at a copy rather than at what the run actually parsed.
+        if cache and status == "OK":
+            self.remember_extraction_in_cache(
+                extraction,
+                content_sha256=content_sha256,
+                extractor=extractor,
+                extractor_version=extractor_version,
+                config_hash=config_hash or "",
+                document_version_id=version.id,
+            )
         return extraction
 
     def latest_extraction(self, document_id: str) -> Extraction | None:
@@ -355,7 +582,7 @@ class DocumentRepository:
         verified: bool = False,
         notes: str | None = None,
     ) -> Source:
-        source = self.session.execute(select(Source).where(Source.kind == kind, Source.reference == reference)).scalar_one_or_none()
+        source = self.find_source(kind=kind, reference=reference)
         if source is not None:
             changed = False
             if authority_tier and source.authority_tier != authority_tier:
@@ -370,8 +597,7 @@ class DocumentRepository:
             if changed:
                 self.session.flush()
             return source
-        source = Source(
-            id=new_id("src"),
+        return self._insert_source(
             kind=kind,
             reference=reference,
             label=label,
@@ -382,32 +608,68 @@ class DocumentRepository:
             verified=verified,
             notes=notes,
         )
-        self.session.add(source)
-        self.session.flush()
-        return source
+
+    def find_source(self, *, kind: str, reference: str) -> Source | None:
+        """The source row for a citation key, if this transaction can already see one.
+
+        A method rather than an inline query because the get-or-create below has to look
+        twice - once to decide, once to re-read after a conflicting insert - and a
+        caller that wants to *simulate* the race (a test, a retry harness) needs one seam
+        to override rather than the whole method.
+        """
+        return self.session.execute(select(Source).where(Source.kind == kind, Source.reference == reference)).scalar_one_or_none()
+
+    def _insert_source(self, **values: Any) -> Source:
+        """Insert one source row, resolving the select-then-insert race by re-reading.
+
+        ``(kind, reference)`` is unique in the schema, so a concurrent writer that got
+        there first does not lose: the failed insert is rolled back to a savepoint (the
+        surrounding transaction survives) and the row that exists is the one returned.
+        A duplicate key here is therefore a *reuse*, never an ingestion failure.
+        """
+        last_error: Exception | None = None
+        for _attempt in range(2):
+            savepoint = self.session.begin_nested()
+            try:
+                source = Source(id=new_id("src"), **values)
+                self.session.add(source)
+                self.session.flush()
+            except IntegrityError as exc:
+                savepoint.rollback()
+                last_error = exc
+                existing = self.find_source(kind=values["kind"], reference=values["reference"])
+                if existing is not None:
+                    return existing
+                continue
+            savepoint.commit()
+            return source
+        raise DrillingIntelligenceError(
+            f"source {values.get('kind')}:{values.get('reference')} could not be created",
+            error=str(last_error),
+        )
 
     # -- audit --------------------------------------------------------------
     def audit(self, *, action: str, subject_type: str, subject_id: str, detail: dict[str, Any] | None = None, actor: str = "system") -> AuditEvent:
-        event = AuditEvent(
-            id=new_id("aud"),
-            actor=actor,
-            action=action,
-            subject_type=subject_type,
-            subject_id=subject_id,
-            detail=detail or {},
-        )
-        self.session.add(event)
-        return event
+        """Append one audit event (the only audit write the repository offers)."""
+        return self.audit_log.record(action=action, subject_type=subject_type, subject_id=subject_id, detail=detail, actor=actor)
 
     def audit_trail(self, subject_type: str, subject_id: str, limit: int = 50) -> list[AuditEvent]:
-        return list(
-            self.session.execute(
-                select(AuditEvent)
-                .where(AuditEvent.subject_type == subject_type, AuditEvent.subject_id == subject_id)
-                .order_by(AuditEvent.at.desc())
-                .limit(limit)
-            ).scalars()
-        )
+        return self.audit_log.trail(subject_type, subject_id, limit=limit)
+
+    # -- consistency --------------------------------------------------------
+    def check_current_version_invariants(self) -> list[Any]:
+        """Cross-row check of the "exactly one current version" rule (see ``database.integrity``)."""
+        from ..database.integrity import check_current_version_invariants
+
+        self.session.flush()
+        return check_current_version_invariants(self.session)
+
+    def check_extraction_cache(self) -> list[Any]:
+        """Report cache keys that hold more than one entry (the unique constraint says: never)."""
+        from ..database.integrity import check_extraction_cache
+
+        self.session.flush()
+        return check_extraction_cache(self.session)
 
 
 __all__ = ["DOCUMENT_LEVEL_FIELDS", "DocumentRepository", "identity_for"]

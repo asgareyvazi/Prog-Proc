@@ -78,8 +78,15 @@ def workspace(tmp_path: Path, settings):
 
 @pytest.fixture
 def db(workspace):
+    """A database built from the models (fast), in the workspace's own data directory.
+
+    ``Workspace`` creates its SQLite file lazily, so the directory has to exist before a
+    URL can be opened; the schema here is ``create_all`` rather than migrated, which is
+    what unit tests want (the migration path is covered in ``tests/integration``).
+    """
     from drilling_intelligence.database.session import Database
 
+    Path(workspace.database_url.replace("sqlite:///", "")).parent.mkdir(parents=True, exist_ok=True)
     database = Database.from_url(workspace.database_url, workspace.settings)
     database.create_all()
     yield database
