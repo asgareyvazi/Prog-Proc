@@ -231,6 +231,21 @@ class Workspace:
             self._index_database = Database(engine, settings=self.settings)
         return self._index_database
 
+    def search_service(self, *, in_memory: bool = False):
+        """Keyword search over this workspace, on the sidecar index.
+
+        Built lazily and cheap to ignore: a workspace that never searches never creates
+        ``index/search_index.db``.  The returned service owns a registry session for as long as
+        it lives, so a long-running process (the UI, a CLI batch) should keep one service and
+        call :meth:`~drilling_intelligence.search.service.SearchService.rebuild` or
+        :meth:`~drilling_intelligence.search.service.SearchService.prune` rather than build a new
+        one per query.  ``in_memory`` is for tests and for a data directory that cannot be
+        written: the search still works, it just does not survive the process.
+        """
+        from ..search.service import SearchService
+
+        return SearchService.for_workspace(self, in_memory=in_memory)
+
     def close(self) -> None:
         if self._database is not None:
             self._database.dispose()
@@ -250,6 +265,7 @@ class Workspace:
             "project_code": self.config.project_code,
             "database": str(self._database.url) if self._database else "(not opened)",
             "schema": (self.migration.to_dict() if self.migration else None),
+            "index_database": (str(self._index_database.url) if self._index_database is not None else str(self.index_database_path)),
         }
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

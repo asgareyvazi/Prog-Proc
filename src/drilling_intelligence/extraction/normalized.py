@@ -306,6 +306,20 @@ class Figure:
         )
 
 
+def _render_field_for_search(item: DataField) -> str:
+    """``name = value unit`` plus the caveats the field carries, as searchable text."""
+    value = "" if item.value is None else str(item.value)
+    if not value and not item.name:
+        return ""
+    parts = [f"{item.name} = {value}{(' ' + item.unit) if item.unit else ''}"]
+    quality = getattr(item.quality, "value", str(item.quality or ""))
+    if quality and quality.upper() not in {"VALID", ""}:
+        parts.append(f"({quality.lower()})")
+    if item.method:
+        parts.append(f"[{item.method}]")
+    return " ".join(parts)
+
+
 @dataclass
 class SearchUnit:
     """A retrievable chunk with exactly one provenance reference."""
@@ -398,11 +412,18 @@ class NormalizedDocument:
         return None
 
     def search_units(self, *, include_tables: bool = True, max_chars: int = 1200) -> list[SearchUnit]:
-        """Chunk the document for keyword indexing, each chunk provenance-anchored.
+        """Chunk the document for retrieval, each chunk anchored to one provenance.
 
-        Chunking deliberately follows the document's own structure (paragraph,
-        table row) rather than a fixed character window, so a search hit can
-        always be shown as "page 27, section 4.2, paragraph 3".
+        Chunking follows the document's own structure - heading, paragraph run, table row,
+        extracted field - rather than a fixed character window, so a search hit can always be
+        shown as "page 27, section 4.2, paragraph 3" or "Summary!B9".  A generic splitter
+        would be shorter code and worse answers: an engineering search is a question about a
+        *value*, and a chunk that cuts a table row in half cannot answer it.
+
+        Fields are indexed as text on purpose (``mud_weight = 10.2 ppg``): the structured
+        record stays in ``extracted_fields`` for calculations, while this is what a keyword
+        query reads.  A field whose quality is anything but ``VALID`` says so in the text, so
+        a search result can never quietly present an unverified number as a settled one.
         """
         units: list[SearchUnit] = []
         buffer: list[str] = []
@@ -433,6 +454,49 @@ class NormalizedDocument:
                     section=last.section if last else "",
                     index=last.index if last else 0,
                     provenance=last.provenance if last else None,
+                )
+            )
+        for section in self.sections:
+            heading = (section.label or "").strip()
+            if not heading:
+                continue
+            anchor = self.paragraph_at(section.paragraph_indices[0]) if section.paragraph_indices else None
+            units.append(
+                SearchUnit(
+                    text=heading,
+                    unit_type="heading",
+                    page=section.page,
+                    section=heading,
+                    index=anchor.index if anchor else 0,
+                    provenance=anchor.provenance if anchor else None,
+                )
+            )
+        for item in self.extracted_fields:
+            text = _render_field_for_search(item)
+            if not text:
+                continue
+            units.append(
+                SearchUnit(
+                    text=text,
+                    unit_type="field",
+                    page=item.provenance.locator.page if item.provenance and item.provenance.locator.kind == "pdf" else None,
+                    section=item.name,
+                    index=len(units),
+                    provenance=item.provenance,
+                )
+            )
+        if self.diagnostics:
+            # Not a claim about a location in the file, so deliberately without provenance:
+            # the chunker downstream records it against the document itself.  A reader
+            # searching for "no text layer" should find the scans that said so.
+            units.append(
+                SearchUnit(
+                    text="; ".join(str(note) for note in self.diagnostics)[: max_chars * 2],
+                    unit_type="diagnostic",
+                    page=None,
+                    section="",
+                    index=len(units),
+                    provenance=None,
                 )
             )
         if include_tables:

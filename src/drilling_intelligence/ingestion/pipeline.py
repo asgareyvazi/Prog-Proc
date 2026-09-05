@@ -49,6 +49,13 @@ class PipelineResult:
     warnings: list[str] = field(default_factory=list)
     error: str = ""
     indexed: int = 0
+    #: Chunks written for those versions.  Zero alongside a successful registration means the
+    #: artefact had nothing searchable in it, which is a different fact from "indexed".
+    indexed_chunks: int = 0
+    #: Indexed versions dropped because the registry no longer considers them current.
+    index_removed: int = 0
+    #: Snapshot of the index after this run (chunk/document counts), when one was wired in.
+    index_stats: dict[str, Any] = field(default_factory=dict)
     #: Registry inconsistencies found after the run (see ``database.integrity``).  Reported,
     #: never raised: the files are already committed, and a warning the user can act on
     #: beats a failed run over a row a repair tool can fix.
@@ -71,12 +78,15 @@ class PipelineResult:
             "from_cache": self.from_cache,
             "failures": self.failures,
             "indexed": self.indexed,
+            "indexed_chunks": self.indexed_chunks,
             "duration_ms": round(self.duration_ms, 1),
             "counts": dict(self.counts),
             "removed": list(self.removed[:100]),
             "skipped": list(self.skipped[:100]),
             "warnings": list(self.warnings),
             "error": self.error,
+            "index_removed": self.index_removed,
+            "index_stats": dict(self.index_stats),
             "results": [item.to_dict() for item in self.results[:2000]],
         }
 
@@ -130,6 +140,26 @@ class IngestionPipeline:
         return scanner
 
     # -- run ----------------------------------------------------------------
+    def reconcile_index(self, repository: DocumentRepository) -> tuple[int, dict[str, Any]]:
+        """Bring the searchable state in line with the registry after a run.
+
+        Two things happen, both of them safe to repeat: chunks for versions that are no longer
+        current (superseded, or rows whose document row has gone) leave the index, and the
+        resulting counts come back for the run report.  This is *why* a re-run after an edit is
+        not a duplicate answer - the superseded version is searchable no more, while its rows
+        stay in the registry with their provenance.
+
+        Returns ``(removed, stats)``.  A failure is reported as a warning by the caller rather
+        than failing the run: the index is disposable, and losing a run because a sidecar could
+        not be written would be backwards.
+        """
+        removed = int(self.index.prune_obsolete(repository=repository) or 0)
+        try:
+            stats = self.index.stats(repository=repository).to_dict()
+        except Exception:  # noqa: BLE001 - statistics are a nicety
+            stats = {}
+        return removed, stats
+
     def check_invariants(self, repository: DocumentRepository) -> list[dict[str, Any]]:
         """Run the cross-row registry checks once, at the end of a pass.
 
@@ -239,8 +269,18 @@ class IngestionPipeline:
                         result.files_extracted += 1
                     if self.index is not None and registration.version_id:
                         try:
-                            self.index.upsert(registration.document_id, registration.version_id)
+                            # The repository of this run, not one the index opens for itself: the
+                            # rows describing this file are still uncommitted in this session, so
+                            # a second session would read "no artefact yet" and index nothing
+                            # while reporting success.
+                            chunks = int(self.index.upsert(registration.document_id, registration.version_id, repository=repository) or 0)
                             result.indexed += 1
+                            result.indexed_chunks += chunks
+                            if not chunks:
+                                # Reported instead of swallowed: "no chunks" after a successful
+                                # extraction means the artefact had nothing to index *or* the
+                                # index read a snapshot that did not contain it yet.
+                                result.warnings.append(f"index wrote no chunks for {registration.filename}")
                             repository.set_document_status(registration.document_id, ProcessingStatus.INDEXED)
                         except Exception as exc:  # noqa: BLE001 - indexing must never fail ingestion
                             result.warnings.append(f"index update failed for {registration.filename}: {type(exc).__name__}: {exc}")
@@ -251,6 +291,10 @@ class IngestionPipeline:
 
             result.counts["PROCESSED"] = len(result.results)
             result.invariant_problems = self.check_invariants(repository)
+            if self.index is not None:
+                result.index_removed, index_stats = self.reconcile_index(repository)
+                if index_stats:
+                    result.index_stats = index_stats
             for problem in result.invariant_problems[:20]:
                 result.warnings.append(f"registry invariant broken: {problem['problem']} on {problem['table']}({problem['row_id']})")
             run.counts = dict(result.counts)
