@@ -380,26 +380,31 @@ class ExcelExtractor:
         # A sheet's used range can be far bigger than its populated area, so the row
         # count is recorded before the budget is applied: "8231 rows, 60000 cells read"
         # is a different statement from "8231 rows, 8231 cells read".
+        # A sheet's used range can be far bigger than its populated area, so the row
+        # count is recorded before the budget is applied: "8231 rows, 60000 cells read"
+        # is a different statement from "8231 rows, 8231 cells read".
         report.rows_seen = int(worksheet.max_row or 0)
         count = 0
         skipped = 0
         truncated = False
         for row in worksheet.iter_rows():
+            filled = [cell for cell in row if cell.value is not None and not (isinstance(cell.value, str) and not cell.value.strip())]
             if truncated:
                 # Past the budget the remaining rows are only *counted*: no text
                 # rendering, no number-format work, no formula lookup.  The workbook is
                 # already in memory, so counting is cheap, and the count is what tells a
                 # reviewer how much of the sheet they are not seeing.
-                skipped += sum(1 for cell in row if cell.value is not None and not (isinstance(cell.value, str) and not cell.value.strip()))
+                skipped += len(filled)
                 continue
-            for cell in row:
-                value = cell.value
-                if value is None or (isinstance(value, str) and not value.strip()):
-                    continue
+            for offset, cell in enumerate(filled):
                 if count >= max_cells:
+                    # Everything from here on in this row and every later row is unread;
+                    # counting it exactly (not "approximately") is what makes the
+                    # diagnostic something a reviewer can act on.
                     truncated = True
-                    skipped += 1
+                    skipped += len(filled) - offset
                     break
+                value = cell.value
                 coordinate = cell.coordinate
                 text = render_cell(value, cell.number_format or "")
                 record = CellRecord(

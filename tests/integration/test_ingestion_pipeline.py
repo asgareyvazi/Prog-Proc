@@ -9,11 +9,12 @@ Migrations are exercised because ``workspace.database`` runs them (no ``create_a
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from tests.fixtures.generate import build_corpus
 
 from drilling_intelligence.database.models import (
@@ -245,3 +246,63 @@ def test_runs_and_audit_trail_are_persisted(ingested, workspace) -> None:
         assert actions["document.registered"] == len(EXPECTED)
         assert actions["document.classified"] >= len(EXPECTED)
         assert actions["ingestion.run"] == 2
+
+
+def test_a_run_reports_a_registry_it_cannot_trust(ingested, workspace) -> None:
+    """Post-run consistency is part of the run report, not an act of faith (P0-3).
+
+    The repository writes under the current-version invariants, so a breakage means damage
+    from elsewhere - an interrupted run, a hand-edited file.  The pipeline runs the checker
+    over the whole registry once per pass and reports what it finds: the run is still
+    successful (the files are committed and correct), but nobody has to discover the
+    inconsistency through a wrong search result.
+    """
+    pipeline, corpus, ids = ingested
+    clean = run(pipeline, corpus, ids)
+    assert clean.ok and clean.invariant_problems == [], clean.to_dict()
+
+    with workspace.database.session() as session:
+        document_id = session.execute(text("select id from document order by identity_path limit 1")).scalar_one()
+        session.execute(text("update document set current_version_id = null where id = :id"), {"id": document_id})
+        session.commit()
+
+    result = run(pipeline, corpus, ids)
+    assert result.ok, result.error
+    assert [problem["problem"] for problem in result.invariant_problems] == ["POINTER_MISSING"], result.invariant_problems
+    assert result.invariant_problems[0]["row_id"] == document_id
+    assert any("registry invariant broken" in warning for warning in result.warnings), result.warnings
+
+    # The same statement is what the UI's status bar and the repair tool read.
+    with workspace.database.session() as session:
+        raw = session.execute(text("select report from ingestion_run order by started_at desc limit 1")).scalar_one()
+        stored = raw if isinstance(raw, dict) else json.loads(raw)
+        assert [problem["problem"] for problem in stored["invariant_problems"]] == ["POINTER_MISSING"], stored
+        # ...and repairing the row makes the next run clean again.
+        session.execute(
+            text(
+                "update document set current_version_id ="
+                " (select id from document_version v where v.document_id = document.id and v.is_current)"
+                " where id = :id"
+            ),
+            {"id": document_id},
+        )
+        session.commit()
+    assert run(pipeline, corpus, ids).invariant_problems == []
+
+
+def test_the_invariant_check_is_opt_out_for_a_repair_pass(ingested, workspace) -> None:
+    """A repair tool fixes rows one at a time and checks at the end; it must not re-scan."""
+    _first, corpus, ids = ingested
+    pipeline = IngestionPipeline(
+        settings=workspace.settings,
+        workspace_root=workspace.root,
+        database=workspace.database,
+        verify_invariants=False,
+    )
+    with workspace.database.session() as session:
+        session.execute(text("update document set current_version_id = null"))
+        session.commit()
+    result = run(pipeline, corpus, ids)
+    assert result.ok, result.error
+    assert result.invariant_problems == [], "silence here is the configured behaviour, not a bug"
+    assert not any("invariant" in warning for warning in result.warnings)

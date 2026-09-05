@@ -453,14 +453,29 @@ def _coerce(value: Any, f: Any, current: Any) -> Any:
     return str(value)
 
 
-def _coerce_scalar(value: str, like: type | object) -> Any:
-    if isinstance(like, bool):
+def _coerce_scalar(value: str, like: Any) -> Any:
+    """Turn an environment string into the type the current value (or its type) has.
+
+    ``like`` may be the *value* or its *class*: an environment override that quietly stayed
+    a string would be worse than no override at all, because ``timeout_seconds = "600"``
+    reaches httpx as text and a range check cannot compare it.  A malformed number is
+    reported as a configuration error naming the value, not as a raw ValueError from
+    somewhere deep in the first HTTP call.
+    """
+    kind = like if isinstance(like, type) else type(like)
+    if kind is bool:
         return value.strip().lower() in {"1", "true", "yes", "on"}
-    if isinstance(like, int):
-        return int(value)
-    if isinstance(like, float):
-        return float(value)
-    if isinstance(like, list):
+    if kind is int:
+        try:
+            return int(value.strip() or 0)
+        except ValueError:
+            raise ConfigurationError(f"environment value {value!r} is not an integer") from None
+    if kind is float:
+        try:
+            return float(value.strip() or 0.0)
+        except ValueError:
+            raise ConfigurationError(f"environment value {value!r} is not a number") from None
+    if kind in (list, tuple):
         return [item.strip() for item in value.split(",") if item.strip()]
     return value
 

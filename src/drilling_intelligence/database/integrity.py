@@ -24,9 +24,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.errors import DrillingIntelligenceError
+from ..core.ids import new_id
 from .models import (
     Calculation,
     Document,
@@ -48,6 +50,7 @@ __all__ = [
     "check_current_version_invariants",
     "check_extraction_cache",
     "check_knowledge_relations",
+    "create_knowledge_relation",
     "describe_problems",
     "require_current_version_invariants",
     "validate_knowledge_relation",
@@ -140,6 +143,21 @@ def check_current_version_invariants(session: Session) -> list[IntegrityProblem]
                         {"current_version_id": document.current_version_id, "expected": expected.id},
                     )
                 )
+            elif pointer.document_id != document.id:
+                # Checked before the id comparison on purpose: a pointer at *another
+                # document's* version is a different and worse fault than pointing at an
+                # older revision of the same one (the row exists, so the foreign key is
+                # satisfied, and every read of this document would show someone else's
+                # revision).  Reporting it as a mismatch would send a repair tool off to
+                # find the wrong version.
+                problems.append(
+                    IntegrityProblem(
+                        "document",
+                        document.id,
+                        "POINTER_FOREIGN",
+                        {"version": pointer.id, "version_of_document": pointer.document_id},
+                    )
+                )
             elif pointer.id != expected.id:
                 problems.append(
                     IntegrityProblem(
@@ -147,15 +165,6 @@ def check_current_version_invariants(session: Session) -> list[IntegrityProblem]
                         document.id,
                         "POINTER_MISMATCH",
                         {"points_at": pointer.id, "expected": expected.id},
-                    )
-                )
-            elif pointer.document_id != document.id:
-                problems.append(
-                    IntegrityProblem(
-                        "document",
-                        document.id,
-                        "POINTER_FOREIGN",
-                        {"version": pointer.id, "version_of_document": pointer.document_id},
                     )
                 )
         for version in owned:
@@ -256,6 +265,108 @@ def validate_knowledge_relation(
     normalised = str(relation).strip()
     if normalised != relation or " " in relation:
         raise KnowledgeIntegrityError(f"knowledge relation {relation!r} must be a single snake_case token")
+
+
+def find_knowledge_relation(
+    session: Session, *, source_type: str, source_id: str, relation: str, target_type: str, target_id: str
+) -> KnowledgeRelation | None:
+    """The stored edge with the same five key columns, if there is one."""
+    return session.execute(
+        select(KnowledgeRelation).where(
+            KnowledgeRelation.source_type == source_type,
+            KnowledgeRelation.source_id == source_id,
+            KnowledgeRelation.relation == relation,
+            KnowledgeRelation.target_type == target_type,
+            KnowledgeRelation.target_id == target_id,
+        )
+    ).scalar_one_or_none()
+
+
+def create_knowledge_relation(
+    session: Session,
+    *,
+    source_type: str,
+    source_id: str,
+    relation: str,
+    target_type: str,
+    target_id: str,
+    weight: float = 1.0,
+    provenance: list[Any] | None = None,
+    note: str | None = None,
+) -> KnowledgeRelation:
+    """Validate, then add (or strengthen) the edge - the only sanctioned write path.
+
+    The graph keeps its polymorphic endpoints (``source_type``/``source_id`` rather than
+    twenty foreign keys, which is the decision recorded in ADR-0006), so nothing at the
+    database level can stop an edge pointing at a row that does not exist.  This function
+    is where that guarantee is enforced instead: it refuses before ``session.add``, so a
+    rejected edge never reaches the unit of work at all.  Re-asserting the same edge
+    updates the existing row instead of tripping ``uq_relation_edge``.
+    """
+    validate_knowledge_relation(
+        session,
+        source_type=source_type,
+        source_id=source_id,
+        target_type=target_type,
+        target_id=target_id,
+        relation=relation,
+    )
+    if not 0.0 <= float(weight) <= 1.0:
+        raise KnowledgeIntegrityError(f"knowledge relation weight must be between 0 and 1, got {weight!r}")
+
+    existing = find_knowledge_relation(
+        session,
+        source_type=source_type,
+        source_id=source_id,
+        relation=relation,
+        target_type=target_type,
+        target_id=target_id,
+    )
+    if existing is not None:
+        return _strengthen(existing, weight=weight, provenance=provenance, note=note)
+
+    relation_row = KnowledgeRelation(
+        id=new_id("rel"),
+        source_type=source_type,
+        source_id=source_id,
+        relation=relation,
+        target_type=target_type,
+        target_id=target_id,
+        weight=float(weight),
+        provenance=list(provenance or []),
+        note=note,
+    )
+    session.add(relation_row)
+    try:
+        with session.begin_nested():
+            session.flush()
+    except IntegrityError:
+        # Someone else wrote the same edge while we were validating: re-read and merge.
+        session.expire_all()
+        winner = find_knowledge_relation(
+            session,
+            source_type=source_type,
+            source_id=source_id,
+            relation=relation,
+            target_type=target_type,
+            target_id=target_id,
+        )
+        if winner is None:  # pragma: no cover - the constraint fired for another reason
+            raise
+        return _strengthen(winner, weight=weight, provenance=provenance, note=note)
+    return relation_row
+
+
+def _strengthen(
+    row: KnowledgeRelation, *, weight: float, provenance: list[Any] | None, note: str | None
+) -> KnowledgeRelation:
+    row.weight = max(float(row.weight or 0.0), float(weight))
+    if provenance:
+        seen = {str(item) for item in (row.provenance or [])}
+        row.provenance = list(row.provenance or []) + [item for item in provenance if str(item) not in seen]
+    if note:
+        row.note = note
+    return row
 
 
 def check_knowledge_relations(session: Session) -> list[IntegrityProblem]:

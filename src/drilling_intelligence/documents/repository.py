@@ -491,7 +491,7 @@ class DocumentRepository:
             try:
                 entry = self.cache_entry(**key)
                 if entry is None:
-                    entry = ExtractionCache(id=new_id("extcache"), hits=0, **key)
+                    entry = ExtractionCache(id=new_id("extc"), hits=0, **key)
                     self.session.add(entry)
                 else:
                     entry.refreshed = entry.extraction_id is not None and entry.extraction_id != extraction.id

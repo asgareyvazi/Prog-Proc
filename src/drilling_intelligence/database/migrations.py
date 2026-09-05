@@ -49,7 +49,10 @@ def find_migrations_dir(start: Path | None = None) -> Path | None:
 
 @dataclass
 class MigrationStatus:
-    mode: str = "unknown"  # migrated | stamped-from-metadata | already-current | unavailable
+    #: ``migrated`` (forward), ``downgraded`` (back, only via allow_downgrade),
+    #: ``downgrade-required`` (an older revision was asked for without permission),
+    #: ``already-current``, ``stamped-from-metadata``, ``unavailable``.
+    mode: str = "unknown"
     current: str = ""
     head: str = ""
     detail: str = ""
@@ -90,14 +93,20 @@ def current_revision(engine: Engine) -> str:
         return ""
 
 
-def upgrade(engine: Engine, revision: str = "head") -> MigrationStatus:
-    """Bring the schema to ``revision``; report how it got there."""
+def upgrade(engine: Engine, revision: str = "head", *, allow_downgrade: bool = False) -> MigrationStatus:
+    """Bring the schema to ``revision``; report how it got there.
+
+    Forward is the normal direction and the only one a workspace opening ever needs.
+    Moving *back* is a deliberate act - a repair tool rolling a half-finished migration off
+    a database - so it requires ``allow_downgrade``; without it the status says
+    ``downgrade-required`` instead of silently reporting that nothing needed doing.
+    """
     directory = find_migrations_dir()
     existing = set(inspect(engine).get_table_names())
     if not existing:
         if directory is None:
             return _create_and_stamp(engine, "no migration scripts available (installed wheel)")
-        return _run_upgrade(engine, directory, revision)
+        return _run_upgrade(engine, directory, revision, allow_downgrade=allow_downgrade)
     if "alembic_version" not in existing:
         if not _looks_like_initial_schema(engine):
             return MigrationStatus(mode="unavailable", detail="Database has neither alembic_version nor the platform tables")
@@ -105,10 +114,10 @@ def upgrade(engine: Engine, revision: str = "head") -> MigrationStatus:
     if directory is None:
         head = ""
         return MigrationStatus(mode="stamped-from-metadata", current=current_revision(engine), head=head, detail="migration scripts unavailable")
-    return _run_upgrade(engine, directory, revision)
+    return _run_upgrade(engine, directory, revision, allow_downgrade=allow_downgrade)
 
 
-def _run_upgrade(engine: Engine, directory: Path, revision: str) -> MigrationStatus:
+def _run_upgrade(engine: Engine, directory: Path, revision: str, *, allow_downgrade: bool = False) -> MigrationStatus:
     from alembic import command
     from alembic.config import Config
     from alembic.script import ScriptDirectory
@@ -119,10 +128,31 @@ def _run_upgrade(engine: Engine, directory: Path, revision: str) -> MigrationSta
     config.attributes["engine"] = engine
     config.attributes["configure_logger"] = False
     before = current_revision(engine)
-    command.upgrade(config, revision)
-    after = current_revision(engine)
+    # ``command.upgrade`` only walks forward: asking it for an older revision is a silent
+    # no-op, which would be reported as "already-current" - the last thing a person
+    # reviewing a failed migration needs.  So the direction is decided here, explicitly.
+    # ``walk_revisions`` yields head-first, so a *higher* index means an *older* revision.
+    order = [step.revision for step in ScriptDirectory.from_config(config).walk_revisions()]
     head = ",".join(ScriptDirectory.from_config(config).get_heads())
-    mode = "already-current" if (before and before == after == head) else "migrated"
+    behind = bool(before) and revision in order and before in order and order.index(revision) > order.index(before)
+    if behind and not allow_downgrade:
+        return MigrationStatus(
+            mode="downgrade-required",
+            current=before,
+            head=head,
+                    detail=f"{revision} is older than the current revision {before}; pass allow_downgrade=True to roll back",
+        )
+    if behind:
+        command.downgrade(config, revision)
+    else:
+        command.upgrade(config, revision)
+    after = current_revision(engine)
+    if before and before == after == head:
+        mode = "already-current"
+    elif before and after and before in order and after in order and order.index(after) > order.index(before):
+        mode = "downgraded"
+    else:
+        mode = "migrated"
     log.event("db.migrate", before=before or None, after=after, head=head, mode=mode)
     return MigrationStatus(mode=mode, current=after, head=head)
 

@@ -303,3 +303,148 @@ def test_a_second_current_version_is_refused_at_the_database_level_too(session) 
     session.expire_all()
     assert session.get(DocumentVersion, first.id).is_current is True
     assert session.get(DocumentVersion, second.id).is_current is False
+
+
+# --------------------------------------------------------------------------- the checker's codes
+#: Every code :func:`check_current_version_invariants` can emit is produced on purpose below.
+#: A code no test reaches is a code that is either dead or wrong, and both are worse than no
+#: checker at all: the point of the report is that a repair tool can act on the *named*
+#: failure.  Several of these states cannot be created through SQL while the partial unique
+#: index exists - which is the guarantee working - so those tests drop the index first,
+#: simulating exactly the case the checker is for: a database where the constraint was never
+#: created (an older file, or a hand-edited one).
+def _codes(session: Session) -> list[str]:
+    session.flush()
+    session.expire_all()
+    return [problem.problem for problem in check_current_version_invariants(session)]
+
+
+def _without_one_current_index(session: Session):
+    session.execute(text("drop index uq_document_version_one_current"))
+    session.flush()
+
+
+def test_the_checker_names_two_current_versions_and_says_the_pointer_disagrees(session) -> None:
+    document = make_document(session)
+    _without_one_current_index(session)
+    add_version(session, document, sha="1" * 64, number=1)
+    second = add_version(session, document, sha="2" * 64, number=2)
+    session.flush()
+    document.current_version_id = second.id  # the pointer picks the other of the two "current" rows
+    session.commit()
+
+    codes = _codes(session)
+    assert codes[0] == "MULTIPLE_CURRENT", codes
+    assert codes[1] == "POINTER_MISMATCH", codes
+    with pytest.raises(Exception, match="current-version invariant violated"):
+        require_current_version_invariants(session)
+
+    # The finding is actionable: fix the rows and the constraint can be rebuilt.
+    session.execute(
+        text(
+            "update document_version set is_current = (version_number ="
+            " (select max(version_number) from document_version where document_id = :id)) where document_id = :id"
+        ),
+        {"id": document.id},
+    )
+    session.execute(
+        text(
+            "update document set current_version_id = (select id from document_version where document_id = document.id"
+            " and is_current = 1) where id = :id"
+        ),
+        {"id": document.id},
+    )
+    session.execute(text("create unique index uq_document_version_one_current on document_version (document_id) where is_current = 1"))
+    session.commit()
+    assert _codes(session) == []
+    # ...and the rebuilt index refuses a second current row again.
+    with pytest.raises(IntegrityError, match=r"UNIQUE constraint failed: document_version\.document_id"):
+        session.execute(
+            text(
+                "insert into document_version (id, document_id, version_number, revision_key, status, source_path,"
+                " sha256, size_bytes, mime_type, parser, parser_version, extraction_version, origin, is_current,"
+                " created_at, updated_at) values ('ver-x', :doc, 9, 'r', 'DRAFT', 'docs/x', '3', 1, '', 'pdf_text',"
+                " '1', '1', 'NEW', 1, '2026-01-01', '2026-01-01')"
+            ),
+            {"doc": document.id},
+        )
+    session.rollback()
+
+
+def test_the_checker_distinguishes_a_stale_pointer_from_a_foreign_one(session) -> None:
+    document = make_document(session)
+    other = make_document(session, name="other.pdf")
+    mine = add_version(session, document, sha="1" * 64, number=1)
+    theirs = add_version(session, other, sha="2" * 64, number=1)
+    other.current_version_id = theirs.id
+    session.flush()
+
+    document.current_version_id = None
+    assert _codes(session) == ["POINTER_MISSING"], "a current version with nothing pointing at it is its own failure"
+
+    document.current_version_id = theirs.id
+    session.flush()
+    codes = _codes(session)
+    assert codes == ["POINTER_FOREIGN"], codes
+    problem = check_current_version_invariants(session)[0]
+    assert problem.detail["version_of_document"] == other.id
+    assert "POINTER_MISMATCH" not in codes, "the sharper label must win: this row belongs to someone else"
+
+    # A pointer at a superseded revision of the *right* document is the other failure.
+    stale = add_version(session, document, sha="9" * 64, number=2, current=False)
+    mine.is_current = False
+    stale.is_current = True
+    session.flush()
+    document.current_version_id = mine.id
+    codes = _codes(session)
+    assert codes == ["POINTER_MISMATCH"], codes
+    detail = check_current_version_invariants(session)[0].detail
+    assert detail == {"points_at": mine.id, "expected": stale.id}, detail
+    with pytest.raises(Exception, match="current-version invariant violated") as caught:
+        require_current_version_invariants(session)
+    assert [item["problem"] for item in caught.value.context["problems"]] == ["POINTER_MISMATCH"]
+
+
+def test_a_current_version_that_claims_to_be_superseded_is_reported(session) -> None:
+    document = make_document(session)
+    _without_one_current_index(session)
+    first = add_version(session, document, sha="1" * 64, number=1)
+    add_version(session, document, sha="2" * 64, number=2)
+    session.commit()
+    # Both claims at once on the older row: current *and* replaced.
+    session.execute(
+        text("update document_version set is_current = 1, superseded_by_version_id = :winner where id = :id"),
+        {"id": first.id, "winner": "ver-22222222-2"},
+    )
+    codes = _codes(session)
+    assert "SUPERSEDED_IS_CURRENT" in codes, codes
+    problem = next(item for item in check_current_version_invariants(session) if item.problem == "SUPERSEDED_IS_CURRENT")
+    assert problem.row_id == first.id and problem.detail == {"superseded_by": "ver-22222222-2"}, problem.to_dict()
+
+
+def test_an_orphan_version_is_reported_rather_than_skipped(session) -> None:
+    """``ON DELETE CASCADE`` normally prevents this; a hand-edited file must still be caught.
+
+    The breakage is created with a plain ``sqlite3`` connection, which is precisely how it
+    happens in real life: someone edits the workspace file with a tool that has no foreign
+    keys switched on, the document row goes, the versions stay - and every later read of the
+    registry would skip them in silence if the checker did not look.
+    """
+    document = make_document(session)
+    orphan = add_version(session, document, sha="1" * 64, number=1)
+    session.commit()
+    bind = session.get_bind()
+    if bind.dialect.name != "sqlite":  # pragma: no cover - the suite runs on SQLite
+        pytest.skip("the hand-edited-file scenario is a SQLite-file scenario")
+    import sqlite3
+    from pathlib import Path
+
+    with sqlite3.connect(Path(str(bind.url.database))) as raw:
+        raw.execute("delete from document where id = ?", (document.id,))
+    # The document row is gone from under the session: drop it from the identity map rather
+    # than expiring it, or the next flush fails on an object that no longer exists.
+    session.expunge_all()
+    assert session.get(DocumentVersion, orphan.id) is not None, "the cascade did not run: the row is orphaned"
+    codes = _codes(session)
+    assert codes == ["ORPHAN_VERSION"], codes
+    assert check_current_version_invariants(session)[0].detail == {"document_id": document.id}

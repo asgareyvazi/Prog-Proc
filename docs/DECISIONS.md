@@ -127,3 +127,67 @@ file, which is what makes the platform usable for engineering decisions. MinerU'
 is Apache-2.0 with additional terms (attribution if offered as an online service; a
 separate commercial licence only past 100M MAU or $20M/month, neither of which applies
 here) — recorded so the next reader does not have to re-litigate it.
+
+---
+
+## ADR-0007 — The document core's invariants live in the schema, the repository and the checker
+
+**Status:** accepted (2026-09-05)
+
+**Context.** Phase-0 review found four places where a correct-looking system could store a
+wrong one: the extraction cache was consulted only *after* the full parse (so it saved
+nothing and could serve an artefact produced by a different extractor); `reprocess()` hashed
+`document.sha256` instead of the file (so a changed file was recorded as unchanged);
+"exactly one current version" was a convention with nothing behind it, and version numbers
+were allocated by `max(version_number) + 1`, which two writers can both pick; a
+workbook over its cell budget returned a partial sheet that looked complete, and
+`st_ctime` was stored under the name `file_created_at`, which it is not on any platform.
+
+**Decision.** Each invariant goes to the layer that can actually hold it:
+
+*   **Routing before the cache.** `registry.register` builds a context, asks the router to
+    `route` (a bounded probe: `extraction.pdf_probe_pages` pages, never a full parse), and
+    only then looks the key up - `content_sha256` + extractor id + extractor version +
+    config hash over the *options that change the artefact*. A hit copies the stored
+    artefact and never enters an extractor; the routing decision is stored with the version
+    either way, so provenance does not depend on the cache being warm.
+*   **The cache is its own table.** `extraction_cache` holds one row per key
+    (`uq_extraction_cache_key`) pointing at the `extraction` row to reuse, with
+    `document_version_id` deliberately outside the key so one artefact may serve many
+    versions; the write is a savepoint upsert, so the loser of a concurrent insert reuses
+    the winner instead of failing the run.
+*   **Current version, three ways.** A partial unique index
+    (`unique (document_id) where is_current`) makes two current versions impossible; a real
+    `deferrable` foreign key from `document.current_version_id` (rebuilt through
+    `batch_alter_table` on SQLite, added directly elsewhere) makes a dangling pointer
+    impossible in the same transaction; and `database.integrity.check_current_version_invariants`
+    reports the three-table statement the schema cannot express - exposed as
+    `DocumentRepository.check_current_version_invariants()` and
+    `require_current_version_invariants()`, which the ingestion path and the migration tests
+    call. Nothing here is SQLite-specific, because the system of record moves.
+*   **Version numbers are claimed, not computed.** `create_version` allocates under the
+    existing `(document_id, version_number)` unique constraint and retries on
+    `IntegrityError` within a savepoint, bounded by `MAX_VERSION_NUMBER_ATTEMPTS`. Sequential
+    numbering is preserved; nothing is loosened to avoid the race, and the supersede
+    back-link is written by the repository so a caller cannot forget it.
+*   **Sources of truth on disk.** `reprocess`/`register` hash the *file*; a missing or
+    unreadable file is an error with no version written. The durable reference is the
+    canonical workspace-relative path (`document_version.source_relative_path`, `/`-separated,
+    normalised), with the absolute path kept for convenience only, so a relocated workspace
+    still resolves and still verifies. `st_ctime` is `fs_metadata_changed_at`, documented as
+    "metadata change" and never used as a document revision date; a genuine creation time is
+    stored only where the platform reports one.
+*   **Limits are reported, not hidden.** The Excel reader keeps `max_sheets`/`max_cells` and
+    emits `EXTRACTION_TRUNCATED: max_cells=N in sheet ...`, storing `truncated`,
+    `cells_read`/`cells_skipped` per sheet in the artefact metadata, so a partial extraction
+    can never be mistaken for a complete one; the two-pass read is bounded by
+    `excel_max_bytes` because openpyxl cannot give values and formulas in one load.
+    A PDF probe that samples says so in `DocumentComplexity.reasons`.
+
+**Consequences.** `tests/integration/test_extraction_cache.py` can assert the *performance*
+property in the same breath as correctness (parser call counts on the second run), and the
+invariant tests deliberately break the rules with raw SQL to prove the checker names each
+failure mode. Migration 0002 repairs data before constraining it - highest version number
+wins, pointer follows, relative paths backfilled from the document identity, cache entries
+backfilled from the artefacts that already exist - and is round-trip tested against a
+populated 0001 database, downgrade included.

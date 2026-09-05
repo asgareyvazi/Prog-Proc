@@ -49,7 +49,17 @@ depends_on = None
 #: without reflecting it.  ``batch_alter_table`` needs this to work in ``--sql``
 #: (offline) mode, where there is no live connection to reflect through; listing the
 #: indexes here too means the rebuild does not silently drop them.
-def _document_table_v1() -> sa.Table:
+def _document_table(*, with_current_version_fk: bool) -> sa.Table:
+    """``document`` as it looks *at the moment a batch rebuild starts*.
+
+    ``copy_from`` is what makes ``batch_alter_table`` work offline and on a database whose
+    indexes alembic must not have to discover: it restates every column, constraint and
+    index of the table being copied, because SQLite's rebuild is
+    "create the new table, copy the rows, drop the old one, rename" - anything left out of
+    this description is silently lost from the user's workspace.  ``fs_metadata_changed_at``
+    is listed here even though this migration adds it: by the time the rebuild runs it
+    exists, and the copy has to carry it across.
+    """
     table = sa.Table(
         "document",
         sa.MetaData(),
@@ -95,7 +105,28 @@ def _document_table_v1() -> sa.Table:
         sa.Index("ix_document_classification", "classification"),
         sa.Index("ix_document_status", "processing_status"),
     )
+    if with_current_version_fk:
+        table.append_constraint(
+            sa.ForeignKeyConstraint(
+                ["current_version_id"],
+                ["document_version.id"],
+                name="fk_document_current_version_id_document_version",
+                ondelete="SET NULL",
+                deferrable=True,
+                initially="DEFERRED",
+            )
+        )
     return table
+
+
+def _document_table_v1() -> sa.Table:
+    """The table as the *upgrade* finds it: new column present, new foreign key absent."""
+    return _document_table(with_current_version_fk=False)
+
+
+def _document_table_v2() -> sa.Table:
+    """The table as the *downgrade* finds it: with the foreign key, so it can be dropped."""
+    return _document_table(with_current_version_fk=True)
 
 
 def upgrade() -> None:
@@ -204,12 +235,16 @@ def _cache_backfill() -> str:
     "First producer" is the oldest row for the key, chosen by a correlated subquery so
     the statement is one static string that SQLite and PostgreSQL both accept.  Only
     rows that carry a parsed artefact qualify: a failed extraction is not cacheable.
+
+    The id is derived from the extraction's own hex body so it stays inside ``String(36)``
+    (SQLite would not complain about a longer one; PostgreSQL would reject the insert and
+    the upgrade would die half-applied).
     """
     return (
         "insert into extraction_cache"
         " (id, content_sha256, extractor, extractor_version, config_hash, extraction_id,"
         "  hits, produced_by_version_id, refreshed, created_at, updated_at) "
-        "select 'extcache-' || e.id, e.content_sha256, e.extractor, e.extractor_version, e.config_hash, e.id,"
+        "select 'xc-' || substr(e.id, 5, 32), e.content_sha256, e.extractor, e.extractor_version, e.config_hash, e.id,"
         "       0, e.document_version_id, false, e.created_at, e.updated_at "
         "from extraction e "
         "where e.status = 'OK' and e.document_json is not null "
@@ -228,7 +263,9 @@ def downgrade() -> None:
     op.drop_index("uq_document_version_one_current", table_name="document_version")
     bind_dialect = op.get_context().dialect.name
     if bind_dialect == "sqlite":
-        with op.batch_alter_table("document", copy_from=_document_table_v1(), recreate="always") as batch_op:
+        # ``copy_from`` has to describe the table *with* the constraint being dropped, or
+        # batch mode cannot resolve the name and the downgrade dies with "No such constraint".
+        with op.batch_alter_table("document", copy_from=_document_table_v2(), recreate="always") as batch_op:
             batch_op.drop_constraint("fk_document_current_version_id_document_version", type_="foreignkey")
     else:
         op.drop_constraint("fk_document_current_version_id_document_version", "document", type_="foreignkey")

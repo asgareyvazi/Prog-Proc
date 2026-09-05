@@ -49,6 +49,10 @@ class PipelineResult:
     warnings: list[str] = field(default_factory=list)
     error: str = ""
     indexed: int = 0
+    #: Registry inconsistencies found after the run (see ``database.integrity``).  Reported,
+    #: never raised: the files are already committed, and a warning the user can act on
+    #: beats a failed run over a row a repair tool can fix.
+    invariant_problems: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -89,6 +93,7 @@ class IngestionPipeline:
         router: Any = None,
         index: Any = None,
         scanner: FileScanner | None = None,
+        verify_invariants: bool = True,
     ) -> None:
         self.settings = settings
         self.workspace_root = Path(workspace_root).expanduser().resolve()
@@ -96,6 +101,7 @@ class IngestionPipeline:
         self.router = router
         self.index = index
         self.scanner = scanner
+        self.verify_invariants = verify_invariants
 
     # -- scanner ------------------------------------------------------------
     def build_scanner(
@@ -124,6 +130,23 @@ class IngestionPipeline:
         return scanner
 
     # -- run ----------------------------------------------------------------
+    def check_invariants(self, repository: DocumentRepository) -> list[dict[str, Any]]:
+        """Run the cross-row registry checks once, at the end of a pass.
+
+        :meth:`DocumentRepository.create_version` already *writes* under the invariants
+        (one current version per document, pointer matching, sequential numbers), so
+        anything this finds is damage from elsewhere: an interrupted run, a hand-edited
+        file, a database written by an older build.  Surfacing it here means the user sees
+        it in the run report instead of in a wrong search result months later.
+        """
+        if not self.verify_invariants:
+            return []
+        try:
+            return [problem.to_dict() for problem in repository.check_current_version_invariants()]
+        except Exception as exc:  # noqa: BLE001 - a diagnostic must never fail a good run
+            log.warning("ingestion integrity check unavailable: %s", exc)
+            return []
+
     def run(
         self,
         *,
@@ -227,12 +250,16 @@ class IngestionPipeline:
                     progress(index, total, planned.file.relative_path)
 
             result.counts["PROCESSED"] = len(result.results)
+            result.invariant_problems = self.check_invariants(repository)
+            for problem in result.invariant_problems[:20]:
+                result.warnings.append(f"registry invariant broken: {problem['problem']} on {problem['table']}({problem['row_id']})")
             run.counts = dict(result.counts)
             run.report = {
                 "removed": result.removed[:200],
                 "skipped": result.skipped[:200],
                 "warnings": result.warnings[:200],
                 "failures": [item.to_dict() for item in result.failures_report()][:200],
+                "invariant_problems": result.invariant_problems[:200],
             }
             run.finished_at = datetime.now(UTC)
             repository.audit(
