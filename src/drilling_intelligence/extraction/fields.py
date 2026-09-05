@@ -902,20 +902,18 @@ def merge_field_sets(primary: Iterable[DataField], secondary: Iterable[DataField
     guesswork.  So the primary list keeps its provenance and the secondary one only
     contributes fields the primary never named.
     """
-    merged: list[DataField] = []
-    seen: set[tuple[str, object]] = set()
-
     def key(item: DataField) -> tuple[str, object]:
         return item.name, item.value if not isinstance(item.value, float) else round(item.value, 6)
 
-    for item in primary:
-        seen.add(key(item))
-        merged.append(item)
+    primary = list(primary)
+    claimed = {key(item) for item in primary}
+    merged = list(primary)
     for item in secondary:
-        if key(item) in seen:
+        if key(item) in claimed:
             continue
-        seen.add(key(item))
         merged.append(item)
+    # ``_dedupe`` still keys on the provenance reference, so a value genuinely stated in
+    # two places keeps both citations - the reviewer should see both, not one of them.
     return _dedupe(merged)
 
 
