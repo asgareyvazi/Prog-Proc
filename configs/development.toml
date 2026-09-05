@@ -1,0 +1,120 @@
+# Development configuration for the Drilling Intelligence platform.
+#
+# Nothing in the application may hardcode a path, a port, a model name or a
+# secret.  Every runtime knob lives here (or in the environment, which wins).
+#
+#   DRILLINTEL_CONFIG=/path/to/other.toml      select a different config file
+#   DRILLINTEL_AI__MODEL=qwen2.5:14b           override a single setting
+#   DRILLINTEL_DATABASE__URL=postgresql+psycopg://...
+#
+# Keys use the form DRILLINTEL_<SECTION>__<KEY> (double underscore = nesting).
+
+[app]
+name = "Drilling Intelligence"
+environment = "development"
+# Where per-workspace state (sqlite db, extraction cache, exports) is written.
+# Relative paths are resolved against the directory containing workspace.toml.
+data_dir = ".drillintel"
+
+[database]
+# Empty url => sqlite file "<workspace>/.drillintel/drilling_intelligence.db".
+# Architecture note: nothing in the domain layer may depend on SQLite specific
+# SQL; Alembic migrations are dialect-portable (see docs/DECISIONS.md ADR-0004).
+url = ""
+echo_sql = false
+sqlite_busy_timeout_ms = 5000
+
+[logging]
+level = "INFO"
+# Empty file => stderr only.  A file is useful for long ingestion runs.
+file = ""
+format = "text"          # text | json
+redact_keys = ["api_key", "token", "password", "secret", "authorization"]
+
+[ai]
+provider = "ollama"                 # ollama | openai-compatible | none
+endpoint = "http://127.0.0.1:11434"
+model = "qwen3:8b"
+temperature = 0.0
+max_context_tokens = 16384
+max_output_tokens = 2048
+timeout_seconds = 120.0
+stream = true
+structured_output = true
+retries = 2
+retry_backoff_seconds = 0.5
+# Local-first: the application must stay fully usable with AI disabled.
+require_ai = false
+# Embeddings are optional in Phase 0; keyword/graph/structured search carry
+# retrieval until an embedding provider is reachable.
+embedding_model = "nomic-embed-text"
+embedding_dimensions = 0            # 0 = discover from the provider at runtime
+capability_probe = true               # query /api/tags (or /v1/models) at startup
+
+[ai.secrets]
+# We never store credentials in files.  This maps a secret slot to the name of
+# the environment variable that carries it.
+openai_api_key = "OPENAI_API_KEY"
+
+[mineru]
+# auto = use MinerU when a runtime is reachable, otherwise fall back.
+# Other modes: cli | http | disabled
+mode = "auto"
+binary = "mineru"
+backend = "pipeline"                  # pipeline runs on CPU; vlm/hybrid need a GPU
+endpoint = "http://127.0.0.1:8000"
+timeout_seconds = 900
+# Routing heuristic: prefer MinerU for complex/text-layer-poor PDFs.
+prefer_when_pages_above = 12
+prefer_when_table_rows_above = 25
+prefer_when_text_chars_per_page_below = 250
+
+[extraction]
+pdf_max_pages = 4000
+pdf_extract_tables = true
+pdf_min_table_rows = 2
+excel_max_sheets = 60
+excel_read_formulas = true
+excel_read_hidden = true              # hidden rows/cols are data, not noise
+text_max_bytes = 8388608
+cache_enabled = true                    # reuse extraction keyed by (sha256, extractor version)
+
+[ingestion]
+max_file_size_mb = 512
+follow_symlinks = false
+ignore_dir_names = [".git", ".drillintel", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"]
+ignore_file_patterns = ["~$*", "*.tmp", "*.part", "*.lock", ".DS_Store", "Thumbs.db"]
+supported_extensions = [".pdf", ".xlsx", ".xlsm", ".docx", ".txt", ".md", ".csv", ".tsv"]
+
+[search]
+vector_store = "auto"          # auto | sqlite-vec | memory | none
+keyword_results = 40
+semantic_results = 40
+hybrid_results = 20
+embedding_cache = true
+
+[authority]
+# Configurable source-authority ladder, highest first (docs/DATA_MODEL.md).
+# Conflict resolution never hardcodes this list.
+hierarchy = [
+  "approved_drilling_program",
+  "approved_engineering_document",
+  "current_operational_report",
+  "current_program_revision",
+  "previous_revision",
+  "historical_report",
+  "technical_reference",
+  "general_knowledge",
+]
+# When two sources disagree and neither outranks the other, the platform keeps
+# the conflict open instead of guessing.  Do not change this for convenience.
+resolve_on_equal_authority = "report_conflict"
+
+[ui]
+window_width = 1500
+window_height = 900
+theme = "dark"
+show_source_panel = true
+# Long operations (scan/extract/embed) run in worker threads; the UI polls this
+# interval in milliseconds for progress events.
+progress_interval_ms = 100

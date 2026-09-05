@@ -1,0 +1,107 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drilling-intelligence"
+version = "0.0.1a0"
+description = "Drilling Intelligence & Knowledge Platform - well-centric document, knowledge and deterministic engineering intelligence (local-first)."
+readme = "README.md"
+requires-python = ">=3.11"
+# The product target runtime is CPython 3.14 (see docs/DECISIONS.md ADR-0002).
+# The floor is 3.11 so the platform can be built, tested and demonstrated on
+# developer machines and CI images that do not yet ship 3.14. Code must not use
+# syntax/stdlib features newer than the floor.
+license = { text = "Proprietary - internal engineering platform (see README.md, Licensing section)" }
+authors = [{ name = "Drilling Intelligence Platform Team" }]
+keywords = [
+    "drilling",
+    "well-planning",
+    "digital-twin",
+    "document-intelligence",
+    "knowledge-graph",
+    "rag",
+    "engineering-calculations",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Engineering/Research",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+]
+
+dependencies = [
+    # Persistence (ADR-0003 / ADR-0004)
+    "SQLAlchemy>=2.0.30,<3.0",
+    "alembic>=1.13,<2.0",
+    # Document intelligence (ADR-0006)
+    "PyMuPDF>=1.24,<2.0",
+    "openpyxl>=3.1,<4.0",
+    "pandas>=2.2",
+    "python-docx>=1.1,<2.0",
+    # Local AI transport (ADR-0005)
+    "httpx>=0.27,<1.0",
+]
+
+[project.optional-dependencies]
+ui = ["PySide6-Essentials>=6.6,<7.0"]
+vec = ["sqlite-vec>=0.1.6,<0.2"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "PySide6-Essentials>=6.6,<7.0",
+    "sqlite-vec>=0.1.6,<0.2",
+]
+
+[project.scripts]
+drillintel = "drilling_intelligence.cli:main"
+drillintel-ui = "drilling_intelligence.ui.app:main"
+
+[project.gui-scripts]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+drilling_intelligence = ["py.typed", "resources/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "ui: PySide6 desktop tests (skipped automatically when Qt cannot load)",
+    "network: tests requiring a locally running Ollama instance (skipped by default)",
+    "mineru: tests requiring a locally installed MinerU runtime (skipped by default)",
+    "engineering: deterministic engineering ground-truth tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RET", "RUF", "BLE", "S", "A", "PTH", "TRY", "PLW"]
+ignore = [
+    "E501",   # long lines are handled by the formatter; docstrings carry engineering notes
+    "RET504", # unnecessary assignment before return - kept for readability in calculations
+    "SIM105", # an explained `except Exception: pass` beats a bare contextlib.suppress at parser boundaries
+    "TRY003", # long messages on exceptions are the point: they reach the UI diagnostics
+    "TRY300", # return-in-try is used deliberately at parser boundaries
+    "TRY301", # raising inside try is how the adapters report failure
+    "PTH123", # open() is fine next to pathlib usage
+    "S603",   # subprocess calls are our own CLI adapters, with no user-supplied shell strings
+    "S110",   # except-pass at parser boundaries: BLE001 stays enabled, so each one is justified inline
+    "S112",   # ... same reasoning for except-continue inside per-item loops
+    "TRY400", # error logging is done by the caller that has the user-facing context
+    "A003",   # "Field"/"id" attributes are domain terms of art
+    "RUF001", # ambiguous unicode (we deliberately use ppg/deg/inch symbols in strings)
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "S101"]
