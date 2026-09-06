@@ -34,7 +34,8 @@ and Ollama (for optional AI) are both opt-in and absent by default.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 PYTHONPATH=src .venv/bin/python -m pytest            # 440 tests: unit, engineering, integration
-.venv/bin/ruff check src tests --output-format=concise
+.venv/bin/ruff check src tests migrations --output-format=concise
+.venv/bin/ruff format --check src tests migrations
 ```
 
 Ingest a folder of documents into a workspace (this is the whole point of phase 0, so it
