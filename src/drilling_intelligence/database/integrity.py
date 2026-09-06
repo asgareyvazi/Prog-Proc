@@ -30,16 +30,31 @@ from sqlalchemy.orm import Session
 from ..core.errors import DrillingIntelligenceError
 from ..core.ids import new_id
 from .models import (
+    BestPractice,
     Calculation,
+    Company,
+    DdrReport,
     Document,
     DocumentVersion,
+    DrillingProgram,
     ExtractionCache,
+    Field,
+    FieldPattern,
     KnowledgeItem,
     KnowledgeRelation,
+    LessonLearned,
+    NptRecord,
+    ProblemOccurrence,
+    ProcedureRecord,
     Project,
+    Recommendation,
+    RiskRecord,
+    ServiceCompany,
     Skill,
     Source,
     Well,
+    WellEvent,
+    WellOperation,
     WellSection,
 )
 
@@ -224,14 +239,46 @@ def require_current_version_invariants(session: Session) -> None:
 #: The tables a knowledge edge may connect.  A closed set is what makes the polymorphic
 #: ``source_type``/``target_type`` pair safe to query without dozens of foreign keys:
 #: adding an endpoint type is one line here plus a real migration.
+#: Every table an evidence-graph edge is allowed to point at, keyed by the name the API uses.
+#:
+#: The hierarchy, the evidence and the derived knowledge were here first; the operational and
+#: engineering records join it rather than getting a graph of their own (:doc:`docs/DECISIONS.md`
+#: ADR-0011), so ``RISK_MITIGATES`` and ``REPORT_CONTAINS_EVENT`` are checked by the same code as
+#: ``SUPPORTS_FACT`` and inherit its rules: both ends must be real rows of a registered table, the
+#: source and target types must be ones the relation accepts, and an edge is still only as strong as
+#: the provenance carried with it.  A record table missing from this map is not an unsupported
+#: relationship - it is a rejected write, which is the point: a typo in an endpoint name would
+#: otherwise become a dangling edge that every later query has to be defensive about.
 RELATION_ENDPOINT_MODELS: dict[str, type] = {
-    "document": Document,
-    "document_version": DocumentVersion,
-    "knowledge_item": KnowledgeItem,
-    "source": Source,
+    # context
+    "company": Company,
+    "project": Project,
+    "field": Field,
     "well": Well,
     "well_section": WellSection,
-    "project": Project,
+    # evidence
+    "document": Document,
+    "document_version": DocumentVersion,
+    "source": Source,
+    "knowledge_item": KnowledgeItem,
+    # operational history
+    "ddr_report": DdrReport,
+    "well_operation": WellOperation,
+    "well_event": WellEvent,
+    "npt_record": NptRecord,
+    "problem_occurrence": ProblemOccurrence,
+    # engineering records
+    "procedure": ProcedureRecord,
+    "program": DrillingProgram,
+    "risk": RiskRecord,
+    "lesson": LessonLearned,
+    # A best practice and a recommendation are records with owners and decisions of their own, so an
+    # edge is allowed to point at them: ``LESSON_BEST_PRACTICE`` is how a lesson's evidence travels with
+    # the practice it became, and a recommendation's links are its own columns.
+    "best_practice": BestPractice,
+    "recommendation": Recommendation,
+    "pattern": FieldPattern,
+    "service_company": ServiceCompany,
     "calculation": Calculation,
     "skill": Skill,
 }
