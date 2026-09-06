@@ -1,0 +1,129 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drilling-intelligence"
+version = "0.0.1a0"
+description = "Drilling Intelligence & Knowledge Platform - well-centric document, knowledge and deterministic engineering intelligence (local-first)."
+readme = "README.md"
+requires-python = ">=3.11"
+# The product target runtime is CPython 3.14 (see docs/DECISIONS.md ADR-0002).
+# The floor is 3.11 so the platform can be built, tested and demonstrated on
+# developer machines and CI images that do not yet ship 3.14. Code must not use
+# syntax/stdlib features newer than the floor.
+license = { text = "Proprietary - internal engineering platform (see README.md, Licensing section)" }
+authors = [{ name = "Drilling Intelligence Platform Team" }]
+keywords = [
+    "drilling",
+    "well-planning",
+    "digital-twin",
+    "document-intelligence",
+    "knowledge-graph",
+    "rag",
+    "engineering-calculations",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Engineering/Research",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+]
+
+# Every runtime dependency below is imported by the installed package.  A library listed here
+# and not used is not free: it is a supply-chain surface, an install-time cost on every
+# machine, and a promise about a capability the platform does not have.  (pandas was removed
+# when the Excel extractor proved it never needed a dataframe library; the same rule applies
+# to anything added later - cite the module that imports it.)
+dependencies = [
+    # Persistence (ADR-0003 / ADR-0004)
+    "SQLAlchemy>=2.0.30,<3.0",
+    "alembic>=1.13,<2.0",
+    # Document intelligence (ADR-0006): PyMuPDF for text PDFs, openpyxl for workbooks,
+    # python-docx for Word.  No OCR engine: MinerU stays an optional external command
+    # behind an adapter (docs/DECISIONS.md ADR-0006).
+    "PyMuPDF>=1.24,<2.0",
+    "openpyxl>=3.1,<4.0",
+    "python-docx>=1.1,<2.0",
+    # Local AI transport (ADR-0005).  httpx is used by the provider adapters in
+    # drilling_intelligence.integrations; nothing here imports Ollama's client library.
+    "httpx>=0.27,<1.0",
+]
+
+[project.optional-dependencies]
+# Forward declarations, marked as such: the packages below are *not* imported by anything in
+# this repository yet.  ``ui`` is the toolkit the desktop front end will use (it is out of scope
+# for this phase, which is exactly why there is no ``drillintel-ui`` script entry point), and
+# ``vec`` is the optional FTS companion for vector recall.  They are extras rather than
+# dependencies so a headless install never pulls in Qt.
+ui = ["PySide6-Essentials>=6.6,<7.0"]
+vec = ["sqlite-vec>=0.1.6,<0.2"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+# One command, and it exists: `drillintel` is drilling_intelligence.cli (version, workspace
+# create, ingest, search, index, doctor).  There is deliberately no `drillintel-ui` /
+# `[project.gui-scripts]` entry while the desktop front end is unimplemented - an entry point
+# naming a module that does not exist installs a command whose first run is a traceback.
+drillintel = "drilling_intelligence.cli:main"
+
+[tool.setuptools]
+# `py.typed` below is only shipped when package data is included; without this line the marker
+# is silently dropped and type checkers stop seeing the package's annotations.
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# The only file the package carries that is not Python: the type-marker.  (There is no
+# resources/ directory, and no data file is read from disk at runtime: configuration is TOML
+# supplied by the operator, and the database schema is defined in code plus the Alembic
+# scripts under `migrations/`, which the repository - not the wheel - owns.
+# `drilling_intelligence.database.migrations.find_migrations_dir()` documents the fallback
+# when a wheel is installed without them.)
+drilling_intelligence = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "ui: PySide6 desktop tests (skipped automatically when Qt cannot load)",
+    "network: tests requiring a locally running Ollama instance (skipped by default)",
+    "mineru: tests requiring a locally installed MinerU runtime (skipped by default)",
+    "engineering: deterministic engineering ground-truth tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RET", "RUF", "BLE", "S", "A", "PTH", "TRY", "PLW"]
+ignore = [
+    "E501",   # long lines are handled by the formatter; docstrings carry engineering notes
+    "RET504", # unnecessary assignment before return - kept for readability in calculations
+    "SIM105", # an explained `except Exception: pass` beats a bare contextlib.suppress at parser boundaries
+    "TRY003", # long messages on exceptions are the point: they reach the UI diagnostics
+    "TRY300", # return-in-try is used deliberately at parser boundaries
+    "TRY301", # raising inside try is how the adapters report failure
+    "PTH123", # open() is fine next to pathlib usage
+    "S603",   # subprocess calls are our own CLI adapters, with no user-supplied shell strings
+    "S110",   # except-pass at parser boundaries: BLE001 stays enabled, so each one is justified inline
+    "S112",   # ... same reasoning for except-continue inside per-item loops
+    "TRY400", # error logging is done by the caller that has the user-facing context
+    "A003",   # "Field"/"id" attributes are domain terms of art
+    "RUF001", # ambiguous unicode (we deliberately use ppg/deg/inch symbols in strings)
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "S101"]
