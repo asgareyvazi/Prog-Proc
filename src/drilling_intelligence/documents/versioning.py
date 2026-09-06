@@ -18,17 +18,32 @@ from ..core.enums import DocumentStatus
 
 _FILENAME_REV = re.compile(r"(?i)\b(?:rev(?:ision)?\.?|r|v)\s*[-_]?\s*(\d{1,3}|[a-kA-K])\b")
 _ORDINAL_REV = re.compile(r"(?i)\b(\d{1,2})(?:st|nd|rd|th)\s+revision\b")
-_DATE_IN_NAME = re.compile(r"(?<!\d)(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])(?!\d)")
+_DATE_IN_NAME = re.compile(
+    r"(?<!\d)(20\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])(?!\d)"
+)
 _DASH_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
 _STATUS_PATTERNS: tuple[tuple[re.Pattern[str], DocumentStatus], ...] = (
-    (re.compile(r"(?i)\b(approved for drilling|afd|approved|issued for drilling|ifd)\b"), DocumentStatus.APPROVED),
+    (
+        re.compile(r"(?i)\b(approved for drilling|afd|approved|issued for drilling|ifd)\b"),
+        DocumentStatus.APPROVED,
+    ),
     (re.compile(r"(?i)\b(draft|rev for comment|pre-release)\b"), DocumentStatus.DRAFT),
-    (re.compile(r"(?i)\b(superseded|obsolete|old|cancelled|withdrawn)\b"), DocumentStatus.SUPERSEDED),
+    (
+        re.compile(r"(?i)\b(superseded|obsolete|old|cancelled|withdrawn)\b"),
+        DocumentStatus.SUPERSEDED,
+    ),
     (re.compile(r"(?i)\b(as[- ]built|as[- ]executed|final)\b"), DocumentStatus.APPROVED),
-    (re.compile(r"(?i)\b(issued for review|for review|ifr|for comment)\b"), DocumentStatus.ISSUED_FOR_REVIEW),
+    (
+        re.compile(r"(?i)\b(issued for review|for review|ifr|for comment)\b"),
+        DocumentStatus.ISSUED_FOR_REVIEW,
+    ),
 )
-_CONTENT_REV = re.compile(r"(?im)^\s*(?:document|program|report)?\s*revision\s*(?:no\.?|#|:)?\s*([0-9]{1,3}|[A-K])\b")
-_APPROVAL_LINE = re.compile(r"(?im)^(?!.*\bnot\b).{0,40}\b(approved|authorised|authorized)\b.{0,60}$")
+_CONTENT_REV = re.compile(
+    r"(?im)^\s*(?:document|program|report)?\s*revision\s*(?:no\.?|#|:)?\s*([0-9]{1,3}|[A-K])\b"
+)
+_APPROVAL_LINE = re.compile(
+    r"(?im)^(?!.*\bnot\b).{0,40}\b(approved|authorised|authorized)\b.{0,60}$"
+)
 
 
 @dataclass(frozen=True)
@@ -70,7 +85,9 @@ def revision_from_token(token: str) -> int:
     return 0
 
 
-def parse_revision(filename: str, content: str = "", file_modified: datetime | None = None) -> RevisionInfo:
+def parse_revision(
+    filename: str, content: str = "", file_modified: datetime | None = None
+) -> RevisionInfo:
     notes: list[str] = []
     revision = ""
     key = 0
@@ -105,7 +122,12 @@ def parse_revision(filename: str, content: str = "", file_modified: datetime | N
     date_match = _DATE_IN_NAME.search(filename or "")
     if date_match:
         try:
-            revision_date = datetime(int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3)), tzinfo=UTC)
+            revision_date = datetime(
+                int(date_match.group(1)),
+                int(date_match.group(2)),
+                int(date_match.group(3)),
+                tzinfo=UTC,
+            )
         except ValueError:
             notes.append(f"filename date {date_match.group(0)!r} is not a valid date; ignored")
     elif file_modified is not None:

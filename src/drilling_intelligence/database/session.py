@@ -23,10 +23,14 @@ from .engine import ensure_parent_dir
 class Database:
     """Owns the engine and session factory for one workspace database."""
 
-    def __init__(self, engine: Engine, *, settings: Settings | None = None, echo: bool = False) -> None:
+    def __init__(
+        self, engine: Engine, *, settings: Settings | None = None, echo: bool = False
+    ) -> None:
         self.engine = engine
         self.settings = settings
-        self._factory = sessionmaker(bind=engine, expire_on_commit=False, future=True, autoflush=False)
+        self._factory = sessionmaker(
+            bind=engine, expire_on_commit=False, future=True, autoflush=False
+        )
 
     # -- construction -------------------------------------------------------
     @classmethod
@@ -37,7 +41,9 @@ class Database:
             busy = int(settings.database.sqlite_busy_timeout_ms) if settings else 5000
 
             @event.listens_for(engine, "connect")
-            def _pragmas(dbapi_conn: object, _rec: object) -> None:  # pragma: no cover - thin wrapper
+            def _pragmas(
+                dbapi_conn: object, _rec: object
+            ) -> None:  # pragma: no cover - thin wrapper
                 # These pragmas are what makes foreign keys enforced and concurrent
                 # readers wait instead of failing, so every connection has to run them.
                 # sqlite3.Cursor only learned the context-manager protocol in 3.12 and
@@ -49,6 +55,7 @@ class Database:
                     cursor.execute(f"PRAGMA busy_timeout={busy}")
                 finally:
                     cursor.close()
+
         return cls(engine, settings=settings)
 
     @classmethod

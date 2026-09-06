@@ -41,6 +41,7 @@ from drilling_intelligence.ingestion.pipeline import IngestionPipeline
 from drilling_intelligence.search.chunking import (
     KIND_DIAGNOSTIC,
     KIND_FIELD,
+    KIND_KNOWLEDGE,
     KIND_PARAGRAPH,
     KIND_TABLE_ROW,
 )
@@ -80,7 +81,12 @@ def ids(workspace, db):
 @pytest.fixture
 def pipeline(workspace):
     index = SqliteSearchIndex(workspace.index_database)
-    return IngestionPipeline(settings=workspace.settings, workspace_root=workspace.root, database=workspace.database, index=index)
+    return IngestionPipeline(
+        settings=workspace.settings,
+        workspace_root=workspace.root,
+        database=workspace.database,
+        index=index,
+    )
 
 
 @pytest.fixture
@@ -146,16 +152,52 @@ class TestIngestThenSearch:
         assert service.search("99.9").results == ()
 
     def test_an_excel_hit_cites_the_sheet_and_cell(self, searched) -> None:
+        """Whatever answers a value query, it cites the cell - derived fact or raw field chunk.
+
+        ``KIND_KNOWLEDGE`` is allowed here because that is the point of the knowledge layer: the
+        top answer to "mud weight 10.2 ppg" is now the *fact*, and the assertion that matters is
+        unchanged - the location still names the sheet and the cell, not a file and a hope.
+        """
         service, _corpus, _result = searched
         response = service.search("mud weight 10.2 ppg", document_type="MUD_REPORT", limit=10)
         hit = response.results[0]
-        assert hit.kind in {KIND_FIELD, KIND_TABLE_ROW}
+        assert hit.kind in {KIND_FIELD, KIND_TABLE_ROW, KIND_KNOWLEDGE}
         assert hit.sheet == "Summary"
         assert "Sheet: Summary" in hit.locator_ref
         assert "Cell" in hit.locator_ref or "Range" in hit.locator_ref
         assert hit.provenance["locator"]["kind"] == "excel"
         assert hit.provenance["filename"] == "mud_report_well-a3.xlsx"
         assert hit.page is None, "an Excel locator names a cell, not a page"
+
+    def test_the_derived_fact_answers_before_the_prose_that_supported_it(self, searched) -> None:
+        """The fact chunk is the top hit, and it says what is asserted, not only what is written."""
+        service, _corpus, _result = searched
+        response = service.search("mud weight 10.2 ppg", document_type="MUD_REPORT", limit=10)
+        kinds = [hit.kind for hit in response.results]
+        assert KIND_KNOWLEDGE in kinds, kinds
+        hit = next(item for item in response.results if item.kind == KIND_KNOWLEDGE)
+        assert hit.chunk_id  # a real indexed row, addressable in the sidecar
+        # The body of a fact chunk is the claim in full: predicate, the value as the source wrote
+        # it, the normalised reading, and the state the value belongs to.
+        assert "predicate: mud weight" in hit.text
+        assert "as written: 10.2 ppg" in hit.text
+        assert "normalised: 10.2 ppg" in hit.text
+        assert "record state: ACTUAL" in hit.text
+        # Cited like any other chunk, down to the cell the value was read from.
+        assert hit.provenance["filename"] == "mud_report_well-a3.xlsx"
+        assert hit.provenance["locator"]["sheet"] == "Summary"
+        assert hit.provenance["locator"]["cell"] == "B9"
+        assert hit.locator_ref.startswith("Sheet: Summary")
+
+    def test_a_well_query_can_be_answered_by_knowledge_alone(self, searched) -> None:
+        """``kinds=["knowledge_fact"]`` is a real filter: facts only, each with its source."""
+        service, _corpus, _result = searched
+        response = service.search("mud weight", kinds=[KIND_KNOWLEDGE], limit=20)
+        assert response.results, "searching only the derived knowledge must find something"
+        assert {hit.kind for hit in response.results} == {KIND_KNOWLEDGE}
+        assert all(hit.provenance for hit in response.results), (
+            "an indexed fact without provenance would be a defect"
+        )
 
     def test_a_pdf_hit_cites_the_page(self, searched) -> None:
         service, _corpus, _result = searched
@@ -204,7 +246,9 @@ class TestIngestThenSearch:
     def test_scanned_pdf_is_findable_as_a_diagnostic_and_says_it_is_uncited(self, searched) -> None:
         service, _corpus, _result = searched
         response = service.search("no text recovered", document_type="OTHER", limit=10)
-        assert response.results, "an unreadable file must still be findable - that is how you fix it"
+        assert response.results, (
+            "an unreadable file must still be findable - that is how you fix it"
+        )
         hit = response.results[0]
         assert hit.kind == KIND_DIAGNOSTIC
         assert hit.cited is False
@@ -217,15 +261,20 @@ class TestIngestThenSearch:
         response = service.search("well report", limit=20)
         kinds = [hit.kind for hit in response.results]
         if KIND_DIAGNOSTIC in kinds:
-            assert kinds.index(KIND_DIAGNOSTIC) > 0, "a note about extraction must not outrank extracted text"
+            assert kinds.index(KIND_DIAGNOSTIC) > 0, (
+                "a note about extraction must not outrank extracted text"
+            )
 
     def test_indexed_text_is_the_artefacts_own_text(self, searched, db) -> None:
         """Guard: chunks are carved out of the stored artefact, not re-derived from the file."""
         service, _corpus, _result = searched
-        hit = service.search("mud weight", document_type="MUD_REPORT", kinds=(KIND_PARAGRAPH,), limit=1).results[0]
+        hit = service.search(
+            "mud weight", document_type="MUD_REPORT", kinds=(KIND_PARAGRAPH,), limit=1
+        ).results[0]
         with db.session() as session:
             row = session.execute(
-                sa_text("select document_json from extraction where document_version_id = :v"), {"v": hit.version_id}
+                sa_text("select document_json from extraction where document_version_id = :v"),
+                {"v": hit.version_id},
             ).scalar()
         assert row is not None
         normalized = NormalizedDocument.from_dict(json.loads(row) if isinstance(row, str) else row)
@@ -239,7 +288,9 @@ class TestIngestThenSearch:
 
 
 class TestIncrementalBehaviour:
-    def test_a_second_run_is_idempotent_and_reindexes_nothing(self, searched, pipeline, corpus_root: Path, ids) -> None:
+    def test_a_second_run_is_idempotent_and_reindexes_nothing(
+        self, searched, pipeline, corpus_root: Path, ids
+    ) -> None:
         service, _corpus, _result = searched
         workspace_id, _project, well_id = ids
         before = service.stats()
@@ -250,14 +301,20 @@ class TestIncrementalBehaviour:
         assert again.index_removed == 0
         assert service.stats()["chunks"] == before["chunks"]
 
-    def test_a_duplicate_uses_the_cache_without_parsing_and_is_searchable(self, searched, pipeline, corpus_root: Path, ids, db) -> None:
+    def test_a_duplicate_uses_the_cache_without_parsing_and_is_searchable(
+        self, searched, pipeline, corpus_root: Path, ids, db
+    ) -> None:
         service, _corpus, _result = searched
         workspace_id, _project, well_id = ids
-        shutil.copy2(corpus_root / "lesson_learned_ll-2025-014.txt", corpus_root / "copy_of_lesson.txt")
+        shutil.copy2(
+            corpus_root / "lesson_learned_ll-2025-014.txt", corpus_root / "copy_of_lesson.txt"
+        )
         result = pipeline.run(root=corpus_root, workspace_id=workspace_id, well_id=well_id)
         by_name = {item.filename: item for item in result.results}
         assert "copy_of_lesson.txt" in by_name
-        assert by_name["copy_of_lesson.txt"].from_cache is True, "the copy must reuse the cached artefact"
+        assert by_name["copy_of_lesson.txt"].from_cache is True, (
+            "the copy must reuse the cached artefact"
+        )
         assert result.from_cache >= 1
         assert result.indexed == 1 and result.indexed_chunks > 0
         # Two documents, two chunk sets: the copy is searchable under its own identity, and the
@@ -276,14 +333,21 @@ class TestIncrementalBehaviour:
                 )
             ).scalar_one()
             sha = session.execute(
-                sa_text("select sha256 from document_version where document_id = (select id from document where filename = 'copy_of_lesson.txt')")
+                sa_text(
+                    "select sha256 from document_version where document_id = (select id from document where filename = 'copy_of_lesson.txt')"
+                )
             ).scalar_one()
             cache_rows = session.execute(
-                sa_text("select count(*) from extraction_cache where content_sha256 = :sha"), {"sha": sha}
+                sa_text("select count(*) from extraction_cache where content_sha256 = :sha"),
+                {"sha": sha},
             ).scalar_one()
-        assert extractions == versions, "one artefact row per version - history is never deduplicated away"
+        assert extractions == versions, (
+            "one artefact row per version - history is never deduplicated away"
+        )
         assert distinct_artefacts == 1, "the copy's artefact is the cached one, byte for byte"
-        assert cache_rows == 1, "the cache key is content-addressed, so two versions share one entry"
+        assert cache_rows == 1, (
+            "the cache key is content-addressed, so two versions share one entry"
+        )
 
     def test_a_modified_file_answers_from_the_new_version_and_the_old_one_goes_quiet(
         self, searched, pipeline, corpus_root: Path, ids, db, workspace
@@ -297,10 +361,14 @@ class TestIncrementalBehaviour:
         result = pipeline.run(root=corpus_root, workspace_id=workspace_id, well_id=well_id)
         assert result.counts["MODIFIED"] == 1
         assert result.indexed == 1
-        assert result.index_removed == 1, "the superseded version leaves the searchable state in the same run"
+        assert result.index_removed == 1, (
+            "the superseded version leaves the searchable state in the same run"
+        )
 
         new_phrase = service.search("re-primed", limit=5)
-        assert [hit.metadata["filename"] for hit in new_phrase.results] == ["lesson_learned_ll-2025-014.txt"]
+        assert [hit.metadata["filename"] for hit in new_phrase.results] == [
+            "lesson_learned_ll-2025-014.txt"
+        ]
         assert new_phrase.results[0].version_number == 2
         assert new_phrase.results[0].cited
 
@@ -315,7 +383,9 @@ class TestIncrementalBehaviour:
 
         counts = service.stats()
         assert counts["versions"] == len(CORPUS_FILES), counts
-        assert counts["stale_versions"] == 0, "the run pruned it itself; nothing is left to reconcile"
+        assert counts["stale_versions"] == 0, (
+            "the run pruned it itself; nothing is left to reconcile"
+        )
         # The history is still the registry's, with its artefact and provenance intact.
         with db.session() as session:
             repository = DocumentRepository(session)
@@ -326,12 +396,14 @@ class TestIncrementalBehaviour:
         # is the difference between "not current" and "not searchable".
         with workspace.index_database.engine.connect() as connection:
             stale_rows = connection.execute(
-                sa_text("select count(*) from search_chunk where version_id = :v"), {"v": stale_version_id}
+                sa_text("select count(*) from search_chunk where version_id = :v"),
+                {"v": stale_version_id},
             ).scalar_one()
         assert stale_rows == 0
-        assert {hit.version_id for hit in service.search("re-primed", include_superseded=True, limit=10).results} == {
-            new_version_id
-        }
+        assert {
+            hit.version_id
+            for hit in service.search("re-primed", include_superseded=True, limit=10).results
+        } == {new_version_id}
 
     def test_a_removed_file_stays_searchable_and_verification_reports_the_source_gone(
         self, searched, pipeline, corpus_root: Path, ids
@@ -343,11 +415,15 @@ class TestIncrementalBehaviour:
         assert before.results
         target.unlink()
         result = pipeline.run(root=corpus_root, workspace_id=workspace_id, well_id=well_id)
-        assert [(item["filename"], item["change"]) for item in result.removed] == [("npt_summary_2025-06.csv", "REMOVED")]
+        assert [(item["filename"], item["change"]) for item in result.removed] == [
+            ("npt_summary_2025-06.csv", "REMOVED")
+        ]
         # Removal from disk is not removal from the record: the index keeps answering from the
         # artefact, and says which version it came from.
         after = service.search("back reaming", document_type="NPT", limit=5)
-        assert [hit.metadata["filename"] for hit in after.results] == [hit.metadata["filename"] for hit in before.results]
+        assert [hit.metadata["filename"] for hit in after.results] == [
+            hit.metadata["filename"] for hit in before.results
+        ]
         checked = service.search("back reaming", document_type="NPT", limit=5, verify=True)
         assert checked.results
         for hit in checked.results:
@@ -357,15 +433,26 @@ class TestIncrementalBehaviour:
             assert hit.verification["status"] == "UNREADABLE", hit.verification
             assert "not reachable" in hit.verification["detail"]
 
-    def test_a_rebuild_produces_the_same_index_as_the_incremental_path(self, searched, workspace) -> None:
+    def test_a_rebuild_produces_the_same_index_as_the_incremental_path(
+        self, searched, workspace
+    ) -> None:
         service, _corpus, _result = searched
         sidecar = workspace.index_database
 
         def dump() -> list[tuple]:
             with sidecar.engine.connect() as connection:
                 return [
-                    (row["chunk_id"], row["kind"], row["text"], str(row["page"]), row["locator_ref"], row["terms_json"])
-                    for row in connection.execute(sa_text("select * from search_chunk order by chunk_id")).mappings()
+                    (
+                        row["chunk_id"],
+                        row["kind"],
+                        row["text"],
+                        str(row["page"]),
+                        row["locator_ref"],
+                        row["terms_json"],
+                    )
+                    for row in connection.execute(
+                        sa_text("select * from search_chunk order by chunk_id")
+                    ).mappings()
                 ]
 
         incremental = dump()
@@ -381,7 +468,10 @@ class TestIncrementalBehaviour:
         """Delete the file, reopen the workspace, rebuild: the answers are unchanged."""
         service, _corpus, _result = searched
         query = "mud weight 10.2 ppg"
-        first = [(hit.chunk_id, round(hit.score, 6), hit.locator_ref) for hit in service.search(query, limit=10).results]
+        first = [
+            (hit.chunk_id, round(hit.score, 6), hit.locator_ref)
+            for hit in service.search(query, limit=10).results
+        ]
         assert first
         path = workspace.index_database_path
         service.index.close()
@@ -396,23 +486,38 @@ class TestIncrementalBehaviour:
             fresh = SearchService.for_workspace(reopened)
             assert fresh.stats()["chunks"] == 0
             assert fresh.stats()["missing_versions"] == len(CORPUS_FILES)
-            assert fresh.needs_rebuild() is True, "an empty index over a full registry is a rebuild away"
+            assert fresh.needs_rebuild() is True, (
+                "an empty index over a full registry is a rebuild away"
+            )
             fresh.rebuild()
-            second = [(hit.chunk_id, round(hit.score, 6), hit.locator_ref) for hit in fresh.search(query, limit=10).results]
+            second = [
+                (hit.chunk_id, round(hit.score, 6), hit.locator_ref)
+                for hit in fresh.search(query, limit=10).results
+            ]
             assert second == first
         finally:
             reopened.close()
 
-    def test_registry_drift_is_detected_and_repair_clears_the_flag(self, searched, workspace) -> None:
+    def test_registry_drift_is_detected_and_repair_clears_the_flag(
+        self, searched, workspace
+    ) -> None:
         service, _corpus, _result = searched
         assert service.needs_rebuild() is False
         with workspace.index_database.engine.connect() as connection:
-            version_id = connection.execute(sa_text("select version_id from search_chunk limit 1")).scalar()
+            version_id = connection.execute(
+                sa_text("select version_id from search_chunk limit 1")
+            ).scalar()
         assert version_id
         with workspace.index_database.engine.begin() as connection:
-            connection.execute(sa_text("update search_document set is_current = 0 where version_id = :v"), {"v": version_id})
+            connection.execute(
+                sa_text("update search_document set is_current = 0 where version_id = :v"),
+                {"v": version_id},
+            )
         with workspace.database.session() as session:
-            session.execute(sa_text("update document_version set is_current = 0 where id = :v"), {"v": version_id})
+            session.execute(
+                sa_text("update document_version set is_current = 0 where id = :v"),
+                {"v": version_id},
+            )
             session.commit()
         assert service.needs_rebuild() is True
         stats = service.rebuild()
@@ -494,7 +599,10 @@ class TestConcurrency:
         for index in range(count):
             path = staging / f"variant_{index}" / f"concurrent_note_{index}.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text + f"\nVariant {index}: the crew re-primed the pump and recovered.\n", encoding="utf-8")
+            path.write_text(
+                text + f"\nVariant {index}: the crew re-primed the pump and recovered.\n",
+                encoding="utf-8",
+            )
             paths.append(path)
         return paths
 
@@ -516,7 +624,9 @@ class TestConcurrency:
                         database=database,
                         index=SqliteSearchIndex(workspace.index_database),
                     )
-                    outcome = run_pipeline.run(root=path.parent, workspace_id=workspace_id, well_id=well_id)
+                    outcome = run_pipeline.run(
+                        root=path.parent, workspace_id=workspace_id, well_id=well_id
+                    )
                     assert outcome.failures == 0, [item.error for item in outcome.failures_report()]
                     assert outcome.counts["PROCESSED"] == 1, outcome.counts
                     assert outcome.indexed == 1, outcome.to_dict()["warnings"]
@@ -536,17 +646,23 @@ class TestConcurrency:
         response = service.search("re-primed", limit=20)
         assert len(response.results) == len(paths), [hit.citation for hit in response.results]
         assert len({hit.document_id for hit in response.results}) == len(paths)
-        assert {hit.metadata["filename"] for hit in response.results} == {path.name for path in paths}
+        assert {hit.metadata["filename"] for hit in response.results} == {
+            path.name for path in paths
+        }
         with db.session() as session:
             problems = DocumentRepository(session).check_current_version_invariants()
         assert problems == [], problems
 
-    def test_a_concurrent_rebuild_leaves_no_half_written_version(self, searched, workspace, db) -> None:
+    def test_a_concurrent_rebuild_leaves_no_half_written_version(
+        self, searched, workspace, db
+    ) -> None:
         service, _corpus, _result = searched
         with db.session() as session:
             pairs = [
                 (str(row[0]), str(row[1]))
-                for row in session.execute(sa_text("select id, current_version_id from document")).all()
+                for row in session.execute(
+                    sa_text("select id, current_version_id from document")
+                ).all()
             ]
         assert len(pairs) >= 2
         errors: list[str] = []
@@ -554,14 +670,18 @@ class TestConcurrency:
         def upsert(pair: tuple[str, str]) -> None:
             try:
                 with workspace.database.session() as session:
-                    SqliteSearchIndex(workspace.index_database).upsert(pair[0], pair[1], repository=DocumentRepository(session))
+                    SqliteSearchIndex(workspace.index_database).upsert(
+                        pair[0], pair[1], repository=DocumentRepository(session)
+                    )
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"upsert {pair}: {type(exc).__name__}: {exc}")
 
         def rebuild() -> None:
             try:
                 with workspace.database.session() as session:
-                    SqliteSearchIndex(workspace.index_database).rebuild(repository=DocumentRepository(session))
+                    SqliteSearchIndex(workspace.index_database).rebuild(
+                        repository=DocumentRepository(session)
+                    )
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"rebuild: {type(exc).__name__}: {exc}")
 
@@ -602,13 +722,18 @@ class TestConcurrency:
         path = workspace.index_database_path
         assert path.exists()
         with sqlite3.connect(path) as connection:
-            names = {row[0] for row in connection.execute("select name from sqlite_master where type = 'table'")}
+            names = {
+                row[0]
+                for row in connection.execute("select name from sqlite_master where type = 'table'")
+            }
         assert {"search_chunk", "search_document", "search_meta"} <= names
         assert not names & {"document", "document_version", "extraction", "extraction_cache"}
 
 
 class TestBackendsOnRealData:
-    def test_the_in_memory_backend_answers_exactly_like_the_sqlite_one(self, searched, workspace) -> None:
+    def test_the_in_memory_backend_answers_exactly_like_the_sqlite_one(
+        self, searched, workspace
+    ) -> None:
         service, _corpus, _result = searched
         memory = SearchService(index=InMemorySearchIndex(), database=workspace.database)
         memory.rebuild()
@@ -620,18 +745,32 @@ class TestBackendsOnRealData:
             '"mud weight"',
             "rig up",
         ):
-            expected = [(hit.chunk_id, round(hit.score, 6)) for hit in service.search(query, limit=10).results]
-            actual = [(hit.chunk_id, round(hit.score, 6)) for hit in memory.search(query, limit=10).results]
+            expected = [
+                (hit.chunk_id, round(hit.score, 6))
+                for hit in service.search(query, limit=10).results
+            ]
+            actual = [
+                (hit.chunk_id, round(hit.score, 6))
+                for hit in memory.search(query, limit=10).results
+            ]
             assert actual == expected, query
 
     def test_the_same_query_on_a_machine_without_fts5(self, searched) -> None:
         service, _corpus, _result = searched
         backend = service.index
-        assert backend.fts_available(), "the fixture machine has FTS5; the parity below is the point"
-        with_fts = [(hit.chunk_id, round(hit.score, 6)) for hit in service.search("mud weight 10.2 ppg", limit=10).results]
+        assert backend.fts_available(), (
+            "the fixture machine has FTS5; the parity below is the point"
+        )
+        with_fts = [
+            (hit.chunk_id, round(hit.score, 6))
+            for hit in service.search("mud weight 10.2 ppg", limit=10).results
+        ]
         backend._fts_ready = False
         try:
-            without = [(hit.chunk_id, round(hit.score, 6)) for hit in service.search("mud weight 10.2 ppg", limit=10).results]
+            without = [
+                (hit.chunk_id, round(hit.score, 6))
+                for hit in service.search("mud weight 10.2 ppg", limit=10).results
+            ]
         finally:
             backend._fts_ready = None
         assert without == with_fts and without

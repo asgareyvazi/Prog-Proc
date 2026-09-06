@@ -38,7 +38,9 @@ def sha256_obj(obj: object) -> str:
     """Stable hash of a JSON-serialisable structure (sorted keys, no whitespace)."""
     import json
 
-    payload = json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=False)
+    payload = json.dumps(
+        obj, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=False
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

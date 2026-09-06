@@ -18,22 +18,58 @@ from typing import Any
 #: the set of corpus files that state the value; ``unit`` is what the *document*
 #: writes (unit conversion is verified separately in the unit tests).
 GROUND_TRUTH: dict[str, dict[str, Any]] = {
-    "mud_weight": {"value": 10.2, "unit": "ppg", "files": ("mud_report_well-a3.xlsx", "well_a3_program_rev12.pdf", "daily_drilling_report_well-a3.docx")},
-    "depth_md": {"value": 10125.0, "unit": "ft", "files": ("mud_report_well-a3.xlsx", "daily_drilling_report_well-a3.docx")},
+    "mud_weight": {
+        "value": 10.2,
+        "unit": "ppg",
+        "files": (
+            "mud_report_well-a3.xlsx",
+            "well_a3_program_rev12.pdf",
+            "daily_drilling_report_well-a3.docx",
+        ),
+    },
+    "depth_md": {
+        "value": 10125.0,
+        "unit": "ft",
+        "files": ("mud_report_well-a3.xlsx", "daily_drilling_report_well-a3.docx"),
+    },
     "depth_tvd": {"value": 9850.0, "unit": "ft", "files": ("mud_report_well-a3.xlsx",)},
-    "casing_shoe_depth": {"value": 8500.0, "unit": "ft", "files": ("daily_drilling_report_well-a3.docx",)},
+    "casing_shoe_depth": {
+        "value": 8500.0,
+        "unit": "ft",
+        "files": ("daily_drilling_report_well-a3.docx",),
+    },
     "fracture_gradient": {"value": 15.8, "unit": "ppg", "files": ("well_a3_program_rev12.pdf",)},
     "equivalent_mud_weight": {"value": 15.8, "unit": "ppg", "files": ("mud_report_well-a3.xlsx",)},
-    "pore_pressure_gradient": {"value": 0.465, "unit": "psi/ft", "files": ("mud_report_well-a3.xlsx", "well_a3_program_rev12.pdf")},
+    "pore_pressure_gradient": {
+        "value": 0.465,
+        "unit": "psi/ft",
+        "files": ("mud_report_well-a3.xlsx", "well_a3_program_rev12.pdf"),
+    },
     "npt_hours": {"value": 18.5, "unit": "h", "files": ("daily_drilling_report_well-a3.docx",)},
-    "hole_size_in": {"value": 12.25, "unit": "in", "files": ("well_a3_program_rev12.pdf", "daily_drilling_report_well-a3.docx")},
+    "hole_size_in": {
+        "value": 12.25,
+        "unit": "in",
+        "files": ("well_a3_program_rev12.pdf", "daily_drilling_report_well-a3.docx"),
+    },
     "casing_size_in": {"value": 9.625, "unit": "in", "files": ("well_a3_program_rev12.pdf",)},
     "rop": {"value": 42.0, "unit": "ft/hr", "files": ("daily_drilling_report_well-a3.docx",)},
     "flow_rate": {"value": 900.0, "unit": "gpm", "files": ("well_a3_program_rev12.pdf",)},
-    "mud_volume_bbl": {"value": 1450.0, "unit": "bbl", "files": ("mud_report_well-a3.xlsx", "daily_drilling_report_well-a3.docx")},
-    "wob": {"value": 32000.0, "unit": "lbf", "files": ("well_a3_program_rev12.pdf", "daily_drilling_report_well-a3.docx")},
+    "mud_volume_bbl": {
+        "value": 1450.0,
+        "unit": "bbl",
+        "files": ("mud_report_well-a3.xlsx", "daily_drilling_report_well-a3.docx"),
+    },
+    "wob": {
+        "value": 32000.0,
+        "unit": "lbf",
+        "files": ("well_a3_program_rev12.pdf", "daily_drilling_report_well-a3.docx"),
+    },
     "torque": {"value": 18400.0, "unit": "ft-lbf", "files": ("well_a3_program_rev12.pdf",)},
-    "rpm": {"value": 120.0, "unit": "rpm", "files": ("well_a3_program_rev12.pdf", "daily_drilling_report_well-a3.docx")},
+    "rpm": {
+        "value": 120.0,
+        "unit": "rpm",
+        "files": ("well_a3_program_rev12.pdf", "daily_drilling_report_well-a3.docx"),
+    },
     "date_iso": {"value": "2025-06-14", "unit": "", "files": ("mud_report_well-a3.xlsx",)},
 }
 
@@ -128,9 +164,13 @@ def build_ddr_docx(path: Path) -> Path:
         "with mud weight maintained at 10.2 ppg and 1,450 bbl total system volume. "
         "WOB averaged 32,000 lbf with 120 rpm and 520 psi standpipe pressure."
     )
-    document.add_paragraph("Maximum allowable annular surface pressure was limited to 1,850 psi by the 9 5/8 in casing shoe at 8,500 ft MD.")
+    document.add_paragraph(
+        "Maximum allowable annular surface pressure was limited to 1,850 psi by the 9 5/8 in casing shoe at 8,500 ft MD."
+    )
     document.add_heading("NPT", level=2)
-    document.add_paragraph("Stuck bit for 6.5 h while back reaming at 9,940 ft; 12.0 h lost to tripping equipment failure (top drive hose). Total NPT 18.5 h.")
+    document.add_paragraph(
+        "Stuck bit for 6.5 h while back reaming at 9,940 ft; 12.0 h lost to tripping equipment failure (top drive hose). Total NPT 18.5 h."
+    )
     document.add_heading("Time breakdown", level=2)
     table = document.add_table(rows=1, cols=3)
     table.style = "Light Grid Accent 1"
@@ -151,7 +191,9 @@ def build_ddr_docx(path: Path) -> Path:
         row[0].text = activity
         row[1].text = f"{hours:.2f}"
         row[2].text = code
-    document.add_paragraph("Prepared by R. Halvorsen, Drilling Supervisor. Reviewed by the company man 15 June 2025.")
+    document.add_paragraph(
+        "Prepared by R. Halvorsen, Drilling Supervisor. Reviewed by the company man 15 June 2025."
+    )
     style = document.styles["Normal"]
     style.font.size = Pt(10)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -180,7 +222,11 @@ def build_program_pdf(path: Path) -> Path:
 
     page.draw_rect(fitz.Rect(40, 30, 555, 62), color=(0.4, 0.4, 0.4), width=1)
     line("NORTH CORMORANT FIELD - DRILLING PROGRAM", 50, 14, True)
-    line("Well A-3   |   12 1/4 in intermediate section   |   Revision 12   |   Status: APPROVED", 70, 9)
+    line(
+        "Well A-3   |   12 1/4 in intermediate section   |   Revision 12   |   Status: APPROVED",
+        70,
+        9,
+    )
     y = 95.0
     for text in (
         "1. Objectives and constraints",
@@ -224,10 +270,21 @@ def build_program_pdf(path: Path) -> Path:
         x = left
         for column_index, cell in enumerate(row):
             width = column_widths[column_index]
-            page.draw_rect(fitz.Rect(x, y_cell, x + width, y_cell + row_height), color=(0.2, 0.2, 0.2), width=0.6)
-            page.insert_text((x + 5, y_cell + 13), cell, fontsize=9, fontname=("hebo" if row_index == 0 else "helv"))
+            page.draw_rect(
+                fitz.Rect(x, y_cell, x + width, y_cell + row_height),
+                color=(0.2, 0.2, 0.2),
+                width=0.6,
+            )
+            page.insert_text(
+                (x + 5, y_cell + 13),
+                cell,
+                fontsize=9,
+                fontname=("hebo" if row_index == 0 else "helv"),
+            )
             x += width
-    page.insert_text((left, top + 6 + 4 * row_height + 20), "End of program extract - page 1 of 1", fontsize=8)
+    page.insert_text(
+        (left, top + 6 + 4 * row_height + 20), "End of program extract - page 1 of 1", fontsize=8
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     document.save(path)
     document.close()
@@ -307,11 +364,21 @@ def build_placeholder_scan() -> bytes:
     for y in range(height):
         rows.append(0)  # filter: none
         for x in range(width):
-            ink = 0 if (10 <= y <= 14 and 6 <= x <= 58) or (20 + (y // 6) * 6 <= y <= 22 + (y // 6) * 6 and 6 <= x <= 50) else 255
+            ink = (
+                0
+                if (10 <= y <= 14 and 6 <= x <= 58)
+                or (20 + (y // 6) * 6 <= y <= 22 + (y // 6) * 6 and 6 <= x <= 50)
+                else 255
+            )
             rows.extend((ink, ink, ink))
 
     def chunk(tag: bytes, payload: bytes) -> bytes:
-        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        return (
+            struct.pack(">I", len(payload))
+            + tag
+            + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
 
     return (
         b"\x89PNG\r\n\x1a\n"
@@ -343,4 +410,15 @@ def build_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Pa
     return written
 
 
-__all__ = ["BUILDERS", "GROUND_TRUTH", "build_corpus", "build_ddr_docx", "build_lesson_txt", "build_mud_report_xlsx", "build_npt_csv", "build_placeholder_scan", "build_program_pdf", "build_scanned_pdf"]
+__all__ = [
+    "BUILDERS",
+    "GROUND_TRUTH",
+    "build_corpus",
+    "build_ddr_docx",
+    "build_lesson_txt",
+    "build_mud_report_xlsx",
+    "build_npt_csv",
+    "build_placeholder_scan",
+    "build_program_pdf",
+    "build_scanned_pdf",
+]

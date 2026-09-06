@@ -194,20 +194,33 @@ def test_the_invariants_of_a_phase_zero_workspace_are_repaired_on_upgrade(tmp_pa
                     " from document_version order by version_number"
                 )
             ).all()
-            pointer = connection.execute(text("select current_version_id from document")).scalar_one()
+            pointer = connection.execute(
+                text("select current_version_id from document")
+            ).scalar_one()
             cached = connection.execute(
-                text("select id, extraction_id, hits, produced_by_version_id, content_sha256 from extraction_cache")
+                text(
+                    "select id, extraction_id, hits, produced_by_version_id, content_sha256 from extraction_cache"
+                )
             ).all()
 
-        assert [(row[0], row[1], bool(row[2])) for row in rows] == [("ver-1", 1, False), ("ver-2", 2, True)], rows
+        assert [(row[0], row[1], bool(row[2])) for row in rows] == [
+            ("ver-1", 1, False),
+            ("ver-2", 2, True),
+        ], rows
         assert pointer == "ver-2", pointer
-        assert all(row[3] == "documents/mud_report.xlsx" for row in rows), "backfilled from the document identity"
-        assert rows[0][4] == "ver-2", "the supersede chain that was already there survives the rebuild"
+        assert all(row[3] == "documents/mud_report.xlsx" for row in rows), (
+            "backfilled from the document identity"
+        )
+        assert rows[0][4] == "ver-2", (
+            "the supersede chain that was already there survives the rebuild"
+        )
 
         assert len(cached) == 1, "one entry per key, whatever the number of artefact rows"
         entry_id, extraction_id, hits, produced_by, sha = cached[0]
         assert extraction_id == "ext-1", "the oldest good artefact is the first producer"
-        assert len(entry_id) <= 36, f"{entry_id!r} must fit the String(36) id column (PostgreSQL would reject it)"
+        assert len(entry_id) <= 36, (
+            f"{entry_id!r} must fit the String(36) id column (PostgreSQL would reject it)"
+        )
         assert hits == 0 and sha == SHA
         assert produced_by == "ver-1"
 
@@ -217,7 +230,13 @@ def test_the_invariants_of_a_phase_zero_workspace_are_repaired_on_upgrade(tmp_pa
             assert check_extraction_cache(session) == []
             assert check_knowledge_relations(session) == []
             # ...and the data is still there afterwards (the table rebuild copied it).
-            row = session.execute(text("select identity_path, filename, classification, size_bytes from document")).mappings().one()
+            row = (
+                session.execute(
+                    text("select identity_path, filename, classification, size_bytes from document")
+                )
+                .mappings()
+                .one()
+            )
             assert dict(row) == {
                 "identity_path": "documents/mud_report.xlsx",
                 "filename": "mud_report.xlsx",
@@ -252,14 +271,22 @@ def test_the_migrated_database_refuses_a_second_current_version(tmp_path) -> Non
         # index, so the two halves of the claim are checked separately: the index exists, and
         # a second current row for the same document trips it.
         with (
-            pytest.raises(IntegrityError, match=r"UNIQUE constraint failed: document_version\.document_id"),
+            pytest.raises(
+                IntegrityError, match=r"UNIQUE constraint failed: document_version\.document_id"
+            ),
             engine.begin() as connection,
         ):
             connection.execute(insert, {"sha": SHA, "is_current": 1, "now": NOW})
         with engine.begin() as connection:
             connection.execute(insert, {"sha": SHA, "is_current": 0, "now": NOW})
-            rows = connection.execute(text("select id, is_current from document_version order by id")).all()
-        assert [(row[0], bool(row[1])) for row in rows] == [("ver-1", False), ("ver-2", True), ("ver-3", False)], rows
+            rows = connection.execute(
+                text("select id, is_current from document_version order by id")
+            ).all()
+        assert [(row[0], bool(row[1])) for row in rows] == [
+            ("ver-1", False),
+            ("ver-2", True),
+            ("ver-3", False),
+        ], rows
     finally:
         engine.dispose()
 
@@ -274,7 +301,9 @@ def test_the_foreign_key_on_the_pointer_is_real_after_the_rebuild(tmp_path) -> N
         named = {key["name"] for key in keys if key.get("name")}
         assert "fk_document_current_version_id_document_version" in named, named
         target = next((key for key in keys if key["referred_table"] == "document_version"), None)
-        assert target is not None and target["constrained_columns"] == ["current_version_id"], target
+        assert target is not None and target["constrained_columns"] == ["current_version_id"], (
+            target
+        )
         assert target["options"].get("ondelete") == "SET NULL", target["options"]
 
         # Deleting the version the registry points at must not orphan the pointer.  SQLite
@@ -287,7 +316,12 @@ def test_the_foreign_key_on_the_pointer_is_real_after_the_rebuild(tmp_path) -> N
             connection.commit()
             still = connection.execute(text("select current_version_id from document")).scalar_one()
         assert still is None, f"ON DELETE SET NULL, so the pointer never dangles (got {still!r})"
-        assert schema_diff(engine) == {"missing_tables": [], "extra_tables": [], "missing_columns": [], "extra_columns": []}
+        assert schema_diff(engine) == {
+            "missing_tables": [],
+            "extra_tables": [],
+            "missing_columns": [],
+            "extra_columns": [],
+        }
     finally:
         engine.dispose()
 
@@ -304,11 +338,18 @@ def test_migrating_back_to_0001_keeps_the_data(tmp_path) -> None:
         build_legacy_database(engine)
         upgrade(engine, "head")
         with engine.connect() as connection:
-            before = connection.execute(text("select id, identity_path, filename, change_count from document")).all()
+            before = connection.execute(
+                text("select id, identity_path, filename, change_count from document")
+            ).all()
         # Rolling back is a deliberate act, so it has to be asked for; and the status says
         # so instead of reporting that nothing needed doing.
         refused = upgrade(engine, FIRST_REVISION)
-        assert refused.mode == "downgrade-required" and refused.current == "0002", refused.to_dict()
+        # "current" is whatever head the database sits on - read from the database rather than
+        # hardcoded, because this file is about the 0001 -> 0002 repair, and a third migration
+        # must not make it lie about the version it refused to roll back from.
+        assert refused.mode == "downgrade-required" and refused.current == current_revision(
+            engine
+        ), refused.to_dict()
         assert "allow_downgrade" in refused.detail, refused.detail
         status = upgrade(engine, FIRST_REVISION, allow_downgrade=True)
         assert status.mode == "downgraded" and not status.up_to_date, status.to_dict()
@@ -322,7 +363,9 @@ def test_migrating_back_to_0001_keeps_the_data(tmp_path) -> None:
         index_names = {index["name"] for index in inspect(engine).get_indexes("document_version")}
         assert "uq_document_version_one_current" not in index_names, index_names
         with engine.connect() as connection:
-            after = connection.execute(text("select id, identity_path, filename, change_count from document")).all()
+            after = connection.execute(
+                text("select id, identity_path, filename, change_count from document")
+            ).all()
             count = connection.execute(text("select count(*) from document_version")).scalar_one()
         assert after == before, "a downgrade must not lose or rewrite rows"
         assert count == 2
@@ -337,7 +380,9 @@ def test_a_timestamp_only_difference_still_needs_no_migration(tmp_path) -> None:
         build_legacy_database(engine)
         upgrade(engine, "head")
         with engine.connect() as connection:
-            value = connection.execute(text("select fs_metadata_changed_at from document")).scalar_one()
+            value = connection.execute(
+                text("select fs_metadata_changed_at from document")
+            ).scalar_one()
         assert value is None, "the repair must not invent a filesystem timestamp it never measured"
     finally:
         engine.dispose()

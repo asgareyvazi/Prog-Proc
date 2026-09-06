@@ -48,7 +48,14 @@ def make_document(session: Session, name: str = "program.pdf") -> Document:
     )
 
 
-def add_version(session: Session, document: Document, *, sha: str, number: int | None = None, current: bool = True) -> DocumentVersion:
+def add_version(
+    session: Session,
+    document: Document,
+    *,
+    sha: str,
+    number: int | None = None,
+    current: bool = True,
+) -> DocumentVersion:
     """Insert a version row directly, bypassing the repository.
 
     The tests below need to *create* inconsistent states on purpose, which the repository
@@ -74,7 +81,17 @@ def add_version(session: Session, document: Document, *, sha: str, number: int |
 
 
 def _next(session: Session, document_id: str) -> int:
-    return int(session.scalar(select(func.max(DocumentVersion.version_number)).where(DocumentVersion.document_id == document_id)) or 0) + 1
+    return (
+        int(
+            session.scalar(
+                select(func.max(DocumentVersion.version_number)).where(
+                    DocumentVersion.document_id == document_id
+                )
+            )
+            or 0
+        )
+        + 1
+    )
 
 
 # --------------------------------------------------------------------------- schema level
@@ -85,19 +102,23 @@ def test_a_second_current_version_is_refused_by_the_database(session) -> None:
     with pytest.raises(IntegrityError) as caught:
         add_version(session, document, sha="c" * 64, number=2, current=True)
         session.flush()
-    assert "uq_document_version_one_current" in str(caught.value) or "UNIQUE constraint" in str(caught.value)
+    assert "uq_document_version_one_current" in str(caught.value) or "UNIQUE constraint" in str(
+        caught.value
+    )
     session.rollback()
 
 
 def test_zero_current_versions_are_allowed_but_the_checker_says_so(session) -> None:
-    """"No current version" is a state a document can legitimately be in (all superseded).
+    """ "No current version" is a state a document can legitimately be in (all superseded).
 
     The index cannot require "at least one", so the checker does - and the repository
     never creates that state.
     """
     document = make_document(session)
     version = add_version(session, document, sha="b" * 64, number=1)
-    session.execute(text("update document_version set is_current = 0 where id = :id"), {"id": version.id})
+    session.execute(
+        text("update document_version set is_current = 0 where id = :id"), {"id": version.id}
+    )
     session.flush()
     # Raw SQL bypasses the identity map; expire so the checker reads the row, not the
     # object the session still remembers.
@@ -137,7 +158,12 @@ def test_deleting_the_current_version_nulls_the_pointer(session) -> None:
     # be treated as the registry's answer.
     session.expire_all()
     assert session.get(Document, document.id).current_version_id is None
-    assert session.scalar(text("select current_version_id from document where id = :id"), {"id": document.id}) is None
+    assert (
+        session.scalar(
+            text("select current_version_id from document where id = :id"), {"id": document.id}
+        )
+        is None
+    )
 
 
 # --------------------------------------------------------------------------- numbering
@@ -160,9 +186,18 @@ def test_version_numbers_stay_sequential_across_the_repository(session) -> None:
     assert numbers == [1, 2, 3, 4]
     assert document.change_count == 4
     assert check_current_version_invariants(session) == []
-    rows = session.execute(select(DocumentVersion).where(DocumentVersion.document_id == document.id)).scalars().all()
+    rows = (
+        session.execute(select(DocumentVersion).where(DocumentVersion.document_id == document.id))
+        .scalars()
+        .all()
+    )
     assert sorted(row.version_number for row in rows) == [1, 2, 3, 4]
-    assert [row.is_current for row in sorted(rows, key=lambda item: item.version_number)] == [False, False, False, True]
+    assert [row.is_current for row in sorted(rows, key=lambda item: item.version_number)] == [
+        False,
+        False,
+        False,
+        True,
+    ]
     # The supersede chain points forward one step at a time.
     by_number = {row.version_number: row for row in rows}
     for number in (1, 2, 3):
@@ -224,7 +259,9 @@ def test_a_colliding_version_number_is_retried_not_raised(session) -> None:
         origin=FileChangeKind.NEW,
     )
     rival = session.get(DocumentVersion, "ver-rival")
-    assert sorted([rival.version_number, version.version_number]) == [1, 2], "numbers stay unique and dense"
+    assert sorted([rival.version_number, version.version_number]) == [1, 2], (
+        "numbers stay unique and dense"
+    )
     assert repository.attempts == 2, "exactly one retry: the loop must not spin"
     assert version.is_current and not rival.is_current
     assert document.current_version_id == version.id
@@ -272,10 +309,14 @@ def test_exhausted_retries_raise_a_clear_error(session) -> None:
             extraction_version="1",
             origin=FileChangeKind.MODIFIED,
         )
-    assert repository.attempts == MAX_VERSION_NUMBER_ATTEMPTS, "bounded retry, then a real error rather than a hang"
+    assert repository.attempts == MAX_VERSION_NUMBER_ATTEMPTS, (
+        "bounded retry, then a real error rather than a hang"
+    )
     # The failed allocation left the healthy state exactly as it was.
     session.expire_all()
-    versions = list(session.scalars(select(DocumentVersion).where(DocumentVersion.document_id == document.id)))
+    versions = list(
+        session.scalars(select(DocumentVersion).where(DocumentVersion.document_id == document.id))
+    )
     assert [row.version_number for row in versions] == [1]
     assert document.current_version_id == versions[0].id
     assert check_current_version_invariants(session) == []
@@ -354,11 +395,17 @@ def test_the_checker_names_two_current_versions_and_says_the_pointer_disagrees(s
         ),
         {"id": document.id},
     )
-    session.execute(text("create unique index uq_document_version_one_current on document_version (document_id) where is_current = 1"))
+    session.execute(
+        text(
+            "create unique index uq_document_version_one_current on document_version (document_id) where is_current = 1"
+        )
+    )
     session.commit()
     assert _codes(session) == []
     # ...and the rebuilt index refuses a second current row again.
-    with pytest.raises(IntegrityError, match=r"UNIQUE constraint failed: document_version\.document_id"):
+    with pytest.raises(
+        IntegrityError, match=r"UNIQUE constraint failed: document_version\.document_id"
+    ):
         session.execute(
             text(
                 "insert into document_version (id, document_id, version_number, revision_key, status, source_path,"
@@ -380,7 +427,9 @@ def test_the_checker_distinguishes_a_stale_pointer_from_a_foreign_one(session) -
     session.flush()
 
     document.current_version_id = None
-    assert _codes(session) == ["POINTER_MISSING"], "a current version with nothing pointing at it is its own failure"
+    assert _codes(session) == ["POINTER_MISSING"], (
+        "a current version with nothing pointing at it is its own failure"
+    )
 
     document.current_version_id = theirs.id
     session.flush()
@@ -388,7 +437,9 @@ def test_the_checker_distinguishes_a_stale_pointer_from_a_foreign_one(session) -
     assert codes == ["POINTER_FOREIGN"], codes
     problem = check_current_version_invariants(session)[0]
     assert problem.detail["version_of_document"] == other.id
-    assert "POINTER_MISMATCH" not in codes, "the sharper label must win: this row belongs to someone else"
+    assert "POINTER_MISMATCH" not in codes, (
+        "the sharper label must win: this row belongs to someone else"
+    )
 
     # A pointer at a superseded revision of the *right* document is the other failure.
     stale = add_version(session, document, sha="9" * 64, number=2, current=False)
@@ -413,13 +464,21 @@ def test_a_current_version_that_claims_to_be_superseded_is_reported(session) -> 
     session.commit()
     # Both claims at once on the older row: current *and* replaced.
     session.execute(
-        text("update document_version set is_current = 1, superseded_by_version_id = :winner where id = :id"),
+        text(
+            "update document_version set is_current = 1, superseded_by_version_id = :winner where id = :id"
+        ),
         {"id": first.id, "winner": "ver-22222222-2"},
     )
     codes = _codes(session)
     assert "SUPERSEDED_IS_CURRENT" in codes, codes
-    problem = next(item for item in check_current_version_invariants(session) if item.problem == "SUPERSEDED_IS_CURRENT")
-    assert problem.row_id == first.id and problem.detail == {"superseded_by": "ver-22222222-2"}, problem.to_dict()
+    problem = next(
+        item
+        for item in check_current_version_invariants(session)
+        if item.problem == "SUPERSEDED_IS_CURRENT"
+    )
+    assert problem.row_id == first.id and problem.detail == {"superseded_by": "ver-22222222-2"}, (
+        problem.to_dict()
+    )
 
 
 def test_an_orphan_version_is_reported_rather_than_skipped(session) -> None:
@@ -444,7 +503,9 @@ def test_an_orphan_version_is_reported_rather_than_skipped(session) -> None:
     # The document row is gone from under the session: drop it from the identity map rather
     # than expiring it, or the next flush fails on an object that no longer exists.
     session.expunge_all()
-    assert session.get(DocumentVersion, orphan.id) is not None, "the cascade did not run: the row is orphaned"
+    assert session.get(DocumentVersion, orphan.id) is not None, (
+        "the cascade did not run: the row is orphaned"
+    )
     codes = _codes(session)
     assert codes == ["ORPHAN_VERSION"], codes
     assert check_current_version_invariants(session)[0].detail == {"document_id": document.id}

@@ -45,14 +45,19 @@ def build_engine(settings: Settings, url: str | None = None, *, echo: bool | Non
     }
     url_obj = make_url(str(target))
     if url_obj.get_backend_name() == "sqlite":
-        kwargs["connect_args"] = {"check_same_thread": False, "timeout": max(1.0, settings.database.sqlite_busy_timeout_ms / 1000.0)}
+        kwargs["connect_args"] = {
+            "check_same_thread": False,
+            "timeout": max(1.0, settings.database.sqlite_busy_timeout_ms / 1000.0),
+        }
     engine = create_engine(target, **kwargs)  # type: ignore[arg-type]
 
     if url_obj.get_backend_name() == "sqlite":
         busy_timeout = int(settings.database.sqlite_busy_timeout_ms)
 
         @event.listens_for(engine, "connect")
-        def _sqlite_pragmas(dbapi_connection: object, _record: object) -> None:  # pragma: no cover - thin wrapper
+        def _sqlite_pragmas(
+            dbapi_connection: object, _record: object
+        ) -> None:  # pragma: no cover - thin wrapper
             with closing(dbapi_connection.cursor()) as cursor:  # type: ignore[attr-defined]
                 cursor.execute("PRAGMA foreign_keys=ON")
                 cursor.execute("PRAGMA journal_mode=WAL")

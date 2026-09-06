@@ -105,10 +105,15 @@ class TestRanking:
             ("c", "The casing program is unrelated to mud.", "paragraph"),
             ("d", "mud_weight = 12.5 ppg", "field"),
         ]
-        return [(row, term_counts(text), max(1, len(text.split())), kind, text) for row, text, kind in rows]
+        return [
+            (row, term_counts(text), max(1, len(text.split())), kind, text)
+            for row, text, kind in rows
+        ]
 
     def test_all_terms_required_and_more_relevant_ranks_first(self) -> None:
-        statistics = IndexStatistics(total_chunks=4, total_length=60, document_frequency={"mud": 4, "12.5": 3, "ppg": 3})
+        statistics = IndexStatistics(
+            total_chunks=4, total_length=60, document_frequency={"mud": 4, "12.5": 3, "ppg": 3}
+        )
         hits = rank_chunks(
             self._rows(),
             terms=["mud", "12.5", "ppg"],
@@ -128,17 +133,29 @@ class TestRanking:
         assert sorted(by_row, key=lambda row: -by_row[row])[0] in {"b", "d"}
 
     def test_a_missing_term_excludes_the_chunk_in_all_mode(self) -> None:
-        statistics = IndexStatistics(total_chunks=4, total_length=60, document_frequency={"mud": 4, "shoe": 1})
+        statistics = IndexStatistics(
+            total_chunks=4, total_length=60, document_frequency={"mud": 4, "shoe": 1}
+        )
         hits = rank_chunks(self._rows(), terms=["mud", "shoe"], statistics=statistics, limit=10)
         assert [hit.row for hit in hits] == ["b"]
 
     def test_any_mode_widens(self) -> None:
-        statistics = IndexStatistics(total_chunks=4, total_length=60, document_frequency={"mud": 4, "shoe": 1, "casing": 1})
-        hits = rank_chunks(self._rows(), terms=["shoe", "casing"], statistics=statistics, require_all=False, limit=10)
+        statistics = IndexStatistics(
+            total_chunks=4, total_length=60, document_frequency={"mud": 4, "shoe": 1, "casing": 1}
+        )
+        hits = rank_chunks(
+            self._rows(),
+            terms=["shoe", "casing"],
+            statistics=statistics,
+            require_all=False,
+            limit=10,
+        )
         assert {hit.row for hit in hits} == {"b", "c"}
 
     def test_rare_terms_outrank_common_ones(self) -> None:
-        statistics = IndexStatistics(total_chunks=4, total_length=60, document_frequency={"mud": 4, "shoe": 1})
+        statistics = IndexStatistics(
+            total_chunks=4, total_length=60, document_frequency={"mud": 4, "shoe": 1}
+        )
         hits = rank_chunks(self._rows(), terms=["shoe"], statistics=statistics, limit=10)
         assert hits and hits[0].term_scores["shoe"] > 0
         # The document that mentions "shoe" is the only one that scores at all, and "mud" being
@@ -156,12 +173,16 @@ class TestRanking:
         assert hits[0].score > hits[1].score
 
     def test_phrases_are_required_not_just_promoted(self) -> None:
-        statistics = IndexStatistics(total_chunks=2, total_length=40, document_frequency={"mud": 2, "weight": 2})
+        statistics = IndexStatistics(
+            total_chunks=2, total_length=40, document_frequency={"mud": 2, "weight": 2}
+        )
         rows = [
             ("loose", term_counts("weight of mud"), 3, "paragraph", "weight of mud"),
             ("exact", term_counts("mud weight"), 2, "paragraph", "mud weight"),
         ]
-        hits = rank_chunks(rows, terms=["mud", "weight"], phrases=["mud weight"], statistics=statistics, limit=10)
+        hits = rank_chunks(
+            rows, terms=["mud", "weight"], phrases=["mud weight"], statistics=statistics, limit=10
+        )
         assert [hit.row for hit in hits] == ["exact"]
 
     def test_phrase_present_on_folded_text(self) -> None:
@@ -173,7 +194,13 @@ class TestRanking:
 
         def row(document_id: str, index: int) -> tuple[dict, dict, int, str, str]:
             text = "ppg"
-            return ({"document_id": document_id, "chunk_index": index}, term_counts(text), 1, KIND_PARAGRAPH, text)
+            return (
+                {"document_id": document_id, "chunk_index": index},
+                term_counts(text),
+                1,
+                KIND_PARAGRAPH,
+                text,
+            )
 
         # Deliberately not in the order the result must come out in.
         rows = [row("doc-b", 1), row("doc-a", 2), row("doc-a", 1)]
@@ -183,7 +210,9 @@ class TestRanking:
             ("doc-a", 2),
             ("doc-b", 1),
         ]
-        assert {hit.score for hit in hits} == {round(hits[0].score, 9)}, "identical content must score identically"
+        assert {hit.score for hit in hits} == {round(hits[0].score, 9)}, (
+            "identical content must score identically"
+        )
         assert rank_chunks(rows, terms=["ppg"], statistics=statistics, limit=10) == hits
 
     def test_limit_bounds_the_result(self) -> None:
@@ -207,7 +236,7 @@ class TestHighlight:
         assert spans == []
 
     def test_long_text_is_windowed_around_the_first_hit(self) -> None:
-        text = ("x" * 500 + "mud weight 12.5 ppg" + "y" * 500)
+        text = "x" * 500 + "mud weight 12.5 ppg" + "y" * 500
         snippet, spans = highlight(text, ["12.5"], context=40)
         assert "12.5" in snippet
         assert len(snippet) < 200
@@ -224,7 +253,9 @@ class TestHighlight:
         snippet, spans = highlight(text, ["mud"], context=30)
         assert snippet.startswith("…"), "a windowed snippet must say it is not the whole chunk"
         assert snippet.endswith("…")
-        assert [snippet[start:end] for start, end in spans] == ["mud"], "spans are offsets into the snippet"
+        assert [snippet[start:end] for start, end in spans] == ["mud"], (
+            "spans are offsets into the snippet"
+        )
 
 
 class TestChunkVocabulary:
@@ -240,8 +271,15 @@ class TestChunkVocabulary:
 
         return NormalizedDocument.from_dict(
             {
-                "metadata": {"filename": "mud.xlsx", "path": "corpus/mud.xlsx", "sha256": "a" * 64, "parser": "excel"},
-                "pages": [{"index": 1, "text": "", "label": "Summary", "char_start": 0, "char_end": 10}],
+                "metadata": {
+                    "filename": "mud.xlsx",
+                    "path": "corpus/mud.xlsx",
+                    "sha256": "a" * 64,
+                    "parser": "excel",
+                },
+                "pages": [
+                    {"index": 1, "text": "", "label": "Summary", "char_start": 0, "char_end": 10}
+                ],
                 "paragraphs": [
                     {
                         "index": 0,
@@ -268,7 +306,9 @@ class TestChunkVocabulary:
         )
 
     def test_a_body_chunk_always_carries_its_locator(self, normalized) -> None:
-        chunks = chunks_for_document(document_id="doc-1", version_id="ver-1", normalized=normalized, source_sha256="a" * 64)
+        chunks = chunks_for_document(
+            document_id="doc-1", version_id="ver-1", normalized=normalized, source_sha256="a" * 64
+        )
         assert chunks
         paragraph = next(chunk for chunk in chunks if chunk.kind == KIND_PARAGRAPH)
         assert paragraph.locator_ref == "Sheet: Summary > Cell: B2"
@@ -291,7 +331,9 @@ class TestChunkVocabulary:
     def test_page_fallback_cites_pages_and_nothing_else(self, normalized) -> None:
         normalized.pages = [Page(index=1, text="Mud weight 12.5 ppg", char_start=0, char_end=19)]
         normalized.paragraphs = []
-        chunks = page_fallback_chunks(document_id="doc-1", version_id="ver-1", normalized=normalized)
+        chunks = page_fallback_chunks(
+            document_id="doc-1", version_id="ver-1", normalized=normalized
+        )
         assert [chunk.kind for chunk in chunks] == [KIND_PAGE]
         assert chunks[0].page == 1
         assert chunks[0].provenance is None
@@ -299,7 +341,9 @@ class TestChunkVocabulary:
 
     def test_build_chunk_set_falls_back_only_when_structure_is_empty(self, normalized) -> None:
         document = _document()
-        chunk_set = build_chunk_set(document=document, normalized=normalized, version_id="ver-1", source_sha256="a" * 64)
+        chunk_set = build_chunk_set(
+            document=document, normalized=normalized, version_id="ver-1", source_sha256="a" * 64
+        )
         assert all(chunk.kind != KIND_PAGE for chunk in chunk_set.chunks)
         assert chunk_set.document.chunk_count == len(chunk_set.chunks)
 
@@ -308,7 +352,9 @@ class TestChunkVocabulary:
         normalized.tables = []
         normalized.pages = [Page(index=1, text="Mud weight 12.5 ppg", char_start=0, char_end=19)]
         fallback = build_chunk_set(document=document, normalized=normalized, version_id="ver-1")
-        assert [chunk.kind for chunk in fallback.chunks] and all(chunk.kind == KIND_PAGE for chunk in fallback.chunks)
+        assert [chunk.kind for chunk in fallback.chunks] and all(
+            chunk.kind == KIND_PAGE for chunk in fallback.chunks
+        )
 
     def test_chunk_ids_are_positional_and_unique(self, normalized) -> None:
         chunks = chunks_for_document(document_id="doc-1", version_id="ver-1", normalized=normalized)

@@ -41,7 +41,13 @@ class CandidateRecord:
     error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"extractor": self.extractor, "supported": self.supported, "reason": self.reason, "chosen": self.chosen, "error": self.error}
+        return {
+            "extractor": self.extractor,
+            "supported": self.supported,
+            "reason": self.reason,
+            "chosen": self.chosen,
+            "error": self.error,
+        }
 
 
 @dataclass
@@ -70,7 +76,13 @@ class ExtractorChoice:
 class DocumentRouter:
     """Selects the extractor for a file and returns normalised content."""
 
-    def __init__(self, extractors: list[DocumentExtractor], *, mineru_available: Any | None = None, settings: Any | None = None) -> None:
+    def __init__(
+        self,
+        extractors: list[DocumentExtractor],
+        *,
+        mineru_available: Any | None = None,
+        settings: Any | None = None,
+    ) -> None:
         """``mineru_available`` is a callable returning ``(bool, reason)``.
 
         It is injected (not imported) so that the router stays testable and the
@@ -95,7 +107,10 @@ class DocumentRouter:
         return bool(self._mineru_available), ""
 
     def list_extractors(self) -> list[dict[str, str]]:
-        return [{"name": e.name, "version": e.version, "description": getattr(e, "description", "")} for e in self.extractors]
+        return [
+            {"name": e.name, "version": e.version, "description": getattr(e, "description", "")}
+            for e in self.extractors
+        ]
 
     def probe(self, context: ExtractionContext) -> Any:
         """Ask the first extractor that supports the file for a cheap complexity probe.
@@ -119,12 +134,16 @@ class DocumentRouter:
             try:
                 return probe(context) or DocumentComplexity()
             except Exception as exc:  # noqa: BLE001 - probing is advisory only
-                complexity = DocumentComplexity(reasons=[f"probe failed: {type(exc).__name__}: {exc}"])
+                complexity = DocumentComplexity(
+                    reasons=[f"probe failed: {type(exc).__name__}: {exc}"]
+                )
                 return complexity
         return DocumentComplexity()
 
     # -- selection ----------------------------------------------------------
-    def route(self, context: ExtractionContext, *, options: dict[str, Any] | None = None) -> ExtractorChoice:
+    def route(
+        self, context: ExtractionContext, *, options: dict[str, Any] | None = None
+    ) -> ExtractorChoice:
         """Decide which extractor *would* read this file, without reading it.
 
         This is the cheap half of :meth:`extract`: an extension check per candidate plus
@@ -162,7 +181,9 @@ class DocumentRouter:
                 supported, reason = extractor.supports(context)
             except Exception as exc:  # noqa: BLE001
                 supported, reason = False, f"support check failed: {type(exc).__name__}: {exc}"
-            records.append(CandidateRecord(extractor=extractor.name, supported=supported, reason=reason))
+            records.append(
+                CandidateRecord(extractor=extractor.name, supported=supported, reason=reason)
+            )
 
         by_name = {extractor.name: extractor for extractor in self.extractors}
         mineru = by_name.get("mineru")
@@ -173,9 +194,23 @@ class DocumentRouter:
             if available and wants_mineru:
                 preferred.append((mineru, f"MinerU selected for complex PDF ({want_reason})"))
             elif not available:
-                records.append(CandidateRecord(extractor="mineru", supported=False, reason=f"unavailable: {why}", chosen=False))
+                records.append(
+                    CandidateRecord(
+                        extractor="mineru",
+                        supported=False,
+                        reason=f"unavailable: {why}",
+                        chosen=False,
+                    )
+                )
             else:
-                records.append(CandidateRecord(extractor="mineru", supported=True, reason=f"not required: {want_reason}", chosen=False))
+                records.append(
+                    CandidateRecord(
+                        extractor="mineru",
+                        supported=True,
+                        reason=f"not required: {want_reason}",
+                        chosen=False,
+                    )
+                )
 
         for extractor in self.extractors:
             if extractor.name == "mineru":
@@ -201,10 +236,14 @@ class DocumentRouter:
             extractor_version=chosen.version,
             reason=reason,
             considered=records,
-            degraded=extension == ".pdf" and mineru is not None and any(r.extractor == "mineru" and not r.supported for r in records),
+            degraded=extension == ".pdf"
+            and mineru is not None
+            and any(r.extractor == "mineru" and not r.supported for r in records),
         )
 
-    def _wants_mineru(self, complexity: DocumentComplexity, context: ExtractionContext) -> tuple[bool, str]:
+    def _wants_mineru(
+        self, complexity: DocumentComplexity, context: ExtractionContext
+    ) -> tuple[bool, str]:
         """Routing heuristic for MinerU - thresholds are configuration, not code."""
         settings = self.settings
         pages_threshold = 12
@@ -227,11 +266,20 @@ class DocumentRouter:
             return True, "multi-column layout"
         if complexity.table_count >= max(1, table_threshold // 8):
             return True, f"{complexity.table_count} table(s) detected"
-        if complexity.pages >= pages_threshold and complexity.text_chars_per_page < density_threshold:
-            return True, f"{complexity.pages} pages at {complexity.text_chars_per_page:.0f} text chars/page"
+        if (
+            complexity.pages >= pages_threshold
+            and complexity.text_chars_per_page < density_threshold
+        ):
+            return (
+                True,
+                f"{complexity.pages} pages at {complexity.text_chars_per_page:.0f} text chars/page",
+            )
         if mode in ("cli", "http") and context.extension.lower() == ".pdf":
             return True, f"mineru.mode = {mode} (forced)"
-        return False, f"simple PDF ({complexity.pages} pages, text layer present, {complexity.table_count} tables)"
+        return (
+            False,
+            f"simple PDF ({complexity.pages} pages, text layer present, {complexity.table_count} tables)",
+        )
 
     # -- extraction ---------------------------------------------------------
     def extract(
@@ -256,22 +304,36 @@ class DocumentRouter:
             context.complexity = self.ensure_complexity(context)
             decision = self.select(context)
         by_name = {extractor.name: extractor for extractor in self.extractors}
-        order = [decision.extractor] + [r.extractor for r in decision.considered if r.supported and r.extractor != decision.extractor]
+        order = [decision.extractor] + [
+            r.extractor
+            for r in decision.considered
+            if r.supported and r.extractor != decision.extractor
+        ]
         errors: list[str] = []
         for name in order:
             extractor = by_name.get(name)
             if extractor is None:
                 continue
-            builder: ProvenanceBuilder = new_provenance_builder(context, extractor.name, extractor.version)
+            builder: ProvenanceBuilder = new_provenance_builder(
+                context, extractor.name, extractor.version
+            )
             try:
                 document = extractor.extract(context, builder)
             except ExtractionError as exc:
                 errors.append(f"{name}: {exc}")
-                log.warning_event("extract.failed", extractor=name, file=context.filename, error=str(exc))
+                log.warning_event(
+                    "extract.failed", extractor=name, file=context.filename, error=str(exc)
+                )
                 continue
             except Exception as exc:  # noqa: BLE001 - a third-party parser failing must not kill ingestion
                 errors.append(f"{name}: {type(exc).__name__}: {exc}")
-                log.error_event("extract.crashed", extractor=name, file=context.filename, error=str(exc), exc_info=True)
+                log.error_event(
+                    "extract.crashed",
+                    extractor=name,
+                    file=context.filename,
+                    error=str(exc),
+                    exc_info=True,
+                )
                 continue
             if name != decision.extractor:
                 document.diagnostics.append(
@@ -302,7 +364,9 @@ def _complexity_notes(complexity: DocumentComplexity) -> list[str]:
         return []
     notes = []
     if complexity.is_scanned:
-        notes.append("document is scanned: text-layer extraction will be poor; MinerU/OCR recommended")
+        notes.append(
+            "document is scanned: text-layer extraction will be poor; MinerU/OCR recommended"
+        )
     if complexity.encrypted:
         notes.append("PDF is encrypted")
     return notes

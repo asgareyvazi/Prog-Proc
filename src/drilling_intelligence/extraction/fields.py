@@ -39,7 +39,7 @@ NUM = r"\d+(?:[,.]\d{3})*(?:[.,]\d+)?"
 #: Mud weights are always written with a decimal part in drilling reports.
 MUD_NUM = r"\d{1,2}[.,]\d{1,2}"
 #: Nominal sizes: 12 1/4, 9-5/8, 8.33, 13 3/8"
-SIZE = r'\d{1,2}[- ]\d/\d|\d{1,2}[.,]\d{2}'
+SIZE = r"\d{1,2}[- ]\d/\d|\d{1,2}[.,]\d{2}"
 
 
 def _unit_re(*units: str) -> str:
@@ -111,11 +111,23 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="mud_weight",
-        pattern=re.compile(rf"(?i)(?<![\d.,]){_value_re(MUD_NUM)}\s*{_unit_re('ppg', 'kg/m3', 'kg/m³', 'lb/gal')}"),
+        pattern=re.compile(
+            rf"(?i)(?<![\d.,]){_value_re(MUD_NUM)}\s*{_unit_re('ppg', 'kg/m3', 'kg/m³', 'lb/gal')}"
+        ),
         context=("mud", "weight", "mw", "slurry", "spacer", "pill", "riser", "kill"),
         # A bare "11.4 ppg" is only a mud weight when nothing in front of it turns it
         # into a limit, a forecast or an equivalent density.
-        reject=("equivalent circulating", "ECD", "exceed", "limit", "maximum", "minimum", "do not", "max ", "min "),
+        reject=(
+            "equivalent circulating",
+            "ECD",
+            "exceed",
+            "limit",
+            "maximum",
+            "minimum",
+            "do not",
+            "max ",
+            "min ",
+        ),
         dimension=Dimension.MUD_WEIGHT,
         confidence=0.7,
         range_unit="ppg",
@@ -124,7 +136,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="equivalent_mud_weight",
-        pattern=re.compile(rf"(?i)\b(?:emw|ecd|equivalent(?: circulating)? (?:mud )?weight)\s*(?:=|:|of|is|at|during)?\s*{_value_re(MUD_NUM)}\s*{_unit_re(*_MUD_UNITS)}?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:emw|ecd|equivalent(?: circulating)? (?:mud )?weight)\s*(?:=|:|of|is|at|during)?\s*{_value_re(MUD_NUM)}\s*{_unit_re(*_MUD_UNITS)}?"
+        ),
         dimension=Dimension.MUD_WEIGHT,
         confidence=0.75,
         range_unit="ppg",
@@ -133,7 +147,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="fracture_gradient",
-        pattern=re.compile(rf"(?i)\b(?:frac(?:ture)?\s*(?:grad(?:ient)?)?|fg)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>ppg/ft|psi/ft|kPa/m|bar/m|MPa/m|ppg)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:frac(?:ture)?\s*(?:grad(?:ient)?)?|fg)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>ppg/ft|psi/ft|kPa/m|bar/m|MPa/m|ppg)?"
+        ),
         # No dimension: a gradient (psi/ft, kPa/m) and an equivalent mud weight
         # (ppg) are both legal ways to state fracture gradient, and the unit must
         # carry that meaning rather than a forced normalisation.
@@ -150,7 +166,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="pore_pressure_gradient",
-        pattern=re.compile(rf"(?i)\bpore pressure\s*grad(?:ient)?\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>ppg/ft|psi/ft|kPa/m|bar/m)?"),
+        pattern=re.compile(
+            rf"(?i)\bpore pressure\s*grad(?:ient)?\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>ppg/ft|psi/ft|kPa/m|bar/m)?"
+        ),
         dimension=None,
         confidence=0.7,
         range_unit="psi/ft",
@@ -159,7 +177,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="depth_md",
-        pattern=re.compile(rf"(?i)\b(?:md|m\.d\.|measured depth|depth md)\s*(?:=|:|of|is|at|to)?\s*{_value_re()}\s*(?P<unit>m|ft)?\b"),
+        pattern=re.compile(
+            rf"(?i)\b(?:md|m\.d\.|measured depth|depth md)\s*(?:=|:|of|is|at|to)?\s*{_value_re()}\s*(?P<unit>m|ft)?\b"
+        ),
         reject=("tvd", "vertical"),
         dimension=Dimension.LENGTH,
         confidence=0.8,
@@ -169,7 +189,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="depth_tvd",
-        pattern=re.compile(rf"(?i)\b(?:tvd|tvdss|true vertical depth)(?: ss)?\s*(?:=|:|of|is|at|to)?\s*{_value_re()}\s*(?P<unit>m|ft)?\b"),
+        pattern=re.compile(
+            rf"(?i)\b(?:tvd|tvdss|true vertical depth)(?: ss)?\s*(?:=|:|of|is|at|to)?\s*{_value_re()}\s*(?P<unit>m|ft)?\b"
+        ),
         dimension=Dimension.LENGTH,
         confidence=0.8,
         range_unit="ft",
@@ -178,7 +200,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="depth_md",
-        pattern=re.compile(rf"(?i)(?<![\d.,]){_value_re()}\s*(?P<unit>m|ft|meters?|metres?)\s*(?:md)\b"),
+        pattern=re.compile(
+            rf"(?i)(?<![\d.,]){_value_re()}\s*(?P<unit>m|ft|meters?|metres?)\s*(?:md)\b"
+        ),
         # No context keywords: requiring the literal "MD" after the unit already
         # distinguishes a depth from any other number, and demanding a nearby word
         # like "bit" silently dropped "from 9,780 ft MD to 10,125 ft MD".
@@ -200,7 +224,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="total_depth",
-        pattern=re.compile(rf"(?i)\b(?:td|total depth|final depth|depth at TD|spud to TD)\s*(?:=|:|of|is|at|@)?\s*{_value_re()}\s*(?P<unit>m|ft)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:td|total depth|final depth|depth at TD|spud to TD)\s*(?:=|:|of|is|at|@)?\s*{_value_re()}\s*(?P<unit>m|ft)?"
+        ),
         dimension=Dimension.LENGTH,
         default_unit="m",
         confidence=0.6,
@@ -222,7 +248,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="casing_shoe_depth",
-        pattern=re.compile(rf"(?i)\b(?:cs|casing)\s*shoe\s*(?:at|@|=|:|depth)?\s*{_value_re()}\s*(?P<unit>m|ft)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:cs|casing)\s*shoe\s*(?:at|@|=|:|depth)?\s*{_value_re()}\s*(?P<unit>m|ft)?"
+        ),
         context=("casing", "shoe"),
         dimension=Dimension.LENGTH,
         default_unit="m",
@@ -233,7 +261,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="hole_size_in",
-        pattern=re.compile(rf'(?i)(?P<value>{SIZE})\s*(?:inch|in\b|")\s*(?:hole|bit|section|open hole|drill)'),
+        pattern=re.compile(
+            rf'(?i)(?P<value>{SIZE})\s*(?:inch|in\b|")\s*(?:hole|bit|section|open hole|drill)'
+        ),
         dimension=Dimension.LENGTH,
         default_unit="in",
         confidence=0.75,
@@ -253,7 +283,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="rop",
-        pattern=re.compile(rf"(?i)\b(?:rop|rate of penetration|average rop|net rop|average rate)\s*(?:=|:|of|is|was|at)?\s*{_value_re()}\s*(?P<unit>m/hr|m/h|ft/hr|fph|f/h|m/s)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:rop|rate of penetration|average rop|net rop|average rate)\s*(?:=|:|of|is|was|at)?\s*{_value_re()}\s*(?P<unit>m/hr|m/h|ft/hr|fph|f/h|m/s)?"
+        ),
         dimension=Dimension.RATE,
         default_unit="m/hr",
         confidence=0.6,
@@ -263,7 +295,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="npt_hours",
-        pattern=re.compile(rf"(?i)\bnpt\b[^0-9\n]{{0,20}}{_value_re()}\s*(?P<unit>h|hr|hrs|hours?|d|days?|min|mins|minutes?)?\b"),
+        pattern=re.compile(
+            rf"(?i)\bnpt\b[^0-9\n]{{0,20}}{_value_re()}\s*(?P<unit>h|hr|hrs|hours?|d|days?|min|mins|minutes?)?\b"
+        ),
         dimension=Dimension.TIME,
         label_unit=(("npt", "h"),),
         confidence=0.65,
@@ -274,7 +308,20 @@ _RULES: tuple[FieldRule, ...] = (
     FieldRule(
         name="pressure",
         pattern=re.compile(rf"(?i)(?<![\d.,]){_value_re()}\s*(?P<unit>psi|bar|kPa|MPa)\b"),
-        context=("test", "pressure", "maasp", "kick", "bop", "choke", "standpipe", "annular", "pump", "lot", "x-test", "integrity"),
+        context=(
+            "test",
+            "pressure",
+            "maasp",
+            "kick",
+            "bop",
+            "choke",
+            "standpipe",
+            "annular",
+            "pump",
+            "lot",
+            "x-test",
+            "integrity",
+        ),
         reject=("mud weight", "gradient", "ppg"),
         dimension=Dimension.PRESSURE,
         confidence=0.6,
@@ -284,7 +331,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="surface_pressure",
-        pattern=re.compile(rf"(?i)\b(?:sidpp|sicp|casing pressure|standpipe pressure|pump pressure|surface pressure|choke pressure)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>psi|bar|kPa|MPa)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:sidpp|sicp|casing pressure|standpipe pressure|pump pressure|surface pressure|choke pressure)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>psi|bar|kPa|MPa)?"
+        ),
         dimension=Dimension.PRESSURE,
         default_unit="psi",
         confidence=0.7,
@@ -294,7 +343,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="torque",
-        pattern=re.compile(rf"(?i)\b(?:torque|rotary torque|off-bottom torque)\s*(?:=|:|of|is|at|avg)?\s*{_value_re()}\s*(?P<unit>ft-?lbf|ft\.?lbf|kNm|kN\.?m|Nm|in-?lbf)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:torque|rotary torque|off-bottom torque)\s*(?:=|:|of|is|at|avg)?\s*{_value_re()}\s*(?P<unit>ft-?lbf|ft\.?lbf|kNm|kN\.?m|Nm|in-?lbf)?"
+        ),
         dimension=Dimension.TORQUE,
         default_unit="ft.lbf",
         confidence=0.6,
@@ -304,7 +355,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="wob",
-        pattern=re.compile(rf"(?i)\b(?:wob|weight on bit)\s*(?:=|:|of|is|at|max)?\s*{_value_re()}\s*(?P<unit>kip|klbs|kips|lbs|lbf|kg|kN)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:wob|weight on bit)\s*(?:=|:|of|is|at|max)?\s*{_value_re()}\s*(?P<unit>kip|klbs|kips|lbs|lbf|kg|kN)?"
+        ),
         dimension=Dimension.FORCE,
         default_unit="kip",
         confidence=0.6,
@@ -314,7 +367,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="rpm",
-        pattern=re.compile(rf"(?i)\b(?:rpm|rotary speed|rotary)\s*(?:=|:|of|is|at|max|avg)?\s*{_value_re()}\s*(?P<unit>rpm)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:rpm|rotary speed|rotary)\s*(?:=|:|of|is|at|max|avg)?\s*{_value_re()}\s*(?P<unit>rpm)?"
+        ),
         dimension=Dimension.ROTARY_SPEED,
         label_unit=(("rpm", "rpm"), ("rotary", "rpm")),
         confidence=0.6,
@@ -324,7 +379,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="flow_rate",
-        pattern=re.compile(rf"(?i)\b(?:flow(?: rate)?|pump(?:ing)?(?: rate| output)|flowline|circulation rate)\s*(?:=|:|of|is|at|max|total)?\s*{_value_re()}\s*(?P<unit>l/s|l/min|gpm|bbl/min|cps)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:flow(?: rate)?|pump(?:ing)?(?: rate| output)|flowline|circulation rate)\s*(?:=|:|of|is|at|max|total)?\s*{_value_re()}\s*(?P<unit>l/s|l/min|gpm|bbl/min|cps)?"
+        ),
         dimension=Dimension.FLOW_RATE,
         default_unit="l/s",
         confidence=0.6,
@@ -334,7 +391,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="mud_volume_bbl",
-        pattern=re.compile(rf"(?i)\b(?:active (?:system|volume)|total volume|mud volume|trip volume|volume)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>bbl|m3|bbls|stb)?\b"),
+        pattern=re.compile(
+            rf"(?i)\b(?:active (?:system|volume)|total volume|mud volume|trip volume|volume)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>bbl|m3|bbls|stb)?\b"
+        ),
         context=("volume", "bbl", "m3", "pits", "active", "trip"),
         dimension=Dimension.VOLUME,
         default_unit="bbl",
@@ -345,7 +404,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="rpm",
-        pattern=re.compile(rf"(?i)(?<![\d.,]){_value_re()}\s*(?P<unit>rpm|rev/min|revolutions? per minute)\b"),
+        pattern=re.compile(
+            rf"(?i)(?<![\d.,]){_value_re()}\s*(?P<unit>rpm|rev/min|revolutions? per minute)\b"
+        ),
         dimension=Dimension.ROTARY_SPEED,
         confidence=0.6,
         range_unit="rpm",
@@ -354,7 +415,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="torque",
-        pattern=re.compile(rf"(?i)(?<![\d.,]){_value_re()}\s*(?P<unit>ft-?lbf|ft\.?lbf|kNm|kN\.?m|in-?lbf)\b"),
+        pattern=re.compile(
+            rf"(?i)(?<![\d.,]){_value_re()}\s*(?P<unit>ft-?lbf|ft\.?lbf|kNm|kN\.?m|in-?lbf)\b"
+        ),
         dimension=Dimension.TORQUE,
         confidence=0.6,
         range_unit="ft.lbf",
@@ -384,7 +447,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="capacity",
-        pattern=re.compile(rf"(?i)\b(?:capacity|annular capacity|pipe capacity|volume\s*/\s*(?:ft|m))\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>bbl/ft|bbl/m|m3/m|gal/ft)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:capacity|annular capacity|pipe capacity|volume\s*/\s*(?:ft|m))\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>bbl/ft|bbl/m|m3/m|gal/ft)?"
+        ),
         dimension=Dimension.VOLUME_PER_LENGTH,
         default_unit="bbl/ft",
         confidence=0.55,
@@ -394,7 +459,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="day_rate",
-        pattern=re.compile(rf"(?i)\b(?:rig (?:day )?rate|day rate|daily cost|cost per day|tariff)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>usd|\$|eur|gbp|NOK|GBP)?"),
+        pattern=re.compile(
+            rf"(?i)\b(?:rig (?:day )?rate|day rate|daily cost|cost per day|tariff)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>usd|\$|eur|gbp|NOK|GBP)?"
+        ),
         dimension=Dimension.COST,
         default_unit="USD",
         confidence=0.55,
@@ -404,7 +471,9 @@ _RULES: tuple[FieldRule, ...] = (
     ),
     FieldRule(
         name="duration_hours",
-        pattern=re.compile(rf"(?i)\b(?:duration|elapsed|took|time)\s*(?:=|:|of|is|was|for)?\s*{_value_re()}\s*(?P<unit>h|hr|hrs|hours?|d|days?|min|mins)\b"),
+        pattern=re.compile(
+            rf"(?i)\b(?:duration|elapsed|took|time)\s*(?:=|:|of|is|was|for)?\s*{_value_re()}\s*(?P<unit>h|hr|hrs|hours?|d|days?|min|mins)\b"
+        ),
         dimension=Dimension.TIME,
         confidence=0.6,
         range_unit="h",
@@ -415,7 +484,13 @@ _RULES: tuple[FieldRule, ...] = (
 
 _DATE_PATTERNS: tuple[tuple[str, re.Pattern[str], float], ...] = (
     ("date_iso", re.compile(r"(?P<value>\d{4}-\d{2}-\d{2})"), 0.85),
-    ("date_text", re.compile(r"(?i)(?P<value>\d{1,2}[- ](?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*[- ]\d{2,4})"), 0.7),
+    (
+        "date_text",
+        re.compile(
+            r"(?i)(?P<value>\d{1,2}[- ](?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*[- ]\d{2,4})"
+        ),
+        0.7,
+    ),
     ("date_dmy", re.compile(r"(?P<value>\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})"), 0.6),
 )
 
@@ -573,7 +648,9 @@ class FieldExtractor:
                     span = _value_span(match)
                     if any(span[0] < end and span[1] > start for start, end in claimed):
                         continue
-                    window = text[max(0, match.start() - CONTEXT_WINDOW) : min(len(text), match.end() + 24)]
+                    window = text[
+                        max(0, match.start() - CONTEXT_WINDOW) : min(len(text), match.end() + 24)
+                    ]
                     # Qualifiers count when they precede the value or sit between the
                     # label and the value; they are ignored in unrelated trailing text.
                     reject_window = text[max(0, match.start() - CONTEXT_WINDOW) : match.end()]
@@ -587,7 +664,8 @@ class FieldExtractor:
                         # reviewer sees the inference instead of trusting it silently.
                         field = replace(
                             field,
-                            note=(field.note + "; " if field.note else "") + "field inferred from the unit alone (no label in the source text)",
+                            note=(field.note + "; " if field.note else "")
+                            + "field inferred from the unit alone (no label in the source text)",
                         )
                     fields.append(field)
                     claimed.append(span)
@@ -602,7 +680,9 @@ class FieldExtractor:
         tally: dict[str, int] = {}
         results: list[DataField] = []
         for paragraph in document.paragraphs:
-            for item in self.scan_text(paragraph.text, paragraph.provenance, source="paragraph", section=paragraph.section):
+            for item in self.scan_text(
+                paragraph.text, paragraph.provenance, source="paragraph", section=paragraph.section
+            ):
                 if tally.get(item.name, 0) >= limit:
                     continue
                 tally[item.name] = tally.get(item.name, 0) + 1
@@ -613,7 +693,9 @@ class FieldExtractor:
                 text = " ".join(cell for cell in row if cell)
                 if not text.strip():
                     continue
-                located = replace(provenance, excerpt=text[:400]) if provenance is not None else None
+                located = (
+                    replace(provenance, excerpt=text[:400]) if provenance is not None else None
+                )
                 for item in self.scan_text(
                     text,
                     located,
@@ -645,7 +727,11 @@ class FieldExtractor:
                         unit="",
                         dimension="DATE",
                         quality=DataQuality.VALID,
-                        provenance=(replace(provenance, excerpt=match.group(0).strip()[:200]) if provenance else None),
+                        provenance=(
+                            replace(provenance, excerpt=match.group(0).strip()[:200])
+                            if provenance
+                            else None
+                        ),
                         confidence=confidence,
                         method=f"{source}:{name}",
                     )
@@ -677,7 +763,11 @@ class FieldExtractor:
                 value=raw,
                 unit="",
                 quality=DataQuality.INVALID,
-                provenance=(replace(provenance, excerpt=match.group(0).strip()[:400]) if provenance else None),
+                provenance=(
+                    replace(provenance, excerpt=match.group(0).strip()[:400])
+                    if provenance
+                    else None
+                ),
                 confidence=0.0,
                 method=f"{source}:{rule.name}",
                 note=f"unparsable value {raw!r}: {exc}",
@@ -693,7 +783,10 @@ class FieldExtractor:
         unit_source = ""
         if not unit:
             if rule.default_unit:
-                unit, unit_source = rule.default_unit, f"unit assumed from field convention ({rule.default_unit})"
+                unit, unit_source = (
+                    rule.default_unit,
+                    f"unit assumed from field convention ({rule.default_unit})",
+                )
             else:
                 if rule.require_unit:
                     return None
@@ -708,7 +801,11 @@ class FieldExtractor:
                     unit=unit,
                     dimension=rule.dimension.value,
                     quality=DataQuality.INVALID,
-                    provenance=(replace(provenance, excerpt=match.group(0).strip()[:400]) if provenance else None),
+                    provenance=(
+                        replace(provenance, excerpt=match.group(0).strip()[:400])
+                        if provenance
+                        else None
+                    ),
                     confidence=0.0,
                     method=f"{source}:{rule.name}",
                     note=f"unit error: {exc}",
@@ -720,7 +817,11 @@ class FieldExtractor:
                     unit=unit,
                     dimension=quantity.dimension.value,
                     quality=DataQuality.INVALID,
-                    provenance=(replace(provenance, excerpt=match.group(0).strip()[:400]) if provenance else None),
+                    provenance=(
+                        replace(provenance, excerpt=match.group(0).strip()[:400])
+                        if provenance
+                        else None
+                    ),
                     confidence=0.0,
                     method=f"{source}:{rule.name}",
                     note=f"dimension mismatch: {quantity.dimension.value} vs expected {rule.dimension.value}",
@@ -737,7 +838,9 @@ class FieldExtractor:
             if verdict is False:
                 quality = DataQuality.INVALID
                 confidence = round(rule.confidence * 0.3, 3)
-                notes.append(f"outside plausible range [{low}, {high}] {rule.range_unit or rule.default_unit or unit}")
+                notes.append(
+                    f"outside plausible range [{low}, {high}] {rule.range_unit or rule.default_unit or unit}"
+                )
             elif verdict is None:
                 notes.append(f"range not checked (unit {unit} incomparable with {rule.range_unit})")
         return DataField(
@@ -746,7 +849,9 @@ class FieldExtractor:
             unit=unit,
             dimension=rule.dimension.value if rule.dimension else "",
             quality=quality,
-            provenance=(replace(provenance, excerpt=match.group(0).strip()[:400]) if provenance else None),
+            provenance=(
+                replace(provenance, excerpt=match.group(0).strip()[:400]) if provenance else None
+            ),
             confidence=confidence,
             method=f"{source}:{rule.name}",
             note="; ".join(n for n in notes if n) or (f"section: {section}" if section else ""),
@@ -813,9 +918,40 @@ def _normalise_unit(captured: str | None, window: str, rule: FieldRule) -> str:
 _UNIT_SLUGS = frozenset(
     {re.sub(r"[^a-z0-9]+", "", name) for name in known_units()}
     | {
-        "ppg", "sg", "kgm3", "psi", "kpa", "bar", "mpa", "ft", "m", "in", "mm", "gal", "bbl",
-        "m3", "l", "hr", "h", "min", "s", "rps", "deg", "count", "ratio", "kbblpd", "kbd", "aday",
-        "bblpd", "gpm", "ls", "kg", "tonnes", "psiperm", "barrelperday", "ftperhour",
+        "ppg",
+        "sg",
+        "kgm3",
+        "psi",
+        "kpa",
+        "bar",
+        "mpa",
+        "ft",
+        "m",
+        "in",
+        "mm",
+        "gal",
+        "bbl",
+        "m3",
+        "l",
+        "hr",
+        "h",
+        "min",
+        "s",
+        "rps",
+        "deg",
+        "count",
+        "ratio",
+        "kbblpd",
+        "kbd",
+        "aday",
+        "bblpd",
+        "gpm",
+        "ls",
+        "kg",
+        "tonnes",
+        "psiperm",
+        "barrelperday",
+        "ftperhour",
     }
 )
 
@@ -886,14 +1022,21 @@ def _dedupe(fields: list[DataField]) -> list[DataField]:
     """Keep the best-confidence record per (name, value, unit, provenance ref)."""
     best: dict[tuple[str, object, str, str], DataField] = {}
     for item in fields:
-        key = (item.name, item.value if not isinstance(item.value, float) else round(item.value, 6), item.unit, item.provenance.ref if item.provenance else "")
+        key = (
+            item.name,
+            item.value if not isinstance(item.value, float) else round(item.value, 6),
+            item.unit,
+            item.provenance.ref if item.provenance else "",
+        )
         current = best.get(key)
         if current is None or (item.confidence or 0.0) > (current.confidence or 0.0):
             best[key] = item
     return list(best.values())
 
 
-def merge_field_sets(primary: Iterable[DataField], secondary: Iterable[DataField]) -> list[DataField]:
+def merge_field_sets(
+    primary: Iterable[DataField], secondary: Iterable[DataField]
+) -> list[DataField]:
     """Combine two field lists, letting the more directly cited one win.
 
     A value an extractor read out of a single cell (or a MinerU structured item) is
@@ -902,6 +1045,7 @@ def merge_field_sets(primary: Iterable[DataField], secondary: Iterable[DataField
     guesswork.  So the primary list keeps its provenance and the secondary one only
     contributes fields the primary never named.
     """
+
     def key(item: DataField) -> tuple[str, object]:
         return item.name, item.value if not isinstance(item.value, float) else round(item.value, 6)
 
@@ -939,7 +1083,9 @@ def rules_as_dicts() -> list[dict[str, Any]]:
             {
                 "name": rule.name,
                 "dimension": rule.dimension.value if rule.dimension else "",
-                "default_unit": rule.default_unit or default_unit(rule.dimension).symbol if rule.dimension else "",
+                "default_unit": rule.default_unit or default_unit(rule.dimension).symbol
+                if rule.dimension
+                else "",
                 "context": list(rule.context),
                 "reject": list(rule.reject),
                 "confidence": rule.confidence,

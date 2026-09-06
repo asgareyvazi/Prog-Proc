@@ -191,3 +191,102 @@ failure mode. Migration 0002 repairs data before constraining it - highest versi
 wins, pointer follows, relative paths backfilled from the document identity, cache entries
 backfilled from the artefacts that already exist - and is round-trip tested against a
 populated 0001 database, downgrade included.
+
+
+---
+
+## ADR-0008 — Knowledge is derived facts that cite their source; a conflict is data, never a decision
+
+**Status:** accepted (2026-09-06)
+
+**Context.** Ingestion could already answer "what did the corpus say", and that turned out not to be
+the question anyone asks first. The question is "what is the mud weight in this hole", and three
+ways of answering it are all wrong in different ways: keep the number in a summary field (it detaches
+from the evidence and from any later revision), let the newest write win (a safety-relevant
+discrepancy becomes a stale row nobody can find), or let a model read the documents (an answer nobody
+can argue with, because it has no source). The knowledge layer also has to survive being wrong: a
+parser that mis-reads a sheet must be fixable by re-deriving from what was stored, without re-running
+extraction and without touching what a person typed.
+
+**Decision.**
+
+*   **Facts, not documents, are the unit of knowledge.** One fact is a subject, a predicate, the
+    value as written, the value normalised, a validity window, a status and provenance. It is stored
+    in ``knowledge_item``, which migration 0003 widens with those columns rather than adding a table
+    per entity type - a well, a hole section, a bit and a document version are addressed by the same
+    ``(entity_type, entity_id)`` pair a ``knowledge_relation`` edge carries, so facts and edges are
+    walked together.
+*   **The payload is the fact, the columns are its index, and the registry owns the lifecycle.**
+    ``payload`` holds what the source said and is rewritten only by a write of the fact itself;
+    ``status``/``superseded_by``/``origin``/the id columns are what the repository decided and are
+    therefore read back from the columns (:meth:`KnowledgeFact.from_item`'s ``column`` helper), with
+    ``set_status`` appending its explanation to ``payload["status_note"]``. Reading the payload first
+    - which is what this layer did until the read paths were tested - printed a disputed value as
+    ``ACTIVE``, and offered the retired side of a settled argument as the answer.
+*   **Identity is content-addressed, so a rebuild is a no-op.** ``fact_id_for(version, lookup_key,
+    original_value)`` keys a row on ``(document_version_id, subject_type:subject_id|property:P|state:PLANNED|ACTUAL,
+    wording)``, and a write reports ``CREATED``/``UPDATED``/``UNCHANGED``. ``PLANNED`` never collides
+    with ``ACTUAL``: a plan that differs from the record is not a contradiction, and a conflict list
+    full of them is a list nobody reads.
+*   **Derivation reads the stored artefact, never the file.** ``KnowledgeExtractionService`` takes
+    ``extraction.document_json`` and turns its ``extracted_fields`` into facts - so a rebuild a year
+    later gives the same answer, an offline workspace needs no MinerU, and no model is anywhere in
+    the path. ``facts_for_payload`` is a pure function for the same reason: "what would this document
+    assert" needs no database.
+*   **Provenance is a storage invariant.** ``put_fact`` refuses an ``EXTRACTED`` fact with no
+    provenance; a field the extractor left uncited is reported in ``SyncResult.warnings`` and
+    quarantined in the artefact instead of being stored or dropped. ``MANUAL`` facts are the one case
+    with no provenance, are never ``is_source_derived``, and are the one rows ``knowledge rebuild``
+    leaves alone - which is what makes a repair command not a data-loss command.
+*   **A subject is looked up, never invented.** One document classification describes exactly one
+    entity type, and that table is checked for uniqueness at import. A document filed under a well
+    asserts things about that well; one that names a well in a field asserts them about the well it
+    named, with a ``DOCUMENT_MENTIONS_WELL`` edge carrying that field's provenance so the inference
+    stays traceable; one that names nothing asserts them about the entity its kind describes, keyed
+    deterministically to the version. Types that have a table of their own - a well, a hole section,
+    a document - are refused a placeholder, because inventing one would put a second source of truth
+    in front of the same name.
+*   **A conflict needs two sources and is then data.** Detection compares values in canonical units
+    through ``core.units``: same unit, tolerance is float noise; different units, tolerance is the
+    precision the coarser source wrote (half its last decimal place, ceiling 2%), because
+    "1222 kg/m3" and "10.2 ppg" are one mud and a platform that reported that as a dispute would be
+    reporting a unit conversion. Two values inside one revision are ``ambiguous_within_source``, and
+    so is a property every source states as the same *set* of values (a table with a depth per row) -
+    counted, named, and not put in front of a reviewer as an argument. Otherwise every side is stored,
+    every side is marked ``CONFLICTED``, and the conflict row records the candidates, the compare
+    unit and the ranking basis. Nothing is chosen.
+*   **Deciding is a separate, recorded act.** ``resolve`` is the only path that picks a side: the
+    chosen fact becomes ``ACTIVE``, the others ``RETIRED`` (kept, citable), the conflict keeps its
+    candidates as it was at that moment, an audit event names who decided, and the key is re-compared
+    so the marking catches up. ``clear_conflict`` deletes only rows still ``OPEN`` - a row carrying a
+    human decision is the record of that decision, and detection re-runs for many reasons.
+*   **Only the current revision answers.** Reads hold ``SUPERSEDED`` and ``RETIRED`` back until a
+    caller asks for history (``include_superseded``), the fact's ``revision`` is stamped from the
+    registry's version number rather than trusted from the payload, and superseding keeps the
+    document's *current* version answering - re-deriving an old revision must not move the answer
+    backwards. ``status`` reports the two drift numbers a workspace can act on: current versions with
+    no facts, and facts citing a version that is no longer current; it recommends a rebuild only
+    when a rebuild would fix what it found.
+*   **The index carries claims, not state.** Fact chunks are written by the same pass from the same
+    authoritative rows, outrank prose, and render their locator through the one ``SourceLocator.ref``
+    the document chunks use, so a hit and a fact listing cite identically. Lifecycle status is
+    deliberately absent from indexed text: a marking pass does not rewrite the sidecar, and text that
+    disagrees with the registry is worse than text that says less.
+
+**Consequences.** A dispute is visible wherever a person might look: ``knowledge conflicts`` lists it,
+``knowledge status`` counts it, and ``doctor`` - which checks that the structures agree, and found no
+reason to care about an argument until now - reports an unresolved conflict as a finding and exits 1,
+because a workspace where two sources disagree about a mud weight is not corrupt but is not sound
+either. ``check_knowledge_relations`` keeps reporting the dangling edges a bad write would leave. ``--json`` renders a domain error
+as a document with ``"ok": false`` and exit 1, because a script that asked for machine-readable output
+must be able to read a failure too; ``--debug`` still raises, and a bug is never dressed up as data.
+The migration backfills every pre-existing ``knowledge_item`` row as ``MANUAL`` and adds no
+interpretation - it does not read predicates out of payloads, because that is derivation, and a SQL
+statement would be a second, dumber implementation of it.
+
+**Rejected.** Newest-write-wins and authority-ranked auto-resolution (both turn a discrepancy into an
+invisible row); a graph database for the edges (a table, a unique constraint and a checker hold the
+invariants, and the system of record has to stay one file); storing the ranking's *outcome* anywhere
+but the audit trail; running a model over the corpus to fill gaps (an engineering value either comes
+from a cell or it does not exist); and rewriting the Excel extractor to emit facts directly (the
+artefact is the contract between extraction and knowledge, and both sides are testable because of it).

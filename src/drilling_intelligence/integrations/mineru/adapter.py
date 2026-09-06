@@ -32,7 +32,9 @@ class MinerUExtractor:
 
     name = "mineru"
     version = EXTRACTION_ENGINE_VERSION
-    description = "MinerU document parser (external CLI/HTTP engine): layout, tables, OCR, formulas."
+    description = (
+        "MinerU document parser (external CLI/HTTP engine): layout, tables, OCR, formulas."
+    )
 
     def __init__(self, settings: Any, prober: MinerUProber | None = None) -> None:
         self.settings = settings
@@ -65,7 +67,9 @@ class MinerUExtractor:
             reasons=[f"MinerU runtime: {status.summary()}"],
         )
 
-    def extract(self, context: ExtractionContext, provenance: ProvenanceBuilder) -> NormalizedDocument:
+    def extract(
+        self, context: ExtractionContext, provenance: ProvenanceBuilder
+    ) -> NormalizedDocument:
         status = self.prober.status()
         if not status.available:
             raise ParserUnavailableError(
@@ -81,7 +85,9 @@ class MinerUExtractor:
             raise ExtractionError(f"MinerU run failed: {type(exc).__name__}: {exc}") from exc
         artefacts = run.artefacts
         if not run.ok or artefacts is None:
-            raise ExtractionError(f"MinerU returned no usable output: {run.error or 'unknown error'}", mode=run.mode)
+            raise ExtractionError(
+                f"MinerU returned no usable output: {run.error or 'unknown error'}", mode=run.mode
+            )
 
         document, diagnostics = self._normalize(artefacts, context)
         document.metadata.engine = (document.metadata.engine or "") or f"MinerU via {run.mode}"
@@ -95,14 +101,18 @@ class MinerUExtractor:
         }
         document.metadata.extra["provenance_source"] = artefacts.best
         document.diagnostics.extend(diagnostics)
-        document.diagnostics.append(f"extracted by MinerU ({run.mode}, artefact={artefacts.best}) in {run.duration_ms / 1000:.1f}s")
+        document.diagnostics.append(
+            f"extracted by MinerU ({run.mode}, artefact={artefacts.best}) in {run.duration_ms / 1000:.1f}s"
+        )
         if artefacts.layout_pdf and artefacts.layout_pdf.exists():
             document.metadata.extra["mineru"]["layout_pdf"] = str(artefacts.layout_pdf)
         run.cleanup()
         return document
 
     # -- internals ----------------------------------------------------------
-    def _normalize(self, artefacts: Any, context: ExtractionContext) -> tuple[NormalizedDocument, list[str]]:
+    def _normalize(
+        self, artefacts: Any, context: ExtractionContext
+    ) -> tuple[NormalizedDocument, list[str]]:
         kwargs = {
             "filename": context.filename,
             "document_id": context.document_id,

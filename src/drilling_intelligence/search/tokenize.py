@@ -68,7 +68,7 @@ STOPWORDS: frozenset[str] = frozenset(
 )
 
 #: Quoted spans are phrase queries: the tokens must appear next to each other, in order.
-PHRASE_MARKERS = ("\"", "\u201c", "\u201d")
+PHRASE_MARKERS = ('"', "\u201c", "\u201d")
 
 
 def _candidate_terms(word: str) -> list[str]:
@@ -167,7 +167,9 @@ def tokens_of_query(query: str, *, extra: Iterable[str] = ()) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-def highlight(text: str, terms: Iterable[str], *, context: int = 90) -> tuple[str, list[tuple[int, int]]]:
+def highlight(
+    text: str, terms: Iterable[str], *, context: int = 90
+) -> tuple[str, list[tuple[int, int]]]:
     """A snippet around the matched region, plus the spans to emphasise.
 
     Returned as offsets rather than markup because the consumer decides how to show it (Qt

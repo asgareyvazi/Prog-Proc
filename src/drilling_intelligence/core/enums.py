@@ -188,12 +188,23 @@ class KnowledgeItemType(StrEnumLike):
 
 
 class KnowledgeStatus(StrEnumLike):
-    """Lifecycle of a knowledge object."""
+    """Lifecycle of a knowledge object.
+
+    ``CONFLICTED`` is what two sources that disagree leave behind: both objects keep their value
+    and neither is deleted (section 19).  ``UNVERIFIED`` marks a value the platform holds but
+    cannot point at a source for - a manual note, an inference whose evidence has not been
+    recorded - so "no provenance" is a state a query can find, not an absence.
+    """
 
     CANDIDATE = "CANDIDATE"
+    #: Agreed with by every source that mentions it, and traceable to at least one.
     ACTIVE = "ACTIVE"
+    #: At least two sources give different values for the same subject and property.
     CONFLICTED = "CONFLICTED"
+    #: A newer revision of the same source says otherwise; the value stays queryable.
     SUPERSEDED = "SUPERSEDED"
+    #: Not source-derived (or its evidence could not be recorded): nobody should act on it.
+    UNVERIFIED = "UNVERIFIED"
     RETIRED = "RETIRED"
 
 
@@ -201,6 +212,15 @@ class KnowledgeRelationType(StrEnumLike):
     """Directed edge vocabulary for the knowledge graph (section 20)."""
 
     WELL_HAS_DOCUMENT = "WELL_HAS_DOCUMENT"
+    #: The mud a well was actually drilled with, as opposed to the one a program planned.
+    WELL_HAS_MUD = "WELL_HAS_MUD"
+    #: A problem or event the well ran into (lost circulation, a kick, NPT), cited to its source.
+    WELL_ENCOUNTERED_EVENT = "WELL_ENCOUNTERED_EVENT"
+    #: A document refers to a well without the workspace having linked them yet.
+    DOCUMENT_MENTIONS_WELL = "DOCUMENT_MENTIONS_WELL"
+    #: Facts are attributed to the *version* that contains them, not the document, so a newer
+    #: revision never rewrites what an older one said.
+    VERSION_CONTAINS_KNOWLEDGE = "VERSION_CONTAINS_KNOWLEDGE"
     DOCUMENT_CONTAINS_KNOWLEDGE = "DOCUMENT_CONTAINS_KNOWLEDGE"
     KNOWLEDGE_SUPPORTS_METHOD = "KNOWLEDGE_SUPPORTS_METHOD"
     METHOD_REQUIRES_INPUT = "METHOD_REQUIRES_INPUT"
@@ -220,6 +240,22 @@ class KnowledgeRelationType(StrEnumLike):
     ITEM_SUPPORTS = "ITEM_SUPPORTS"
     DOCUMENT_HAS_VERSION = "DOCUMENT_HAS_VERSION"
     SKILL_USES_KNOWLEDGE = "SKILL_USES_KNOWLEDGE"
+
+
+class KnowledgeOrigin(StrEnumLike):
+    """Who is responsible for a knowledge object existing.
+
+    This is what makes a rebuild safe: ``rebuild`` regenerates the derived world from the
+    extractions it can re-run, and must never touch what a person wrote.  Without an origin on
+    the row, "rebuild the knowledge" and "delete the user's notes" are the same operation.
+    """
+
+    #: Read out of a document by a deterministic extractor, provenance included.
+    EXTRACTED = "EXTRACTED"
+    #: Recalculated or linked by the platform from other knowledge (a conflict record, a link).
+    DERIVED = "DERIVED"
+    #: Typed in by a person; no automated process may overwrite or delete it.
+    MANUAL = "MANUAL"
 
 
 class ConflictResolution(StrEnumLike):

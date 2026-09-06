@@ -176,7 +176,9 @@ class SearchService:
         operation, sees every commit, and leaks nothing.
         """
         if repository is None and database is None:
-            raise ValueError("a search service needs a repository or a database to read the registry from")
+            raise ValueError(
+                "a search service needs a repository or a database to read the registry from"
+            )
         self.index = index
         self._repository = repository
         self._database = database
@@ -200,10 +202,14 @@ class SearchService:
         The sidecar database is created on first use and never migrated: it is derived data,
         so an old or damaged file is a thing to rebuild, not a thing to upgrade.
         """
-        index: SearchIndex = InMemorySearchIndex() if in_memory else SqliteSearchIndex(workspace.index_database)
+        index: SearchIndex = (
+            InMemorySearchIndex() if in_memory else SqliteSearchIndex(workspace.index_database)
+        )
         settings = getattr(workspace, "settings", None)
         limit = int(getattr(getattr(settings, "search", None), "keyword_results", 40) or 40)
-        return cls(index=index, database=workspace.database, default_limit=min(200, max(1, limit // 2)))
+        return cls(
+            index=index, database=workspace.database, default_limit=min(200, max(1, limit // 2))
+        )
 
     # -- writes -------------------------------------------------------------
     def index_version(self, document_id: str, version_id: str) -> int:
@@ -211,7 +217,9 @@ class SearchService:
         with self._registry() as repository:
             chunk_set = chunk_set_for(repository, document_id, version_id)
         if chunk_set is None:
-            log.warning("search.index.no_artefact", document_id=document_id, version_id=version_id, level=25)
+            log.warning(
+                "search.index.no_artefact", document_id=document_id, version_id=version_id, level=25
+            )
             return 0
         uncited = uncited_chunks(chunk_set.chunks)
         if uncited:
@@ -314,7 +322,9 @@ class SearchService:
             kinds=tuple(kinds) if kinds else None,
             include_superseded=include_superseded,
         )
-        request = SearchRequest(query=str(query or ""), filters=filters, limit=int(limit or self.default_limit))
+        request = SearchRequest(
+            query=str(query or ""), filters=filters, limit=int(limit or self.default_limit)
+        )
         hits, meta = self.index.search(request)
         # Verification reads files, and the registry row that names the file has to come from a
         # session - so the whole presentation step happens inside one registry read.
@@ -344,11 +354,15 @@ class SearchService:
         return response
 
     # -- presentation of one hit -------------------------------------------
-    def _result(self, hit: Hit, meta: Mapping[str, Any], repository: DocumentRepository, *, verify: bool) -> SearchResult:
+    def _result(
+        self, hit: Hit, meta: Mapping[str, Any], repository: DocumentRepository, *, verify: bool
+    ) -> SearchResult:
         chunk, document = hit.chunk, hit.document
         # Highlight what the query actually matched; on the broadened fallback that can be a
         # subset of the terms, which is exactly why the mode is reported alongside.
-        snippet, spans = highlight(chunk.text, list(hit.matched_terms), context=self.snippet_context)
+        snippet, spans = highlight(
+            chunk.text, list(hit.matched_terms), context=self.snippet_context
+        )
         provenance = dict(chunk.provenance or {})
         cited = bool(chunk.provenance)
         verbatim = _is_verbatim(chunk.text, str(provenance.get("excerpt") or ""))
@@ -443,7 +457,9 @@ def _citation(chunk: Any, document: Any, *, cited: bool) -> str:
     return f"{label}{revision} > {location}{suffix}"
 
 
-def _with_verification(result: SearchResult, hit: Hit, *, repository: DocumentRepository) -> SearchResult:
+def _with_verification(
+    result: SearchResult, hit: Hit, *, repository: DocumentRepository
+) -> SearchResult:
     """Re-read the source and compare, through the same check the UI uses.
 
     Verification is opt-in per query because it opens files: on a workspace of a few thousand
@@ -457,7 +473,13 @@ def _with_verification(result: SearchResult, hit: Hit, *, repository: DocumentRe
     chunk = hit.chunk
     version = repository.version(chunk.version_id)
     if version is None:
-        return replace(result, verification={"status": "NOT_CHECKABLE", "detail": f"version {chunk.version_id} is no longer in the registry"})
+        return replace(
+            result,
+            verification={
+                "status": "NOT_CHECKABLE",
+                "detail": f"version {chunk.version_id} is no longer in the registry",
+            },
+        )
     path = repository.resolve_source_path(version)
     if path is None:
         return replace(
@@ -470,9 +492,21 @@ def _with_verification(result: SearchResult, hit: Hit, *, repository: DocumentRe
     try:
         provenance = Provenance.from_dict(dict(chunk.provenance)) if chunk.provenance else None
     except Exception as exc:  # noqa: BLE001 - a malformed record is reported, not fatal
-        return replace(result, verification={"status": "NOT_CHECKABLE", "detail": f"stored provenance unreadable: {exc}"})
+        return replace(
+            result,
+            verification={
+                "status": "NOT_CHECKABLE",
+                "detail": f"stored provenance unreadable: {exc}",
+            },
+        )
     if provenance is None:
-        return replace(result, verification={"status": "NOT_CHECKABLE", "detail": "chunk has no recorded location to verify"})
+        return replace(
+            result,
+            verification={
+                "status": "NOT_CHECKABLE",
+                "detail": "chunk has no recorded location to verify",
+            },
+        )
     if not result.verbatim:
         # A view of a larger region has nothing at its location that reads as this chunk, so the
         # excerpt comparison cannot apply to it.  What *can* be established - and what such a

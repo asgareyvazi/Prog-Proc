@@ -283,7 +283,9 @@ def _excel_read(source: Path, locator: ExcelLocator) -> str:
             for row in ws[locator.range_]:
                 rows.append("\t".join("" if c.value is None else str(c.value) for c in row))
             return "\n".join(rows)
-        raise ProvenanceError("Excel provenance records neither a cell nor a range", file=str(source))
+        raise ProvenanceError(
+            "Excel provenance records neither a cell nor a range", file=str(source)
+        )
     finally:
         wb.close()
 
@@ -298,7 +300,9 @@ def _pdf_read(source: Path, locator: PdfLocator) -> str:
         if locator.table is not None:
             tables = page.find_tables().tables
             if locator.table >= len(tables):
-                raise ProvenanceError(f"Table {locator.table} not found on page {locator.page}", file=str(source))
+                raise ProvenanceError(
+                    f"Table {locator.table} not found on page {locator.page}", file=str(source)
+                )
             rows = tables[locator.table].extract()
             return "\n".join("\t".join("" if c is None else str(c) for c in row) for row in rows)
         blocks = page.get_text("blocks")
@@ -332,7 +336,7 @@ def _text_read(source: Path, locator: TextLocator) -> str:
     text = source.read_text(encoding="utf-8", errors="replace")
     if locator.char_start is not None:
         end = locator.char_end if locator.char_end is not None else len(text)
-        return text[locator.char_start:end]
+        return text[locator.char_start : end]
     if locator.line_start is not None:
         lines = text.splitlines()
         start = max(1, locator.line_start)
@@ -395,12 +399,19 @@ def verify_provenance(
     expected_norm = normalise_text(provenance.excerpt)
     current_norm = normalise_text(current)
     if not expected_norm:
-        return VerificationResult(provenance, "NOT_CHECKABLE", "No excerpt stored to compare", current_excerpt=current[:200])
+        return VerificationResult(
+            provenance,
+            "NOT_CHECKABLE",
+            "No excerpt stored to compare",
+            current_excerpt=current[:200],
+        )
     if expected_norm == current_norm or expected_norm in current_norm:
         return VerificationResult(provenance, "MATCH", "", current_excerpt=current[:200])
     ratio = difflib.SequenceMatcher(None, expected_norm, current_norm).ratio()
     if ratio >= fuzzy:
-        return VerificationResult(provenance, "MATCH", f"Similar (ratio {ratio:.3f})", current_excerpt=current[:200])
+        return VerificationResult(
+            provenance, "MATCH", f"Similar (ratio {ratio:.3f})", current_excerpt=current[:200]
+        )
     return VerificationResult(
         provenance,
         "MISMATCH",

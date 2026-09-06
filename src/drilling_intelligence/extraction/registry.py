@@ -47,7 +47,9 @@ def build_default_router(settings: Any, *, mineru: Any = None) -> DocumentRouter
             except Exception as exc:  # noqa: BLE001 - never let discovery break startup
                 from ..core.logging import get_logger
 
-                get_logger("extraction.registry").warning_event("mineru.discovery_failed", error=str(exc))
+                get_logger("extraction.registry").warning_event(
+                    "mineru.discovery_failed", error=str(exc)
+                )
                 mineru = None
     if mineru is not None:
         extractors.append(mineru)

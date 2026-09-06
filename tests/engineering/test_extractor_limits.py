@@ -94,7 +94,9 @@ def test_over_limit_workbook_reports_the_truncation_loudly(tmp_path: Path) -> No
     assert document.tables, "the first quarter still has to be usable"
     rendered = "\n".join(table.text() for table in document.tables)
     assert "r1c1" in rendered
-    assert f"r{ROWS}c{COLUMNS}" not in rendered, "cells past the budget must not be presented as read"
+    assert f"r{ROWS}c{COLUMNS}" not in rendered, (
+        "cells past the budget must not be presented as read"
+    )
     # A truncated extraction is a different artefact: the digest proves it.
     complete = extract(tmp_path / "big.xlsx", excel_max_cells=ROWS * COLUMNS)
     assert structure_digest(document) != structure_digest(complete)
@@ -112,14 +114,19 @@ def test_under_limit_workbook_is_not_marked_truncated(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("bad_limit", [0, -1, None, "nonsense"])
-def test_a_broken_limit_falls_back_instead_of_reading_nothing(tmp_path: Path, bad_limit: Any) -> None:
+def test_a_broken_limit_falls_back_instead_of_reading_nothing(
+    tmp_path: Path, bad_limit: Any
+) -> None:
     """``excel_max_cells = 0`` is a typo, not a request for an empty document."""
     workbook = tmp_path / "small.xlsx"
     write_workbook(workbook, rows=10, columns=2)
     document = extract(workbook, excel_max_cells=bad_limit)
     assert document.tables, "the default budget keeps the read useful"
     assert not [note for note in document.diagnostics if "max_cells" in note]
-    assert document.metadata.extra["workbook"]["limits"]["max_cells_per_sheet"] == DEFAULT_MAX_CELLS_PER_SHEET
+    assert (
+        document.metadata.extra["workbook"]["limits"]["max_cells_per_sheet"]
+        == DEFAULT_MAX_CELLS_PER_SHEET
+    )
 
 
 # --------------------------------------------------------------------------- sheet budget
@@ -133,16 +140,20 @@ def test_sheet_budget_is_reported_and_the_book_is_closed_once(tmp_path: Path) ->
     assert document.metadata.page_count == 2
     extra = document.metadata.extra["workbook"]
     assert extra["truncated"] is True
-    assert extra["limits"] == {
-        "max_sheets": 2,
-        "max_cells_per_sheet": DEFAULT_MAX_CELLS_PER_SHEET,
-        "max_bytes": 64 * 1024 * 1024,
-        "sheets_total": 7,
-        "sheets_read": 2,
-        "sheets_skipped": 5,
-        "cells_skipped": 0,
-        "formula_pass": False,
-    } or extra["limits"]["sheets_skipped"] == 5
+    assert (
+        extra["limits"]
+        == {
+            "max_sheets": 2,
+            "max_cells_per_sheet": DEFAULT_MAX_CELLS_PER_SHEET,
+            "max_bytes": 64 * 1024 * 1024,
+            "sheets_total": 7,
+            "sheets_read": 2,
+            "sheets_skipped": 5,
+            "cells_skipped": 0,
+            "formula_pass": False,
+        }
+        or extra["limits"]["sheets_skipped"] == 5
+    )
 
 
 def test_repeated_reads_do_not_leak_file_handles(tmp_path: Path) -> None:
@@ -252,7 +263,9 @@ def test_the_second_pass_is_skipped_for_an_overweight_workbook(tmp_path: Path) -
 
 # --------------------------------------------------------------------------- the PDF probe
 @pytest.mark.parametrize("probe_pages", [3, 12, 500])
-def test_the_probe_reads_a_sample_but_reports_the_true_page_count(tmp_path: Path, probe_pages: int) -> None:
+def test_the_probe_reads_a_sample_but_reports_the_true_page_count(
+    tmp_path: Path, probe_pages: int
+) -> None:
     """Routing must stay cheap on a 600-page DDR compilation - and say what it sampled."""
     pymupdf = pytest.importorskip("pymupdf")
     pdf = tmp_path / "long.pdf"
@@ -260,22 +273,36 @@ def test_the_probe_reads_a_sample_but_reports_the_true_page_count(tmp_path: Path
     doc = pymupdf.open()
     for index in range(total):
         page = doc.new_page()
-        page.insert_text((72, 720), f"Drilling report page {index + 1}: mud weight 10.2 ppg at 3105 ft MD.")
+        page.insert_text(
+            (72, 720), f"Drilling report page {index + 1}: mud weight 10.2 ppg at 3105 ft MD."
+        )
     doc.save(pdf)
     doc.close()
 
     from drilling_intelligence.extraction.pdf_text import PdfTextExtractor
 
-    context = ExtractionContext(path=pdf, filename=pdf.name, sha256="0" * 64, extension=".pdf", size_bytes=pdf.stat().st_size)
+    context = ExtractionContext(
+        path=pdf,
+        filename=pdf.name,
+        sha256="0" * 64,
+        extension=".pdf",
+        size_bytes=pdf.stat().st_size,
+    )
     context.options = {"pdf_probe_pages": probe_pages}
     complexity = PdfTextExtractor().probe(context)
-    assert complexity.pages == total, "the header gives the real page count for free; sampling it would be sloppy"
+    assert complexity.pages == total, (
+        "the header gives the real page count for free; sampling it would be sloppy"
+    )
     assert complexity.has_text_layer is True
     assert complexity.is_scanned is False
     if total > probe_pages:
-        assert any(f"first {probe_pages} of {total} pages" in reason for reason in complexity.reasons), complexity.reasons
+        assert any(
+            f"first {probe_pages} of {total} pages" in reason for reason in complexity.reasons
+        ), complexity.reasons
     else:
-        assert not any("probed the first" in reason for reason in complexity.reasons), complexity.reasons
+        assert not any("probed the first" in reason for reason in complexity.reasons), (
+            complexity.reasons
+        )
 
 
 def test_the_probe_never_raises_on_a_broken_file(tmp_path: Path) -> None:
@@ -284,7 +311,15 @@ def test_the_probe_never_raises_on_a_broken_file(tmp_path: Path) -> None:
     broken.write_bytes(b"%PDF-1.7\nnot really a pdf\n%%EOF\n")
     from drilling_intelligence.extraction.pdf_text import PdfTextExtractor
 
-    context = ExtractionContext(path=broken, filename=broken.name, sha256="0" * 64, extension=".pdf", size_bytes=broken.stat().st_size)
+    context = ExtractionContext(
+        path=broken,
+        filename=broken.name,
+        sha256="0" * 64,
+        extension=".pdf",
+        size_bytes=broken.stat().st_size,
+    )
     complexity = PdfTextExtractor().probe(context)
-    assert complexity.pages == 0, "an unreadable file has no structure to report, but the probe still answers"
+    assert complexity.pages == 0, (
+        "an unreadable file has no structure to report, but the probe still answers"
+    )
     assert any("probe failed" in reason for reason in complexity.reasons), complexity.reasons

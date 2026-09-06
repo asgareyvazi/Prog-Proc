@@ -120,7 +120,9 @@ class DocumentRepository:
     def versions_for(self, document_id: str) -> list[DocumentVersion]:
         return list(
             self.session.execute(
-                select(DocumentVersion).where(DocumentVersion.document_id == document_id).order_by(DocumentVersion.version_number)
+                select(DocumentVersion)
+                .where(DocumentVersion.document_id == document_id)
+                .order_by(DocumentVersion.version_number)
             ).scalars()
         )
 
@@ -146,7 +148,11 @@ class DocumentRepository:
             stmt = stmt.where(Document.processing_status == processing_status)
         if search_text:
             stmt = stmt.where(Document.filename.ilike(f"%{search_text}%"))
-        stmt = stmt.order_by(Document.filename.asc(), Document.identity_path.asc()).limit(limit).offset(offset)
+        stmt = (
+            stmt.order_by(Document.filename.asc(), Document.identity_path.asc())
+            .limit(limit)
+            .offset(offset)
+        )
         return list(self.session.execute(stmt).scalars())
 
     def counts(self, *, workspace_id: str | None = None) -> dict[str, Any]:
@@ -157,9 +163,16 @@ class DocumentRepository:
             return {str(key or ""): int(count) for key, count in self.session.execute(stmt).all()}
 
         return {
-            "documents": int(self.session.execute(select(func.count()).select_from(Document)).scalar_one() or 0),
-            "versions": int(self.session.execute(select(func.count()).select_from(DocumentVersion)).scalar_one() or 0),
-            "extractions": int(self.session.execute(select(func.count()).select_from(Extraction)).scalar_one() or 0),
+            "documents": int(
+                self.session.execute(select(func.count()).select_from(Document)).scalar_one() or 0
+            ),
+            "versions": int(
+                self.session.execute(select(func.count()).select_from(DocumentVersion)).scalar_one()
+                or 0
+            ),
+            "extractions": int(
+                self.session.execute(select(func.count()).select_from(Extraction)).scalar_one() or 0
+            ),
             "by_classification": tally(Document, Document.classification),
             "by_processing_status": tally(Document, Document.processing_status),
         }
@@ -303,7 +316,11 @@ class DocumentRepository:
                     # before, or the supersede chain has a hole in it and "what did this
                     # revision replace?" stops having an answer.
                     predecessor = max(
-                        (row for row in siblings if row.is_current or row.version_number < next_number),
+                        (
+                            row
+                            for row in siblings
+                            if row.is_current or row.version_number < next_number
+                        ),
                         key=lambda row: row.version_number,
                         default=None,
                     )
@@ -335,7 +352,9 @@ class DocumentRepository:
     def next_version_number(self, document_id: str) -> int:
         """``max`` rather than ``count``: a document must never reuse a version number."""
         current = self.session.execute(
-            select(func.max(DocumentVersion.version_number)).where(DocumentVersion.document_id == document_id)
+            select(func.max(DocumentVersion.version_number)).where(
+                DocumentVersion.document_id == document_id
+            )
         ).scalar_one_or_none()
         return int(current or 0) + 1
 
@@ -355,7 +374,8 @@ class DocumentRepository:
         candidates = candidate_source_paths(
             recorded_path=version.source_path or "",
             workspace_root=workspace_root,
-            relative_path=version.source_relative_path or (document.identity_path if document is not None else ""),
+            relative_path=version.source_relative_path
+            or (document.identity_path if document is not None else ""),
             filename=document.filename if document is not None else "",
         )
         return first_existing(candidates)
@@ -371,7 +391,9 @@ class DocumentRepository:
             pointed = self.version(document.current_version_id)
             if pointed is not None:
                 return pointed
-        return next((version for version in self.versions_for(document.id) if version.is_current), None)
+        return next(
+            (version for version in self.versions_for(document.id) if version.is_current), None
+        )
 
     def touch_document_from_version(self, document: Document, version: DocumentVersion) -> None:
         """Keep the registry row consistent with its current version.
@@ -387,13 +409,19 @@ class DocumentRepository:
             document.revision = version.revision
             document.revision_key = version.revision_key
 
-    def update_document_metadata(self, document: Document, values: dict[str, Any]) -> dict[str, Any]:
+    def update_document_metadata(
+        self, document: Document, values: dict[str, Any]
+    ) -> dict[str, Any]:
         """Update only document-level fields; unknown keys are reported, not applied."""
         applied: dict[str, Any] = {}
         for key, raw_value in values.items():
             if key not in DOCUMENT_LEVEL_FIELDS:
                 continue
-            value = str(getattr(raw_value, "value", raw_value)) if key == "classification" else raw_value
+            value = (
+                str(getattr(raw_value, "value", raw_value))
+                if key == "classification"
+                else raw_value
+            )
             setattr(document, key, value)
             applied[key] = value
         self.session.flush()
@@ -408,12 +436,16 @@ class DocumentRepository:
         self.session.flush()
         return True
 
-    def set_processing(self, document: Document, status: ProcessingStatus, error: str | None = None) -> None:
+    def set_processing(
+        self, document: Document, status: ProcessingStatus, error: str | None = None
+    ) -> None:
         document.processing_status = str(getattr(status, "value", status))
         document.processing_error = error
 
     # -- extraction storage -------------------------------------------------
-    def find_cached_extraction(self, *, content_sha256: str, extractor: str, extractor_version: str, config_hash: str) -> Extraction | None:
+    def find_cached_extraction(
+        self, *, content_sha256: str, extractor: str, extractor_version: str, config_hash: str
+    ) -> Extraction | None:
         """Extraction cache lookup: identical bytes + identical extractor = reuse.
 
         The cache table is the *index*; the artefact it points at is a normal
@@ -430,14 +462,18 @@ class DocumentRepository:
         )
         if entry is None:
             return None
-        artefact = self.session.get(Extraction, entry.extraction_id) if entry.extraction_id else None
+        artefact = (
+            self.session.get(Extraction, entry.extraction_id) if entry.extraction_id else None
+        )
         if artefact is None or not artefact.document_json:
             self.session.delete(entry)
             self.session.flush()
             return None
         return artefact
 
-    def cache_entry(self, *, content_sha256: str, extractor: str, extractor_version: str, config_hash: str) -> ExtractionCache | None:
+    def cache_entry(
+        self, *, content_sha256: str, extractor: str, extractor_version: str, config_hash: str
+    ) -> ExtractionCache | None:
         return self.session.execute(
             select(ExtractionCache).where(
                 ExtractionCache.content_sha256 == content_sha256,
@@ -447,7 +483,9 @@ class DocumentRepository:
             )
         ).scalar_one_or_none()
 
-    def cache_hit(self, *, content_sha256: str, extractor: str, extractor_version: str, config_hash: str) -> None:
+    def cache_hit(
+        self, *, content_sha256: str, extractor: str, extractor_version: str, config_hash: str
+    ) -> None:
         """Count a reuse.  Best-effort: the count is diagnostics, never correctness."""
         entry = self.cache_entry(
             content_sha256=content_sha256,
@@ -494,7 +532,9 @@ class DocumentRepository:
                     entry = ExtractionCache(id=new_id("extc"), hits=0, **key)
                     self.session.add(entry)
                 else:
-                    entry.refreshed = entry.extraction_id is not None and entry.extraction_id != extraction.id
+                    entry.refreshed = (
+                        entry.extraction_id is not None and entry.extraction_id != extraction.id
+                    )
                 entry.extraction_id = extraction.id
                 entry.produced_by_version_id = document_version_id
                 self.session.flush()
@@ -504,7 +544,9 @@ class DocumentRepository:
                 continue
             savepoint.commit()
             return entry
-        raise DrillingIntelligenceError("could not publish the extraction to the cache", error=str(last_error))
+        raise DrillingIntelligenceError(
+            "could not publish the extraction to the cache", error=str(last_error)
+        )
 
     def save_extraction(
         self,
@@ -562,11 +604,16 @@ class DocumentRepository:
 
     def latest_extraction(self, document_id: str) -> Extraction | None:
         return self.session.execute(
-            select(Extraction).where(Extraction.document_id == document_id).order_by(Extraction.created_at.desc()).limit(1)
+            select(Extraction)
+            .where(Extraction.document_id == document_id)
+            .order_by(Extraction.created_at.desc())
+            .limit(1)
         ).scalar_one_or_none()
 
     def extraction_for_version(self, version_id: str) -> Extraction | None:
-        return self.session.execute(select(Extraction).where(Extraction.document_version_id == version_id).limit(1)).scalar_one_or_none()
+        return self.session.execute(
+            select(Extraction).where(Extraction.document_version_id == version_id).limit(1)
+        ).scalar_one_or_none()
 
     # -- sources ------------------------------------------------------------
     def get_or_create_source(
@@ -617,7 +664,9 @@ class DocumentRepository:
         caller that wants to *simulate* the race (a test, a retry harness) needs one seam
         to override rather than the whole method.
         """
-        return self.session.execute(select(Source).where(Source.kind == kind, Source.reference == reference)).scalar_one_or_none()
+        return self.session.execute(
+            select(Source).where(Source.kind == kind, Source.reference == reference)
+        ).scalar_one_or_none()
 
     def _insert_source(self, **values: Any) -> Source:
         """Insert one source row, resolving the select-then-insert race by re-reading.
@@ -649,9 +698,23 @@ class DocumentRepository:
         )
 
     # -- audit --------------------------------------------------------------
-    def audit(self, *, action: str, subject_type: str, subject_id: str, detail: dict[str, Any] | None = None, actor: str = "system") -> AuditEvent:
+    def audit(
+        self,
+        *,
+        action: str,
+        subject_type: str,
+        subject_id: str,
+        detail: dict[str, Any] | None = None,
+        actor: str = "system",
+    ) -> AuditEvent:
         """Append one audit event (the only audit write the repository offers)."""
-        return self.audit_log.record(action=action, subject_type=subject_type, subject_id=subject_id, detail=detail, actor=actor)
+        return self.audit_log.record(
+            action=action,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            detail=detail,
+            actor=actor,
+        )
 
     def audit_trail(self, subject_type: str, subject_id: str, limit: int = 50) -> list[AuditEvent]:
         return self.audit_log.trail(subject_type, subject_id, limit=limit)

@@ -49,7 +49,9 @@ class DocumentComplexity:
 
     @property
     def looks_structured_pdf(self) -> bool:
-        return self.is_scanned or not self.has_text_layer or self.multi_column or self.table_count >= 3
+        return (
+            self.is_scanned or not self.has_text_layer or self.multi_column or self.table_count >= 3
+        )
 
 
 @dataclass
@@ -77,7 +79,14 @@ class ExtractionContext:
 class ProvenanceBuilder:
     """Creates provenance records stamped with the current document identity."""
 
-    __slots__ = ("confidence_default", "document_id", "document_version_id", "filename", "parser", "sha256")
+    __slots__ = (
+        "confidence_default",
+        "document_id",
+        "document_version_id",
+        "filename",
+        "parser",
+        "sha256",
+    )
 
     def __init__(
         self,
@@ -107,32 +116,72 @@ class ProvenanceBuilder:
             confidence=self.confidence_default if confidence is None else confidence,
         )
 
-    def pdf(self, *, page: int | None = None, block: int | None = None, paragraph: int | None = None,
-             section: str | None = None, table: int | None = None, bbox: tuple[float, float, float, float] | None = None,
-             excerpt: str = "", confidence: float | None = None) -> Provenance:
+    def pdf(
+        self,
+        *,
+        page: int | None = None,
+        block: int | None = None,
+        paragraph: int | None = None,
+        section: str | None = None,
+        table: int | None = None,
+        bbox: tuple[float, float, float, float] | None = None,
+        excerpt: str = "",
+        confidence: float | None = None,
+    ) -> Provenance:
         return self._make(
-            PdfLocator(page=page, block=block, paragraph=paragraph, section=section, table=table, bbox=bbox),
+            PdfLocator(
+                page=page, block=block, paragraph=paragraph, section=section, table=table, bbox=bbox
+            ),
             excerpt,
             confidence,
         )
 
-    def excel(self, *, sheet: str, cell: str | None = None, range_: str | None = None, read: str = "value",
-              row: int | None = None, column: int | None = None, excerpt: str = "",
-              confidence: float | None = None) -> Provenance:
+    def excel(
+        self,
+        *,
+        sheet: str,
+        cell: str | None = None,
+        range_: str | None = None,
+        read: str = "value",
+        row: int | None = None,
+        column: int | None = None,
+        excerpt: str = "",
+        confidence: float | None = None,
+    ) -> Provenance:
         return self._make(
-            ExcelLocator(sheet=sheet, cell=cell, range_=range_, read=read, row=row, column=column), excerpt, confidence
+            ExcelLocator(sheet=sheet, cell=cell, range_=range_, read=read, row=row, column=column),
+            excerpt,
+            confidence,
         )
 
-    def docx(self, *, heading: str | None = None, paragraph: int | None = None, table: int | None = None,
-             row: int | None = None, column: int | None = None, excerpt: str = "",
-             confidence: float | None = None) -> Provenance:
+    def docx(
+        self,
+        *,
+        heading: str | None = None,
+        paragraph: int | None = None,
+        table: int | None = None,
+        row: int | None = None,
+        column: int | None = None,
+        excerpt: str = "",
+        confidence: float | None = None,
+    ) -> Provenance:
         return self._make(
-            DocxLocator(heading=heading, paragraph=paragraph, table=table, row=row, column=column), excerpt, confidence
+            DocxLocator(heading=heading, paragraph=paragraph, table=table, row=row, column=column),
+            excerpt,
+            confidence,
         )
 
-    def text(self, *, line_start: int | None = None, line_end: int | None = None, char_start: int | None = None,
-             char_end: int | None = None, section: str | None = None, excerpt: str = "",
-             confidence: float | None = None) -> Provenance:
+    def text(
+        self,
+        *,
+        line_start: int | None = None,
+        line_end: int | None = None,
+        char_start: int | None = None,
+        char_end: int | None = None,
+        section: str | None = None,
+        excerpt: str = "",
+        confidence: float | None = None,
+    ) -> Provenance:
         return self._make(
             TextLocator(
                 line_start=line_start,
@@ -161,7 +210,9 @@ class DocumentExtractor(Protocol):
         """Return (can_handle, reason).  The reason ends up in the audit trail."""
         ...
 
-    def extract(self, context: ExtractionContext, provenance: ProvenanceBuilder) -> NormalizedDocument:
+    def extract(
+        self, context: ExtractionContext, provenance: ProvenanceBuilder
+    ) -> NormalizedDocument:
         """Parse the file into the normalised model.  Raise ExtractionError on failure."""
         ...
 
@@ -170,7 +221,9 @@ class DocumentExtractor(Protocol):
         ...
 
 
-def new_provenance_builder(context: ExtractionContext, parser: str, version: str) -> ProvenanceBuilder:
+def new_provenance_builder(
+    context: ExtractionContext, parser: str, version: str
+) -> ProvenanceBuilder:
     builder = ProvenanceBuilder(
         document_id=context.document_id,
         document_version_id=context.document_version_id,
@@ -181,7 +234,9 @@ def new_provenance_builder(context: ExtractionContext, parser: str, version: str
     return builder
 
 
-def stamp_extraction(document: NormalizedDocument, parser: str, version: str, engine: str = "") -> NormalizedDocument:
+def stamp_extraction(
+    document: NormalizedDocument, parser: str, version: str, engine: str = ""
+) -> NormalizedDocument:
     """Attach extraction identity to the document metadata (single place, no drift)."""
     document.metadata.parser = parser
     document.metadata.parser_version = version

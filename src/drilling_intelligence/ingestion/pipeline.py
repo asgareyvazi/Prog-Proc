@@ -56,6 +56,17 @@ class PipelineResult:
     index_removed: int = 0
     #: Snapshot of the index after this run (chunk/document counts), when one was wired in.
     index_stats: dict[str, Any] = field(default_factory=dict)
+    #: Knowledge rows written by this run (created/updated/unchanged), and the two counters the
+    #: user reads: how many facts exist now, and how many arguments are still open.
+    facts_written: dict[str, int] = field(
+        default_factory=lambda: {"created": 0, "updated": 0, "unchanged": 0}
+    )
+    facts_skipped: int = 0
+    conflicts_open: int = 0
+    #: Facts this run marked CONFLICTED, and conflicts cleared because a value now agrees.
+    conflicts_marked: int = 0
+    conflicts_cleared: int = 0
+    relations_written: int = 0
     #: Registry inconsistencies found after the run (see ``database.integrity``).  Reported,
     #: never raised: the files are already committed, and a warning the user can act on
     #: beats a failed run over a row a repair tool can fix.
@@ -79,6 +90,12 @@ class PipelineResult:
             "failures": self.failures,
             "indexed": self.indexed,
             "indexed_chunks": self.indexed_chunks,
+            "facts_written": dict(self.facts_written),
+            "relations_written": self.relations_written,
+            "facts_skipped": self.facts_skipped,
+            "conflicts_open": self.conflicts_open,
+            "conflicts_marked": self.conflicts_marked,
+            "conflicts_cleared": self.conflicts_cleared,
             "duration_ms": round(self.duration_ms, 1),
             "counts": dict(self.counts),
             "removed": list(self.removed[:100]),
@@ -104,6 +121,8 @@ class IngestionPipeline:
         index: Any = None,
         scanner: FileScanner | None = None,
         verify_invariants: bool = True,
+        knowledge: Any = None,
+        derive_knowledge: bool = True,
     ) -> None:
         self.settings = settings
         self.workspace_root = Path(workspace_root).expanduser().resolve()
@@ -112,6 +131,16 @@ class IngestionPipeline:
         self.index = index
         self.scanner = scanner
         self.verify_invariants = verify_invariants
+        #: The knowledge layer, wired in by the workspace/CLI.  ``None`` is an explicit choice -
+        #: "register and extract only" - not a degraded mode: when it is None the run says so in
+        #: ``facts_written`` (all zeros) and the report's warnings stay clean.
+        #: ``None`` until the first run builds it (see :meth:`knowledge_service`).  Pass
+        #: ``derive_knowledge=False`` to register and extract without touching the knowledge
+        #: layer - a legitimate choice for a tool that only needs the registry, and the reason
+        #: the flag is explicit instead of inferred from a missing argument.
+        self._knowledge_arg = knowledge
+        self.derive_knowledge_enabled = bool(derive_knowledge)
+        self.knowledge = knowledge
 
     # -- scanner ------------------------------------------------------------
     def build_scanner(
@@ -131,13 +160,90 @@ class IngestionPipeline:
                 follow_symlinks=bool(ingestion.follow_symlinks),
                 ignore_dir_names=tuple(ingestion.ignore_dir_names),
                 ignore_file_patterns=tuple(ingestion.ignore_file_patterns),
-                supported_extensions=tuple(ingestion.supported_extensions) + tuple(ext.lower() for ext in extra_extensions),
+                supported_extensions=tuple(ingestion.supported_extensions)
+                + tuple(ext.lower() for ext in extra_extensions),
             )
         if cancel is not None:
             scanner = replace(scanner, cancel=cancel)
         if on_progress is not None:
             scanner = replace(scanner, on_progress=on_progress)
         return scanner
+
+    def knowledge_service(self) -> Any:
+        """The knowledge layer for this run, built lazily from the same database.
+
+        The service is constructed with ``index=None`` on purpose: indexing is this pipeline's job
+        and it happens after the facts are written, so a version's chunk set contains its fact
+        chunks in the same pass instead of needing a second one.
+        """
+        if not self.derive_knowledge_enabled:
+            return None
+        if self.knowledge is None:
+            from ..knowledge.service import KnowledgeExtractionService
+
+            self.knowledge = KnowledgeExtractionService(
+                database=self.database, settings=self.settings, index=None, refresh_index=False
+            )
+        return self.knowledge
+
+    def derive_knowledge(
+        self,
+        knowledge: Any,
+        registration: Any,
+        *,
+        repository: DocumentRepository,
+        result: PipelineResult,
+        session: Any,
+    ) -> None:
+        """Derive facts for one freshly processed version, reporting - never raising - trouble.
+
+        A knowledge failure is a warning rather than a run failure because the document is already
+        registered and extracted: the pipeline's job for that file succeeded, and the fix
+        (``drillintel knowledge rebuild``) is a repair of derived data, not of the registry.  It is
+        still said out loud, because silently skipping derivation is how a knowledge base ends up
+        quietly missing half the corpus.
+        """
+        try:
+            sync = knowledge.sync_version(
+                registration.document_id, registration.version_id, session=session
+            )
+        except Exception as exc:  # noqa: BLE001 - derived data, reported, never swallowed
+            result.warnings.append(
+                f"knowledge derivation failed for {registration.filename}: {type(exc).__name__}: {exc}"
+            )
+            return
+        for key, value in sync.facts.items():
+            result.facts_written[key] += value
+        result.relations_written += sync.relations
+        result.facts_skipped += len(sync.skipped)
+        result.warnings.extend(
+            f"knowledge: {warning} ({registration.filename})" for warning in sync.warnings
+        )
+
+    def finish_knowledge(
+        self, knowledge: Any, *, repository: DocumentRepository, result: PipelineResult
+    ) -> None:
+        """Compare everything once, at the end: conflicts are a corpus-wide question.
+
+        Detecting them per file would report a conflict only after the *second* document arrived,
+        in whichever order the scan happened to visit them; this way the run's answer is the same
+        regardless of the order files were read in.
+        """
+        from ..knowledge.conflicts import detect_conflicts
+        from ..knowledge.repository import KnowledgeRepository
+
+        try:
+            knowledge_store = KnowledgeRepository(repository.session)
+            report = detect_conflicts(knowledge_store)
+            repository.session.commit()
+            # Counted from the store, not from the report: a conflict opened by an earlier run is
+            # still open, and "how many arguments are waiting for you" has to include it.
+            result.conflicts_open = len(knowledge_store.conflicts(limit=1000))
+            result.conflicts_marked = report.items_marked
+            result.conflicts_cleared = report.cleared
+        except Exception as exc:  # noqa: BLE001 - a diagnostic must never fail a good run
+            result.warnings.append(f"conflict detection unavailable: {type(exc).__name__}: {exc}")
+            return
 
     # -- run ----------------------------------------------------------------
     def reconcile_index(self, repository: DocumentRepository) -> tuple[int, dict[str, Any]]:
@@ -195,6 +301,7 @@ class IngestionPipeline:
 
         scan_root = Path(root).expanduser().resolve() if root else self.workspace_root
         result = PipelineResult(root=str(scan_root), workspace_id=workspace_id)
+        knowledge = self.knowledge_service()
         if not scan_root.exists():
             result.error = f"scan root does not exist: {scan_root}"
             result.counts = {"error": 1}
@@ -216,7 +323,9 @@ class IngestionPipeline:
         )
         result.run_id = run.id
         try:
-            scanner = self.scanner or self.build_scanner(cancel=cancel, extra_extensions=extra_extensions)
+            scanner = self.scanner or self.build_scanner(
+                cancel=cancel, extra_extensions=extra_extensions
+            )
             scan: ScanResult = scanner.scan(scan_root, extra_extensions=extra_extensions)
             result.files_found = len(scan.files)
             result.skipped = [{"path": path, "reason": reason} for path, reason in scan.skipped]
@@ -242,7 +351,9 @@ class IngestionPipeline:
             work_items = [
                 item
                 for item in plan.items
-                if item.needs_extraction or item.change in (FileChangeKind.NEW, FileChangeKind.MODIFIED, FileChangeKind.DUPLICATE)
+                if item.needs_extraction
+                or item.change
+                in (FileChangeKind.NEW, FileChangeKind.MODIFIED, FileChangeKind.DUPLICATE)
             ]
             total = len(work_items)
             for index, planned in enumerate(work_items, start=1):
@@ -271,28 +382,55 @@ class IngestionPipeline:
                         result.from_cache += 1
                     else:
                         result.files_extracted += 1
+                    if knowledge is not None and registration.version_id:
+                        # Knowledge before indexing, in this same session: a version's chunk set
+                        # contains its fact chunks, so one file is registered, extracted, derived
+                        # and searchable in one pass with nothing to re-run.  Facts written here
+                        # are visible to the index below because they share the session.
+                        self.derive_knowledge(
+                            knowledge,
+                            registration,
+                            repository=repository,
+                            result=result,
+                            session=session,
+                        )
                     if self.index is not None and registration.version_id:
                         try:
                             # The repository of this run, not one the index opens for itself: the
                             # rows describing this file are still uncommitted in this session, so
                             # a second session would read "no artefact yet" and index nothing
                             # while reporting success.
-                            chunks = int(self.index.upsert(registration.document_id, registration.version_id, repository=repository) or 0)
+                            chunks = int(
+                                self.index.upsert(
+                                    registration.document_id,
+                                    registration.version_id,
+                                    repository=repository,
+                                )
+                                or 0
+                            )
                             result.indexed += 1
                             result.indexed_chunks += chunks
                             if not chunks:
                                 # Reported instead of swallowed: "no chunks" after a successful
                                 # extraction means the artefact had nothing to index *or* the
                                 # index read a snapshot that did not contain it yet.
-                                result.warnings.append(f"index wrote no chunks for {registration.filename}")
-                            repository.set_document_status(registration.document_id, ProcessingStatus.INDEXED)
+                                result.warnings.append(
+                                    f"index wrote no chunks for {registration.filename}"
+                                )
+                            repository.set_document_status(
+                                registration.document_id, ProcessingStatus.INDEXED
+                            )
                         except Exception as exc:  # noqa: BLE001 - indexing must never fail ingestion
-                            result.warnings.append(f"index update failed for {registration.filename}: {type(exc).__name__}: {exc}")
+                            result.warnings.append(
+                                f"index update failed for {registration.filename}: {type(exc).__name__}: {exc}"
+                            )
                 # Per-file commit: a crash loses at most the file in flight.
                 session.commit()
                 if progress is not None:
                     progress(index, total, planned.file.relative_path)
 
+            if knowledge is not None:
+                self.finish_knowledge(knowledge, repository=repository, result=result)
             result.counts["PROCESSED"] = len(result.results)
             result.invariant_problems = self.check_invariants(repository)
             if self.index is not None:
@@ -300,7 +438,9 @@ class IngestionPipeline:
                 if index_stats:
                     result.index_stats = index_stats
             for problem in result.invariant_problems[:20]:
-                result.warnings.append(f"registry invariant broken: {problem['problem']} on {problem['table']}({problem['row_id']})")
+                result.warnings.append(
+                    f"registry invariant broken: {problem['problem']} on {problem['table']}({problem['row_id']})"
+                )
             run.counts = dict(result.counts)
             run.report = {
                 "removed": result.removed[:200],

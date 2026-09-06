@@ -35,13 +35,18 @@ class DocxExtractor:
 
     name = "docx"
     version = EXTRACTION_ENGINE_VERSION
-    description = "python-docx paragraph/table reader (headings, styles, tables, comments where available)."
+    description = (
+        "python-docx paragraph/table reader (headings, styles, tables, comments where available)."
+    )
 
     def supports(self, context: ExtractionContext) -> tuple[bool, str]:
         if context.extension.lower() == ".docx":
             return True, "DOCX (python-docx)"
         if context.extension.lower() == ".doc":
-            return False, "legacy binary .doc is not supported by python-docx; convert or route via MinerU"
+            return (
+                False,
+                "legacy binary .doc is not supported by python-docx; convert or route via MinerU",
+            )
         return False, f"extension {context.extension} is not DOCX"
 
     def probe(self, context: ExtractionContext) -> DocumentComplexity:
@@ -55,14 +60,18 @@ class DocxExtractor:
             complexity.pages = max(1, paragraphs // 40)
             complexity.table_count = tables
             complexity.has_text_layer = paragraphs > 0
-            complexity.text_chars_per_page = sum(len(p.text) for p in document.paragraphs) / max(1, complexity.pages)
+            complexity.text_chars_per_page = sum(len(p.text) for p in document.paragraphs) / max(
+                1, complexity.pages
+            )
             if tables:
                 complexity.reasons.append(f"{tables} table(s)")
         except Exception as exc:  # noqa: BLE001
             complexity.reasons.append(f"probe failed: {type(exc).__name__}: {exc}")
         return complexity
 
-    def extract(self, context: ExtractionContext, provenance: ProvenanceBuilder) -> NormalizedDocument:
+    def extract(
+        self, context: ExtractionContext, provenance: ProvenanceBuilder
+    ) -> NormalizedDocument:
         try:
             import docx
             from docx.oxml.ns import qn
@@ -72,7 +81,9 @@ class DocxExtractor:
         try:
             document = docx.Document(str(context.path))
         except Exception as exc:
-            raise ExtractionError(f"Cannot open {context.filename}: {type(exc).__name__}: {exc}") from exc
+            raise ExtractionError(
+                f"Cannot open {context.filename}: {type(exc).__name__}: {exc}"
+            ) from exc
 
         normalized = NormalizedDocument(
             metadata=ExtractionMetadata(
@@ -80,7 +91,8 @@ class DocxExtractor:
                 path=str(context.path),
                 sha256=context.sha256,
                 extension=context.extension,
-                mime_type=context.mime_type or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                mime_type=context.mime_type
+                or "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 size_bytes=context.size_bytes,
                 engine=f"python-docx {_docx_version()}",
             )
@@ -195,7 +207,12 @@ class DocxExtractor:
                         caption=_table_caption(document, table_counter),
                         page=page,
                         anchor=f"body element {index}",
-                        provenance=provenance.docx(table=table_counter, excerpt="\n".join(" | ".join(c or "" for c in r) for r in rows[:5])[:2000]),
+                        provenance=provenance.docx(
+                            table=table_counter,
+                            excerpt="\n".join(" | ".join(c or "" for c in r) for r in rows[:5])[
+                                :2000
+                            ],
+                        ),
                         extra={"body_index": index, "merged_cells": merged_cells},
                     )
                     normalized.tables.append(table)
@@ -204,14 +221,20 @@ class DocxExtractor:
 
         normalized.pages[0].text = clean_text("\n\n".join(p.text for p in normalized.paragraphs))
         normalized.pages[0].char_end = char_cursor
-        normalized.text = clean_text("\n\n".join([p.text for p in normalized.paragraphs] + [t.text() for t in normalized.tables]))
+        normalized.text = clean_text(
+            "\n\n".join(
+                [p.text for p in normalized.paragraphs] + [t.text() for t in normalized.tables]
+            )
+        )
         normalized.metadata.page_count = 1
         normalized.metadata.extra["body_elements"] = index
         normalized.metadata.extra["table_count"] = table_counter
         if not normalized.paragraphs and not normalized.tables:
             normalized.diagnostics.append("DOCX body contained no readable paragraphs or tables")
         if _has_tracked_changes(document, qn):
-            normalized.diagnostics.append("document contains tracked changes/revisions - read the revision state before relying on values")
+            normalized.diagnostics.append(
+                "document contains tracked changes/revisions - read the revision state before relying on values"
+            )
         return normalized
 
 

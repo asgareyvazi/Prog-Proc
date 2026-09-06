@@ -70,7 +70,10 @@ _MAX_LABEL_WORDS = 4
 _MAX_KEY_VALUE_COLUMNS = 5
 
 _LABEL = re.compile(r"^[A-Z][A-Za-z0-9 /()\-\u00b0]{1,60}?[:\u2014-]?$")
-_UNIT_IN_TEXT = re.compile(r"(?P<value>-?\d+(?:[.,]\d+)?)\s*(?P<unit>ppg|kg/m3|g/cm3|SG|psi|bar|kPa|MPa|m|ft|m3|bbl|gal|l/s|gpm|m/hr|ft/hr|h|hr|min|d|deg|in)\b", re.IGNORECASE)
+_UNIT_IN_TEXT = re.compile(
+    r"(?P<value>-?\d+(?:[.,]\d+)?)\s*(?P<unit>ppg|kg/m3|g/cm3|SG|psi|bar|kPa|MPa|m|ft|m3|bbl|gal|l/s|gpm|m/hr|ft/hr|h|hr|min|d|deg|in)\b",
+    re.IGNORECASE,
+)
 _TIME_TEXT = re.compile(r"^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$")
 
 
@@ -146,7 +149,9 @@ class ExcelExtractor:
 
     name = "excel"
     version = EXTRACTION_ENGINE_VERSION
-    description = "openpyxl workbook reader: sheets, merged cells, hidden data, formulas, values, dates."
+    description = (
+        "openpyxl workbook reader: sheets, merged cells, hidden data, formulas, values, dates."
+    )
 
     def supports(self, context: ExtractionContext) -> tuple[bool, str]:
         if context.extension.lower() in (".xlsx", ".xlsm", ".xltx", ".xltm"):
@@ -175,7 +180,9 @@ class ExcelExtractor:
             complexity.reasons.append(f"probe failed: {type(exc).__name__}: {exc}")
         return complexity
 
-    def extract(self, context: ExtractionContext, provenance: ProvenanceBuilder) -> NormalizedDocument:
+    def extract(
+        self, context: ExtractionContext, provenance: ProvenanceBuilder
+    ) -> NormalizedDocument:
         try:
             from openpyxl import load_workbook
             from openpyxl.utils import get_column_letter
@@ -190,7 +197,11 @@ class ExcelExtractor:
             DEFAULT_MAX_CELLS_PER_SHEET,
             "excel_max_cells",
         )
-        max_bytes = _positive_int(context.option("excel_max_bytes", DEFAULT_MAX_BYTES), DEFAULT_MAX_BYTES, "excel_max_bytes")
+        max_bytes = _positive_int(
+            context.option("excel_max_bytes", DEFAULT_MAX_BYTES),
+            DEFAULT_MAX_BYTES,
+            "excel_max_bytes",
+        )
 
         document = NormalizedDocument(
             metadata=ExtractionMetadata(
@@ -198,7 +209,8 @@ class ExcelExtractor:
                 path=str(context.path),
                 sha256=context.sha256,
                 extension=context.extension,
-                mime_type=context.mime_type or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                mime_type=context.mime_type
+                or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 size_bytes=context.size_bytes,
                 engine=f"openpyxl {_openpyxl_version()}",
             )
@@ -219,13 +231,17 @@ class ExcelExtractor:
         try:
             values_book = load_workbook(context.path, data_only=True, read_only=False)
         except Exception as exc:
-            raise ExtractionError(f"Cannot open workbook {context.filename}: {type(exc).__name__}: {exc}") from exc
+            raise ExtractionError(
+                f"Cannot open workbook {context.filename}: {type(exc).__name__}: {exc}"
+            ) from exc
         formula_book = None
         if read_formulas:
             try:
                 formula_book = load_workbook(context.path, data_only=False, read_only=False)
             except Exception as exc:  # noqa: BLE001 - formulas are a bonus, values are the record
-                document.diagnostics.append(f"formula read unavailable: {type(exc).__name__}: {exc}")
+                document.diagnostics.append(
+                    f"formula read unavailable: {type(exc).__name__}: {exc}"
+                )
 
         reports: list[SheetReport] = []
         try:
@@ -235,7 +251,11 @@ class ExcelExtractor:
             # a confusing empty document later).
             total_sheets = len(values_book.worksheets)
             for worksheet in values_book.worksheets[:max_sheets]:
-                reports.append(self._read_sheet(worksheet, formula_book, get_column_letter, read_hidden, max_cells=max_cells))
+                reports.append(
+                    self._read_sheet(
+                        worksheet, formula_book, get_column_letter, read_hidden, max_cells=max_cells
+                    )
+                )
         finally:
             values_book.close()
             if formula_book is not None:
@@ -266,7 +286,8 @@ class ExcelExtractor:
                 "cells_skipped": sum(report.cells_skipped for report in reports),
                 "formula_pass": read_formulas,
             },
-            "truncated": bool(total_sheets > max_sheets) or any(report.truncated for report in reports),
+            "truncated": bool(total_sheets > max_sheets)
+            or any(report.truncated for report in reports),
             "sheets": [
                 {
                     "name": r.name,
@@ -285,14 +306,22 @@ class ExcelExtractor:
                     "repeated_headers": r.repeated_headers,
                 }
                 for r in reports
-            ]
+            ],
         }
 
         paragraph_index = 0
         for sheet_index, report in enumerate(reports):
             label = f"{report.name}{'' if report.visible else ' (hidden sheet)'}"
             document.pages.append(
-                Page(index=sheet_index + 1, text="", char_start=0, char_end=0, label=label, block_count=len(report.cells), extra={"sheet": report.name})
+                Page(
+                    index=sheet_index + 1,
+                    text="",
+                    char_start=0,
+                    char_end=0,
+                    label=label,
+                    block_count=len(report.cells),
+                    extra={"sheet": report.name},
+                )
             )
             # A title paragraph per sheet keeps the sheet name searchable and cited.
             title = Paragraph(
@@ -312,7 +341,9 @@ class ExcelExtractor:
             document.paragraphs.append(title)
             paragraph_index += 1
 
-            for table_number, table in enumerate(self._tables_from_report(report, provenance, sheet_index + 1)):
+            for table_number, table in enumerate(
+                self._tables_from_report(report, provenance, sheet_index + 1)
+            ):
                 table.page = sheet_index + 1
                 document.tables.append(table)
                 for heading_text in self._table_headings(table):
@@ -339,9 +370,16 @@ class ExcelExtractor:
             rows = [t.text() for t in document.tables if t.sheet == sheet_name]
             page.text = clean_text("\n\n".join(rows))[:200000]
 
-        document.text = clean_text("\n\n".join([p.text for p in document.paragraphs if p.text] + [t.text() for t in document.tables]))
+        document.text = clean_text(
+            "\n\n".join(
+                [p.text for p in document.paragraphs if p.text]
+                + [t.text() for t in document.tables]
+            )
+        )
         if not document.tables:
-            document.diagnostics.append("no populated table regions found (workbook may contain only formulas/empty cells)")
+            document.diagnostics.append(
+                "no populated table regions found (workbook may contain only formulas/empty cells)"
+            )
         return document
 
     # ------------------------------------------------------------------ sheets
@@ -372,8 +410,16 @@ class ExcelExtractor:
                 for col in range(merged.min_col, merged.max_col + 1):
                     merged_by_cell[(row, col)] = str(merged)
 
-        hidden_rows = {r for r, dim in (worksheet.row_dimensions or {}).items() if getattr(dim, "hidden", False)}
-        hidden_columns = {get_column_letter(c) for c, dim in (worksheet.column_dimensions or {}).items() if getattr(dim, "hidden", False)}
+        hidden_rows = {
+            r
+            for r, dim in (worksheet.row_dimensions or {}).items()
+            if getattr(dim, "hidden", False)
+        }
+        hidden_columns = {
+            get_column_letter(c)
+            for c, dim in (worksheet.column_dimensions or {}).items()
+            if getattr(dim, "hidden", False)
+        }
         report.hidden_rows = sorted(hidden_rows)
         report.hidden_columns = sorted(hidden_columns)
         report.rows = worksheet.max_row or 0
@@ -394,7 +440,12 @@ class ExcelExtractor:
         skipped = 0
         truncated = False
         for row in worksheet.iter_rows():
-            filled = [cell for cell in row if cell.value is not None and not (isinstance(cell.value, str) and not cell.value.strip())]
+            filled = [
+                cell
+                for cell in row
+                if cell.value is not None
+                and not (isinstance(cell.value, str) and not cell.value.strip())
+            ]
             if truncated:
                 # Past the budget the remaining rows are only *counted*: no text
                 # rendering, no number-format work, no formula lookup.  The workbook is
@@ -444,7 +495,9 @@ class ExcelExtractor:
         return report
 
     # ------------------------------------------------------------------ tables
-    def _tables_from_report(self, report: SheetReport, provenance: ProvenanceBuilder, page: int) -> list[Table]:
+    def _tables_from_report(
+        self, report: SheetReport, provenance: ProvenanceBuilder, page: int
+    ) -> list[Table]:
         """Split a sheet into table regions separated by empty rows/columns.
 
         Drilling workbooks stack several tables on one sheet (rig summary above a
@@ -479,7 +532,12 @@ class ExcelExtractor:
                 continue
             grid: list[list[str | None]] = []
             for row in block_rows:
-                grid.append([by_row[row].get(col).value_text if by_row[row].get(col) else None for col in columns])
+                grid.append(
+                    [
+                        by_row[row].get(col).value_text if by_row[row].get(col) else None
+                        for col in columns
+                    ]
+                )
             first_row, last_row = block_rows[0], block_rows[-1]
             first_col, last_col = columns[0], columns[-1]
             range_ref = f"{_letter(first_col)}{first_row}:{_letter(last_col)}{last_row}"
@@ -497,27 +555,47 @@ class ExcelExtractor:
                             page=page,
                             anchor=range_ref,
                             has_header=False,
-                            provenance=provenance.excel(sheet=report.name, range_=range_ref, excerpt=" | ".join(header)[:1500]),
+                            provenance=provenance.excel(
+                                sheet=report.name,
+                                range_=range_ref,
+                                excerpt=" | ".join(header)[:1500],
+                            ),
                             extra={"repeated_header": True},
                         )
                     )
                     header_texts.append(joined)
                     continue
                 header_texts.append(joined)
-            excerpt = "\n".join("\t".join("" if c is None else str(c) for c in row) for row in grid[:8])
+            excerpt = "\n".join(
+                "\t".join("" if c is None else str(c) for c in row) for row in grid[:8]
+            )
             tables.append(
                 Table(
                     table_id=f"{report.name}-block{block_index + 1}",
                     rows=grid,
-                    caption=f"{report.name}" if len(blocks) == 1 else f"{report.name} block {block_index + 1}",
+                    caption=f"{report.name}"
+                    if len(blocks) == 1
+                    else f"{report.name} block {block_index + 1}",
                     sheet=report.name,
                     page=page,
                     anchor=range_ref,
-                    provenance=provenance.excel(sheet=report.name, range_=range_ref, excerpt=excerpt[:2000]),
+                    provenance=provenance.excel(
+                        sheet=report.name, range_=range_ref, excerpt=excerpt[:2000]
+                    ),
                     extra={
-                        "hidden_rows_in_block": [r for r in report.hidden_rows if first_row <= r <= last_row],
-                        "hidden_columns_in_block": [c for c in report.hidden_columns if first_col <= _column_index(c) <= last_col],
-                        "merged_ranges": [m for m in report.merged if _range_intersects_rows(m, first_row, last_row)],
+                        "hidden_rows_in_block": [
+                            r for r in report.hidden_rows if first_row <= r <= last_row
+                        ],
+                        "hidden_columns_in_block": [
+                            c
+                            for c in report.hidden_columns
+                            if first_col <= _column_index(c) <= last_col
+                        ],
+                        "merged_ranges": [
+                            m
+                            for m in report.merged
+                            if _range_intersects_rows(m, first_row, last_row)
+                        ],
                     },
                 )
             )
@@ -539,7 +617,9 @@ class ExcelExtractor:
         return out[:400]
 
     # -------------------------------------------------------------- key/value
-    def _key_value_fields(self, report: SheetReport, provenance: ProvenanceBuilder) -> list[DataField]:
+    def _key_value_fields(
+        self, report: SheetReport, provenance: ProvenanceBuilder
+    ) -> list[DataField]:
         """Label/value pairs (one per row) become directly cell-cited fields.
 
         ``B14: 'Mud weight' -> C14: '10.2 ppg'`` is the single most common shape
@@ -580,7 +660,8 @@ class ExcelExtractor:
             numbers_beyond_the_value = sum(
                 1
                 for extra in trailing
-                if (_parsed := _parse_value(extra.value_text)) is not None and isinstance(_parsed[0], (int, float))
+                if (_parsed := _parse_value(extra.value_text)) is not None
+                and isinstance(_parsed[0], (int, float))
             )
             if numbers_beyond_the_value >= 2:
                 continue
@@ -599,7 +680,8 @@ class ExcelExtractor:
                         break
             fields.append(
                 DataField(
-                    name=canonical_field_name(label) or re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_"),
+                    name=canonical_field_name(label)
+                    or re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_"),
                     value=value,
                     unit=unit,
                     dimension=_dimension_for_unit(unit),
@@ -637,7 +719,11 @@ def render_cell(value: Any, number_format: str) -> str:
         return "TRUE" if value else "FALSE"
     if isinstance(value, (dt.datetime, dt.date, dt.time)):
         if isinstance(value, dt.datetime):
-            return value.strftime("%Y-%m-%d %H:%M:%S") if (value.hour or value.minute or value.second) else value.strftime("%Y-%m-%d")
+            return (
+                value.strftime("%Y-%m-%d %H:%M:%S")
+                if (value.hour or value.minute or value.second)
+                else value.strftime("%Y-%m-%d")
+            )
         if isinstance(value, dt.date):
             return value.strftime("%Y-%m-%d")
         return value.strftime("%H:%M:%S") if "%S" in number_format else value.strftime("%H:%M")
@@ -649,7 +735,11 @@ def render_cell(value: Any, number_format: str) -> str:
         minutes, seconds = divmod(remainder, 60)
         return f"{sign}{hours:02d}:{minutes:02d}:{seconds:02d}"
     if isinstance(value, float):
-        if value == int(value) and abs(value) < 1e15 and "0" not in (number_format.split(".")[-1] if "." in number_format else ""):
+        if (
+            value == int(value)
+            and abs(value) < 1e15
+            and "0" not in (number_format.split(".")[-1] if "." in number_format else "")
+        ):
             return str(int(value))
         return f"{value:.6g}"
     if isinstance(value, int):

@@ -101,7 +101,9 @@ def test_every_problem_is_reported_in_one_error(tmp_path) -> None:
         ("ui", "window_width", "10", "must be >="),
     ],
 )
-def test_an_out_of_range_value_is_rejected(tmp_path, section: str, key: str, value: str, expectation: str) -> None:
+def test_an_out_of_range_value_is_rejected(
+    tmp_path, section: str, key: str, value: str, expectation: str
+) -> None:
     with pytest.raises(ConfigurationError, match=rf"{section}\.{key}") as caught:
         load(tmp_path, f"[{section}]\n{key} = {value}\n")
     assert expectation in "; ".join(caught.value.context["problems"])
@@ -161,7 +163,9 @@ def test_an_unknown_key_is_reported_but_not_fatal(tmp_path) -> None:
     """
     settings = load(tmp_path, "[ai]\nenabled = false\n[extraction]\nexcel_max_cells = 5000\n")
     assert settings.extraction.excel_max_cells == 5000
-    assert any("ai.enabled" in key or "enabled" in key for key in settings.unknown_keys), settings.unknown_keys
+    assert any("ai.enabled" in key or "enabled" in key for key in settings.unknown_keys), (
+        settings.unknown_keys
+    )
 
 
 def test_environment_overrides_are_validated_too(monkeypatch) -> None:

@@ -94,16 +94,22 @@ class PdfTextExtractor:
                         f"table and density counts describe that sample"
                     )
                 if complexity.is_scanned:
-                    complexity.reasons.append(f"{scanned_pages}/{sampled} sampled pages have no usable text layer")
+                    complexity.reasons.append(
+                        f"{scanned_pages}/{sampled} sampled pages have no usable text layer"
+                    )
                 if table_count:
-                    complexity.reasons.append(f"{table_count} table(s) detected in the sampled pages")
+                    complexity.reasons.append(
+                        f"{table_count} table(s) detected in the sampled pages"
+                    )
                 if complexity.text_chars_per_page < 400:
                     complexity.reasons.append("low text density (complex layout or images)")
         except Exception as exc:  # noqa: BLE001 - probing must never raise
             complexity.reasons.append(f"probe failed: {type(exc).__name__}: {exc}")
         return complexity
 
-    def extract(self, context: ExtractionContext, provenance: ProvenanceBuilder) -> NormalizedDocument:
+    def extract(
+        self, context: ExtractionContext, provenance: ProvenanceBuilder
+    ) -> NormalizedDocument:
         try:
             import pymupdf
         except Exception as exc:  # pragma: no cover - dependency failure
@@ -130,7 +136,9 @@ class PdfTextExtractor:
             if doc.is_encrypted:
                 document.diagnostics.append("PDF is encrypted; text extraction may be incomplete")
             if doc.page_count > max_pages:
-                document.diagnostics.append(f"page count {doc.page_count} truncated to configured max {max_pages}")
+                document.diagnostics.append(
+                    f"page count {doc.page_count} truncated to configured max {max_pages}"
+                )
 
             char_cursor = 0
             paragraph_index = 0
@@ -152,7 +160,9 @@ class PdfTextExtractor:
                     )
                 )
                 if not blocks:
-                    document.diagnostics.append(f"page {page_number + 1}: no extractable text (image/scan?)")
+                    document.diagnostics.append(
+                        f"page {page_number + 1}: no extractable text (image/scan?)"
+                    )
                 for block_index, block in enumerate(blocks):
                     text = clean_text(block["text"])
                     if not text:
@@ -178,7 +188,13 @@ class PdfTextExtractor:
                     if section is not None:
                         paragraph.heading_level = section[0]
                         paragraph.style = "heading"
-                        current_section = Section(heading=section[1], level=section[0], page=page_number + 1, char_start=char_cursor, number=section[2])
+                        current_section = Section(
+                            heading=section[1],
+                            level=section[0],
+                            page=page_number + 1,
+                            char_start=char_cursor,
+                            number=section[2],
+                        )
                         document.sections.append(current_section)
                     paragraph.section = current_section.label if current_section else ""
                     document.paragraphs.append(paragraph)
@@ -194,13 +210,26 @@ class PdfTextExtractor:
                     current_section.char_end = char_cursor
 
             if want_tables:
-                self._extract_tables(doc, provenance, document, paragraph_index, page_limit=min(doc.page_count, max_pages))
+                self._extract_tables(
+                    doc,
+                    provenance,
+                    document,
+                    paragraph_index,
+                    page_limit=min(doc.page_count, max_pages),
+                )
 
         # Table content is part of the searchable/scannable text, exactly as in the
         # DOCX and XLSX readers: a DDR table is where the numbers live.
-        document.text = clean_text("\n\n".join([p.text for p in document.paragraphs if p.text] + [t.text() for t in document.tables]))
+        document.text = clean_text(
+            "\n\n".join(
+                [p.text for p in document.paragraphs if p.text]
+                + [t.text() for t in document.tables]
+            )
+        )
         if not document.paragraphs:
-            document.diagnostics.append("no text recovered: PDF appears to be a scan; MinerU/OCR required")
+            document.diagnostics.append(
+                "no text recovered: PDF appears to be a scan; MinerU/OCR required"
+            )
         return document
 
     # -- internals ----------------------------------------------------------
@@ -217,7 +246,9 @@ class PdfTextExtractor:
                 page = doc[index]
                 data = page.get_text("dict") or {}
                 for block in data.get("blocks", []):
-                    for span in block.get("lines", [{}])[0].get("spans", []) if block.get("lines") else []:
+                    for span in (
+                        block.get("lines", [{}])[0].get("spans", []) if block.get("lines") else []
+                    ):
                         if (span.get("text") or "").strip():
                             sizes.append(round(float(span.get("size", 0.0)), 1))
             if not sizes:
@@ -243,29 +274,42 @@ class PdfTextExtractor:
         ``page_limit`` keeps a 900-page annex from costing more than the text pass;
         the truncated count is recorded as a diagnostic rather than hidden.
         """
-        limit = doc.page_count if page_limit is None else min(doc.page_count, max(1, int(page_limit)))
+        limit = (
+            doc.page_count if page_limit is None else min(doc.page_count, max(1, int(page_limit)))
+        )
         if limit < doc.page_count:
-            document.diagnostics.append(f"table scan limited to the first {limit} of {doc.page_count} pages (pdf_max_pages)")
+            document.diagnostics.append(
+                f"table scan limited to the first {limit} of {doc.page_count} pages (pdf_max_pages)"
+            )
         table_index = 0
         for page_number in range(limit):
             page = doc[page_number]
             try:
                 finder = page.find_tables()
             except Exception as exc:  # noqa: BLE001
-                document.diagnostics.append(f"table detection failed on page {page_number + 1}: {type(exc).__name__}")
+                document.diagnostics.append(
+                    f"table detection failed on page {page_number + 1}: {type(exc).__name__}"
+                )
                 continue
             for table_number, table in enumerate(finder.tables):
                 try:
-                    rows = [[None if cell is None else str(cell).strip() for cell in row] for row in table.extract()]
+                    rows = [
+                        [None if cell is None else str(cell).strip() for cell in row]
+                        for row in table.extract()
+                    ]
                 except Exception as exc:  # noqa: BLE001
-                    document.diagnostics.append(f"table extraction failed (page {page_number + 1}, table {table_number}): {exc}")
+                    document.diagnostics.append(
+                        f"table extraction failed (page {page_number + 1}, table {table_number}): {exc}"
+                    )
                     continue
                 rows = [row for row in rows if any(cell not in (None, "") for cell in row)]
                 if len(rows) < 2:
                     continue
                 bbox = tuple(table.bbox) if table.bbox else None
                 anchor = f"p{page_number + 1}t{table_number}"
-                excerpt = "\n".join("\t".join("" if c is None else c for c in row) for row in rows[:6])
+                excerpt = "\n".join(
+                    "\t".join("" if c is None else c for c in row) for row in rows[:6]
+                )
                 document.tables.append(
                     Table(
                         table_id=f"p{page_number + 1}-table{table_number + 1}",
@@ -273,7 +317,12 @@ class PdfTextExtractor:
                         caption=_table_caption(document, page_number + 1, table_number),
                         page=page_number + 1,
                         anchor=anchor,
-                        provenance=provenance.pdf(page=page_number + 1, table=table_number, bbox=bbox, excerpt=excerpt[:2000]),
+                        provenance=provenance.pdf(
+                            page=page_number + 1,
+                            table=table_number,
+                            bbox=bbox,
+                            excerpt=excerpt[:2000],
+                        ),
                         extra={"row_count": len(rows), "col_count": len(rows[0]) if rows else 0},
                     )
                 )
@@ -315,12 +364,21 @@ def _ordered_blocks(page: Any) -> list[dict[str, Any]]:
         for index, block in enumerate(page.get_text("blocks")):
             if int(block[6] or 0) != 0:
                 continue
-            raw.append({"index": index, "text": str(block[4]), "bbox": (block[0], block[1], block[2], block[3]), "max_size": 0.0})
+            raw.append(
+                {
+                    "index": index,
+                    "text": str(block[4]),
+                    "bbox": (block[0], block[1], block[2], block[3]),
+                    "max_size": 0.0,
+                }
+            )
     raw.sort(key=lambda item: (round(item["bbox"][1] / 4.0), item["bbox"][0]))
     return raw
 
 
-def _heading_to_section(text: str, body_size: float, block_max_size: float) -> tuple[int, str, str] | None:
+def _heading_to_section(
+    text: str, body_size: float, block_max_size: float
+) -> tuple[int, str, str] | None:
     """Detect a heading: numbered and/or larger than the body text."""
     stripped = text.strip()
     if not stripped or len(stripped) > 160 or "\n" in stripped:

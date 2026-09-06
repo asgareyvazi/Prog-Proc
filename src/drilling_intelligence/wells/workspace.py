@@ -75,7 +75,9 @@ class WorkspaceConfig:
         except FileNotFoundError:
             return cls()
         except tomllib.TOMLDecodeError as exc:
-            raise WorkspaceError(f"workspace.toml is not valid TOML: {exc}", path=str(path)) from exc
+            raise WorkspaceError(
+                f"workspace.toml is not valid TOML: {exc}", path=str(path)
+            ) from exc
         known = set(cls.__dataclass_fields__)
         values = {key: value for key, value in payload.items() if key in known}
         extra = {key: value for key, value in payload.items() if key not in known}
@@ -85,7 +87,14 @@ class WorkspaceConfig:
 class Workspace:
     """An opened workspace: settings, data dirs, engine and services handle."""
 
-    def __init__(self, root: Path, settings: Settings, config: WorkspaceConfig, *, migration: MigrationStatus | None = None) -> None:
+    def __init__(
+        self,
+        root: Path,
+        settings: Settings,
+        config: WorkspaceConfig,
+        *,
+        migration: MigrationStatus | None = None,
+    ) -> None:
         self.root = Path(root)
         self.settings = settings
         self.config = config
@@ -100,11 +109,16 @@ class Workspace:
 
     # -- construction -------------------------------------------------------
     @classmethod
-    def open(cls, root: Path | str, settings: Settings | None = None, *, create: bool = False) -> Workspace:
+    def open(
+        cls, root: Path | str, settings: Settings | None = None, *, create: bool = False
+    ) -> Workspace:
         path = Path(root).expanduser().resolve()
         if not path.exists():
             if not create:
-                raise WorkspaceError(f"workspace does not exist: {path}", hint="create it with `drillintel workspace create` or pass create=True")
+                raise WorkspaceError(
+                    f"workspace does not exist: {path}",
+                    hint="create it with `drillintel workspace create` or pass create=True",
+                )
             return cls.create(path, settings)
         if not path.is_dir():
             raise WorkspaceError(f"workspace path is not a directory: {path}")
@@ -115,7 +129,11 @@ class Workspace:
                 hint="run `drillintel workspace create <path>` to initialise it",
             )
         settings = settings or Settings.load()
-        config = WorkspaceConfig.from_path(marker) if marker.exists() else WorkspaceConfig(name=path.name)
+        config = (
+            WorkspaceConfig.from_path(marker)
+            if marker.exists()
+            else WorkspaceConfig(name=path.name)
+        )
         if not config.name:
             config.name = path.name
         workspace = cls(path, settings, config)
@@ -126,7 +144,15 @@ class Workspace:
         return workspace
 
     @classmethod
-    def create(cls, root: Path | str, settings: Settings | None = None, *, name: str = "", description: str = "", corpus_dirs: list[str] | None = None) -> Workspace:
+    def create(
+        cls,
+        root: Path | str,
+        settings: Settings | None = None,
+        *,
+        name: str = "",
+        description: str = "",
+        corpus_dirs: list[str] | None = None,
+    ) -> Workspace:
         path = Path(root).expanduser().resolve()
         path.mkdir(parents=True, exist_ok=True)
         if not os.access(path, os.W_OK):
@@ -145,7 +171,13 @@ class Workspace:
 
     # -- layout -------------------------------------------------------------
     def ensure_layout(self) -> None:
-        for directory in (self.data_dir, self.cache_dir, self.exports_dir, self.index_dir, self.logs_dir):
+        for directory in (
+            self.data_dir,
+            self.cache_dir,
+            self.exports_dir,
+            self.index_dir,
+            self.logs_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
         for corpus in self.config.corpus_dirs:
             target = self.root / corpus
@@ -265,7 +297,11 @@ class Workspace:
             "project_code": self.config.project_code,
             "database": str(self._database.url) if self._database else "(not opened)",
             "schema": (self.migration.to_dict() if self.migration else None),
-            "index_database": (str(self._index_database.url) if self._index_database is not None else str(self.index_database_path)),
+            "index_database": (
+                str(self._index_database.url)
+                if self._index_database is not None
+                else str(self.index_database_path)
+            ),
         }
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid

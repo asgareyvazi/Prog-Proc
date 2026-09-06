@@ -116,7 +116,11 @@ class AuditLog:
         """Was this action recorded for this subject?  Used by tests and repair tools."""
         row = self.session.execute(
             select(AuditEvent.id)
-            .where(AuditEvent.subject_type == subject_type, AuditEvent.subject_id == subject_id, AuditEvent.action == action)
+            .where(
+                AuditEvent.subject_type == subject_type,
+                AuditEvent.subject_id == subject_id,
+                AuditEvent.action == action,
+            )
             .limit(1)
         ).first()
         return row is not None

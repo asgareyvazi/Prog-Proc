@@ -44,6 +44,10 @@ B = 0.75
 
 #: Multipliers applied to the BM25 score, by chunk kind.
 DEFAULT_KIND_WEIGHTS: dict[str, float] = {
+    # A derived fact outranks the prose it came from: when both match, the assertion is the
+    # answer and the paragraph is the evidence behind it.  It is still below nothing at all - the
+    # weight is a tie-breaker between forms of the same content, not a claim of truth.
+    "knowledge_fact": 1.45,
     "field": 1.35,
     "table_row": 1.15,
     "heading": 1.1,
@@ -157,14 +161,18 @@ def rank_chunks(
     scored: list[MatchedChunk] = []
     average_length = statistics.average_length or 1.0
     for row, counts, length, kind, text in chunks:
-        if not candidate_matches(counts, text, terms=terms, phrases=phrases, require_all=require_all):
+        if not candidate_matches(
+            counts, text, terms=terms, phrases=phrases, require_all=require_all
+        ):
             continue
         contribution: dict[str, float] = {}
         for term in terms:
             frequency = int(counts.get(term, 0))
             if frequency <= 0:
                 continue
-            denominator = frequency + K1 * (1.0 - B + B * (length / average_length if average_length else 1.0))
+            denominator = frequency + K1 * (
+                1.0 - B + B * (length / average_length if average_length else 1.0)
+            )
             contribution[term] = statistics.idf(term) * (frequency * (K1 + 1.0)) / denominator
         if not contribution and not phrases:
             continue
@@ -190,7 +198,11 @@ def phrase_join(phrases: Iterable[str]) -> str:
 
 
 def _document_id(row: Any) -> str:
-    return str(getattr(row, "document_id", "") or (row.get("document_id") if isinstance(row, Mapping) else "") or "")
+    return str(
+        getattr(row, "document_id", "")
+        or (row.get("document_id") if isinstance(row, Mapping) else "")
+        or ""
+    )
 
 
 def _chunk_index(row: Any) -> int:

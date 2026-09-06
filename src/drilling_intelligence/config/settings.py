@@ -54,7 +54,9 @@ class LoggingSettings:
     level: str = "INFO"
     file: str = ""
     format: str = "text"
-    redact_keys: list[str] = field(default_factory=lambda: ["api_key", "token", "password", "secret", "authorization"])
+    redact_keys: list[str] = field(
+        default_factory=lambda: ["api_key", "token", "password", "secret", "authorization"]
+    )
 
 
 @dataclass
@@ -139,9 +141,20 @@ class IngestionSettings:
     max_file_size_mb: int = 512
     follow_symlinks: bool = False
     ignore_dir_names: list[str] = field(
-        default_factory=lambda: [".git", ".drillintel", "node_modules", "__pycache__", ".venv", "venv", "dist", "build"]
+        default_factory=lambda: [
+            ".git",
+            ".drillintel",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+        ]
     )
-    ignore_file_patterns: list[str] = field(default_factory=lambda: ["~$*", "*.tmp", "*.part", "*.lock", ".DS_Store", "Thumbs.db"])
+    ignore_file_patterns: list[str] = field(
+        default_factory=lambda: ["~$*", "*.tmp", "*.part", "*.lock", ".DS_Store", "Thumbs.db"]
+    )
     supported_extensions: list[str] = field(
         default_factory=lambda: [".pdf", ".xlsx", ".xlsm", ".docx", ".txt", ".md", ".csv", ".tsv"]
     )
@@ -244,7 +257,9 @@ class Settings:
         if from_env:
             candidate = Path(from_env).expanduser()
             if not candidate.exists():
-                raise ConfigurationError(f"$DRILLINTEL_CONFIG points at a missing file: {candidate}", path=str(candidate))
+                raise ConfigurationError(
+                    f"$DRILLINTEL_CONFIG points at a missing file: {candidate}", path=str(candidate)
+                )
             return candidate
         for root in (Path.cwd(), *Path.cwd().parents):
             for folder in DEFAULT_CONFIG_DIRS:
@@ -264,7 +279,9 @@ class Settings:
                 self.unknown_keys.append(str(name))
                 continue
             if not isinstance(section, dict):
-                raise ConfigurationError(f"Section [{name}] must be a table, got {type(section).__name__}")
+                raise ConfigurationError(
+                    f"Section [{name}] must be a table, got {type(section).__name__}"
+                )
             _apply_section(target, section, f"{name}", self.unknown_keys)
 
     def apply_env(self, environ: dict[str, str] | None = None) -> None:
@@ -317,7 +334,11 @@ class Settings:
                 problems.append(f"{dotted} must be >= {minimum}, got {value!r}")
         for dotted, low, high in _RANGES:
             value = flat.get(dotted)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and not low <= value <= high:
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and not low <= value <= high
+            ):
                 problems.append(f"{dotted} must be between {low} and {high}, got {value!r}")
         for dotted, allowed in _CHOICES.items():
             value = flat.get(dotted)
@@ -325,7 +346,9 @@ class Settings:
                 continue
             text_value = str(value).strip().lower()
             if text_value not in allowed:
-                problems.append(f"{dotted} must be one of {', '.join(sorted(allowed))}, got {value!r}")
+                problems.append(
+                    f"{dotted} must be one of {', '.join(sorted(allowed))}, got {value!r}"
+                )
         # Lists that must not be empty or duplicated: the authority ladder decides
         # conflicts, so a gap or a repeat there is a correctness bug, not a style issue.
         hierarchy = list(self.authority.hierarchy or [])
@@ -387,7 +410,9 @@ class Settings:
         return {
             "source_path": self.source_path or "(defaults only)",
             "environment": self.app.environment,
-            "database": "explicit url" if self.database.url else f"sqlite in workspace ({self.database.sqlite_filename})",
+            "database": "explicit url"
+            if self.database.url
+            else f"sqlite in workspace ({self.database.sqlite_filename})",
             "ai": {
                 "provider": self.ai.provider,
                 "endpoint": self.ai.endpoint,
@@ -396,9 +421,15 @@ class Settings:
                 "temperature": self.ai.temperature,
                 "timeout_seconds": self.ai.timeout_seconds,
                 "require_ai": self.ai.require_ai,
-                "api_key_source": ("env:" + self.ai.secrets.get("openai_api_key", "-")) if self.ai.provider == "openai-compatible" else "n/a",
+                "api_key_source": ("env:" + self.ai.secrets.get("openai_api_key", "-"))
+                if self.ai.provider == "openai-compatible"
+                else "n/a",
             },
-            "mineru": {"mode": self.mineru.mode, "binary": self.mineru.binary, "backend": self.mineru.backend},
+            "mineru": {
+                "mode": self.mineru.mode,
+                "binary": self.mineru.binary,
+                "backend": self.mineru.backend,
+            },
             "authority_hierarchy": list(self.authority.hierarchy),
             "overrides": list(self.applied_overrides),
             "unknown_keys": list(self.unknown_keys),
@@ -537,7 +568,18 @@ _RANGES: tuple[tuple[str, float, float], ...] = (
 _CHOICES: dict[str, frozenset[str]] = {
     "ai.provider": frozenset({"ollama", "openai-compatible", "none"}),
     "mineru.mode": frozenset({"auto", "cli", "http", "disabled", "off", "none"}),
-    "mineru.backend": frozenset({"pipeline", "hybrid", "hybrid-engine", "vlm-engine", "vlm-transformers", "vlm-vllm-engine", "omniparse", "olmocr"}),
+    "mineru.backend": frozenset(
+        {
+            "pipeline",
+            "hybrid",
+            "hybrid-engine",
+            "vlm-engine",
+            "vlm-transformers",
+            "vlm-vllm-engine",
+            "omniparse",
+            "olmocr",
+        }
+    ),
     "search.vector_store": frozenset({"auto", "sqlite-vec", "memory", "none"}),
     "logging.level": frozenset({"debug", "info", "warning", "error", "critical"}),
     "logging.format": frozenset({"text", "json"}),

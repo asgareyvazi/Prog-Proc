@@ -48,7 +48,9 @@ class RecordingRouter:
         self.parsed: list[str] = []
         #: ``"extractor:filename" -> calls``, counted inside the extractor.
         self.extractor_calls: dict[str, int] = {}
-        self.inner.extractors = [_SpyExtractor(extractor, self.extractor_calls) for extractor in self.inner.extractors]
+        self.inner.extractors = [
+            _SpyExtractor(extractor, self.extractor_calls) for extractor in self.inner.extractors
+        ]
         # ``route`` calls ``probe`` on the inner router, so the instance attribute is
         # wrapped: without this, "the cheap probe ran" would be unobservable from here.
         inner_probe = self.inner.probe
@@ -123,7 +125,9 @@ def ids(workspace):
         return workspace_row.id, well.id
 
 
-def run_pipeline(workspace, corpus: Path, ids, *, router: Any = None, settings: Any = None, **kwargs: Any):
+def run_pipeline(
+    workspace, corpus: Path, ids, *, router: Any = None, settings: Any = None, **kwargs: Any
+):
     pipeline = IngestionPipeline(
         settings=settings or workspace.settings,
         workspace_root=workspace.root,
@@ -137,7 +141,12 @@ def run_pipeline(workspace, corpus: Path, ids, *, router: Any = None, settings: 
 def cache_rows(database) -> dict[tuple[str, str, str, str], str]:
     with database.read_only() as session:
         return {
-            (entry.content_sha256, entry.extractor, entry.extractor_version, entry.config_hash): str(entry.extraction_id or "")
+            (
+                entry.content_sha256,
+                entry.extractor,
+                entry.extractor_version,
+                entry.config_hash,
+            ): str(entry.extraction_id or "")
             for entry in session.scalars(select(ExtractionCache))
         }
 
@@ -167,23 +176,33 @@ def test_cache_hit_never_invokes_an_extractor(workspace, corpus, ids) -> None:
     assert duplicate.fields > 0, "a reused artefact still has to yield its fields"
     assert duplicate.extractor == EXPECTED_EXTRACTOR[LESSON]
 
-    assert copy.name in spy.routed, "the duplicate must still be routed: that is where the key comes from"
+    assert copy.name in spy.routed, (
+        "the duplicate must still be routed: that is where the key comes from"
+    )
     assert copy.name not in spy.parsed, "a cache hit must not ask the router to extract"
-    assert spy.extractor_calls == {}, f"no extractor may run for a duplicate, saw {spy.extractor_calls}"
+    assert spy.extractor_calls == {}, (
+        f"no extractor may run for a duplicate, saw {spy.extractor_calls}"
+    )
     # And the untouched files stay untouched too: the whole second run is parse-free.
     assert spy.parser_calls == 0
 
     with workspace.database.read_only() as session:
         document = session.scalar(select(Document).where(Document.filename == copy.name))
         version = session.get(DocumentVersion, document.current_version_id)
-        extraction = session.scalar(select(Extraction).where(Extraction.document_version_id == version.id))
+        extraction = session.scalar(
+            select(Extraction).where(Extraction.document_version_id == version.id)
+        )
         assert extraction.status == "CACHE_HIT", extraction.status
         assert extraction.duration_ms == 0.0
-        assert extraction.stats["reused_from_extraction_id"], "which artefact was reused has to be recorded"
+        assert extraction.stats["reused_from_extraction_id"], (
+            "which artefact was reused has to be recorded"
+        )
         # The version's row is self-contained: nothing downstream has to follow the
         # pointer in order to classify, display or cite it.
         assert extraction.document_json and extraction.text_blob.strip()
-        assert extraction.router_decision["extractor"] == extraction.extractor, "routing provenance survives the reuse"
+        assert extraction.router_decision["extractor"] == extraction.extractor, (
+            "routing provenance survives the reuse"
+        )
 
 
 def test_modified_file_is_not_served_from_the_cache(workspace, corpus, ids) -> None:
@@ -193,7 +212,11 @@ def test_modified_file_is_not_served_from_the_cache(workspace, corpus, ids) -> N
     spy.extractor_calls.clear()
 
     target = corpus / LESSON
-    target.write_text(target.read_text(encoding="utf-8") + "\nAdded after the first run: 12.4 pgs EMW at 3200 ft MD.\n", encoding="utf-8")
+    target.write_text(
+        target.read_text(encoding="utf-8")
+        + "\nAdded after the first run: 12.4 pgs EMW at 3200 ft MD.\n",
+        encoding="utf-8",
+    )
     result = run_pipeline(workspace, corpus, ids, router=spy)
     assert result.ok, result.error
     assert spy.extractor_calls.get(f"text:{LESSON}") == 1, spy.extractor_calls
@@ -202,7 +225,9 @@ def test_modified_file_is_not_served_from_the_cache(workspace, corpus, ids) -> N
         document = session.scalar(select(Document).where(Document.filename == LESSON))
         version = session.get(DocumentVersion, document.current_version_id)
         assert version.origin == "MODIFIED"
-        extraction = session.scalar(select(Extraction).where(Extraction.document_version_id == version.id))
+        extraction = session.scalar(
+            select(Extraction).where(Extraction.document_version_id == version.id)
+        )
         assert extraction.status == "OK"
         assert "EMW at 3200 ft" in extraction.text_blob
 
@@ -220,7 +245,9 @@ def test_one_cache_entry_per_key_and_reuses_are_counted(workspace, corpus, ids) 
     assert set(after) == set(entries), "a reuse must not introduce a new cache key"
 
     with workspace.database.read_only() as session:
-        text_entries = [entry for entry in session.scalars(select(ExtractionCache)) if entry.extractor == "text"]
+        text_entries = [
+            entry for entry in session.scalars(select(ExtractionCache)) if entry.extractor == "text"
+        ]
         assert any(int(entry.hits) >= 1 for entry in text_entries), (
             "reuses have to be counted, otherwise 'is the cache helping?' is unanswerable"
         )
@@ -240,7 +267,9 @@ def test_option_change_invalidates_a_duplicate_but_not_the_others(workspace, cor
     spy = RecordingRouter(build_default_router(workspace.settings))
     hit_run = run_pipeline(workspace, corpus, ids, router=spy)
     duplicate = next(item for item in hit_run.results if item.filename == "copy_a.txt")
-    assert duplicate.from_cache and spy.extractor_calls == {}, "unchanged options must hit the cache"
+    assert duplicate.from_cache and spy.extractor_calls == {}, (
+        "unchanged options must hit the cache"
+    )
 
     settings = deepcopy(workspace.settings)
     settings.extraction.text_max_bytes = max(64, settings.extraction.text_max_bytes // 2)
@@ -276,10 +305,12 @@ def test_extractor_version_change_invalidates_the_cache(workspace, corpus, ids) 
     assert result.ok, result.error
     bumped = next(item for item in result.results if item.filename == "copy_bumped.txt")
     assert bumped.from_cache is False
-    assert spy.extractor_calls.get(f"text:{bumped.filename}") == 1, f"a new extractor version must re-parse: {spy.extractor_calls}"
+    assert spy.extractor_calls.get(f"text:{bumped.filename}") == 1, (
+        f"a new extractor version must re-parse: {spy.extractor_calls}"
+    )
 
     after = cache_rows(workspace.database)
-    assert ("9999.1.bumped" in {key[2] for key in after}), after
+    assert "9999.1.bumped" in {key[2] for key in after}, after
     assert len(after) == len(before) + 1, "the bumped extractor adds its own key for the same bytes"
 
 
@@ -294,7 +325,9 @@ def test_a_crashing_extractor_is_reported_not_raised(workspace, corpus, ids) -> 
     router = build_default_router(workspace.settings)
     for extractor in router.extractors:
         if extractor.name == EXPECTED_EXTRACTOR[LESSON]:
-            extractor.extract = lambda context, provenance: (_ for _ in ()).throw(RuntimeError("boom in the parser"))
+            extractor.extract = lambda context, provenance: (_ for _ in ()).throw(
+                RuntimeError("boom in the parser")
+            )
     result = run_pipeline(workspace, corpus, ids, router=router)
     assert result.ok, result.error
     broken = next(item for item in result.results if item.filename == LESSON)
@@ -307,7 +340,12 @@ def test_a_crashing_extractor_is_reported_not_raised(workspace, corpus, ids) -> 
         document = session.scalar(select(Document).where(Document.filename == LESSON))
         assert document.processing_status == "FAILED"
         assert "boom in the parser" in (document.processing_error or "")
-        actions = [event.action for event in session.scalars(select(AuditEvent).where(AuditEvent.subject_id == document.id))]
+        actions = [
+            event.action
+            for event in session.scalars(
+                select(AuditEvent).where(AuditEvent.subject_id == document.id)
+            )
+        ]
         assert "extraction.failed" in actions, actions
 
 
@@ -316,14 +354,26 @@ def test_forced_reprocess_republishes_the_entry_and_keeps_history(workspace, cor
     """``force`` re-parses and moves *what the cache points at*; artefact rows are never edited."""
     run_pipeline(workspace, corpus, ids)
     with workspace.database.read_only() as session:
-        original_rows = {row[0]: (row[1], row[2]) for row in session.execute(select(Extraction.id, Extraction.status, Extraction.document_json))}
+        original_rows = {
+            row[0]: (row[1], row[2])
+            for row in session.execute(
+                select(Extraction.id, Extraction.status, Extraction.document_json)
+            )
+        }
 
     result = run_pipeline(workspace, corpus, ids, force=True)
     assert result.ok, result.error
 
     with workspace.database.read_only() as session:
-        rows_now = {row[0]: (row[1], row[2]) for row in session.execute(select(Extraction.id, Extraction.status, Extraction.document_json))}
-        assert set(original_rows) <= set(rows_now), "a forced run must not delete the artefacts it replaces"
+        rows_now = {
+            row[0]: (row[1], row[2])
+            for row in session.execute(
+                select(Extraction.id, Extraction.status, Extraction.document_json)
+            )
+        }
+        assert set(original_rows) <= set(rows_now), (
+            "a forced run must not delete the artefacts it replaces"
+        )
         assert all(rows_now[key] == original_rows[key] for key in original_rows), "or rewrite them"
         for entry in session.scalars(select(ExtractionCache)):
             artefact = session.get(Extraction, entry.extraction_id)
@@ -331,9 +381,14 @@ def test_forced_reprocess_republishes_the_entry_and_keeps_history(workspace, cor
             assert artefact.id not in original_rows, "the cache now serves the fresh artefact"
         # Force re-extracts; it does not fabricate a version for unchanged bytes.
         for document in session.scalars(select(Document)):
-            assert session.scalar(
-                select(func.count()).select_from(DocumentVersion).where(DocumentVersion.document_id == document.id)
-            ) == 1, document.filename
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(DocumentVersion)
+                    .where(DocumentVersion.document_id == document.id)
+                )
+                == 1
+            ), document.filename
 
 
 def test_cache_disabled_means_no_reuse_but_still_stores(workspace, corpus, ids) -> None:
@@ -347,7 +402,10 @@ def test_cache_disabled_means_no_reuse_but_still_stores(workspace, corpus, ids) 
     assert not cache_rows(workspace.database), "and nothing is published to the cache"
 
     with workspace.database.read_only() as session:
-        assert session.scalar(select(func.count()).select_from(Extraction)) == len(EXPECTED_EXTRACTOR) + 4
+        assert (
+            session.scalar(select(func.count()).select_from(Extraction))
+            == len(EXPECTED_EXTRACTOR) + 4
+        )
         assert session.scalar(select(func.count()).select_from(DocumentVersion)) > 0
 
 
@@ -367,8 +425,15 @@ def test_repository_lookup_keys_and_misses(workspace, corpus, ids) -> None:
         }
         cached = repository.find_cached_extraction(**base)
         assert cached is not None and cached.id == artefact.id
-        for field, wrong in (("content_sha256", "0" * 64), ("extractor", "nope"), ("extractor_version", "0" * 8), ("config_hash", "deadbeefdeadbeef")):
+        for field, wrong in (
+            ("content_sha256", "0" * 64),
+            ("extractor", "nope"),
+            ("extractor_version", "0" * 8),
+            ("config_hash", "deadbeefdeadbeef"),
+        ):
             probe = dict(base)
             probe[field] = wrong
-            assert repository.find_cached_extraction(**probe) is None, f"{field} must be part of the key"
+            assert repository.find_cached_extraction(**probe) is None, (
+                f"{field} must be part of the key"
+            )
         assert repository.check_extraction_cache() == []

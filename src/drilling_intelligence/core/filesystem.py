@@ -77,7 +77,9 @@ class FileTimestamps:
         """JSON-ready form, stored in ``document_version.metadata_json['filesystem']``."""
         return {
             "modified_at": self.modified_at.isoformat() if self.modified_at else None,
-            "metadata_changed_at": self.metadata_changed_at.isoformat() if self.metadata_changed_at else None,
+            "metadata_changed_at": self.metadata_changed_at.isoformat()
+            if self.metadata_changed_at
+            else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "creation_is_authoritative": self.creation_is_authoritative,
             "note": self.note,

@@ -98,9 +98,21 @@ def _document_table(*, with_current_version_fk: bool) -> sa.Table:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id", name="pk_document"),
         sa.UniqueConstraint("workspace_id", "identity_path", name="uq_document_workspace_identity"),
-        sa.ForeignKeyConstraint(["workspace_id"], ["workspace.id"], name="fk_document_workspace_id_workspace", ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["project_id"], ["project.id"], name="fk_document_project_id_project", ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["well_id"], ["well.id"], name="fk_document_well_id_well", ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(
+            ["workspace_id"],
+            ["workspace.id"],
+            name="fk_document_workspace_id_workspace",
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["project.id"],
+            name="fk_document_project_id_project",
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["well_id"], ["well.id"], name="fk_document_well_id_well", ondelete="SET NULL"
+        ),
         sa.Index("ix_document_well", "well_id"),
         sa.Index("ix_document_classification", "classification"),
         sa.Index("ix_document_status", "processing_status"),
@@ -131,8 +143,12 @@ def _document_table_v2() -> sa.Table:
 
 def upgrade() -> None:
     # -- new columns (both dialects support ADD COLUMN directly) ------------
-    op.add_column("document", sa.Column("fs_metadata_changed_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("document_version", sa.Column("source_relative_path", sa.String(length=1024), nullable=True))
+    op.add_column(
+        "document", sa.Column("fs_metadata_changed_at", sa.DateTime(timezone=True), nullable=True)
+    )
+    op.add_column(
+        "document_version", sa.Column("source_relative_path", sa.String(length=1024), nullable=True)
+    )
 
     # -- repair the data first, so the constraints below can be created -----
     # "Exactly one current version per document": the highest version number wins.
@@ -175,7 +191,9 @@ def upgrade() -> None:
     # On PostgreSQL the constraint is simply added.
     bind_dialect = op.get_context().dialect.name
     if bind_dialect == "sqlite":
-        with op.batch_alter_table("document", copy_from=_document_table_v1(), recreate="always") as batch_op:
+        with op.batch_alter_table(
+            "document", copy_from=_document_table_v1(), recreate="always"
+        ) as batch_op:
             batch_op.create_foreign_key(
                 "fk_document_current_version_id_document_version",
                 "document_version",
@@ -213,10 +231,17 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_extraction_cache")),
         sa.UniqueConstraint(
-            "content_sha256", "extractor", "extractor_version", "config_hash", name="uq_extraction_cache_key"
+            "content_sha256",
+            "extractor",
+            "extractor_version",
+            "config_hash",
+            name="uq_extraction_cache_key",
         ),
         sa.ForeignKeyConstraint(
-            ["extraction_id"], ["extraction.id"], name=op.f("fk_extraction_cache_extraction_id_extraction"), ondelete="CASCADE"
+            ["extraction_id"],
+            ["extraction.id"],
+            name=op.f("fk_extraction_cache_extraction_id_extraction"),
+            ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["produced_by_version_id"],
@@ -265,10 +290,16 @@ def downgrade() -> None:
     if bind_dialect == "sqlite":
         # ``copy_from`` has to describe the table *with* the constraint being dropped, or
         # batch mode cannot resolve the name and the downgrade dies with "No such constraint".
-        with op.batch_alter_table("document", copy_from=_document_table_v2(), recreate="always") as batch_op:
-            batch_op.drop_constraint("fk_document_current_version_id_document_version", type_="foreignkey")
+        with op.batch_alter_table(
+            "document", copy_from=_document_table_v2(), recreate="always"
+        ) as batch_op:
+            batch_op.drop_constraint(
+                "fk_document_current_version_id_document_version", type_="foreignkey"
+            )
     else:
-        op.drop_constraint("fk_document_current_version_id_document_version", "document", type_="foreignkey")
+        op.drop_constraint(
+            "fk_document_current_version_id_document_version", "document", type_="foreignkey"
+        )
     with op.batch_alter_table("document_version") as batch_op:
         batch_op.drop_column("source_relative_path")
     with op.batch_alter_table("document") as batch_op:

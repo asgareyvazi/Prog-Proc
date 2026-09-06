@@ -23,7 +23,11 @@ class DrillingIntelligenceError(Exception):
         self.context: dict[str, Any] = context
 
     def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"error": type(self).__name__, "code": self.code, "message": self.message}
+        payload: dict[str, Any] = {
+            "error": type(self).__name__,
+            "code": self.code,
+            "message": self.message,
+        }
         if self.hint:
             payload["hint"] = self.hint
         if self.context:
@@ -131,7 +135,9 @@ class MethodNotFoundError(DrillingIntelligenceError):
 # --------------------------------------------------------------------------- ai
 class ProviderUnavailableError(DrillingIntelligenceError):
     code = "AI_UNAVAILABLE"
-    hint = "Start Ollama (`ollama serve`) and pull the configured model, or set ai.provider = 'none'."
+    hint = (
+        "Start Ollama (`ollama serve`) and pull the configured model, or set ai.provider = 'none'."
+    )
 
 
 class ProviderProtocolError(DrillingIntelligenceError):

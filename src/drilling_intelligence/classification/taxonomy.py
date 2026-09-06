@@ -373,9 +373,7 @@ TAXONOMY: tuple[TypeSignature, ...] = (
     ),
     TypeSignature(
         classification=DocumentClassification.TECHNICAL_REFERENCE,
-        filename_patterns=(
-            (r"\bhandbook\b|\bmanual\b|\btextbook\b|\breference\b", 0.45),
-        ),
+        filename_patterns=((r"\bhandbook\b|\bmanual\b|\btextbook\b|\breference\b", 0.45),),
         content_patterns=(
             (r"\bchapter\s*\d+\b", 0.35),
             (r"\bfigure\s*\d+\.\d+\b", 0.2),
@@ -420,18 +418,29 @@ TAXONOMY: tuple[TypeSignature, ...] = (
     ),
     TypeSignature(
         classification=DocumentClassification.CONTRACT,
-        filename_patterns=((r"\bcontract\b|\bworkscope\b|\bscope of work\b", 0.6), (r"\bTBE\b|\bITB\b", 0.35)),
-        content_patterns=((r"\bparties\b.{0,40}\bagree\b", 0.3), (r"\bliability\b", 0.2), (r"\breimbursable\b", 0.25)),
+        filename_patterns=(
+            (r"\bcontract\b|\bworkscope\b|\bscope of work\b", 0.6),
+            (r"\bTBE\b|\bITB\b", 0.35),
+        ),
+        content_patterns=(
+            (r"\bparties\b.{0,40}\bagree\b", 0.3),
+            (r"\bliability\b", 0.2),
+            (r"\breimbursable\b", 0.25),
+        ),
         extensions=(".pdf", ".docx"),
         authority_tier="approved_engineering_document",
         description="Contract, workscope and commercial terms.",
     ),
 )
 
-CLASSIFIER_TAXONOMY: dict[DocumentClassification, TypeSignature] = {signature.classification: signature for signature in TAXONOMY}
+CLASSIFIER_TAXONOMY: dict[DocumentClassification, TypeSignature] = {
+    signature.classification: signature for signature in TAXONOMY
+}
 
 
-def authority_for(classification: DocumentClassification, *, status: str | None = None, is_current: bool = True) -> str:
+def authority_for(
+    classification: DocumentClassification, *, status: str | None = None, is_current: bool = True
+) -> str:
     """Default authority tier for a document type, refined by approval state.
 
     'Approved' + current + program is the top of the ladder; the same document
@@ -446,9 +455,18 @@ def authority_for(classification: DocumentClassification, *, status: str | None 
         if not is_current:
             return "previous_revision"
         return "current_program_revision"
-    if (status or "").upper() == "APPROVED" and tier in {"historical_report", "current_operational_report"}:
+    if (status or "").upper() == "APPROVED" and tier in {
+        "historical_report",
+        "current_operational_report",
+    }:
         return "approved_engineering_document"
     return tier
 
 
-__all__ = ["CLASSIFIER_TAXONOMY", "TAXONOMY", "DocumentClassification", "TypeSignature", "authority_for"]
+__all__ = [
+    "CLASSIFIER_TAXONOMY",
+    "TAXONOMY",
+    "DocumentClassification",
+    "TypeSignature",
+    "authority_for",
+]

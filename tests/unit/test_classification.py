@@ -42,7 +42,11 @@ def _read(path: Path) -> _Document:
         from openpyxl import load_workbook
 
         book = load_workbook(path, data_only=True)
-        rows = (" ".join(str(v) for v in row if v is not None) for sheet in book for row in sheet.iter_rows(values_only=True))
+        rows = (
+            " ".join(str(v) for v in row if v is not None)
+            for sheet in book
+            for row in sheet.iter_rows(values_only=True)
+        )
         return _Document("\n".join(rows), suffix)
     return _Document(path.read_text(encoding="utf-8"), suffix)
 
@@ -105,7 +109,9 @@ def test_scores_cover_the_taxonomy_and_the_winner_leads(classifier, corpus_dir) 
     assert result.scores[result.classification.value] == pytest.approx(max(result.scores.values()))
     runner_up = result.runner_up
     assert runner_up is not None
-    assert (result.scores[result.classification.value] - runner_up[1] >= MIN_MARGIN) or result.ambiguous
+    assert (
+        result.scores[result.classification.value] - runner_up[1] >= MIN_MARGIN
+    ) or result.ambiguous
 
 
 def test_a_scan_without_text_says_it_cannot_read_it(classifier) -> None:
@@ -130,14 +136,20 @@ def test_thin_evidence_is_other_not_the_closest_guess(classifier) -> None:
     result = classify(classifier, "report.pdf", "notes about the weather", "pdf")
     assert result.classification is DocumentClassification.OTHER and result.weak
     assert result.confidence <= NOISE_SCORE
-    assert classify(classifier, "IMG_2040.jpg", "", "jpg").classification is DocumentClassification.OTHER
+    assert (
+        classify(classifier, "IMG_2040.jpg", "", "jpg").classification
+        is DocumentClassification.OTHER
+    )
     assert WEAK_CONFIDENCE > 0
 
 
 def test_authority_tier_follows_type_and_status(classifier, corpus_dir) -> None:
     document = _read(corpus_dir / "well_a3_program_rev12.pdf")
     approved = classifier.classify(
-        filename="well_a3_program_rev12.pdf", text=document.text, extension="pdf", declared_status="APPROVED"
+        filename="well_a3_program_rev12.pdf",
+        text=document.text,
+        extension="pdf",
+        declared_status="APPROVED",
     )
     assert approved.authority_tier == "approved_drilling_program"
     superseded = classifier.classify(
@@ -153,6 +165,9 @@ def test_authority_tier_follows_type_and_status(classifier, corpus_dir) -> None:
 def test_only_taxonomy_members_are_acceptable() -> None:
     # The contract any future LLM classifier has to satisfy: free text is not a label.
     assert DeterministicClassifier.validate("mud_report") is DocumentClassification.MUD_REPORT
-    assert DeterministicClassifier.validate("Drilling Program") is DocumentClassification.DRILLING_PROGRAM
+    assert (
+        DeterministicClassifier.validate("Drilling Program")
+        is DocumentClassification.DRILLING_PROGRAM
+    )
     assert DeterministicClassifier.validate("probably a report?") is None
     assert DeterministicClassifier.validate(None) is None

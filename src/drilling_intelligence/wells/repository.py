@@ -24,8 +24,18 @@ class WellRepository:
         self.session = session
 
     # -- workspaces ---------------------------------------------------------
-    def get_or_create_workspace(self, root_path: str, *, name: str = "", data_dir: str = "", project_id: str | None = None, config: dict[str, Any] | None = None) -> Workspace:
-        existing = self.session.execute(select(Workspace).where(Workspace.root_path == root_path)).scalar_one_or_none()
+    def get_or_create_workspace(
+        self,
+        root_path: str,
+        *,
+        name: str = "",
+        data_dir: str = "",
+        project_id: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> Workspace:
+        existing = self.session.execute(
+            select(Workspace).where(Workspace.root_path == root_path)
+        ).scalar_one_or_none()
         if existing is not None:
             changed = False
             if data_dir and existing.data_dir != data_dir:
@@ -53,7 +63,9 @@ class WellRepository:
         return list(self.session.execute(select(Workspace).order_by(Workspace.name)).scalars())
 
     def workspace_by_root(self, root_path: str) -> Workspace | None:
-        return self.session.execute(select(Workspace).where(Workspace.root_path == root_path)).scalar_one_or_none()
+        return self.session.execute(
+            select(Workspace).where(Workspace.root_path == root_path)
+        ).scalar_one_or_none()
 
     def mark_scanned(self, workspace: Workspace, at: datetime | None = None) -> None:
         workspace.last_scan_at = at or datetime.now(UTC)
@@ -64,7 +76,9 @@ class WellRepository:
         return self.session.get(Company, company_id)
 
     def get_or_create_company(self, name: str, code: str | None = None) -> Company:
-        company = self.session.execute(select(Company).where(Company.name == name)).scalar_one_or_none()
+        company = self.session.execute(
+            select(Company).where(Company.name == name)
+        ).scalar_one_or_none()
         if company is not None:
             return company
         company = Company(id=new_id("co"), name=name, code=code)
@@ -72,26 +86,43 @@ class WellRepository:
         self.session.flush()
         return company
 
-    def get_or_create_project(self, name: str, *, company: Company | None = None, code: str | None = None, country: str | None = None) -> Project:
+    def get_or_create_project(
+        self,
+        name: str,
+        *,
+        company: Company | None = None,
+        code: str | None = None,
+        country: str | None = None,
+    ) -> Project:
         stmt = select(Project).where(Project.name == name)
         if company is not None:
             stmt = stmt.where(Project.company_id == company.id)
         project = self.session.execute(stmt).scalar_one_or_none()
         if project is not None:
             return project
-        project = Project(id=new_id("prj"), name=name, company_id=company.id if company else None, code=code, country=country)
+        project = Project(
+            id=new_id("prj"),
+            name=name,
+            company_id=company.id if company else None,
+            code=code,
+            country=country,
+        )
         self.session.add(project)
         self.session.flush()
         return project
 
-    def get_or_create_field(self, name: str, *, project: Project | None = None, basin: str | None = None) -> Field:
+    def get_or_create_field(
+        self, name: str, *, project: Project | None = None, basin: str | None = None
+    ) -> Field:
         stmt = select(Field).where(Field.name == name)
         if project is not None:
             stmt = stmt.where(Field.project_id == project.id)
         field = self.session.execute(stmt).scalar_one_or_none()
         if field is not None:
             return field
-        field = Field(id=new_id("fld"), name=name, project_id=project.id if project else None, basin=basin)
+        field = Field(
+            id=new_id("fld"), name=name, project_id=project.id if project else None, basin=basin
+        )
         self.session.add(field)
         self.session.flush()
         return field
@@ -110,9 +141,13 @@ class WellRepository:
         stmt = select(Well).where(Well.name == name)
         if project_id:
             stmt = stmt.where(Well.project_id == project_id)
-        return self.session.execute(stmt.order_by(Well.created_at, Well.id).limit(1)).scalar_one_or_none()
+        return self.session.execute(
+            stmt.order_by(Well.created_at, Well.id).limit(1)
+        ).scalar_one_or_none()
 
-    def list_wells(self, *, project_id: str | None = None, status: str | None = None, limit: int = 500) -> list[Well]:
+    def list_wells(
+        self, *, project_id: str | None = None, status: str | None = None, limit: int = 500
+    ) -> list[Well]:
         stmt = select(Well)
         if project_id:
             stmt = stmt.where(Well.project_id == project_id)
@@ -157,14 +192,18 @@ class WellRepository:
         self.session.flush()
         return well
 
-    def set_well_status(self, well: Well, new_status: WellLifecycleStatus | str, *, allow_same: bool = False) -> WellLifecycleStatus:
+    def set_well_status(
+        self, well: Well, new_status: WellLifecycleStatus | str, *, allow_same: bool = False
+    ) -> WellLifecycleStatus:
         """Transition the lifecycle, validating it.  Illegal jumps are refused."""
         target = WellLifecycleStatus(str(getattr(new_status, "value", new_status)))
         current = WellLifecycleStatus(well.lifecycle_status)
         if target is current:
             if allow_same:
                 return current
-            raise ValidationError(f"well is already {current.value}", well_id=well.id, status=current.value)
+            raise ValidationError(
+                f"well is already {current.value}", well_id=well.id, status=current.value
+            )
         allowed = WELL_LIFECYCLE_TRANSITIONS.get(current, ())
         if target not in allowed:
             raise ValidationError(
@@ -208,7 +247,13 @@ class WellRepository:
 
     # -- sections -----------------------------------------------------------
     def list_sections(self, well_id: str) -> list[WellSection]:
-        return list(self.session.execute(select(WellSection).where(WellSection.well_id == well_id).order_by(WellSection.sequence)).scalars())
+        return list(
+            self.session.execute(
+                select(WellSection)
+                .where(WellSection.well_id == well_id)
+                .order_by(WellSection.sequence)
+            ).scalars()
+        )
 
     def get_or_create_section(
         self,
@@ -221,7 +266,9 @@ class WellRepository:
         planned_mud_weight: tuple[float, str] | None = None,
         attributes: dict[str, Any] | None = None,
     ) -> WellSection:
-        existing = self.session.execute(select(WellSection).where(WellSection.well_id == well.id, WellSection.name == name)).scalar_one_or_none()
+        existing = self.session.execute(
+            select(WellSection).where(WellSection.well_id == well.id, WellSection.name == name)
+        ).scalar_one_or_none()
         if existing is not None:
             return existing
         section = WellSection(
@@ -241,7 +288,13 @@ class WellRepository:
         self.session.flush()
         return section
 
-    def update_section(self, section: WellSection, values: dict[str, Any], *, state: RecordState | str = RecordState.PLANNED) -> list[str]:
+    def update_section(
+        self,
+        section: WellSection,
+        values: dict[str, Any],
+        *,
+        state: RecordState | str = RecordState.PLANNED,
+    ) -> list[str]:
         """Write section attributes for a *state*.
 
         Planned and actual mud weight/duration are separate columns on purpose:
@@ -288,7 +341,9 @@ class WellRepository:
     # -- statistics ---------------------------------------------------------
     def well_statistics(self, well_id: str) -> dict[str, Any]:
         sections = self.list_sections(well_id)
-        documents = list(self.session.execute(select(Document).where(Document.well_id == well_id)).scalars())
+        documents = list(
+            self.session.execute(select(Document).where(Document.well_id == well_id)).scalars()
+        )
         by_class: dict[str, int] = {}
         for document in documents:
             by_class[document.classification] = by_class.get(document.classification, 0) + 1
@@ -296,8 +351,12 @@ class WellRepository:
             "sections": len(sections),
             "documents": len(documents),
             "documents_by_classification": by_class,
-            "planned_sections": sum(1 for section in sections if section.planned_mud_weight_value is not None),
-            "actual_sections": sum(1 for section in sections if section.actual_mud_weight_value is not None),
+            "planned_sections": sum(
+                1 for section in sections if section.planned_mud_weight_value is not None
+            ),
+            "actual_sections": sum(
+                1 for section in sections if section.actual_mud_weight_value is not None
+            ),
         }
 
 

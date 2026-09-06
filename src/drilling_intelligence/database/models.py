@@ -52,8 +52,12 @@ def _utcnow() -> datetime:
 
 
 class TimestampMixin:
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
 
 
 # --------------------------------------------------------------------------- hierarchy
@@ -65,7 +69,9 @@ class Company(Base, TimestampMixin):
     code: Mapped[str | None] = mapped_column(String(32))
     notes: Mapped[str | None] = mapped_column(Text)
 
-    projects: Mapped[list[Project]] = relationship(back_populates="company", cascade="all, delete-orphan")
+    projects: Mapped[list[Project]] = relationship(
+        back_populates="company", cascade="all, delete-orphan"
+    )
 
 
 class Project(Base, TimestampMixin):
@@ -81,7 +87,9 @@ class Project(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False)
 
     company: Mapped[Company | None] = relationship(back_populates="projects")
-    fields: Mapped[list[Field]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    fields: Mapped[list[Field]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     wells: Mapped[list[Well]] = relationship(back_populates="project", cascade="all, delete-orphan")
 
 
@@ -114,7 +122,9 @@ class Well(Base, TimestampMixin):
     #: Operator/partner designation as written on reports (used for matching offsets).
     well_identifier: Mapped[str | None] = mapped_column(String(120))
     lifecycle_status: Mapped[str] = mapped_column(String(24), default="PLANNED", nullable=False)
-    well_type: Mapped[str | None] = mapped_column(String(40))  # exploration/appraisal/development/...
+    well_type: Mapped[str | None] = mapped_column(
+        String(40)
+    )  # exploration/appraisal/development/...
     trajectory_type: Mapped[str | None] = mapped_column(String(40))  # vertical/planar/3d/horizontal
     spud_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completion_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -200,7 +210,9 @@ class Document(Base, TimestampMixin):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    workspace_id: Mapped[str | None] = mapped_column(ForeignKey("workspace.id", ondelete="SET NULL"))
+    workspace_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workspace.id", ondelete="SET NULL")
+    )
     project_id: Mapped[str | None] = mapped_column(ForeignKey("project.id", ondelete="SET NULL"))
     well_id: Mapped[str | None] = mapped_column(ForeignKey("well.id", ondelete="SET NULL"))
     #: Normalised path within the workspace; identity, not content (section 13).
@@ -221,7 +233,9 @@ class Document(Base, TimestampMixin):
     #: rename, link count) on POSIX.  Recorded for forensics, never presented as a
     #: creation or revision date.
     fs_metadata_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
     #: Document-level metadata that survives a revision change.
     classification: Mapped[str] = mapped_column(String(40), default="OTHER", nullable=False)
     classification_confidence: Mapped[float | None] = mapped_column(Float)
@@ -243,7 +257,9 @@ class Document(Base, TimestampMixin):
     #: deleting the document.  Deferred constraints are standard SQL (SQLite >= 3.6.19
     #: and PostgreSQL both enforce them at COMMIT), so this is not a SQLite-only trick.
     current_version_id: Mapped[str | None] = mapped_column(
-        ForeignKey("document_version.id", ondelete="SET NULL", deferrable=True, initially="DEFERRED")
+        ForeignKey(
+            "document_version.id", ondelete="SET NULL", deferrable=True, initially="DEFERRED"
+        )
     )
     #: Number of times this slot was seen with different content.
     change_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -282,7 +298,9 @@ class DocumentVersion(Base, TimestampMixin):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    document_id: Mapped[str] = mapped_column(ForeignKey("document.id", ondelete="CASCADE"), nullable=False)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("document.id", ondelete="CASCADE"), nullable=False
+    )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     #: Human revision label as authored ("Rev 2", "Rev B").  Never invented.
     revision: Mapped[str | None] = mapped_column(String(64))
@@ -309,8 +327,12 @@ class DocumentVersion(Base, TimestampMixin):
     sheet_count: Mapped[int | None] = mapped_column(Integer)
     word_count: Mapped[int | None] = mapped_column(Integer)
     #: Provenance of the supersede chain (section 14).
-    supersedes_version_id: Mapped[str | None] = mapped_column(ForeignKey("document_version.id", ondelete="SET NULL"))
-    superseded_by_version_id: Mapped[str | None] = mapped_column(ForeignKey("document_version.id", ondelete="SET NULL"))
+    supersedes_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    superseded_by_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
     #: 'NEW' / 'MODIFIED' / 'DUPLICATE' - why this version exists (section 13).
     origin: Mapped[str] = mapped_column(String(16), default="NEW", nullable=False)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -318,11 +340,17 @@ class DocumentVersion(Base, TimestampMixin):
     approved_by: Mapped[str | None] = mapped_column(String(200))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Duplicate handling: pointer to the version holding identical content.
-    duplicate_of_version_id: Mapped[str | None] = mapped_column(ForeignKey("document_version.id", ondelete="SET NULL"))
+    duplicate_of_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
     metadata_json: Mapped[dict | None] = mapped_column(JSON, default=dict)
 
-    document: Mapped[Document] = relationship(back_populates="versions", foreign_keys="DocumentVersion.document_id")
-    extractions: Mapped[list[Extraction]] = relationship(back_populates="version", cascade="all, delete-orphan")
+    document: Mapped[Document] = relationship(
+        back_populates="versions", foreign_keys="DocumentVersion.document_id"
+    )
+    extractions: Mapped[list[Extraction]] = relationship(
+        back_populates="version", cascade="all, delete-orphan"
+    )
 
 
 class Extraction(Base, TimestampMixin):
@@ -341,13 +369,19 @@ class Extraction(Base, TimestampMixin):
     __table_args__ = (
         # Speeds the "which artefacts exist for these bytes" lookup.  Not unique:
         # uniqueness of the cache key is the job of extraction_cache.
-        Index("ix_extraction_cache", "content_sha256", "extractor", "extractor_version", "config_hash"),
+        Index(
+            "ix_extraction_cache", "content_sha256", "extractor", "extractor_version", "config_hash"
+        ),
         Index("ix_extraction_version", "document_version_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    document_id: Mapped[str] = mapped_column(ForeignKey("document.id", ondelete="CASCADE"), nullable=False)
-    document_version_id: Mapped[str] = mapped_column(ForeignKey("document_version.id", ondelete="CASCADE"), nullable=False)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("document.id", ondelete="CASCADE"), nullable=False
+    )
+    document_version_id: Mapped[str] = mapped_column(
+        ForeignKey("document_version.id", ondelete="CASCADE"), nullable=False
+    )
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     extractor: Mapped[str] = mapped_column(String(48), nullable=False)
     extractor_version: Mapped[str] = mapped_column(String(48), nullable=False)
@@ -386,7 +420,13 @@ class ExtractionCache(Base, TimestampMixin):
 
     __tablename__ = "extraction_cache"
     __table_args__ = (
-        UniqueConstraint("content_sha256", "extractor", "extractor_version", "config_hash", name="uq_extraction_cache_key"),
+        UniqueConstraint(
+            "content_sha256",
+            "extractor",
+            "extractor_version",
+            "config_hash",
+            name="uq_extraction_cache_key",
+        ),
         Index("ix_extraction_cache_sha", "content_sha256"),
     )
 
@@ -396,11 +436,15 @@ class ExtractionCache(Base, TimestampMixin):
     extractor_version: Mapped[str] = mapped_column(String(48), nullable=False)
     config_hash: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     #: The stored artefact this key resolves to.
-    extraction_id: Mapped[str | None] = mapped_column(ForeignKey("extraction.id", ondelete="CASCADE"))
+    extraction_id: Mapped[str | None] = mapped_column(
+        ForeignKey("extraction.id", ondelete="CASCADE")
+    )
     #: How many versions have reused this artefact instead of re-parsing it.
     hits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: The first version this artefact was produced for (provenance of the cache entry).
-    produced_by_version_id: Mapped[str | None] = mapped_column(ForeignKey("document_version.id", ondelete="SET NULL"))
+    produced_by_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
     #: True when the entry was written by a forced re-extraction replacing an older one.
     refreshed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
@@ -413,15 +457,21 @@ class Source(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("kind", "reference", name="uq_source_kind_reference"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # document|manual|calculation|inference|reference
+    kind: Mapped[str] = mapped_column(
+        String(32), nullable=False
+    )  # document|manual|calculation|inference|reference
     #: Stable citation key: document version id, book ISBN/section, user id...
     reference: Mapped[str] = mapped_column(String(512), nullable=False)
     label: Mapped[str] = mapped_column(String(400), nullable=False)
-    authority_tier: Mapped[str] = mapped_column(String(64), default="general_knowledge", nullable=False)
+    authority_tier: Mapped[str] = mapped_column(
+        String(64), default="general_knowledge", nullable=False
+    )
     #: 0-100; lets a reviewer override the tier ordering deterministically.
     authority_score: Mapped[float | None] = mapped_column(Float)
     document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
-    document_version_id: Mapped[str | None] = mapped_column(ForeignKey("document_version.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
     publisher: Mapped[str | None] = mapped_column(String(200))
     publication: Mapped[str | None] = mapped_column(String(300))
     revision: Mapped[str | None] = mapped_column(String(64))
@@ -437,6 +487,9 @@ class KnowledgeItem(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_knowledge_lookup", "well_id", "lookup_key"),
         Index("ix_knowledge_type", "item_type"),
+        Index("ix_knowledge_subject", "entity_type", "entity_id"),
+        Index("ix_knowledge_predicate", "predicate", "status"),
+        Index("ix_knowledge_version", "document_version_id", "origin"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -452,17 +505,45 @@ class KnowledgeItem(Base, TimestampMixin):
     lookup_key: Mapped[str | None] = mapped_column(String(300))
     value: Mapped[float | None] = mapped_column(Float)
     unit: Mapped[str] = mapped_column(String(24), default="")
+    # -- the fact shape (knowledge layer): subject / predicate / object, with the source wording
+    #: What the value belongs to.  ``entity_id`` addresses the registry row of ``entity_type``
+    #: (a ``well``, a ``document``, a ``knowledge_item`` for types with no table of their own).
+    entity_type: Mapped[str | None] = mapped_column(String(32))
+    entity_id: Mapped[str | None] = mapped_column(String(36))
+    #: The assertion made about the subject, e.g. ``mud_weight``.  Open vocabulary, snake_case.
+    predicate: Mapped[str | None] = mapped_column(String(120))
+    #: quantity|text|date|boolean|ratio - decides how the value is compared and normalised.
+    value_type: Mapped[str] = mapped_column(String(16), default="text", nullable=False)
+    #: The value exactly as the source wrote it.  ``value``/``unit`` are the normalised pair;
+    #: keeping only those would let a converter quietly rewrite engineering history.
+    original_value: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    original_unit: Mapped[str] = mapped_column(String(24), default="", nullable=False)
+    #: When the value applies (a mud weight reported for a shift is not timeless).
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The value in the field's canonical unit (12.5 ppg stays 12.5 ppg; 85 degF becomes 29.44
+    #: degC).  ``value``/``unit`` are what the source said, converted only when its unit was
+    #: unknown; these two are what comparisons are made on, stored so a query can filter on them
+    #: without re-parsing JSON.
+    normalized_value: Mapped[float | None] = mapped_column(Float)
+    normalized_unit: Mapped[str] = mapped_column(String(24), default="", nullable=False)
+    #: Who is responsible for the row existing - ``rebuild`` only replaces ``EXTRACTED``.
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     #: PLANNED/ACTUAL/... so a planned and an actual value never collide (section 11).
     record_state: Mapped[str] = mapped_column(String(16), default="CURRENT", nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     confidence: Mapped[float | None] = mapped_column(Float)
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     well_id: Mapped[str | None] = mapped_column(ForeignKey("well.id", ondelete="SET NULL"))
-    section_id: Mapped[str | None] = mapped_column(ForeignKey("well_section.id", ondelete="SET NULL"))
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
     project_id: Mapped[str | None] = mapped_column(ForeignKey("project.id", ondelete="SET NULL"))
     source_id: Mapped[str | None] = mapped_column(ForeignKey("source.id", ondelete="SET NULL"))
     document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
-    document_version_id: Mapped[str | None] = mapped_column(ForeignKey("document_version.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
     provenance: Mapped[list | None] = mapped_column(JSON, default=list)
     evidence: Mapped[list | None] = mapped_column(JSON, default=list)
     #: Set when a stronger source supersedes this item.
@@ -475,7 +556,14 @@ class KnowledgeRelation(Base, TimestampMixin):
 
     __tablename__ = "knowledge_relation"
     __table_args__ = (
-        UniqueConstraint("source_type", "source_id", "relation", "target_type", "target_id", name="uq_relation_edge"),
+        UniqueConstraint(
+            "source_type",
+            "source_id",
+            "relation",
+            "target_type",
+            "target_id",
+            name="uq_relation_edge",
+        ),
         Index("ix_relation_source", "source_type", "source_id"),
         Index("ix_relation_target", "target_type", "target_id"),
     )
@@ -508,7 +596,9 @@ class KnowledgeConflict(Base, TimestampMixin):
     #: The unit the values were normalised to for comparison (auditability).
     compare_unit: Mapped[str] = mapped_column(String(24), default="")
     note: Mapped[str | None] = mapped_column(Text)
-    detected_by: Mapped[str] = mapped_column(String(64), default="conflict_detector", nullable=False)
+    detected_by: Mapped[str] = mapped_column(
+        String(64), default="conflict_detector", nullable=False
+    )
 
 
 class Skill(Base, TimestampMixin):
@@ -535,7 +625,9 @@ class SkillVersion(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("skill_id", "version", name="uq_skill_version"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    skill_id: Mapped[str] = mapped_column(ForeignKey("skill.id", ondelete="CASCADE"), nullable=False)
+    skill_id: Mapped[str] = mapped_column(
+        ForeignKey("skill.id", ondelete="CASCADE"), nullable=False
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     builder: Mapped[str] = mapped_column(String(64), default="skill_pipeline", nullable=False)
     builder_version: Mapped[str] = mapped_column(String(48), default="", nullable=False)
@@ -567,7 +659,9 @@ class Calculation(Base, TimestampMixin):
     #: PLANNED / FORECAST / ACTUAL / ... the state the numbers describe.
     record_state: Mapped[str] = mapped_column(String(16), default="CURRENT", nullable=False)
     well_id: Mapped[str | None] = mapped_column(ForeignKey("well.id", ondelete="SET NULL"))
-    section_id: Mapped[str | None] = mapped_column(ForeignKey("well_section.id", ondelete="SET NULL"))
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
     project_id: Mapped[str | None] = mapped_column(ForeignKey("project.id", ondelete="SET NULL"))
     source_id: Mapped[str | None] = mapped_column(ForeignKey("source.id", ondelete="SET NULL"))
     inputs: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
@@ -579,14 +673,18 @@ class Calculation(Base, TimestampMixin):
     provenance: Mapped[list | None] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(24), default="COMPUTED", nullable=False)
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    supersedes_id: Mapped[str | None] = mapped_column(ForeignKey("calculation.id", ondelete="SET NULL"))
+    supersedes_id: Mapped[str | None] = mapped_column(
+        ForeignKey("calculation.id", ondelete="SET NULL")
+    )
     reviewer: Mapped[str | None] = mapped_column(String(200))
     approval_note: Mapped[str | None] = mapped_column(Text)
     #: How the run was triggered (ui/cli/agent) - part of the audit trail.
     triggered_by: Mapped[str] = mapped_column(String(40), default="cli", nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
 
-    input_records: Mapped[list[CalculationInput]] = relationship(back_populates="calculation", cascade="all, delete-orphan")
+    input_records: Mapped[list[CalculationInput]] = relationship(
+        back_populates="calculation", cascade="all, delete-orphan"
+    )
 
 
 class CalculationInput(Base):
@@ -601,7 +699,9 @@ class CalculationInput(Base):
     __table_args__ = (Index("ix_calc_input_subject", "subject_key"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    calculation_id: Mapped[str] = mapped_column(ForeignKey("calculation.id", ondelete="CASCADE"), nullable=False)
+    calculation_id: Mapped[str] = mapped_column(
+        ForeignKey("calculation.id", ondelete="CASCADE"), nullable=False
+    )
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     value: Mapped[float | None] = mapped_column(Float)
     unit: Mapped[str] = mapped_column(String(24), default="")
@@ -620,9 +720,13 @@ class IngestionRun(Base):
     __tablename__ = "ingestion_run"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    workspace_id: Mapped[str | None] = mapped_column(ForeignKey("workspace.id", ondelete="SET NULL"))
+    workspace_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workspace.id", ondelete="SET NULL")
+    )
     root_path: Mapped[str] = mapped_column(String(1024), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     mode: Mapped[str] = mapped_column(String(24), default="incremental", nullable=False)
     counts: Mapped[dict | None] = mapped_column(JSON, default=dict)

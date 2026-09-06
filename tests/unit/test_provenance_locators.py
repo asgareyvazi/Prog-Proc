@@ -25,7 +25,10 @@ from drilling_intelligence.core.provenance import (
 def test_locator_references_are_human_readable() -> None:
     assert PdfLocator(page=7, block=2).ref() == "Page 7 > Block 2"
     assert ExcelLocator(sheet="Mud Log", cell="B14").ref() == "Sheet: Mud Log > Cell: B14"
-    assert ExcelLocator(sheet="S", range_="A3:G9", read="formula").ref() == "Sheet: S > Range: A3:G9 > formula"
+    assert (
+        ExcelLocator(sheet="S", range_="A3:G9", read="formula").ref()
+        == "Sheet: S > Range: A3:G9 > formula"
+    )
     assert DocxLocator(heading="NPT", paragraph=4).ref() == "Heading: NPT > Paragraph 4"
     assert TextLocator(line_start=10, line_end=12).ref() == "Lines 10-12"
     assert UnknownLocator(note="artifact lost").ref() == "Location unknown (artifact lost)"
@@ -40,7 +43,9 @@ def test_locator_round_trips_through_json() -> None:
     ):
         payload = locator.to_dict()
         assert payload["locator_kind"] == locator.kind
-        assert SourceLocator.from_dict(payload) == locator, f"{type(locator).__name__} lost data in JSON"
+        assert SourceLocator.from_dict(payload) == locator, (
+            f"{type(locator).__name__} lost data in JSON"
+        )
 
 
 def test_verify_provenance_re_reads_the_original_file(corpus_dir) -> None:
@@ -59,14 +64,23 @@ def test_verify_provenance_re_reads_the_original_file(corpus_dir) -> None:
 
     assert verify_provenance(source, record(lines[index - 1])).status == "MATCH"
     # The excerpt is not what the file says there.
-    assert verify_provenance(source, record("a sentence that is not in this file")).status == "MISMATCH"
+    assert (
+        verify_provenance(source, record("a sentence that is not in this file")).status
+        == "MISMATCH"
+    )
     # Right excerpt, different file on disk: the recorded hash is the tamper check.
-    assert verify_provenance(source, record(lines[index - 1], sha=sha256_text("other"))).status == "MISMATCH"
+    assert (
+        verify_provenance(source, record(lines[index - 1], sha=sha256_text("other"))).status
+        == "MISMATCH"
+    )
 
 
 def test_unreadable_source_is_reported_not_silently_ok(tmp_path) -> None:
     provenance = Provenance(
-        document_id="doc-1", filename="gone.txt", locator=TextLocator(line_start=1, line_end=1), excerpt="anything"
+        document_id="doc-1",
+        filename="gone.txt",
+        locator=TextLocator(line_start=1, line_end=1),
+        excerpt="anything",
     )
     result = verify_provenance(tmp_path / "gone.txt", provenance)
     assert result.status == "UNREADABLE" and not result.ok

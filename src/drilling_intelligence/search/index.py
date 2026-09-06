@@ -48,7 +48,14 @@ from sqlalchemy import text as sa_text
 from ..core.logging import get_logger
 from ..documents.repository import DocumentRepository
 from ..extraction.normalized import NormalizedDocument
-from .chunking import ChunkSet, IndexChunk, IndexDocument, build_chunk_set
+from .chunking import (
+    KIND_KNOWLEDGE,
+    ChunkSet,
+    IndexChunk,
+    IndexDocument,
+    build_chunk_set,
+    fact_chunks,
+)
 from .ranking import IndexStatistics, rank_chunks
 from .tokenize import parse_query
 
@@ -226,7 +233,9 @@ class SearchFilters:
         return True
 
     def to_dict(self) -> dict[str, Any]:
-        return {key: value for key, value in self.__dict__.items() if value not in (None, False, (), "")}
+        return {
+            key: value for key, value in self.__dict__.items() if value not in (None, False, (), "")
+        }
 
 
 @dataclass
@@ -271,6 +280,10 @@ class IndexStats:
     stale_versions: int = 0
     #: Indexed versions whose row has gone from the registry entirely.
     orphaned: int = 0
+    #: Chunks that are derived knowledge facts rather than document text.  Reported separately
+    #: because "the corpus is indexed but the facts are not" is a different problem from "nothing
+    #: is indexed", and only the first one is fixed by ``drillintel knowledge rebuild``.
+    knowledge_chunks: int = 0
     #: Current registry versions with nothing indexed - the "the index was never built" case,
     #: and the reason a search can legitimately return nothing for a file that exists.
     missing_versions: int = 0
@@ -292,7 +305,9 @@ class SearchIndex(Protocol):
     without threading a session through every call.
     """
 
-    def upsert(self, document_id: str, version_id: str, *, repository: DocumentRepository | None = None) -> int: ...
+    def upsert(
+        self, document_id: str, version_id: str, *, repository: DocumentRepository | None = None
+    ) -> int: ...
 
     def store(self, chunk_set: ChunkSet) -> int: ...
 
@@ -302,7 +317,6 @@ class SearchIndex(Protocol):
 
     def prune_obsolete(self, *, repository: DocumentRepository | None = None) -> int:
         """Versions removed from the searchable state (not chunk rows - see ``remove_version``)."""
-
 
     def clear(self) -> int: ...
 
@@ -316,7 +330,9 @@ class SearchIndex(Protocol):
 
 
 # --------------------------------------------------------------------------- registry -> index
-def index_document_for(document: Any, version: Any, extraction: Any, normalized: NormalizedDocument) -> IndexDocument:
+def index_document_for(
+    document: Any, version: Any, extraction: Any, normalized: NormalizedDocument
+) -> IndexDocument:
     """Copy the registry's filterable facts into the index record for one version.
 
     Company, project and well are denormalised - names as well as ids - so a result can label
@@ -378,7 +394,9 @@ def _iso(value: Any) -> str:
     return str(iso()) if callable(iso) else str(value)
 
 
-def chunk_set_for(repository: DocumentRepository, document_id: str, version_id: str) -> ChunkSet | None:
+def chunk_set_for(
+    repository: DocumentRepository, document_id: str, version_id: str
+) -> ChunkSet | None:
     """Index records for one version, read only from registry rows.
 
     ``None`` - rather than an empty chunk set - means "there is nothing to index yet", so the
@@ -398,6 +416,32 @@ def chunk_set_for(repository: DocumentRepository, document_id: str, version_id: 
         normalized=normalized,
         version_id=version.id,
         source_sha256=version.sha256,
+        extra_chunks=_knowledge_chunks(repository, version),
+    )
+
+
+def _knowledge_chunks(repository: DocumentRepository, version: Any) -> list[Any]:
+    """The facts stored about one version, ready to index (empty when knowledge was never derived).
+
+    :meth:`KnowledgeRepository.facts_for_version` already hands back :class:`KnowledgeFact`
+    objects, so nothing is reconstructed here - a second mapping between row and fact would be a
+    second place for the two to disagree.
+
+    Read from ``knowledge_item`` rather than re-derived from the artefact, so the index mirrors
+    what the *database* says - conflicts, manual notes and retired values included - and so a
+    query never disagrees with ``drillintel knowledge facts`` about what is known.
+    """
+    from ..knowledge.repository import KnowledgeRepository
+
+    facts = KnowledgeRepository(repository.session).facts_for_version(
+        str(version.id), include_superseded=True
+    )
+    return list(
+        fact_chunks(
+            version_id=str(version.id),
+            document_id=str(version.document_id),
+            facts=facts,
+        )
     )
 
 
@@ -415,7 +459,10 @@ def _current_pairs(repository: DocumentRepository) -> list[tuple[str, str]]:
         .where(DocumentVersion.is_current.is_(True))
         .order_by(DocumentVersion.document_id, DocumentVersion.version_number)
     )
-    return [(str(document_id), str(version_id)) for document_id, version_id in repository.session.execute(statement).all()]
+    return [
+        (str(document_id), str(version_id))
+        for document_id, version_id in repository.session.execute(statement).all()
+    ]
 
 
 def _current_version_ids(repository: DocumentRepository) -> set[str]:
@@ -423,7 +470,9 @@ def _current_version_ids(repository: DocumentRepository) -> set[str]:
 
     return {
         str(row[0])
-        for row in repository.session.execute(select(DocumentVersion.id).where(DocumentVersion.is_current.is_(True))).all()
+        for row in repository.session.execute(
+            select(DocumentVersion.id).where(DocumentVersion.is_current.is_(True))
+        ).all()
     }
 
 
@@ -460,7 +509,9 @@ def _score(
     requirements of a quoted query, the kind weighting, and the filter set - all from
     :mod:`drilling_intelligence.search.ranking`, on the same ``rows`` in both backends.
     """
-    triples = [(chunk, chunk.terms, max(1, chunk.length), chunk.kind, chunk.text) for chunk, _ in pairs]
+    triples = [
+        (chunk, chunk.terms, max(1, chunk.length), chunk.kind, chunk.text) for chunk, _ in pairs
+    ]
     matches = rank_chunks(
         triples,
         terms=request.terms,
@@ -516,7 +567,9 @@ def score_candidates(
     """
     mode = request.mode if request.mode in ("all", "any") else "all"
     pairs = list(candidates_for(mode))
-    hits, scoring_truncated, matched_any = _score(pairs, replace(request, mode=mode), statistics=statistics)
+    hits, scoring_truncated, matched_any = _score(
+        pairs, replace(request, mode=mode), statistics=statistics
+    )
     truncated = scoring_truncated or bool(retrieval_truncated and retrieval_truncated(mode))
     candidates = len(pairs)
     if not hits and matched_any is False and mode == "all" and len(request.terms) > 1:
@@ -526,7 +579,9 @@ def score_candidates(
         mode = "any"
         pairs = list(candidates_for(mode))
         candidates = len(pairs)
-        hits, scoring_truncated, _ = _score(pairs, replace(request, mode=mode), statistics=statistics)
+        hits, scoring_truncated, _ = _score(
+            pairs, replace(request, mode=mode), statistics=statistics
+        )
         truncated = truncated or scoring_truncated
     return hits, {
         "mode": mode,
@@ -550,8 +605,12 @@ class InMemorySearchIndex:
         self.registry_revision = ""
 
     # -- writes -------------------------------------------------------------
-    def upsert(self, document_id: str, version_id: str, *, repository: DocumentRepository | None = None) -> int:
-        chunk_set = chunk_set_for(_need_repository(repository, self._repository), document_id, version_id)
+    def upsert(
+        self, document_id: str, version_id: str, *, repository: DocumentRepository | None = None
+    ) -> int:
+        chunk_set = chunk_set_for(
+            _need_repository(repository, self._repository), document_id, version_id
+        )
         if chunk_set is None:
             return 0
         self.remove_version(version_id)
@@ -581,7 +640,12 @@ class InMemorySearchIndex:
         return removed
 
     def prune_obsolete(self, *, repository: DocumentRepository | None = None) -> int:
-        obsolete = [version_id for version_id in list(self._documents) if version_id not in _current_version_ids(_need_repository(repository, self._repository))]
+        obsolete = [
+            version_id
+            for version_id in list(self._documents)
+            if version_id
+            not in _current_version_ids(_need_repository(repository, self._repository))
+        ]
         for version_id in obsolete:
             self.remove_version(version_id)
         return len(obsolete)
@@ -614,7 +678,13 @@ class InMemorySearchIndex:
     def search(self, request: SearchRequest) -> tuple[list[Hit], dict[str, Any]]:
         pairs = self.pairs()
         if not pairs:
-            return [], {"mode": request.mode, "truncated": False, "candidates": 0, "total_chunks": 0, "fts_used": False}
+            return [], {
+                "mode": request.mode,
+                "truncated": False,
+                "candidates": 0,
+                "total_chunks": 0,
+                "fts_used": False,
+            }
         return score_candidates(
             request,
             statistics=self._statistics(request.terms),
@@ -625,8 +695,14 @@ class InMemorySearchIndex:
 
     def _statistics(self, terms: Sequence[str]) -> IndexStatistics:
         total_length = sum(chunk.length for chunk in self._chunks.values())
-        frequencies = {term: sum(1 for chunk in self._chunks.values() if term in chunk.terms) for term in terms}
-        return IndexStatistics(total_chunks=len(self._chunks), total_length=total_length, document_frequency=frequencies)
+        frequencies = {
+            term: sum(1 for chunk in self._chunks.values() if term in chunk.terms) for term in terms
+        }
+        return IndexStatistics(
+            total_chunks=len(self._chunks),
+            total_length=total_length,
+            document_frequency=frequencies,
+        )
 
     def stats(self, *, repository: DocumentRepository | None = None) -> IndexStats:
         return self._tally(repository=repository or self._repository)
@@ -636,6 +712,9 @@ class InMemorySearchIndex:
             documents=len({document.document_id for document in self._documents.values()}),
             versions=len(self._documents),
             chunks=len(self._chunks),
+            knowledge_chunks=sum(
+                1 for chunk in self._chunks.values() if chunk.kind == KIND_KNOWLEDGE
+            ),
             fts_available=False,
         )
         if repository is not None:
@@ -686,7 +765,10 @@ class SqliteSearchIndex:
     def _probe_fts(self) -> bool:
         try:
             with self.engine.connect() as connection:
-                options = {str(row).strip().upper() for row in connection.execute(sa_text("pragma compile_options")).scalars()}
+                options = {
+                    str(row).strip().upper()
+                    for row in connection.execute(sa_text("pragma compile_options")).scalars()
+                }
             if "ENABLE_FTS5" in options:
                 return True
             with self.engine.begin() as connection:
@@ -716,7 +798,9 @@ class SqliteSearchIndex:
 
     def _meta(self, key: str, default: str = "") -> str:
         with self.engine.connect() as connection:
-            row = connection.execute(select(search_meta_table.c.value).where(search_meta_table.c.key == key)).first()
+            row = connection.execute(
+                select(search_meta_table.c.value).where(search_meta_table.c.key == key)
+            ).first()
         return str(row[0]) if row else default
 
     def _set_meta(self, key: str, value: str) -> None:
@@ -735,11 +819,19 @@ class SqliteSearchIndex:
 
         with self.engine.begin() as connection:
             statement = dialect_insert(search_meta_table).values(key=key, value=value)
-            connection.execute(statement.on_conflict_do_update(index_elements=["key"], set_={"value": statement.excluded.value}))
+            connection.execute(
+                statement.on_conflict_do_update(
+                    index_elements=["key"], set_={"value": statement.excluded.value}
+                )
+            )
 
     # -- writes -------------------------------------------------------------
-    def upsert(self, document_id: str, version_id: str, *, repository: DocumentRepository | None = None) -> int:
-        chunk_set = chunk_set_for(_need_repository(repository, self._repository), document_id, version_id)
+    def upsert(
+        self, document_id: str, version_id: str, *, repository: DocumentRepository | None = None
+    ) -> int:
+        chunk_set = chunk_set_for(
+            _need_repository(repository, self._repository), document_id, version_id
+        )
         if chunk_set is None:
             return 0
         self.remove_version(version_id)
@@ -778,8 +870,12 @@ class SqliteSearchIndex:
                 ),
                 {"version_id": version_id},
             )
-        removed = connection.execute(delete(search_chunk_table).where(search_chunk_table.c.version_id == version_id)).rowcount
-        connection.execute(delete(search_document_table).where(search_document_table.c.version_id == version_id))
+        removed = connection.execute(
+            delete(search_chunk_table).where(search_chunk_table.c.version_id == version_id)
+        ).rowcount
+        connection.execute(
+            delete(search_document_table).where(search_document_table.c.version_id == version_id)
+        )
         return int(removed or 0)
 
     def remove_version(self, version_id: str) -> int:
@@ -789,7 +885,14 @@ class SqliteSearchIndex:
 
     def remove_document(self, document_id: str) -> int:
         with self.engine.begin() as connection:
-            versions = [str(row[0]) for row in connection.execute(select(search_document_table.c.version_id).where(search_document_table.c.document_id == document_id)).all()]
+            versions = [
+                str(row[0])
+                for row in connection.execute(
+                    select(search_document_table.c.version_id).where(
+                        search_document_table.c.document_id == document_id
+                    )
+                ).all()
+            ]
             return sum(self._delete(connection, version_id) for version_id in versions)
 
     def prune_obsolete(self, *, repository: DocumentRepository | None = None) -> int:
@@ -801,7 +904,10 @@ class SqliteSearchIndex:
         """
         current = _current_version_ids(_need_repository(repository, self._repository))
         with self.engine.connect() as connection:
-            stored = [str(row[0]) for row in connection.execute(select(search_document_table.c.version_id)).all()]
+            stored = [
+                str(row[0])
+                for row in connection.execute(select(search_document_table.c.version_id)).all()
+            ]
         obsolete = [version_id for version_id in stored if version_id not in current]
         for version_id in obsolete:
             self.remove_version(version_id)
@@ -809,7 +915,12 @@ class SqliteSearchIndex:
 
     def clear(self) -> int:
         with self.engine.begin() as connection:
-            count = int(connection.execute(select(func.count()).select_from(search_chunk_table)).scalar_one() or 0)
+            count = int(
+                connection.execute(
+                    select(func.count()).select_from(search_chunk_table)
+                ).scalar_one()
+                or 0
+            )
             if self.fts_available():
                 connection.execute(sa_text(f"delete from {FTS_TABLE}"))  # noqa: S608 - module constant
             connection.execute(delete(search_chunk_table))
@@ -903,7 +1014,9 @@ class SqliteSearchIndex:
         )
         try:
             with self.engine.connect() as connection:
-                rows = connection.execute(statement, {"match": match, "cap": RETRIEVAL_CAP + 1}).all()
+                rows = connection.execute(
+                    statement, {"match": match, "cap": RETRIEVAL_CAP + 1}
+                ).all()
         except Exception:  # noqa: BLE001 - a malformed expression means "use the scan"
             log.warning("search.fts_query_failed", match=match[:200], level=25)
             return None, False
@@ -925,13 +1038,19 @@ class SqliteSearchIndex:
                 for batch in _batches(ordered):
                     rows.extend(
                         dict(row)
-                        for row in connection.execute(statement.where(search_chunk_table.c.chunk_id.in_(batch)).order_by(search_chunk_table.c.chunk_id)).mappings()
+                        for row in connection.execute(
+                            statement.where(search_chunk_table.c.chunk_id.in_(batch)).order_by(
+                                search_chunk_table.c.chunk_id
+                            )
+                        ).mappings()
                     )
         else:
             with self.engine.connect() as connection:
                 rows = [
                     dict(row)
-                    for row in connection.execute(statement.order_by(search_chunk_table.c.chunk_id).limit(RETRIEVAL_CAP)).mappings()
+                    for row in connection.execute(
+                        statement.order_by(search_chunk_table.c.chunk_id).limit(RETRIEVAL_CAP)
+                    ).mappings()
                 ]
         if not rows:
             return []
@@ -939,7 +1058,11 @@ class SqliteSearchIndex:
         documents: dict[str, IndexDocument] = {}
         with self.engine.connect() as connection:
             for batch in _batches(versions):
-                for row in connection.execute(select(search_document_table).where(search_document_table.c.version_id.in_(batch))).mappings():
+                for row in connection.execute(
+                    select(search_document_table).where(
+                        search_document_table.c.version_id.in_(batch)
+                    )
+                ).mappings():
                     documents[str(row["version_id"])] = IndexDocument.from_row(dict(row))
         return [
             (IndexChunk.from_row(row), documents[str(row["version_id"])])
@@ -950,13 +1073,17 @@ class SqliteSearchIndex:
     def _statistics(self, terms: Sequence[str]) -> IndexStatistics:
         with self.engine.connect() as connection:
             total_chunks, total_length = connection.execute(
-                select(func.count(), func.coalesce(func.sum(search_chunk_table.c.length), 0)).select_from(search_chunk_table)
+                select(
+                    func.count(), func.coalesce(func.sum(search_chunk_table.c.length), 0)
+                ).select_from(search_chunk_table)
             ).one()
             frequencies: dict[str, int] = {}
             for term in terms:
                 needle = f'"{term}":'
                 count = connection.execute(
-                    select(func.count()).select_from(search_chunk_table).where(sa_text("instr(terms_json, :needle) > 0").bindparams(needle=needle))
+                    select(func.count())
+                    .select_from(search_chunk_table)
+                    .where(sa_text("instr(terms_json, :needle) > 0").bindparams(needle=needle))
                 ).scalar_one()
                 frequencies[term] = int(count or 0)
         return IndexStatistics(
@@ -970,9 +1097,23 @@ class SqliteSearchIndex:
             documents = connection.execute(
                 select(func.count(func.distinct(search_document_table.c.document_id)))
             ).scalar_one()
-            versions = connection.execute(select(func.count()).select_from(search_document_table)).scalar_one()
-            chunks = connection.execute(select(func.count()).select_from(search_chunk_table)).scalar_one()
-        return {"documents": int(documents or 0), "versions": int(versions or 0), "chunks": int(chunks or 0)}
+            versions = connection.execute(
+                select(func.count()).select_from(search_document_table)
+            ).scalar_one()
+            chunks = connection.execute(
+                select(func.count()).select_from(search_chunk_table)
+            ).scalar_one()
+            knowledge = connection.execute(
+                select(func.count())
+                .select_from(search_chunk_table)
+                .where(search_chunk_table.c.kind == KIND_KNOWLEDGE)
+            ).scalar_one()
+        return {
+            "documents": int(documents or 0),
+            "versions": int(versions or 0),
+            "chunks": int(chunks or 0),
+            "knowledge_chunks": int(knowledge or 0),
+        }
 
     def stats(self, *, repository: DocumentRepository | None = None) -> IndexStats:
         counts = self._counts()
@@ -980,6 +1121,7 @@ class SqliteSearchIndex:
             documents=counts["documents"],
             versions=counts["versions"],
             chunks=counts["chunks"],
+            knowledge_chunks=counts["knowledge_chunks"],
             fts_available=self.fts_available(),
             schema_version=_int(self._meta("schema_version", str(SCHEMA_VERSION))),
             built_at=self._meta("built_at"),
@@ -989,9 +1131,17 @@ class SqliteSearchIndex:
             # The registry says what is current; the sidecar says what is searchable.  Asking
             # both is how "the index is behind" becomes a number instead of a surprise.
             current = _current_version_ids(repository)
-            known = {str(row[0]) for row in repository.session.execute(sa_text("select id from document_version")).all()}
+            known = {
+                str(row[0])
+                for row in repository.session.execute(
+                    sa_text("select id from document_version")
+                ).all()
+            }
             with self.engine.connect() as connection:
-                stored = {str(row[0]) for row in connection.execute(select(search_document_table.c.version_id)).all()}
+                stored = {
+                    str(row[0])
+                    for row in connection.execute(select(search_document_table.c.version_id)).all()
+                }
             for version_id in stored:
                 if version_id not in known:
                     stats.orphaned += 1

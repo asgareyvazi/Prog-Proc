@@ -203,11 +203,23 @@ class DocumentRegistry:
                 project_id=project_id,
                 classification=DocumentClassification.OTHER,
             )
-            self.repository.audit(action="document.registered", subject_type="document", subject_id=document.id, detail={"identity": identity, "sha256": sha256})
+            self.repository.audit(
+                action="document.registered",
+                subject_type="document",
+                subject_id=document.id,
+                detail={"identity": identity, "sha256": sha256},
+            )
         elif carry_forward:
-            applied = self.repository.update_document_metadata(document, {k: v for k, v in carry_forward.items() if v is not None})
+            applied = self.repository.update_document_metadata(
+                document, {k: v for k, v in carry_forward.items() if v is not None}
+            )
             if applied:
-                self.repository.audit(action="document.carry_forward", subject_type="document", subject_id=document.id, detail={"fields": sorted(applied)})
+                self.repository.audit(
+                    action="document.carry_forward",
+                    subject_type="document",
+                    subject_id=document.id,
+                    detail={"fields": sorted(applied)},
+                )
 
         result.document_id = document.id
         # A version means "a content state", so only a content difference creates one.
@@ -225,7 +237,11 @@ class DocumentRegistry:
             # UNCHANGED would leave a supersede chain that contradicts its own hashes.
             change = FileChangeKind.MODIFIED
             result.change = change
-            log.warning_event("plan.stale", file=filename, note="content changed after planning; version recorded as MODIFIED")
+            log.warning_event(
+                "plan.stale",
+                file=filename,
+                note="content changed after planning; version recorded as MODIFIED",
+            )
 
         # Only the *modification* time is passed to the revision parser, and only as a
         # tie-breaker for a revision that the text itself states: filesystem times say
@@ -247,9 +263,13 @@ class DocumentRegistry:
                 source_relative_path=relative,
                 revision=revision.revision or None,
                 revision_key=revision.revision_key,
-                status=revision.status.value if revision.status.value != "UNKNOWN" else document.status,
+                status=revision.status.value
+                if revision.status.value != "UNKNOWN"
+                else document.status,
                 supersedes_version_id=current.id if current is not None else None,
-                duplicate_of_version_id=duplicate_of[1] if duplicate_of and duplicate_of[1] else None,
+                duplicate_of_version_id=duplicate_of[1]
+                if duplicate_of and duplicate_of[1]
+                else None,
                 metadata_json={
                     "revision_notes": list(revision.notes),
                     "revision_source": revision.source,
@@ -325,7 +345,11 @@ class DocumentRegistry:
             )
             decision = self.router.route(context, options=options)
 
-            cached = None if (force or not self.cache_enabled) else self.find_cached(sha256=sha256, decision=decision, config_hash=config_hash)
+            cached = (
+                None
+                if (force or not self.cache_enabled)
+                else self.find_cached(sha256=sha256, decision=decision, config_hash=config_hash)
+            )
             if cached is not None:
                 extraction = self._store_cached_extraction(
                     document=document,
@@ -359,8 +383,15 @@ class DocumentRegistry:
             result.duration_ms = (time.perf_counter() - started) * 1000.0
             return result
         except Exception as exc:  # noqa: BLE001 - third-party parser boundary
-            self.repository.set_processing(document, ProcessingStatus.FAILED, f"{type(exc).__name__}: {exc}")
-            self.repository.audit(action="extraction.crashed", subject_type="document", subject_id=document.id, detail={"error": str(exc)})
+            self.repository.set_processing(
+                document, ProcessingStatus.FAILED, f"{type(exc).__name__}: {exc}"
+            )
+            self.repository.audit(
+                action="extraction.crashed",
+                subject_type="document",
+                subject_id=document.id,
+                detail={"error": str(exc)},
+            )
             log.error_event("extraction.crashed", file=filename, error=str(exc), exc_info=True)
             result.error = f"{type(exc).__name__}: {exc}"
             result.error_code = "EXTRACTION"
@@ -368,7 +399,9 @@ class DocumentRegistry:
             return result
 
         # -- classification -------------------------------------------------
-        classification, confidence, authority, notes, title = self._classify(document, version, extraction, filename)
+        classification, confidence, authority, notes, title = self._classify(
+            document, version, extraction, filename
+        )
         applied = self.repository.update_document_metadata(
             document,
             {
@@ -383,7 +416,12 @@ class DocumentRegistry:
             action="document.classified",
             subject_type="document",
             subject_id=document.id,
-            detail={"classification": classification, "confidence": format_number(confidence), "applied": sorted(applied), "notes": notes},
+            detail={
+                "classification": classification,
+                "confidence": format_number(confidence),
+                "applied": sorted(applied),
+                "notes": notes,
+            },
         )
         result.classification = classification
         result.classification_confidence = confidence
@@ -450,7 +488,10 @@ class DocumentRegistry:
         stats = dict(cached.stats or {})
         stats["reused_from_extraction_id"] = cached.id
         stats["cache_hit"] = True
-        stats["diagnostics"] = [*stats.get("diagnostics", []), "extraction reused from cache (identical content hash)"]
+        stats["diagnostics"] = [
+            *stats.get("diagnostics", []),
+            "extraction reused from cache (identical content hash)",
+        ]
         extraction = self.repository.save_extraction(
             document=document,
             version=version,
@@ -478,7 +519,12 @@ class DocumentRegistry:
         stored_fields = payload.get("extracted_fields") or []
         result.extractor = decision.extractor
         result.fields = len(stored_fields)
-        result.fields_unverified = sum(1 for item in stored_fields if (item or {}).get("quality") in (DataQuality.UNVERIFIED.value, DataQuality.MISSING.value))
+        result.fields_unverified = sum(
+            1
+            for item in stored_fields
+            if (item or {}).get("quality")
+            in (DataQuality.UNVERIFIED.value, DataQuality.MISSING.value)
+        )
         result.pages = len(payload.get("pages") or [])
         result.tables = len(payload.get("tables") or [])
         result.paragraphs = len(payload.get("paragraphs") or [])
@@ -486,7 +532,9 @@ class DocumentRegistry:
         return extraction
 
     @staticmethod
-    def _apply_cache_hit_counts(version: DocumentVersion, extraction: Extraction, decision: Any) -> None:
+    def _apply_cache_hit_counts(
+        version: DocumentVersion, extraction: Extraction, decision: Any
+    ) -> None:
         """Stamp the version from the *stored* artefact, never from a fresh parse."""
         payload = extraction.document_json or {}
         stats = extraction.stats or {}
@@ -495,7 +543,9 @@ class DocumentRegistry:
         version.extraction_version = EXTRACTION_ENGINE_VERSION
         version.page_count = int(stats.get("pages") or 0) or None
         version.word_count = int(stats.get("words") or 0) or None
-        sheets = ((payload.get("metadata") or {}).get("extra") or {}).get("workbook", {}).get("sheets")
+        sheets = (
+            ((payload.get("metadata") or {}).get("extra") or {}).get("workbook", {}).get("sheets")
+        )
         version.sheet_count = len(sheets or []) or None
 
     def _extract_and_store(
@@ -519,7 +569,9 @@ class DocumentRegistry:
         # The extractor's own fields are cited to the exact cell or structured item they
         # came from; the rule pass adds what prose mentions.  Assigning the rule output
         # alone would throw the better evidence away.
-        parsed.extracted_fields = merge_field_sets(parsed.extracted_fields, self.field_extractor.apply(parsed))
+        parsed.extracted_fields = merge_field_sets(
+            parsed.extracted_fields, self.field_extractor.apply(parsed)
+        )
         stats = {
             "chars": parsed.char_count,
             "words": parsed.word_count,
@@ -528,9 +580,15 @@ class DocumentRegistry:
             "sections": len(parsed.sections),
             "pages": len(parsed.pages),
             "fields": len(parsed.extracted_fields),
-            "fields_valid": sum(1 for f in parsed.extracted_fields if f.quality is DataQuality.VALID),
-            "fields_unverified": sum(1 for f in parsed.extracted_fields if f.quality is DataQuality.UNVERIFIED),
-            "fields_invalid": sum(1 for f in parsed.extracted_fields if f.quality is DataQuality.INVALID),
+            "fields_valid": sum(
+                1 for f in parsed.extracted_fields if f.quality is DataQuality.VALID
+            ),
+            "fields_unverified": sum(
+                1 for f in parsed.extracted_fields if f.quality is DataQuality.UNVERIFIED
+            ),
+            "fields_invalid": sum(
+                1 for f in parsed.extracted_fields if f.quality is DataQuality.INVALID
+            ),
             "structure_digest": structure_digest(parsed),
             "diagnostics": list(parsed.diagnostics),
             "provenance_count": len(parsed.provenance),
@@ -566,9 +624,13 @@ class DocumentRegistry:
         version.extraction_version = EXTRACTION_ENGINE_VERSION
         version.page_count = parsed.metadata.page_count or len(parsed.pages)
         version.word_count = parsed.word_count
-        version.sheet_count = len(((parsed.metadata.extra.get("workbook") or {}).get("sheets")) or []) or None
+        version.sheet_count = (
+            len(((parsed.metadata.extra.get("workbook") or {}).get("sheets")) or []) or None
+        )
         if force:
-            result.warnings.append("forced reprocess: the extractor ran even though a cached artefact existed")
+            result.warnings.append(
+                "forced reprocess: the extractor ran even though a cached artefact existed"
+            )
             self.repository.audit(
                 action="extraction.reprocessed",
                 subject_type="document_version",
@@ -598,9 +660,13 @@ class DocumentRegistry:
             subject_id=document.id,
             detail={"error": str(exc), "code": getattr(exc, "code", "")},
         )
-        log.warning_event("extraction.failed", document_id=document.id, file=document.filename, error=str(exc))
+        log.warning_event(
+            "extraction.failed", document_id=document.id, file=document.filename, error=str(exc)
+        )
 
-    def _refine_revision(self, document: Document, version: DocumentVersion, extraction: Extraction, stat: Any) -> None:
+    def _refine_revision(
+        self, document: Document, version: DocumentVersion, extraction: Extraction, stat: Any
+    ) -> None:
         """Prefer a revision stated inside the document over the filename guess.
 
         ``well_a3_program_rev12.pdf`` is evidence; a body line reading "Revision 14"
@@ -608,7 +674,9 @@ class DocumentRegistry:
         the replacement is recorded as an audit event - the registry never quietly
         rewrites history (section 85).
         """
-        file_modified = version.file_modified_at or (datetime.fromtimestamp(stat.st_mtime, tz=UTC) if stat is not None else None)
+        file_modified = version.file_modified_at or (
+            datetime.fromtimestamp(stat.st_mtime, tz=UTC) if stat is not None else None
+        )
         refined = parse_revision("", extraction.text_blob or "", file_modified=file_modified)
         if refined.revision_key <= (version.revision_key or 0):
             return
@@ -641,10 +709,18 @@ class DocumentRegistry:
         self.repository.session.flush()
 
     # -- helpers ------------------------------------------------------------
-    def _classify(self, document: Document, version: DocumentVersion, extraction: Extraction | None, filename: str) -> tuple[str, float, str, list[str], str]:
+    def _classify(
+        self,
+        document: Document,
+        version: DocumentVersion,
+        extraction: Extraction | None,
+        filename: str,
+    ) -> tuple[str, float, str, list[str], str]:
         """Deterministic classification over the stored extraction."""
         document_json = (extraction.document_json if extraction else None) or {}
-        normalized = NormalizedDocument.from_dict(document_json) if document_json else NormalizedDocument()
+        normalized = (
+            NormalizedDocument.from_dict(document_json) if document_json else NormalizedDocument()
+        )
         result = self.classifier.classify(
             filename=filename,
             text=normalized.text or (extraction.text_blob if extraction else "") or "",
@@ -654,13 +730,25 @@ class DocumentRegistry:
             is_current=bool(version.is_current),
         )
         title = self._detect_title(normalized, filename, version)
-        return result.classification.value, result.confidence, result.authority_tier, list(result.notes), title
+        return (
+            result.classification.value,
+            result.confidence,
+            result.authority_tier,
+            list(result.notes),
+            title,
+        )
 
     @staticmethod
-    def _detect_title(normalized: NormalizedDocument, filename: str, version: DocumentVersion) -> str:
+    def _detect_title(
+        normalized: NormalizedDocument, filename: str, version: DocumentVersion
+    ) -> str:
         """Prefer a real document title over the filename (which lies often)."""
-        pdf_title = str((normalized.metadata.extra.get("pdf_metadata") or {}).get("title") or "").strip()
-        core_title = str((normalized.metadata.extra.get("core_properties") or {}).get("title") or "").strip()
+        pdf_title = str(
+            (normalized.metadata.extra.get("pdf_metadata") or {}).get("title") or ""
+        ).strip()
+        core_title = str(
+            (normalized.metadata.extra.get("core_properties") or {}).get("title") or ""
+        ).strip()
         if pdf_title and len(pdf_title) > 3:
             return pdf_title[:400]
         if core_title and len(core_title) > 3:
@@ -668,21 +756,30 @@ class DocumentRegistry:
         # A workbook or CSV has no prose title: its name is the title the reader sees,
         # and "Sheet: Summary" is a locator rather than something a human wrote.
         if Path(filename).suffix.lower() in {".csv", ".tsv", ".xlsx", ".xlsm", ".xls"}:
-            return core_title[:400] if core_title and len(core_title) > 3 else Path(filename).stem[:400]
+            return (
+                core_title[:400]
+                if core_title and len(core_title) > 3
+                else Path(filename).stem[:400]
+            )
         for paragraph in normalized.paragraphs[:12]:
             text = (paragraph.text or "").strip()
             if paragraph.is_heading and paragraph.style != "sheet" and len(text) > 5:
                 return text[:400]
         for line in (normalized.text or "").splitlines()[:8]:
             stripped = line.strip()
-            if len(stripped) > 12 and not stripped.lower().startswith((*_SYNTHETIC_TITLE_MARKERS, "http", "www.")):
+            if len(stripped) > 12 and not stripped.lower().startswith(
+                (*_SYNTHETIC_TITLE_MARKERS, "http", "www.")
+            ):
                 return stripped[:400]
         return Path(filename).stem[:400]
 
     def _sha(self, path: Path, size: int) -> str:
         from ..core.hashing import sha256_file
 
-        chunk = int(getattr(getattr(self.settings, "ingestion", None), "hash_chunk_bytes", 1 << 20) or (1 << 20))
+        chunk = int(
+            getattr(getattr(self.settings, "ingestion", None), "hash_chunk_bytes", 1 << 20)
+            or (1 << 20)
+        )
         try:
             return sha256_file(path, chunk)
         except OSError as exc:
@@ -716,7 +813,10 @@ class DocumentRegistry:
         mineru = getattr(self.settings, "mineru", None)
         payload = {
             "options": self._extractor_options(),
-            "mineru": {"mode": getattr(mineru, "mode", ""), "backend": getattr(mineru, "backend", "")},
+            "mineru": {
+                "mode": getattr(mineru, "mode", ""),
+                "backend": getattr(mineru, "backend", ""),
+            },
             "engine": EXTRACTION_ENGINE_VERSION,
             "classifier": CLASSIFIER_VERSION,
             "extension": extension,
@@ -724,7 +824,9 @@ class DocumentRegistry:
         return sha256_obj(payload)[:16]
 
     # -- reprocessing -------------------------------------------------------
-    def reprocess(self, document_id: str, *, workspace_root: Path | str, force: bool = True) -> RegistrationResult:
+    def reprocess(
+        self, document_id: str, *, workspace_root: Path | str, force: bool = True
+    ) -> RegistrationResult:
         """Re-register a document from the file on disk.
 
         Three rules make this safe to expose in a UI:
@@ -742,7 +844,12 @@ class DocumentRegistry:
         """
         document = self.repository.get(document_id)
         if document is None:
-            return RegistrationResult(filename="(unknown)", change=FileChangeKind.NEW, error=f"document {document_id} not found", error_code="NOT_FOUND")
+            return RegistrationResult(
+                filename="(unknown)",
+                change=FileChangeKind.NEW,
+                error=f"document {document_id} not found",
+                error_code="NOT_FOUND",
+            )
         version = self.repository.current_version(document)
         if version is None:
             return RegistrationResult(
@@ -752,7 +859,9 @@ class DocumentRegistry:
                 error=f"document {document.filename} has no version to reprocess",
                 error_code="REGISTRY",
             )
-        source = self.repository.resolve_source_path(version, document, workspace_root=workspace_root)
+        source = self.repository.resolve_source_path(
+            version, document, workspace_root=workspace_root
+        )
         if source is None:
             return RegistrationResult(
                 filename=document.filename,

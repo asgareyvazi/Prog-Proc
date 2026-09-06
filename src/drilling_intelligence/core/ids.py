@@ -52,7 +52,11 @@ class SubjectKey:
 
     @classmethod
     def parse(cls, rendered: str) -> SubjectKey:
-        fields = {part.split(":", 1)[0]: part.split(":", 1)[1] for part in (rendered or "").split("|") if ":" in part}
+        fields = {
+            part.split(":", 1)[0]: part.split(":", 1)[1]
+            for part in (rendered or "").split("|")
+            if ":" in part
+        }
         return cls(
             well_id=fields.get("well", ""),
             section_id=fields.get("section", ""),

@@ -104,9 +104,23 @@ def run_command(
             "timeout": True,
         }
     except FileNotFoundError as exc:
-        return {"argv": argv, "returncode": -1, "stdout": "", "stderr": f"executable not found: {exc}", "duration_ms": 0.0, "timeout": False}
+        return {
+            "argv": argv,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": f"executable not found: {exc}",
+            "duration_ms": 0.0,
+            "timeout": False,
+        }
     except Exception as exc:  # noqa: BLE001 - subprocess boundary
-        return {"argv": argv, "returncode": -1, "stdout": "", "stderr": f"{type(exc).__name__}: {exc}", "duration_ms": 0.0, "timeout": False}
+        return {
+            "argv": argv,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": f"{type(exc).__name__}: {exc}",
+            "duration_ms": 0.0,
+            "timeout": False,
+        }
 
 
 def parse_json_loose(text: str) -> Any:
@@ -128,7 +142,17 @@ def parse_json_loose(text: str) -> Any:
     return None
 
 
-def http_json(method: str, url: str, *, json_body: Any = None, params: dict[str, Any] | None = None, timeout: float = 30.0, headers: dict[str, str] | None = None, files: dict[str, Any] | None = None, data: dict[str, Any] | None = None) -> dict[str, Any]:
+def http_json(
+    method: str,
+    url: str,
+    *,
+    json_body: Any = None,
+    params: dict[str, Any] | None = None,
+    timeout: float = 30.0,
+    headers: dict[str, str] | None = None,
+    files: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Small HTTP helper used by the Ollama/MinerU clients (httpx under the hood).
 
     Kept in one place so timeout/retry/redaction behaviour is identical for every

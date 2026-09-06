@@ -65,7 +65,9 @@ def test_pdf_table_is_a_grid_not_a_blob_of_text(corpus_dir, extract) -> None:
     assert all(len(row) == table.column_count for row in table.rows), "ragged grid"
     assert table.page == 1 and table.table_id
     cells = {cell for row in table.rows for cell in row if cell}
-    assert any("ppg" in cell.lower() or "gradient" in cell.lower() for cell in cells), sorted(cells)[:8]
+    assert any("ppg" in cell.lower() or "gradient" in cell.lower() for cell in cells), sorted(
+        cells
+    )[:8]
 
 
 def test_a_scanned_pdf_reports_that_it_has_no_text(corpus_dir, extract) -> None:
@@ -73,7 +75,9 @@ def test_a_scanned_pdf_reports_that_it_has_no_text(corpus_dir, extract) -> None:
     document, _choice, _extractor = extract(corpus_dir / "scanned_well_b11_report.pdf")
     assert not document.text.strip()
     assert document.diagnostics, "an unreadable page has to say so"
-    assert any("no extractable text" in line or "scan" in line.lower() for line in document.diagnostics)
+    assert any(
+        "no extractable text" in line or "scan" in line.lower() for line in document.diagnostics
+    )
 
 
 def test_excel_keeps_sheets_formulas_and_cell_types(corpus_dir, extract) -> None:
@@ -88,7 +92,9 @@ def test_excel_keeps_sheets_formulas_and_cell_types(corpus_dir, extract) -> None
     assert document.tables, "each populated sheet becomes a table"
     table = document.tables[0]
     assert table.sheet and table.provenance is not None
-    assert table.provenance.locator.kind == "excel" and table.provenance.locator.sheet == table.sheet
+    assert (
+        table.provenance.locator.kind == "excel" and table.provenance.locator.sheet == table.sheet
+    )
     # A label/value row is read as a field, and it is cited to the *cell* that holds the
     # number - including when the row also carries a units column and a remark column,
     # which is how real mud reports are laid out.
@@ -97,8 +103,12 @@ def test_excel_keeps_sheets_formulas_and_cell_types(corpus_dir, extract) -> None
     field = fields[0]
     assert float(field.value) == pytest.approx(10.2)
     assert field.unit == "ppg", "the units column belongs to the value"
-    assert field.provenance.locator.ref() == "Sheet: Summary > Cell: B9", field.provenance.locator.ref()
-    assert all(other.provenance.locator.cell for other in document.extracted_fields), "every key/value field needs a cell citation"
+    assert field.provenance.locator.ref() == "Sheet: Summary > Cell: B9", (
+        field.provenance.locator.ref()
+    )
+    assert all(other.provenance.locator.cell for other in document.extracted_fields), (
+        "every key/value field needs a cell citation"
+    )
 
 
 def test_a_workbook_provenance_excerpt_is_the_text_at_its_location(corpus_dir, extract) -> None:
@@ -113,17 +123,37 @@ def test_a_workbook_provenance_excerpt_is_the_text_at_its_location(corpus_dir, e
 
     path = corpus_dir / "mud_report_well-a3.xlsx"
     document, _choice, _extractor = extract(path)
-    records = [(f"paragraph {paragraph.index}", paragraph.text, paragraph.provenance) for paragraph in document.paragraphs]
-    records += [(f"table {table.table_id}", table.caption, table.provenance) for table in document.tables]
-    records += [(f"field {field.name}", field.value_text if hasattr(field, "value_text") else str(field.value), field.provenance) for field in document.extracted_fields]
-    quoted = [(label, text, provenance) for label, text, provenance in records if provenance is not None and str(provenance.excerpt or "")]
+    records = [
+        (f"paragraph {paragraph.index}", paragraph.text, paragraph.provenance)
+        for paragraph in document.paragraphs
+    ]
+    records += [
+        (f"table {table.table_id}", table.caption, table.provenance) for table in document.tables
+    ]
+    records += [
+        (
+            f"field {field.name}",
+            field.value_text if hasattr(field, "value_text") else str(field.value),
+            field.provenance,
+        )
+        for field in document.extracted_fields
+    ]
+    quoted = [
+        (label, text, provenance)
+        for label, text, provenance in records
+        if provenance is not None and str(provenance.excerpt or "")
+    ]
     assert quoted, "the workbook extractor is expected to record excerpts, not only locations"
     for label, _text, provenance in quoted:
         outcome = verify_provenance(path, provenance)
-        assert outcome.status == "MATCH", f"{label} cites {provenance.locator.ref()!r} but it does not re-read: {outcome.detail} / {outcome.current_excerpt[:60]!r}"
+        assert outcome.status == "MATCH", (
+            f"{label} cites {provenance.locator.ref()!r} but it does not re-read: {outcome.detail} / {outcome.current_excerpt[:60]!r}"
+        )
 
 
-def test_a_synthetic_sheet_heading_is_located_without_claiming_a_quotation(corpus_dir, extract) -> None:
+def test_a_synthetic_sheet_heading_is_located_without_claiming_a_quotation(
+    corpus_dir, extract
+) -> None:
     """``Sheet: Summary`` is our label for a place, not a sentence the file contains.
 
     Keeping the locator is useful (it is where the sheet starts); recording an excerpt is not,
@@ -137,8 +167,12 @@ def test_a_synthetic_sheet_heading_is_located_without_claiming_a_quotation(corpu
     headings = [paragraph for paragraph in document.paragraphs if paragraph.style == "sheet"]
     assert headings, "each sheet contributes one searchable title paragraph"
     for paragraph in headings:
-        assert paragraph.provenance is not None and paragraph.provenance.locator.ref().startswith("Sheet:")
-        assert not str(paragraph.provenance.excerpt or ""), "a synthesised label must not be recorded as a quotation"
+        assert paragraph.provenance is not None and paragraph.provenance.locator.ref().startswith(
+            "Sheet:"
+        )
+        assert not str(paragraph.provenance.excerpt or ""), (
+            "a synthesised label must not be recorded as a quotation"
+        )
         assert verify_provenance(path, paragraph.provenance).status == "NOT_CHECKABLE"
 
 
@@ -161,7 +195,9 @@ def test_csv_and_text_keep_line_offsets_and_the_header_row(corpus_dir, extract) 
         assert document.text, name
         # Provenance may sit on a paragraph (prose) or on the table (a delimited file),
         # but in both cases it must be a line range that a human can open to.
-        located = [paragraph.provenance for paragraph in document.paragraphs if paragraph.provenance]
+        located = [
+            paragraph.provenance for paragraph in document.paragraphs if paragraph.provenance
+        ]
         located += [table.provenance for table in document.tables if table.provenance]
         assert located, name
         for provenance in located:

@@ -64,7 +64,12 @@ def trail(session) -> tuple[DocumentRepository, str]:
 # --------------------------------------------------------------------------- the write path
 def test_events_are_appended_and_read_back(session, trail) -> None:
     repository, document_id = trail
-    first = repository.audit(action="document.registered", subject_type="document", subject_id=document_id, detail={"sha256": "a" * 64})
+    first = repository.audit(
+        action="document.registered",
+        subject_type="document",
+        subject_id=document_id,
+        detail={"sha256": "a" * 64},
+    )
     session.flush()
     assert first.id and first.at is not None
     assert repository.audit_trail("document", document_id)[0].action == "document.registered"
@@ -74,12 +79,19 @@ def test_events_are_appended_and_read_back(session, trail) -> None:
 
 def test_detail_is_stored_verbatim_and_defaulted(session, trail) -> None:
     repository, document_id = trail
-    row = repository.audit(action="document.classified", subject_type="document", subject_id=document_id, detail={"kind": "MUD_REPORT", "confidence": 0.91})
+    row = repository.audit(
+        action="document.classified",
+        subject_type="document",
+        subject_id=document_id,
+        detail={"kind": "MUD_REPORT", "confidence": 0.91},
+    )
     session.flush()
     stored = session.get(AuditEvent, row.id)
     assert stored.detail == {"kind": "MUD_REPORT", "confidence": 0.91}
     assert stored.actor == "system"
-    empty = repository.audit(action="document.touched", subject_type="document", subject_id=document_id)
+    empty = repository.audit(
+        action="document.touched", subject_type="document", subject_id=document_id
+    )
     session.flush()
     assert session.get(AuditEvent, empty.id).detail == {}
 
@@ -87,7 +99,12 @@ def test_detail_is_stored_verbatim_and_defaulted(session, trail) -> None:
 # --------------------------------------------------------------------------- no update path
 def test_an_edited_audit_row_is_refused(session, trail) -> None:
     repository, document_id = trail
-    row = repository.audit(action="document.registered", subject_type="document", subject_id=document_id, detail={"sha256": "a" * 64})
+    row = repository.audit(
+        action="document.registered",
+        subject_type="document",
+        subject_id=document_id,
+        detail={"sha256": "a" * 64},
+    )
     session.commit()  # written and durable: what follows is an attempt to rewrite history
 
     row.action = "document.registered_typo_fixed"
@@ -97,12 +114,19 @@ def test_an_edited_audit_row_is_refused(session, trail) -> None:
     assert caught.value.context["subject_id"] == document_id
     session.rollback()
     session.expire_all()
-    assert session.get(AuditEvent, row.id).action == "document.registered", "the row is untouched, not half-written"
+    assert session.get(AuditEvent, row.id).action == "document.registered", (
+        "the row is untouched, not half-written"
+    )
 
 
 def test_a_deleted_audit_row_is_refused(session, trail) -> None:
     repository, document_id = trail
-    row = repository.audit(action="document.version_added", subject_type="document", subject_id=document_id, detail={"version": 1})
+    row = repository.audit(
+        action="document.version_added",
+        subject_type="document",
+        subject_id=document_id,
+        detail={"version": 1},
+    )
     session.commit()
     session.delete(row)
     with pytest.raises(AuditPolicyError, match="delete is not permitted"):
@@ -110,33 +134,57 @@ def test_a_deleted_audit_row_is_refused(session, trail) -> None:
     session.rollback()
     session.expire_all()
     assert session.get(AuditEvent, row.id) is not None
-    assert session.scalar(select(func.count()).select_from(AuditEvent)) == 1, "the refused delete removed nothing"
+    assert session.scalar(select(func.count()).select_from(AuditEvent)) == 1, (
+        "the refused delete removed nothing"
+    )
 
 
 def test_correction_is_additive(session, trail) -> None:
     """The documented way to fix history: append an event that references the earlier one."""
     repository, document_id = trail
-    wrong = repository.audit(action="document.classified", subject_type="document", subject_id=document_id, detail={"kind": "DDR"})
+    wrong = repository.audit(
+        action="document.classified",
+        subject_type="document",
+        subject_id=document_id,
+        detail={"kind": "DDR"},
+    )
     session.flush()
     right = repository.audit(
         action="audit.corrected",
         subject_type="document",
         subject_id=document_id,
-        detail={"replaces": wrong.id, "kind": "MUD_REPORT", "reason": "the label row is a mud report"},
+        detail={
+            "replaces": wrong.id,
+            "kind": "MUD_REPORT",
+            "reason": "the label row is a mud report",
+        },
     )
     session.flush()
     actions = [event.action for event in repository.audit_trail("document", document_id, limit=10)]
     assert actions == ["audit.corrected", "document.classified"], "both events are on the trail"
     assert right.detail["replaces"] == wrong.id
-    assert session.get(AuditEvent, wrong.id).detail["kind"] == "DDR", "the original claim survives as written"
+    assert session.get(AuditEvent, wrong.id).detail["kind"] == "DDR", (
+        "the original claim survives as written"
+    )
 
 
 # --------------------------------------------------------------------------- the contract itself
 def test_the_log_offers_no_way_to_rewrite_history() -> None:
     """The public surface is record + reads; nothing named like an edit or a purge exists."""
-    names = {name for name, _ in inspect.getmembers(AuditLog, predicate=inspect.isfunction) if not name.startswith("_")}
+    names = {
+        name
+        for name, _ in inspect.getmembers(AuditLog, predicate=inspect.isfunction)
+        if not name.startswith("_")
+    }
     assert names == {"record", "trail", "has_action"}, names
-    forbidden = [name for name in names if any(token in name.lower() for token in ("update", "delete", "remove", "purge", "edit", "clear", "set"))]
+    forbidden = [
+        name
+        for name in names
+        if any(
+            token in name.lower()
+            for token in ("update", "delete", "remove", "purge", "edit", "clear", "set")
+        )
+    ]
     assert forbidden == []
 
 
@@ -150,19 +198,32 @@ def test_the_repository_exposes_audit_only_as_an_append(session) -> None:
     # check is scoped to the audit methods instead of grepping the whole module.)
     for name in ("audit", "audit_trail"):
         body = inspect.getsource(getattr(DocumentRepository, name))
-        forbidden = [token for token in ("session.delete", "session.execute", "update audit_event", "record.update") if token in body]
+        forbidden = [
+            token
+            for token in (
+                "session.delete",
+                "session.execute",
+                "update audit_event",
+                "record.update",
+            )
+            if token in body
+        ]
         assert forbidden == [], f"DocumentRepository.{name} must not {forbidden}: {body}"
 
 
 def test_the_policy_is_installed_once_and_is_idempotent() -> None:
     """Re-import must not stack listeners (each would raise once per flush, harmlessly but noisily)."""
-    assert install_append_only_policy() is False, "the guard is installed on import of the persistence layer"
+    assert install_append_only_policy() is False, (
+        "the guard is installed on import of the persistence layer"
+    )
 
 
 def test_the_guard_covers_any_session_in_the_process(db, trail) -> None:
     """Not just the fixture's session: the listener is on the mapper, process-wide."""
     repository, document_id = trail
-    row = repository.audit(action="document.registered", subject_type="document", subject_id=document_id)
+    row = repository.audit(
+        action="document.registered", subject_type="document", subject_id=document_id
+    )
     repository.session.commit()
     with db.session() as other:
         found = other.get(AuditEvent, row.id)
@@ -178,7 +239,12 @@ def test_an_ordinary_document_update_is_not_collateral_damage(session, trail) ->
     repository, document_id = trail
     document = session.get(Document, document_id)
     document.filename = "renamed.txt"
-    repository.audit(action="document.renamed", subject_type="document", subject_id=document_id, detail={"to": "renamed.txt"})
+    repository.audit(
+        action="document.renamed",
+        subject_type="document",
+        subject_id=document_id,
+        detail={"to": "renamed.txt"},
+    )
     session.flush()
     session.commit()
     assert session.get(Document, document_id).filename == "renamed.txt"

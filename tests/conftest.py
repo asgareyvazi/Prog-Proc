@@ -100,6 +100,23 @@ def session(db):
 
 
 @pytest.fixture
+def well(session, tmp_path: Path):
+    """A real well, created through the well registry.
+
+    Knowledge tests need one because a ``well`` subject has to point at a row that exists: the edge
+    validator rejects a relation to a well nobody registered, and that rejection is part of what the
+    knowledge layer promises.  Created through ``WellRepository`` rather than by hand, so the
+    workspace/project links are as real as the well's.
+    """
+    from drilling_intelligence.wells.repository import WellRepository
+
+    repository = WellRepository(session)
+    repository.get_or_create_workspace(str(tmp_path), name="Knowledge Test")
+    project = repository.get_or_create_project("Knowledge Test")
+    return repository.create_well("A-3", project_id=project.id)
+
+
+@pytest.fixture
 def corpus_in_workspace(corpus_dir: Path, workspace) -> Path:
     """Corpus copied under the workspace so identity paths are workspace-relative."""
     import shutil

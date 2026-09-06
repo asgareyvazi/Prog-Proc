@@ -79,7 +79,9 @@ class ScannedFile:
             "size_bytes": self.size_bytes,
             "modified_at": self.modified_at.isoformat(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
-            "metadata_changed_at": self.metadata_changed_at.isoformat() if self.metadata_changed_at else None,
+            "metadata_changed_at": self.metadata_changed_at.isoformat()
+            if self.metadata_changed_at
+            else None,
             "mime_type": self.mime_type,
             "excluded_reason": self.excluded_reason,
         }
@@ -121,9 +123,34 @@ class ScanResult:
 class FileScanner:
     """Walks a workspace corpus and yields candidate documents."""
 
-    supported_extensions: tuple[str, ...] = (".pdf", ".xlsx", ".xlsm", ".docx", ".txt", ".md", ".csv", ".tsv")
-    ignore_dir_names: tuple[str, ...] = (".git", ".drillintel", "node_modules", "__pycache__", ".venv", "venv", "dist", "build")
-    ignore_file_patterns: tuple[str, ...] = ("~$*", "*.tmp", "*.part", "*.lock", ".DS_Store", "Thumbs.db")
+    supported_extensions: tuple[str, ...] = (
+        ".pdf",
+        ".xlsx",
+        ".xlsm",
+        ".docx",
+        ".txt",
+        ".md",
+        ".csv",
+        ".tsv",
+    )
+    ignore_dir_names: tuple[str, ...] = (
+        ".git",
+        ".drillintel",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+    )
+    ignore_file_patterns: tuple[str, ...] = (
+        "~$*",
+        "*.tmp",
+        "*.part",
+        "*.lock",
+        ".DS_Store",
+        "Thumbs.db",
+    )
     max_file_size_bytes: int = 512 * 1024 * 1024
     follow_symlinks: bool = False
     #: Extensions that should be reported as skipped even though we cannot parse them.
@@ -137,11 +164,15 @@ class FileScanner:
         self.ignore_file_patterns = tuple(self.ignore_file_patterns)
 
     # -- public -------------------------------------------------------------
-    def scan(self, root: Path | str, *, extra_extensions: Iterable[str] | None = None) -> ScanResult:
+    def scan(
+        self, root: Path | str, *, extra_extensions: Iterable[str] | None = None
+    ) -> ScanResult:
         root_path = Path(root).expanduser().resolve()
         if not root_path.exists():
             raise ScannerError(f"scan root does not exist: {root_path}", root=str(root_path))
-        extensions = set(self.supported_extensions) | {ext.lower() for ext in (extra_extensions or [])}
+        extensions = set(self.supported_extensions) | {
+            ext.lower() for ext in (extra_extensions or [])
+        }
         result = ScanResult(root=str(root_path))
         import time
 
@@ -161,7 +192,9 @@ class FileScanner:
                     continue
                 target = current / name
                 if target.is_symlink() and not self.follow_symlinks:
-                    result.skipped.append((str(target), "symlink directory (follow_symlinks=false)"))
+                    result.skipped.append(
+                        (str(target), "symlink directory (follow_symlinks=false)")
+                    )
                     continue
                 if target.is_symlink():
                     resolved = str(target.resolve())
@@ -191,7 +224,11 @@ class FileScanner:
                     result.skipped.append((str(path), "symlink file (follow_symlinks=false)"))
                     continue
                 modified = datetime.fromtimestamp(stat.st_mtime, tz=UTC)
-                created = datetime.fromtimestamp(stat.st_ctime, tz=UTC) if hasattr(stat, "st_ctime") else None
+                created = (
+                    datetime.fromtimestamp(stat.st_ctime, tz=UTC)
+                    if hasattr(stat, "st_ctime")
+                    else None
+                )
                 excluded_reason = ""
                 if stat.st_size > self.max_file_size_bytes:
                     excluded_reason = f"exceeds max_file_size_mb ({stat.st_size} bytes > {self.max_file_size_bytes})"

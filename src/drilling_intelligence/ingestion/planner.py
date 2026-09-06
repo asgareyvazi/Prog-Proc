@@ -98,12 +98,20 @@ class ScanPlan:
         for item in self.items:
             tally[item.change.value] += 1
         tally["SKIPPED"] = len(self.skipped)
-        tally["TO_PROCESS"] = sum(1 for item in self.items if item.needs_extraction or item.change in (FileChangeKind.NEW, FileChangeKind.MODIFIED))
+        tally["TO_PROCESS"] = sum(
+            1
+            for item in self.items
+            if item.needs_extraction or item.change in (FileChangeKind.NEW, FileChangeKind.MODIFIED)
+        )
         return tally
 
     @property
     def work_items(self) -> list[PlannedFile]:
-        return [item for item in self.items if item.change in (FileChangeKind.NEW, FileChangeKind.MODIFIED) or item.needs_extraction]
+        return [
+            item
+            for item in self.items
+            if item.change in (FileChangeKind.NEW, FileChangeKind.MODIFIED) or item.needs_extraction
+        ]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -129,7 +137,13 @@ class ScanPlan:
 class IngestionPlanner:
     """Compares a scan against the registry and produces a :class:`ScanPlan`."""
 
-    def __init__(self, repository: DocumentRepository, *, settings: Any = None, hash_chunk_bytes: int = 1 << 20) -> None:
+    def __init__(
+        self,
+        repository: DocumentRepository,
+        *,
+        settings: Any = None,
+        hash_chunk_bytes: int = 1 << 20,
+    ) -> None:
         self.repository = repository
         self.settings = settings
         self.hash_chunk_bytes = hash_chunk_bytes
@@ -188,7 +202,11 @@ class IngestionPlanner:
 
             document = self.repository.by_identity(workspace_id, identity)
             if document is not None:
-                plan.items.append(self._plan_known(file, document, digest, force_reprocess, seen_hashes, workspace_id, identity))
+                plan.items.append(
+                    self._plan_known(
+                        file, document, digest, force_reprocess, seen_hashes, workspace_id, identity
+                    )
+                )
                 continue
 
             # Unknown slot: is the *content* already registered somewhere else?
@@ -262,7 +280,11 @@ class IngestionPlanner:
         identity = identity or self._identity(file, None)
         current_version_id = document.current_version_id or ""
         if document.sha256 == digest and not force_reprocess:
-            extraction = self.repository.latest_extraction(document.id) if hasattr(self.repository, "latest_extraction") else None
+            extraction = (
+                self.repository.latest_extraction(document.id)
+                if hasattr(self.repository, "latest_extraction")
+                else None
+            )
             # A CACHE_HIT row *is* a usable extraction: it is the same content, already
             # parsed and stored.  Treating it as missing re-extracts forever.
             usable = extraction is not None and extraction.status in {"OK", "CACHE_HIT"}
@@ -273,7 +295,8 @@ class IngestionPlanner:
                 sha256=digest,
                 document_id=document.id,
                 current_version_id=current_version_id or None,
-                reason="content hash matches the registry" + ("" if usable else "; no stored extraction, will extract"),
+                reason="content hash matches the registry"
+                + ("" if usable else "; no stored extraction, will extract"),
                 needs_extraction=not usable,
             )
         if document.sha256 == digest and force_reprocess:
@@ -329,7 +352,9 @@ class IngestionPlanner:
             return None
         return (version.document_id, version.id)
 
-    def _detect_removed(self, workspace_id: str | None, identities_in_scan: set[str]) -> list[RemovedFile]:
+    def _detect_removed(
+        self, workspace_id: str | None, identities_in_scan: set[str]
+    ) -> list[RemovedFile]:
         if workspace_id is None:
             return []
         removed: list[RemovedFile] = []

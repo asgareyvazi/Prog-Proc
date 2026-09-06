@@ -79,8 +79,15 @@ def document_and_version(session):
 # --------------------------------------------------------------------------- sources
 def test_get_or_create_source_is_idempotent_and_keeps_the_unique_key(session) -> None:
     repository = DocumentRepository(session)
-    first = repository.get_or_create_source(kind="document", reference="ver-1", label="Mud report Rev 1", authority_tier="current_operational_report")
-    again = repository.get_or_create_source(kind="document", reference="ver-1", label="ignored", authority_tier="historical_report")
+    first = repository.get_or_create_source(
+        kind="document",
+        reference="ver-1",
+        label="Mud report Rev 1",
+        authority_tier="current_operational_report",
+    )
+    again = repository.get_or_create_source(
+        kind="document", reference="ver-1", label="ignored", authority_tier="historical_report"
+    )
     assert first.id == again.id
     assert session.scalar(select(func.count()).select_from(Source)) == 1
     # Reuse also refreshes the fields that legitimately change (authority, revision),
@@ -91,11 +98,15 @@ def test_get_or_create_source_is_idempotent_and_keeps_the_unique_key(session) ->
 def test_a_competing_source_insert_becomes_a_reuse(session) -> None:
     """The window: we looked, saw nothing, and the row was there anyway."""
     repository = DocumentRepository(session)
-    winner = repository.get_or_create_source(kind="manual", reference="paper-42", label="Offset paper")
+    winner = repository.get_or_create_source(
+        kind="manual", reference="paper-42", label="Offset paper"
+    )
     session.commit()
 
     blind = BlindOnceRepository(session, blind="source")
-    result = blind.get_or_create_source(kind="manual", reference="paper-42", label="Offset paper (again)")
+    result = blind.get_or_create_source(
+        kind="manual", reference="paper-42", label="Offset paper (again)"
+    )
     assert result.id == winner.id, "the loser reuses the winner's row"
     assert blind.lookups >= 2, "the re-read after the failed insert is what saves the run"
     assert session.scalar(select(func.count()).select_from(Source)) == 1
@@ -110,8 +121,19 @@ def test_the_source_key_constraint_is_real(session) -> None:
         "insert into source (id, kind, reference, label, authority_tier, verified, created_at, updated_at)"
         " values (:id, :kind, :reference, :label, :tier, 0, '2026-01-01', '2026-01-01')"
     )
-    with pytest.raises(Exception, match=r"UNIQUE constraint failed: source\.kind, source\.reference"):
-        session.execute(raw, {"id": "src-raw", "kind": "document", "reference": "dup", "label": "two", "tier": "general_knowledge"})
+    with pytest.raises(
+        Exception, match=r"UNIQUE constraint failed: source\.kind, source\.reference"
+    ):
+        session.execute(
+            raw,
+            {
+                "id": "src-raw",
+                "kind": "document",
+                "reference": "dup",
+                "label": "two",
+                "tier": "general_knowledge",
+            },
+        )
     session.rollback()
 
 
@@ -133,8 +155,14 @@ def raw_cache_insert(sha: str):
     ).bindparams(sha=sha)
 
 
-
-def store_artefact(repository: DocumentRepository, document: Document, version: DocumentVersion, *, extractor: str = "pdf_text", sha: str = "d" * 64) -> Extraction:
+def store_artefact(
+    repository: DocumentRepository,
+    document: Document,
+    version: DocumentVersion,
+    *,
+    extractor: str = "pdf_text",
+    sha: str = "d" * 64,
+) -> Extraction:
     return repository.save_extraction(
         document=document,
         version=version,
@@ -164,17 +192,27 @@ def test_one_cache_entry_per_key_pointing_at_a_real_artefact(session, document_a
     )
     assert entry.extraction_id == artefact.id
     assert entry.produced_by_version_id == version.id
-    assert repository.find_cached_extraction(
-        content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg"
-    ).id == artefact.id
+    assert (
+        repository.find_cached_extraction(
+            content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg"
+        ).id
+        == artefact.id
+    )
     assert repository.check_extraction_cache() == []
 
 
-def test_a_competing_cache_insert_becomes_an_update_not_a_failure(session, document_and_version) -> None:
+def test_a_competing_cache_insert_becomes_an_update_not_a_failure(
+    session, document_and_version
+) -> None:
     repository, document, version = document_and_version
     first = store_artefact(repository, document, version)
     repository.remember_extraction_in_cache(
-        first, content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg", document_version_id=version.id
+        first,
+        content_sha256="d" * 64,
+        extractor="pdf_text",
+        extractor_version="1",
+        config_hash="cfg",
+        document_version_id=version.id,
     )
     session.commit()
 
@@ -185,19 +223,33 @@ def test_a_competing_cache_insert_becomes_an_update_not_a_failure(session, docum
 
     blind = BlindOnceRepository(session, blind="cache")
     entry = blind.remember_extraction_in_cache(
-        second, content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg", document_version_id=version.id
+        second,
+        content_sha256="d" * 64,
+        extractor="pdf_text",
+        extractor_version="1",
+        config_hash="cfg",
+        document_version_id=version.id,
     )
     assert entry.extraction_id == second.id, "the freshest artefact is what the cache should serve"
-    assert session.scalar(select(func.count()).select_from(ExtractionCache)) == 1, "but still exactly one entry per key"
+    assert session.scalar(select(func.count()).select_from(ExtractionCache)) == 1, (
+        "but still exactly one entry per key"
+    )
     session.commit()
     assert blind.lookups >= 2
 
 
-def test_a_second_artefact_for_the_same_key_is_refused_by_the_database(session, document_and_version) -> None:
+def test_a_second_artefact_for_the_same_key_is_refused_by_the_database(
+    session, document_and_version
+) -> None:
     repository, document, version = document_and_version
     artefact = store_artefact(repository, document, version)
     repository.remember_extraction_in_cache(
-        artefact, content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg", document_version_id=version.id
+        artefact,
+        content_sha256="d" * 64,
+        extractor="pdf_text",
+        extractor_version="1",
+        config_hash="cfg",
+        document_version_id=version.id,
     )
     session.flush()
     with pytest.raises(Exception, match=r"UNIQUE constraint failed: extraction_cache"):
@@ -210,16 +262,24 @@ def test_a_deleted_artefact_leaves_no_zombie_entry(session, document_and_version
     repository, document, version = document_and_version
     artefact = store_artefact(repository, document, version)
     repository.remember_extraction_in_cache(
-        artefact, content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg", document_version_id=version.id
+        artefact,
+        content_sha256="d" * 64,
+        extractor="pdf_text",
+        extractor_version="1",
+        config_hash="cfg",
+        document_version_id=version.id,
     )
     session.flush()
     assert session.scalar(select(func.count()).select_from(ExtractionCache)) == 1
     session.delete(artefact)
     session.flush()
     assert session.scalar(select(func.count()).select_from(ExtractionCache)) == 0
-    assert repository.find_cached_extraction(
-        content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg"
-    ) is None
+    assert (
+        repository.find_cached_extraction(
+            content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg"
+        )
+        is None
+    )
 
 
 def test_stale_pointer_is_cleaned_up_instead_of_served(session, document_and_version) -> None:
@@ -227,12 +287,24 @@ def test_stale_pointer_is_cleaned_up_instead_of_served(session, document_and_ver
     repository, document, version = document_and_version
     artefact = store_artefact(repository, document, version)
     entry = repository.remember_extraction_in_cache(
-        artefact, content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg", document_version_id=version.id
+        artefact,
+        content_sha256="d" * 64,
+        extractor="pdf_text",
+        extractor_version="1",
+        config_hash="cfg",
+        document_version_id=version.id,
     )
     session.flush()
-    session.execute(text("update extraction_cache set extraction_id = NULL where id = :id"), {"id": entry.id})
+    session.execute(
+        text("update extraction_cache set extraction_id = NULL where id = :id"), {"id": entry.id}
+    )
     session.expire_all()
-    assert repository.find_cached_extraction(
-        content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg"
-    ) is None
-    assert session.scalar(select(func.count()).select_from(ExtractionCache)) == 0, "the broken entry is removed on the spot"
+    assert (
+        repository.find_cached_extraction(
+            content_sha256="d" * 64, extractor="pdf_text", extractor_version="1", config_hash="cfg"
+        )
+        is None
+    )
+    assert session.scalar(select(func.count()).select_from(ExtractionCache)) == 0, (
+        "the broken entry is removed on the spot"
+    )

@@ -21,492 +21,671 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table('audit_event',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('actor', sa.String(length=80), nullable=False),
-    sa.Column('action', sa.String(length=64), nullable=False),
-    sa.Column('subject_type', sa.String(length=40), nullable=False),
-    sa.Column('subject_id', sa.String(length=36), nullable=False),
-    sa.Column('detail', sa.JSON(), nullable=True),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_audit_event'))
+    op.create_table(
+        "audit_event",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("actor", sa.String(length=80), nullable=False),
+        sa.Column("action", sa.String(length=64), nullable=False),
+        sa.Column("subject_type", sa.String(length=40), nullable=False),
+        sa.Column("subject_id", sa.String(length=36), nullable=False),
+        sa.Column("detail", sa.JSON(), nullable=True),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_audit_event")),
     )
-    with op.batch_alter_table('audit_event', schema=None) as batch_op:
-        batch_op.create_index('ix_audit_subject', ['subject_type', 'subject_id'], unique=False)
+    with op.batch_alter_table("audit_event", schema=None) as batch_op:
+        batch_op.create_index("ix_audit_subject", ["subject_type", "subject_id"], unique=False)
 
-    op.create_table('company',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('name', sa.String(length=200), nullable=False),
-    sa.Column('code', sa.String(length=32), nullable=True),
-    sa.Column('notes', sa.Text(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_company')),
-    sa.UniqueConstraint('name', name=op.f('uq_company_name'))
+    op.create_table(
+        "company",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("name", sa.String(length=200), nullable=False),
+        sa.Column("code", sa.String(length=32), nullable=True),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_company")),
+        sa.UniqueConstraint("name", name=op.f("uq_company_name")),
     )
-    op.create_table('knowledge_relation',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('source_type', sa.String(length=32), nullable=False),
-    sa.Column('source_id', sa.String(length=36), nullable=False),
-    sa.Column('relation', sa.String(length=48), nullable=False),
-    sa.Column('target_type', sa.String(length=32), nullable=False),
-    sa.Column('target_id', sa.String(length=36), nullable=False),
-    sa.Column('weight', sa.Float(), nullable=False),
-    sa.Column('provenance', sa.JSON(), nullable=True),
-    sa.Column('note', sa.Text(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_knowledge_relation')),
-    sa.UniqueConstraint('source_type', 'source_id', 'relation', 'target_type', 'target_id', name='uq_relation_edge')
+    op.create_table(
+        "knowledge_relation",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("source_type", sa.String(length=32), nullable=False),
+        sa.Column("source_id", sa.String(length=36), nullable=False),
+        sa.Column("relation", sa.String(length=48), nullable=False),
+        sa.Column("target_type", sa.String(length=32), nullable=False),
+        sa.Column("target_id", sa.String(length=36), nullable=False),
+        sa.Column("weight", sa.Float(), nullable=False),
+        sa.Column("provenance", sa.JSON(), nullable=True),
+        sa.Column("note", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_knowledge_relation")),
+        sa.UniqueConstraint(
+            "source_type",
+            "source_id",
+            "relation",
+            "target_type",
+            "target_id",
+            name="uq_relation_edge",
+        ),
     )
-    with op.batch_alter_table('knowledge_relation', schema=None) as batch_op:
-        batch_op.create_index('ix_relation_source', ['source_type', 'source_id'], unique=False)
-        batch_op.create_index('ix_relation_target', ['target_type', 'target_id'], unique=False)
+    with op.batch_alter_table("knowledge_relation", schema=None) as batch_op:
+        batch_op.create_index("ix_relation_source", ["source_type", "source_id"], unique=False)
+        batch_op.create_index("ix_relation_target", ["target_type", "target_id"], unique=False)
 
-    op.create_table('skill',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('slug', sa.String(length=120), nullable=False),
-    sa.Column('title', sa.String(length=300), nullable=False),
-    sa.Column('domain', sa.String(length=80), nullable=False),
-    sa.Column('summary', sa.Text(), nullable=True),
-    sa.Column('status', sa.String(length=24), nullable=False),
-    sa.Column('current_version', sa.Integer(), nullable=False),
-    sa.Column('package_path', sa.String(length=1024), nullable=True),
-    sa.Column('tags', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_skill')),
-    sa.UniqueConstraint('slug', name=op.f('uq_skill_slug'))
+    op.create_table(
+        "skill",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("slug", sa.String(length=120), nullable=False),
+        sa.Column("title", sa.String(length=300), nullable=False),
+        sa.Column("domain", sa.String(length=80), nullable=False),
+        sa.Column("summary", sa.Text(), nullable=True),
+        sa.Column("status", sa.String(length=24), nullable=False),
+        sa.Column("current_version", sa.Integer(), nullable=False),
+        sa.Column("package_path", sa.String(length=1024), nullable=True),
+        sa.Column("tags", sa.JSON(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_skill")),
+        sa.UniqueConstraint("slug", name=op.f("uq_skill_slug")),
     )
-    op.create_table('project',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('company_id', sa.String(length=36), nullable=True),
-    sa.Column('name', sa.String(length=200), nullable=False),
-    sa.Column('code', sa.String(length=64), nullable=True),
-    sa.Column('country', sa.String(length=80), nullable=True),
-    sa.Column('description', sa.Text(), nullable=True),
-    sa.Column('status', sa.String(length=32), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['company_id'], ['company.id'], name=op.f('fk_project_company_id_company'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_project')),
-    sa.UniqueConstraint('company_id', 'code', name='uq_project_company_code')
+    op.create_table(
+        "project",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("company_id", sa.String(length=36), nullable=True),
+        sa.Column("name", sa.String(length=200), nullable=False),
+        sa.Column("code", sa.String(length=64), nullable=True),
+        sa.Column("country", sa.String(length=80), nullable=True),
+        sa.Column("description", sa.Text(), nullable=True),
+        sa.Column("status", sa.String(length=32), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["company_id"],
+            ["company.id"],
+            name=op.f("fk_project_company_id_company"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_project")),
+        sa.UniqueConstraint("company_id", "code", name="uq_project_company_code"),
     )
-    op.create_table('skill_version',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('skill_id', sa.String(length=36), nullable=False),
-    sa.Column('version', sa.Integer(), nullable=False),
-    sa.Column('builder', sa.String(length=64), nullable=False),
-    sa.Column('builder_version', sa.String(length=48), nullable=False),
-    sa.Column('content', sa.JSON(), nullable=False),
-    sa.Column('source_document_ids', sa.JSON(), nullable=True),
-    sa.Column('metrics', sa.JSON(), nullable=True),
-    sa.Column('provenance', sa.JSON(), nullable=True),
-    sa.Column('review_status', sa.String(length=24), nullable=False),
-    sa.Column('reviewer', sa.String(length=200), nullable=True),
-    sa.Column('notes', sa.Text(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['skill_id'], ['skill.id'], name=op.f('fk_skill_version_skill_id_skill'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_skill_version')),
-    sa.UniqueConstraint('skill_id', 'version', name='uq_skill_version')
+    op.create_table(
+        "skill_version",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("skill_id", sa.String(length=36), nullable=False),
+        sa.Column("version", sa.Integer(), nullable=False),
+        sa.Column("builder", sa.String(length=64), nullable=False),
+        sa.Column("builder_version", sa.String(length=48), nullable=False),
+        sa.Column("content", sa.JSON(), nullable=False),
+        sa.Column("source_document_ids", sa.JSON(), nullable=True),
+        sa.Column("metrics", sa.JSON(), nullable=True),
+        sa.Column("provenance", sa.JSON(), nullable=True),
+        sa.Column("review_status", sa.String(length=24), nullable=False),
+        sa.Column("reviewer", sa.String(length=200), nullable=True),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["skill_id"],
+            ["skill.id"],
+            name=op.f("fk_skill_version_skill_id_skill"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_skill_version")),
+        sa.UniqueConstraint("skill_id", "version", name="uq_skill_version"),
     )
-    op.create_table('field',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('project_id', sa.String(length=36), nullable=True),
-    sa.Column('name', sa.String(length=200), nullable=False),
-    sa.Column('basin', sa.String(length=120), nullable=True),
-    sa.Column('offshore', sa.Boolean(), nullable=True),
-    sa.Column('notes', sa.Text(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['project.id'], name=op.f('fk_field_project_id_project'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_field'))
+    op.create_table(
+        "field",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("project_id", sa.String(length=36), nullable=True),
+        sa.Column("name", sa.String(length=200), nullable=False),
+        sa.Column("basin", sa.String(length=120), nullable=True),
+        sa.Column("offshore", sa.Boolean(), nullable=True),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["project.id"],
+            name=op.f("fk_field_project_id_project"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_field")),
     )
-    op.create_table('workspace',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('root_path', sa.String(length=1024), nullable=False),
-    sa.Column('name', sa.String(length=200), nullable=False),
-    sa.Column('data_dir', sa.String(length=1024), nullable=False),
-    sa.Column('project_id', sa.String(length=36), nullable=True),
-    sa.Column('last_scan_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('config', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['project.id'], name=op.f('fk_workspace_project_id_project'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_workspace')),
-    sa.UniqueConstraint('root_path', name=op.f('uq_workspace_root_path'))
+    op.create_table(
+        "workspace",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("root_path", sa.String(length=1024), nullable=False),
+        sa.Column("name", sa.String(length=200), nullable=False),
+        sa.Column("data_dir", sa.String(length=1024), nullable=False),
+        sa.Column("project_id", sa.String(length=36), nullable=True),
+        sa.Column("last_scan_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("config", sa.JSON(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["project.id"],
+            name=op.f("fk_workspace_project_id_project"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_workspace")),
+        sa.UniqueConstraint("root_path", name=op.f("uq_workspace_root_path")),
     )
-    op.create_table('ingestion_run',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('workspace_id', sa.String(length=36), nullable=True),
-    sa.Column('root_path', sa.String(length=1024), nullable=False),
-    sa.Column('started_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('finished_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('mode', sa.String(length=24), nullable=False),
-    sa.Column('counts', sa.JSON(), nullable=True),
-    sa.Column('report', sa.JSON(), nullable=True),
-    sa.Column('error', sa.Text(), nullable=True),
-    sa.ForeignKeyConstraint(['workspace_id'], ['workspace.id'], name=op.f('fk_ingestion_run_workspace_id_workspace'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_ingestion_run'))
+    op.create_table(
+        "ingestion_run",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("workspace_id", sa.String(length=36), nullable=True),
+        sa.Column("root_path", sa.String(length=1024), nullable=False),
+        sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("mode", sa.String(length=24), nullable=False),
+        sa.Column("counts", sa.JSON(), nullable=True),
+        sa.Column("report", sa.JSON(), nullable=True),
+        sa.Column("error", sa.Text(), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["workspace_id"],
+            ["workspace.id"],
+            name=op.f("fk_ingestion_run_workspace_id_workspace"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_ingestion_run")),
     )
-    op.create_table('well',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('project_id', sa.String(length=36), nullable=True),
-    sa.Column('field_id', sa.String(length=36), nullable=True),
-    sa.Column('name', sa.String(length=200), nullable=False),
-    sa.Column('well_identifier', sa.String(length=120), nullable=True),
-    sa.Column('lifecycle_status', sa.String(length=24), nullable=False),
-    sa.Column('well_type', sa.String(length=40), nullable=True),
-    sa.Column('trajectory_type', sa.String(length=40), nullable=True),
-    sa.Column('spud_date', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('completion_date', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('total_depth_md_value', sa.Float(), nullable=True),
-    sa.Column('total_depth_md_unit', sa.String(length=16), nullable=False),
-    sa.Column('total_depth_tvd_value', sa.Float(), nullable=True),
-    sa.Column('total_depth_tvd_unit', sa.String(length=16), nullable=False),
-    sa.Column('kb_elevation_value', sa.Float(), nullable=True),
-    sa.Column('kb_elevation_unit', sa.String(length=16), nullable=False),
-    sa.Column('surface_x_value', sa.Float(), nullable=True),
-    sa.Column('surface_y_value', sa.Float(), nullable=True),
-    sa.Column('coordinate_system', sa.String(length=64), nullable=True),
-    sa.Column('notes', sa.Text(), nullable=True),
-    sa.Column('attributes', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['field_id'], ['field.id'], name=op.f('fk_well_field_id_field'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['project_id'], ['project.id'], name=op.f('fk_well_project_id_project'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_well')),
-    sa.UniqueConstraint('project_id', 'name', name='uq_well_project_name')
+    op.create_table(
+        "well",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("project_id", sa.String(length=36), nullable=True),
+        sa.Column("field_id", sa.String(length=36), nullable=True),
+        sa.Column("name", sa.String(length=200), nullable=False),
+        sa.Column("well_identifier", sa.String(length=120), nullable=True),
+        sa.Column("lifecycle_status", sa.String(length=24), nullable=False),
+        sa.Column("well_type", sa.String(length=40), nullable=True),
+        sa.Column("trajectory_type", sa.String(length=40), nullable=True),
+        sa.Column("spud_date", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("completion_date", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("total_depth_md_value", sa.Float(), nullable=True),
+        sa.Column("total_depth_md_unit", sa.String(length=16), nullable=False),
+        sa.Column("total_depth_tvd_value", sa.Float(), nullable=True),
+        sa.Column("total_depth_tvd_unit", sa.String(length=16), nullable=False),
+        sa.Column("kb_elevation_value", sa.Float(), nullable=True),
+        sa.Column("kb_elevation_unit", sa.String(length=16), nullable=False),
+        sa.Column("surface_x_value", sa.Float(), nullable=True),
+        sa.Column("surface_y_value", sa.Float(), nullable=True),
+        sa.Column("coordinate_system", sa.String(length=64), nullable=True),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("attributes", sa.JSON(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["field_id"], ["field.id"], name=op.f("fk_well_field_id_field"), ondelete="SET NULL"
+        ),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["project.id"],
+            name=op.f("fk_well_project_id_project"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_well")),
+        sa.UniqueConstraint("project_id", "name", name="uq_well_project_name"),
     )
-    with op.batch_alter_table('well', schema=None) as batch_op:
-        batch_op.create_index('ix_well_status', ['lifecycle_status'], unique=False)
+    with op.batch_alter_table("well", schema=None) as batch_op:
+        batch_op.create_index("ix_well_status", ["lifecycle_status"], unique=False)
 
-    op.create_table('document',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('workspace_id', sa.String(length=36), nullable=True),
-    sa.Column('project_id', sa.String(length=36), nullable=True),
-    sa.Column('well_id', sa.String(length=36), nullable=True),
-    sa.Column('identity_path', sa.String(length=1024), nullable=False),
-    sa.Column('filename', sa.String(length=512), nullable=False),
-    sa.Column('extension', sa.String(length=16), nullable=False),
-    sa.Column('mime_type', sa.String(length=128), nullable=False),
-    sa.Column('size_bytes', sa.Integer(), nullable=False),
-    sa.Column('sha256', sa.String(length=64), nullable=False),
-    sa.Column('file_created_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('file_modified_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('imported_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('classification', sa.String(length=40), nullable=False),
-    sa.Column('classification_confidence', sa.Float(), nullable=True),
-    sa.Column('title', sa.String(length=400), nullable=True),
-    sa.Column('document_date', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('revision', sa.String(length=64), nullable=True),
-    sa.Column('revision_key', sa.Integer(), nullable=False),
-    sa.Column('status', sa.String(length=32), nullable=False),
-    sa.Column('source_authority', sa.String(length=64), nullable=True),
-    sa.Column('wellbore', sa.String(length=80), nullable=True),
-    sa.Column('interval_from', sa.String(length=40), nullable=True),
-    sa.Column('interval_to', sa.String(length=40), nullable=True),
-    sa.Column('processing_status', sa.String(length=24), nullable=False),
-    sa.Column('processing_error', sa.Text(), nullable=True),
-    sa.Column('current_version_id', sa.String(length=36), nullable=True),
-    sa.Column('change_count', sa.Integer(), nullable=False),
-    sa.Column('tags', sa.JSON(), nullable=True),
-    sa.Column('notes', sa.Text(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['project.id'], name=op.f('fk_document_project_id_project'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['well_id'], ['well.id'], name=op.f('fk_document_well_id_well'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['workspace_id'], ['workspace.id'], name=op.f('fk_document_workspace_id_workspace'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_document')),
-    sa.UniqueConstraint('workspace_id', 'identity_path', name='uq_document_workspace_identity')
+    op.create_table(
+        "document",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("workspace_id", sa.String(length=36), nullable=True),
+        sa.Column("project_id", sa.String(length=36), nullable=True),
+        sa.Column("well_id", sa.String(length=36), nullable=True),
+        sa.Column("identity_path", sa.String(length=1024), nullable=False),
+        sa.Column("filename", sa.String(length=512), nullable=False),
+        sa.Column("extension", sa.String(length=16), nullable=False),
+        sa.Column("mime_type", sa.String(length=128), nullable=False),
+        sa.Column("size_bytes", sa.Integer(), nullable=False),
+        sa.Column("sha256", sa.String(length=64), nullable=False),
+        sa.Column("file_created_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("file_modified_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("imported_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("classification", sa.String(length=40), nullable=False),
+        sa.Column("classification_confidence", sa.Float(), nullable=True),
+        sa.Column("title", sa.String(length=400), nullable=True),
+        sa.Column("document_date", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("revision", sa.String(length=64), nullable=True),
+        sa.Column("revision_key", sa.Integer(), nullable=False),
+        sa.Column("status", sa.String(length=32), nullable=False),
+        sa.Column("source_authority", sa.String(length=64), nullable=True),
+        sa.Column("wellbore", sa.String(length=80), nullable=True),
+        sa.Column("interval_from", sa.String(length=40), nullable=True),
+        sa.Column("interval_to", sa.String(length=40), nullable=True),
+        sa.Column("processing_status", sa.String(length=24), nullable=False),
+        sa.Column("processing_error", sa.Text(), nullable=True),
+        sa.Column("current_version_id", sa.String(length=36), nullable=True),
+        sa.Column("change_count", sa.Integer(), nullable=False),
+        sa.Column("tags", sa.JSON(), nullable=True),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["project.id"],
+            name=op.f("fk_document_project_id_project"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["well_id"], ["well.id"], name=op.f("fk_document_well_id_well"), ondelete="SET NULL"
+        ),
+        sa.ForeignKeyConstraint(
+            ["workspace_id"],
+            ["workspace.id"],
+            name=op.f("fk_document_workspace_id_workspace"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_document")),
+        sa.UniqueConstraint("workspace_id", "identity_path", name="uq_document_workspace_identity"),
     )
-    with op.batch_alter_table('document', schema=None) as batch_op:
-        batch_op.create_index('ix_document_classification', ['classification'], unique=False)
-        batch_op.create_index(batch_op.f('ix_document_sha256'), ['sha256'], unique=False)
-        batch_op.create_index('ix_document_status', ['processing_status'], unique=False)
-        batch_op.create_index('ix_document_well', ['well_id'], unique=False)
+    with op.batch_alter_table("document", schema=None) as batch_op:
+        batch_op.create_index("ix_document_classification", ["classification"], unique=False)
+        batch_op.create_index(batch_op.f("ix_document_sha256"), ["sha256"], unique=False)
+        batch_op.create_index("ix_document_status", ["processing_status"], unique=False)
+        batch_op.create_index("ix_document_well", ["well_id"], unique=False)
 
-    op.create_table('knowledge_conflict',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('lookup_key', sa.String(length=300), nullable=False),
-    sa.Column('well_id', sa.String(length=36), nullable=True),
-    sa.Column('property_name', sa.String(length=120), nullable=False),
-    sa.Column('record_state', sa.String(length=16), nullable=False),
-    sa.Column('candidates', sa.JSON(), nullable=False),
-    sa.Column('status', sa.String(length=32), nullable=False),
-    sa.Column('resolution', sa.JSON(), nullable=True),
-    sa.Column('compare_unit', sa.String(length=24), nullable=False),
-    sa.Column('note', sa.Text(), nullable=True),
-    sa.Column('detected_by', sa.String(length=64), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['well_id'], ['well.id'], name=op.f('fk_knowledge_conflict_well_id_well'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_knowledge_conflict'))
+    op.create_table(
+        "knowledge_conflict",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("lookup_key", sa.String(length=300), nullable=False),
+        sa.Column("well_id", sa.String(length=36), nullable=True),
+        sa.Column("property_name", sa.String(length=120), nullable=False),
+        sa.Column("record_state", sa.String(length=16), nullable=False),
+        sa.Column("candidates", sa.JSON(), nullable=False),
+        sa.Column("status", sa.String(length=32), nullable=False),
+        sa.Column("resolution", sa.JSON(), nullable=True),
+        sa.Column("compare_unit", sa.String(length=24), nullable=False),
+        sa.Column("note", sa.Text(), nullable=True),
+        sa.Column("detected_by", sa.String(length=64), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["well_id"],
+            ["well.id"],
+            name=op.f("fk_knowledge_conflict_well_id_well"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_knowledge_conflict")),
     )
-    with op.batch_alter_table('knowledge_conflict', schema=None) as batch_op:
-        batch_op.create_index(batch_op.f('ix_knowledge_conflict_lookup_key'), ['lookup_key'], unique=False)
+    with op.batch_alter_table("knowledge_conflict", schema=None) as batch_op:
+        batch_op.create_index(
+            batch_op.f("ix_knowledge_conflict_lookup_key"), ["lookup_key"], unique=False
+        )
 
-    op.create_table('well_section',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('well_id', sa.String(length=36), nullable=False),
-    sa.Column('sequence', sa.Integer(), nullable=False),
-    sa.Column('name', sa.String(length=120), nullable=False),
-    sa.Column('hole_size_in', sa.Float(), nullable=True),
-    sa.Column('casing_program', sa.String(length=120), nullable=True),
-    sa.Column('top_depth_value', sa.Float(), nullable=True),
-    sa.Column('top_depth_unit', sa.String(length=16), nullable=False),
-    sa.Column('bottom_depth_value', sa.Float(), nullable=True),
-    sa.Column('bottom_depth_unit', sa.String(length=16), nullable=False),
-    sa.Column('planned_duration_days', sa.Float(), nullable=True),
-    sa.Column('actual_duration_days', sa.Float(), nullable=True),
-    sa.Column('planned_mud_weight_value', sa.Float(), nullable=True),
-    sa.Column('planned_mud_weight_unit', sa.String(length=16), nullable=False),
-    sa.Column('actual_mud_weight_value', sa.Float(), nullable=True),
-    sa.Column('actual_mud_weight_unit', sa.String(length=16), nullable=False),
-    sa.Column('formation_top', sa.String(length=120), nullable=True),
-    sa.Column('notes', sa.Text(), nullable=True),
-    sa.Column('attributes', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['well_id'], ['well.id'], name=op.f('fk_well_section_well_id_well'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_well_section')),
-    sa.UniqueConstraint('well_id', 'name', name='uq_well_section_name')
+    op.create_table(
+        "well_section",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("well_id", sa.String(length=36), nullable=False),
+        sa.Column("sequence", sa.Integer(), nullable=False),
+        sa.Column("name", sa.String(length=120), nullable=False),
+        sa.Column("hole_size_in", sa.Float(), nullable=True),
+        sa.Column("casing_program", sa.String(length=120), nullable=True),
+        sa.Column("top_depth_value", sa.Float(), nullable=True),
+        sa.Column("top_depth_unit", sa.String(length=16), nullable=False),
+        sa.Column("bottom_depth_value", sa.Float(), nullable=True),
+        sa.Column("bottom_depth_unit", sa.String(length=16), nullable=False),
+        sa.Column("planned_duration_days", sa.Float(), nullable=True),
+        sa.Column("actual_duration_days", sa.Float(), nullable=True),
+        sa.Column("planned_mud_weight_value", sa.Float(), nullable=True),
+        sa.Column("planned_mud_weight_unit", sa.String(length=16), nullable=False),
+        sa.Column("actual_mud_weight_value", sa.Float(), nullable=True),
+        sa.Column("actual_mud_weight_unit", sa.String(length=16), nullable=False),
+        sa.Column("formation_top", sa.String(length=120), nullable=True),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("attributes", sa.JSON(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["well_id"], ["well.id"], name=op.f("fk_well_section_well_id_well"), ondelete="CASCADE"
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_well_section")),
+        sa.UniqueConstraint("well_id", "name", name="uq_well_section_name"),
     )
-    op.create_table('document_version',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('document_id', sa.String(length=36), nullable=False),
-    sa.Column('version_number', sa.Integer(), nullable=False),
-    sa.Column('revision', sa.String(length=64), nullable=True),
-    sa.Column('revision_key', sa.Integer(), nullable=False),
-    sa.Column('revision_date', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('status', sa.String(length=32), nullable=False),
-    sa.Column('source_path', sa.String(length=1024), nullable=False),
-    sa.Column('sha256', sa.String(length=64), nullable=False),
-    sa.Column('size_bytes', sa.Integer(), nullable=False),
-    sa.Column('file_modified_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('mime_type', sa.String(length=128), nullable=False),
-    sa.Column('parser', sa.String(length=64), nullable=False),
-    sa.Column('parser_version', sa.String(length=64), nullable=False),
-    sa.Column('extraction_version', sa.String(length=64), nullable=False),
-    sa.Column('extracted_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('page_count', sa.Integer(), nullable=True),
-    sa.Column('sheet_count', sa.Integer(), nullable=True),
-    sa.Column('word_count', sa.Integer(), nullable=True),
-    sa.Column('supersedes_version_id', sa.String(length=36), nullable=True),
-    sa.Column('superseded_by_version_id', sa.String(length=36), nullable=True),
-    sa.Column('origin', sa.String(length=16), nullable=False),
-    sa.Column('is_current', sa.Boolean(), nullable=False),
-    sa.Column('approved_by', sa.String(length=200), nullable=True),
-    sa.Column('approved_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('duplicate_of_version_id', sa.String(length=36), nullable=True),
-    sa.Column('metadata_json', sa.JSON(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['document_id'], ['document.id'], name=op.f('fk_document_version_document_id_document'), ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['duplicate_of_version_id'], ['document_version.id'], name=op.f('fk_document_version_duplicate_of_version_id_document_version'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['superseded_by_version_id'], ['document_version.id'], name=op.f('fk_document_version_superseded_by_version_id_document_version'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['supersedes_version_id'], ['document_version.id'], name=op.f('fk_document_version_supersedes_version_id_document_version'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_document_version')),
-    sa.UniqueConstraint('document_id', 'version_number', name='uq_document_version_number')
+    op.create_table(
+        "document_version",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("document_id", sa.String(length=36), nullable=False),
+        sa.Column("version_number", sa.Integer(), nullable=False),
+        sa.Column("revision", sa.String(length=64), nullable=True),
+        sa.Column("revision_key", sa.Integer(), nullable=False),
+        sa.Column("revision_date", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("status", sa.String(length=32), nullable=False),
+        sa.Column("source_path", sa.String(length=1024), nullable=False),
+        sa.Column("sha256", sa.String(length=64), nullable=False),
+        sa.Column("size_bytes", sa.Integer(), nullable=False),
+        sa.Column("file_modified_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("mime_type", sa.String(length=128), nullable=False),
+        sa.Column("parser", sa.String(length=64), nullable=False),
+        sa.Column("parser_version", sa.String(length=64), nullable=False),
+        sa.Column("extraction_version", sa.String(length=64), nullable=False),
+        sa.Column("extracted_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("page_count", sa.Integer(), nullable=True),
+        sa.Column("sheet_count", sa.Integer(), nullable=True),
+        sa.Column("word_count", sa.Integer(), nullable=True),
+        sa.Column("supersedes_version_id", sa.String(length=36), nullable=True),
+        sa.Column("superseded_by_version_id", sa.String(length=36), nullable=True),
+        sa.Column("origin", sa.String(length=16), nullable=False),
+        sa.Column("is_current", sa.Boolean(), nullable=False),
+        sa.Column("approved_by", sa.String(length=200), nullable=True),
+        sa.Column("approved_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("duplicate_of_version_id", sa.String(length=36), nullable=True),
+        sa.Column("metadata_json", sa.JSON(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["document_id"],
+            ["document.id"],
+            name=op.f("fk_document_version_document_id_document"),
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["duplicate_of_version_id"],
+            ["document_version.id"],
+            name=op.f("fk_document_version_duplicate_of_version_id_document_version"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["superseded_by_version_id"],
+            ["document_version.id"],
+            name=op.f("fk_document_version_superseded_by_version_id_document_version"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["supersedes_version_id"],
+            ["document_version.id"],
+            name=op.f("fk_document_version_supersedes_version_id_document_version"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_document_version")),
+        sa.UniqueConstraint("document_id", "version_number", name="uq_document_version_number"),
     )
-    with op.batch_alter_table('document_version', schema=None) as batch_op:
-        batch_op.create_index('ix_document_version_sha', ['sha256'], unique=False)
+    with op.batch_alter_table("document_version", schema=None) as batch_op:
+        batch_op.create_index("ix_document_version_sha", ["sha256"], unique=False)
 
-    op.create_table('extraction',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('document_id', sa.String(length=36), nullable=False),
-    sa.Column('document_version_id', sa.String(length=36), nullable=False),
-    sa.Column('content_sha256', sa.String(length=64), nullable=False),
-    sa.Column('extractor', sa.String(length=48), nullable=False),
-    sa.Column('extractor_version', sa.String(length=48), nullable=False),
-    sa.Column('config_hash', sa.String(length=16), nullable=False),
-    sa.Column('router_decision', sa.JSON(), nullable=True),
-    sa.Column('status', sa.String(length=24), nullable=False),
-    sa.Column('error', sa.Text(), nullable=True),
-    sa.Column('duration_ms', sa.Float(), nullable=True),
-    sa.Column('stats', sa.JSON(), nullable=True),
-    sa.Column('document_json', sa.JSON(), nullable=True),
-    sa.Column('text_blob', sa.Text(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['document_id'], ['document.id'], name=op.f('fk_extraction_document_id_document'), ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['document_version_id'], ['document_version.id'], name=op.f('fk_extraction_document_version_id_document_version'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_extraction'))
+    op.create_table(
+        "extraction",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("document_id", sa.String(length=36), nullable=False),
+        sa.Column("document_version_id", sa.String(length=36), nullable=False),
+        sa.Column("content_sha256", sa.String(length=64), nullable=False),
+        sa.Column("extractor", sa.String(length=48), nullable=False),
+        sa.Column("extractor_version", sa.String(length=48), nullable=False),
+        sa.Column("config_hash", sa.String(length=16), nullable=False),
+        sa.Column("router_decision", sa.JSON(), nullable=True),
+        sa.Column("status", sa.String(length=24), nullable=False),
+        sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("duration_ms", sa.Float(), nullable=True),
+        sa.Column("stats", sa.JSON(), nullable=True),
+        sa.Column("document_json", sa.JSON(), nullable=True),
+        sa.Column("text_blob", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["document_id"],
+            ["document.id"],
+            name=op.f("fk_extraction_document_id_document"),
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["document_version_id"],
+            ["document_version.id"],
+            name=op.f("fk_extraction_document_version_id_document_version"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_extraction")),
     )
-    with op.batch_alter_table('extraction', schema=None) as batch_op:
-        batch_op.create_index('ix_extraction_cache', ['content_sha256', 'extractor', 'extractor_version', 'config_hash'], unique=False)
-        batch_op.create_index('ix_extraction_version', ['document_version_id'], unique=False)
+    with op.batch_alter_table("extraction", schema=None) as batch_op:
+        batch_op.create_index(
+            "ix_extraction_cache",
+            ["content_sha256", "extractor", "extractor_version", "config_hash"],
+            unique=False,
+        )
+        batch_op.create_index("ix_extraction_version", ["document_version_id"], unique=False)
 
-    op.create_table('source',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('kind', sa.String(length=32), nullable=False),
-    sa.Column('reference', sa.String(length=512), nullable=False),
-    sa.Column('label', sa.String(length=400), nullable=False),
-    sa.Column('authority_tier', sa.String(length=64), nullable=False),
-    sa.Column('authority_score', sa.Float(), nullable=True),
-    sa.Column('document_id', sa.String(length=36), nullable=True),
-    sa.Column('document_version_id', sa.String(length=36), nullable=True),
-    sa.Column('publisher', sa.String(length=200), nullable=True),
-    sa.Column('publication', sa.String(length=300), nullable=True),
-    sa.Column('revision', sa.String(length=64), nullable=True),
-    sa.Column('issued_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('verified', sa.Boolean(), nullable=False),
-    sa.Column('notes', sa.Text(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['document_id'], ['document.id'], name=op.f('fk_source_document_id_document'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['document_version_id'], ['document_version.id'], name=op.f('fk_source_document_version_id_document_version'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_source')),
-    sa.UniqueConstraint('kind', 'reference', name='uq_source_kind_reference')
+    op.create_table(
+        "source",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("kind", sa.String(length=32), nullable=False),
+        sa.Column("reference", sa.String(length=512), nullable=False),
+        sa.Column("label", sa.String(length=400), nullable=False),
+        sa.Column("authority_tier", sa.String(length=64), nullable=False),
+        sa.Column("authority_score", sa.Float(), nullable=True),
+        sa.Column("document_id", sa.String(length=36), nullable=True),
+        sa.Column("document_version_id", sa.String(length=36), nullable=True),
+        sa.Column("publisher", sa.String(length=200), nullable=True),
+        sa.Column("publication", sa.String(length=300), nullable=True),
+        sa.Column("revision", sa.String(length=64), nullable=True),
+        sa.Column("issued_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("verified", sa.Boolean(), nullable=False),
+        sa.Column("notes", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["document_id"],
+            ["document.id"],
+            name=op.f("fk_source_document_id_document"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["document_version_id"],
+            ["document_version.id"],
+            name=op.f("fk_source_document_version_id_document_version"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_source")),
+        sa.UniqueConstraint("kind", "reference", name="uq_source_kind_reference"),
     )
-    op.create_table('calculation',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('method_id', sa.String(length=80), nullable=False),
-    sa.Column('method_version', sa.String(length=48), nullable=False),
-    sa.Column('calculation_type', sa.String(length=64), nullable=False),
-    sa.Column('record_state', sa.String(length=16), nullable=False),
-    sa.Column('well_id', sa.String(length=36), nullable=True),
-    sa.Column('section_id', sa.String(length=36), nullable=True),
-    sa.Column('project_id', sa.String(length=36), nullable=True),
-    sa.Column('source_id', sa.String(length=36), nullable=True),
-    sa.Column('inputs', sa.JSON(), nullable=False),
-    sa.Column('outputs', sa.JSON(), nullable=True),
-    sa.Column('assumptions', sa.JSON(), nullable=True),
-    sa.Column('validation', sa.JSON(), nullable=True),
-    sa.Column('uncertainty', sa.JSON(), nullable=True),
-    sa.Column('confidence', sa.Float(), nullable=True),
-    sa.Column('provenance', sa.JSON(), nullable=True),
-    sa.Column('status', sa.String(length=24), nullable=False),
-    sa.Column('revision', sa.Integer(), nullable=False),
-    sa.Column('supersedes_id', sa.String(length=36), nullable=True),
-    sa.Column('reviewer', sa.String(length=200), nullable=True),
-    sa.Column('approval_note', sa.Text(), nullable=True),
-    sa.Column('triggered_by', sa.String(length=40), nullable=False),
-    sa.Column('error', sa.Text(), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['project_id'], ['project.id'], name=op.f('fk_calculation_project_id_project'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['section_id'], ['well_section.id'], name=op.f('fk_calculation_section_id_well_section'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['source_id'], ['source.id'], name=op.f('fk_calculation_source_id_source'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['supersedes_id'], ['calculation.id'], name=op.f('fk_calculation_supersedes_id_calculation'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['well_id'], ['well.id'], name=op.f('fk_calculation_well_id_well'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_calculation'))
+    op.create_table(
+        "calculation",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("method_id", sa.String(length=80), nullable=False),
+        sa.Column("method_version", sa.String(length=48), nullable=False),
+        sa.Column("calculation_type", sa.String(length=64), nullable=False),
+        sa.Column("record_state", sa.String(length=16), nullable=False),
+        sa.Column("well_id", sa.String(length=36), nullable=True),
+        sa.Column("section_id", sa.String(length=36), nullable=True),
+        sa.Column("project_id", sa.String(length=36), nullable=True),
+        sa.Column("source_id", sa.String(length=36), nullable=True),
+        sa.Column("inputs", sa.JSON(), nullable=False),
+        sa.Column("outputs", sa.JSON(), nullable=True),
+        sa.Column("assumptions", sa.JSON(), nullable=True),
+        sa.Column("validation", sa.JSON(), nullable=True),
+        sa.Column("uncertainty", sa.JSON(), nullable=True),
+        sa.Column("confidence", sa.Float(), nullable=True),
+        sa.Column("provenance", sa.JSON(), nullable=True),
+        sa.Column("status", sa.String(length=24), nullable=False),
+        sa.Column("revision", sa.Integer(), nullable=False),
+        sa.Column("supersedes_id", sa.String(length=36), nullable=True),
+        sa.Column("reviewer", sa.String(length=200), nullable=True),
+        sa.Column("approval_note", sa.Text(), nullable=True),
+        sa.Column("triggered_by", sa.String(length=40), nullable=False),
+        sa.Column("error", sa.Text(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["project.id"],
+            name=op.f("fk_calculation_project_id_project"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["section_id"],
+            ["well_section.id"],
+            name=op.f("fk_calculation_section_id_well_section"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["source_id"],
+            ["source.id"],
+            name=op.f("fk_calculation_source_id_source"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["supersedes_id"],
+            ["calculation.id"],
+            name=op.f("fk_calculation_supersedes_id_calculation"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["well_id"], ["well.id"], name=op.f("fk_calculation_well_id_well"), ondelete="SET NULL"
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_calculation")),
     )
-    with op.batch_alter_table('calculation', schema=None) as batch_op:
-        batch_op.create_index('ix_calculation_well', ['well_id', 'method_id'], unique=False)
+    with op.batch_alter_table("calculation", schema=None) as batch_op:
+        batch_op.create_index("ix_calculation_well", ["well_id", "method_id"], unique=False)
 
-    op.create_table('knowledge_item',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('item_type', sa.String(length=32), nullable=False),
-    sa.Column('title', sa.String(length=400), nullable=False),
-    sa.Column('content', sa.Text(), nullable=False),
-    sa.Column('domain', sa.String(length=80), nullable=False),
-    sa.Column('applicability', sa.Text(), nullable=True),
-    sa.Column('assumptions', sa.JSON(), nullable=True),
-    sa.Column('payload', sa.JSON(), nullable=True),
-    sa.Column('lookup_key', sa.String(length=300), nullable=True),
-    sa.Column('value', sa.Float(), nullable=True),
-    sa.Column('unit', sa.String(length=24), nullable=False),
-    sa.Column('record_state', sa.String(length=16), nullable=False),
-    sa.Column('status', sa.String(length=24), nullable=False),
-    sa.Column('confidence', sa.Float(), nullable=True),
-    sa.Column('revision', sa.Integer(), nullable=False),
-    sa.Column('well_id', sa.String(length=36), nullable=True),
-    sa.Column('section_id', sa.String(length=36), nullable=True),
-    sa.Column('project_id', sa.String(length=36), nullable=True),
-    sa.Column('source_id', sa.String(length=36), nullable=True),
-    sa.Column('document_id', sa.String(length=36), nullable=True),
-    sa.Column('document_version_id', sa.String(length=36), nullable=True),
-    sa.Column('provenance', sa.JSON(), nullable=True),
-    sa.Column('evidence', sa.JSON(), nullable=True),
-    sa.Column('superseded_by', sa.String(length=36), nullable=True),
-    sa.Column('created_by', sa.String(length=80), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.ForeignKeyConstraint(['document_id'], ['document.id'], name=op.f('fk_knowledge_item_document_id_document'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['document_version_id'], ['document_version.id'], name=op.f('fk_knowledge_item_document_version_id_document_version'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['project_id'], ['project.id'], name=op.f('fk_knowledge_item_project_id_project'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['section_id'], ['well_section.id'], name=op.f('fk_knowledge_item_section_id_well_section'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['source_id'], ['source.id'], name=op.f('fk_knowledge_item_source_id_source'), ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['well_id'], ['well.id'], name=op.f('fk_knowledge_item_well_id_well'), ondelete='SET NULL'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_knowledge_item'))
+    op.create_table(
+        "knowledge_item",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("item_type", sa.String(length=32), nullable=False),
+        sa.Column("title", sa.String(length=400), nullable=False),
+        sa.Column("content", sa.Text(), nullable=False),
+        sa.Column("domain", sa.String(length=80), nullable=False),
+        sa.Column("applicability", sa.Text(), nullable=True),
+        sa.Column("assumptions", sa.JSON(), nullable=True),
+        sa.Column("payload", sa.JSON(), nullable=True),
+        sa.Column("lookup_key", sa.String(length=300), nullable=True),
+        sa.Column("value", sa.Float(), nullable=True),
+        sa.Column("unit", sa.String(length=24), nullable=False),
+        sa.Column("record_state", sa.String(length=16), nullable=False),
+        sa.Column("status", sa.String(length=24), nullable=False),
+        sa.Column("confidence", sa.Float(), nullable=True),
+        sa.Column("revision", sa.Integer(), nullable=False),
+        sa.Column("well_id", sa.String(length=36), nullable=True),
+        sa.Column("section_id", sa.String(length=36), nullable=True),
+        sa.Column("project_id", sa.String(length=36), nullable=True),
+        sa.Column("source_id", sa.String(length=36), nullable=True),
+        sa.Column("document_id", sa.String(length=36), nullable=True),
+        sa.Column("document_version_id", sa.String(length=36), nullable=True),
+        sa.Column("provenance", sa.JSON(), nullable=True),
+        sa.Column("evidence", sa.JSON(), nullable=True),
+        sa.Column("superseded_by", sa.String(length=36), nullable=True),
+        sa.Column("created_by", sa.String(length=80), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["document_id"],
+            ["document.id"],
+            name=op.f("fk_knowledge_item_document_id_document"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["document_version_id"],
+            ["document_version.id"],
+            name=op.f("fk_knowledge_item_document_version_id_document_version"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["project_id"],
+            ["project.id"],
+            name=op.f("fk_knowledge_item_project_id_project"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["section_id"],
+            ["well_section.id"],
+            name=op.f("fk_knowledge_item_section_id_well_section"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["source_id"],
+            ["source.id"],
+            name=op.f("fk_knowledge_item_source_id_source"),
+            ondelete="SET NULL",
+        ),
+        sa.ForeignKeyConstraint(
+            ["well_id"],
+            ["well.id"],
+            name=op.f("fk_knowledge_item_well_id_well"),
+            ondelete="SET NULL",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_knowledge_item")),
     )
-    with op.batch_alter_table('knowledge_item', schema=None) as batch_op:
-        batch_op.create_index('ix_knowledge_lookup', ['well_id', 'lookup_key'], unique=False)
-        batch_op.create_index('ix_knowledge_type', ['item_type'], unique=False)
+    with op.batch_alter_table("knowledge_item", schema=None) as batch_op:
+        batch_op.create_index("ix_knowledge_lookup", ["well_id", "lookup_key"], unique=False)
+        batch_op.create_index("ix_knowledge_type", ["item_type"], unique=False)
 
-    op.create_table('calculation_input',
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('calculation_id', sa.String(length=36), nullable=False),
-    sa.Column('name', sa.String(length=80), nullable=False),
-    sa.Column('value', sa.Float(), nullable=True),
-    sa.Column('unit', sa.String(length=24), nullable=False),
-    sa.Column('dimension', sa.String(length=32), nullable=False),
-    sa.Column('source_kind', sa.String(length=24), nullable=False),
-    sa.Column('subject_key', sa.String(length=300), nullable=True),
-    sa.Column('provenance', sa.JSON(), nullable=True),
-    sa.ForeignKeyConstraint(['calculation_id'], ['calculation.id'], name=op.f('fk_calculation_input_calculation_id_calculation'), ondelete='CASCADE'),
-    sa.PrimaryKeyConstraint('id', name=op.f('pk_calculation_input'))
+    op.create_table(
+        "calculation_input",
+        sa.Column("id", sa.String(length=36), nullable=False),
+        sa.Column("calculation_id", sa.String(length=36), nullable=False),
+        sa.Column("name", sa.String(length=80), nullable=False),
+        sa.Column("value", sa.Float(), nullable=True),
+        sa.Column("unit", sa.String(length=24), nullable=False),
+        sa.Column("dimension", sa.String(length=32), nullable=False),
+        sa.Column("source_kind", sa.String(length=24), nullable=False),
+        sa.Column("subject_key", sa.String(length=300), nullable=True),
+        sa.Column("provenance", sa.JSON(), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["calculation_id"],
+            ["calculation.id"],
+            name=op.f("fk_calculation_input_calculation_id_calculation"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_calculation_input")),
     )
-    with op.batch_alter_table('calculation_input', schema=None) as batch_op:
-        batch_op.create_index('ix_calc_input_subject', ['subject_key'], unique=False)
-
+    with op.batch_alter_table("calculation_input", schema=None) as batch_op:
+        batch_op.create_index("ix_calc_input_subject", ["subject_key"], unique=False)
 
 
 def downgrade() -> None:
-    with op.batch_alter_table('calculation_input', schema=None) as batch_op:
-        batch_op.drop_index('ix_calc_input_subject')
+    with op.batch_alter_table("calculation_input", schema=None) as batch_op:
+        batch_op.drop_index("ix_calc_input_subject")
 
-    op.drop_table('calculation_input')
-    with op.batch_alter_table('knowledge_item', schema=None) as batch_op:
-        batch_op.drop_index('ix_knowledge_type')
-        batch_op.drop_index('ix_knowledge_lookup')
+    op.drop_table("calculation_input")
+    with op.batch_alter_table("knowledge_item", schema=None) as batch_op:
+        batch_op.drop_index("ix_knowledge_type")
+        batch_op.drop_index("ix_knowledge_lookup")
 
-    op.drop_table('knowledge_item')
-    with op.batch_alter_table('calculation', schema=None) as batch_op:
-        batch_op.drop_index('ix_calculation_well')
+    op.drop_table("knowledge_item")
+    with op.batch_alter_table("calculation", schema=None) as batch_op:
+        batch_op.drop_index("ix_calculation_well")
 
-    op.drop_table('calculation')
-    op.drop_table('source')
-    with op.batch_alter_table('extraction', schema=None) as batch_op:
-        batch_op.drop_index('ix_extraction_version')
-        batch_op.drop_index('ix_extraction_cache')
+    op.drop_table("calculation")
+    op.drop_table("source")
+    with op.batch_alter_table("extraction", schema=None) as batch_op:
+        batch_op.drop_index("ix_extraction_version")
+        batch_op.drop_index("ix_extraction_cache")
 
-    op.drop_table('extraction')
-    with op.batch_alter_table('document_version', schema=None) as batch_op:
-        batch_op.drop_index('ix_document_version_sha')
+    op.drop_table("extraction")
+    with op.batch_alter_table("document_version", schema=None) as batch_op:
+        batch_op.drop_index("ix_document_version_sha")
 
-    op.drop_table('document_version')
-    op.drop_table('well_section')
-    with op.batch_alter_table('knowledge_conflict', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_knowledge_conflict_lookup_key'))
+    op.drop_table("document_version")
+    op.drop_table("well_section")
+    with op.batch_alter_table("knowledge_conflict", schema=None) as batch_op:
+        batch_op.drop_index(batch_op.f("ix_knowledge_conflict_lookup_key"))
 
-    op.drop_table('knowledge_conflict')
-    with op.batch_alter_table('document', schema=None) as batch_op:
-        batch_op.drop_index('ix_document_well')
-        batch_op.drop_index('ix_document_status')
-        batch_op.drop_index(batch_op.f('ix_document_sha256'))
-        batch_op.drop_index('ix_document_classification')
+    op.drop_table("knowledge_conflict")
+    with op.batch_alter_table("document", schema=None) as batch_op:
+        batch_op.drop_index("ix_document_well")
+        batch_op.drop_index("ix_document_status")
+        batch_op.drop_index(batch_op.f("ix_document_sha256"))
+        batch_op.drop_index("ix_document_classification")
 
-    op.drop_table('document')
-    with op.batch_alter_table('well', schema=None) as batch_op:
-        batch_op.drop_index('ix_well_status')
+    op.drop_table("document")
+    with op.batch_alter_table("well", schema=None) as batch_op:
+        batch_op.drop_index("ix_well_status")
 
-    op.drop_table('well')
-    op.drop_table('ingestion_run')
-    op.drop_table('workspace')
-    op.drop_table('field')
-    op.drop_table('skill_version')
-    op.drop_table('project')
-    op.drop_table('skill')
-    with op.batch_alter_table('knowledge_relation', schema=None) as batch_op:
-        batch_op.drop_index('ix_relation_target')
-        batch_op.drop_index('ix_relation_source')
+    op.drop_table("well")
+    op.drop_table("ingestion_run")
+    op.drop_table("workspace")
+    op.drop_table("field")
+    op.drop_table("skill_version")
+    op.drop_table("project")
+    op.drop_table("skill")
+    with op.batch_alter_table("knowledge_relation", schema=None) as batch_op:
+        batch_op.drop_index("ix_relation_target")
+        batch_op.drop_index("ix_relation_source")
 
-    op.drop_table('knowledge_relation')
-    op.drop_table('company')
-    with op.batch_alter_table('audit_event', schema=None) as batch_op:
-        batch_op.drop_index('ix_audit_subject')
+    op.drop_table("knowledge_relation")
+    op.drop_table("company")
+    with op.batch_alter_table("audit_event", schema=None) as batch_op:
+        batch_op.drop_index("ix_audit_subject")
 
-    op.drop_table('audit_event')
+    op.drop_table("audit_event")

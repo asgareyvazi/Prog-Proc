@@ -25,7 +25,15 @@ from drilling_intelligence.database.migrations import (
 from drilling_intelligence.database.session import Database
 
 ROOT = Path(__file__).resolve().parents[2]
-REQUIRED_TABLES = {"workspace", "well", "document", "document_version", "source", "extraction", "audit_event"}
+REQUIRED_TABLES = {
+    "workspace",
+    "well",
+    "document",
+    "document_version",
+    "source",
+    "extraction",
+    "audit_event",
+}
 
 
 def test_the_migrations_tree_is_found_from_the_installed_package() -> None:
@@ -65,7 +73,9 @@ def test_ensure_schema_is_idempotent(tmp_path) -> None:
     try:
         first = ensure_schema(database.engine)
         second = ensure_schema(database.engine)
-        assert first.mode in {"migrated", "stamped-from-metadata", "already-current"}, first.to_dict()
+        assert first.mode in {"migrated", "stamped-from-metadata", "already-current"}, (
+            first.to_dict()
+        )
         assert second.mode == "already-current", second.to_dict()
         assert second.up_to_date
     finally:
@@ -86,7 +96,16 @@ def test_a_workspace_is_migrated_when_it_is_opened(workspace) -> None:
 def test_offline_sql_generation_still_works(tmp_path) -> None:
     env = dict(os.environ, DRILLINTEL_DATABASE__URL=f"sqlite:///{tmp_path / 'offline.db'}")
     result = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "upgrade", "head", "--sql"],
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ROOT / "alembic.ini"),
+            "upgrade",
+            "head",
+            "--sql",
+        ],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -104,11 +123,15 @@ def test_the_initial_migration_starts_the_chain_and_can_be_reversed() -> None:
     first = next(path for path in versions if "initial_schema" in path.name)
     text = first.read_text(encoding="utf-8")
     assert "down_revision = None" in text.replace('"', "'"), "the chain must start here"
-    assert "op.create_table" in text and "def downgrade" in text, "every migration needs a downgrade"
+    assert "op.create_table" in text and "def downgrade" in text, (
+        "every migration needs a downgrade"
+    )
 
 
 def test_the_database_url_is_never_baked_into_the_migration_config() -> None:
     """The URL comes from settings or the engine Alembic was handed, never from the ini."""
     assert "sqlite:///" not in (ROOT / "alembic.ini").read_text(encoding="utf-8")
     env = (ROOT / "migrations" / "env.py").read_text(encoding="utf-8")
-    assert 'attributes.get("engine")' in env, "ensure_schema() hands over a live engine and env.py must use it"
+    assert 'attributes.get("engine")' in env, (
+        "ensure_schema() hands over a live engine and env.py must use it"
+    )

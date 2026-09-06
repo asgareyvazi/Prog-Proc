@@ -77,7 +77,9 @@ def test_the_endpoints_stay_polymorphic_and_unconstrained() -> None:
     assert set(RELATION_ENDPOINT_MODELS) >= {"document", "knowledge_item", "well", "source"}
 
 
-def test_a_supported_edge_between_two_real_rows_is_written(session, document_row, knowledge_item) -> None:
+def test_a_supported_edge_between_two_real_rows_is_written(
+    session, document_row, knowledge_item
+) -> None:
     row = create_knowledge_relation(
         session,
         source_type="document",
@@ -96,7 +98,9 @@ def test_a_supported_edge_between_two_real_rows_is_written(session, document_row
     assert check_knowledge_relations(session) == []
 
 
-def test_re_asserting_the_same_edge_strengthens_it_instead_of_duplicating(session, document_row, knowledge_item) -> None:
+def test_re_asserting_the_same_edge_strengthens_it_instead_of_duplicating(
+    session, document_row, knowledge_item
+) -> None:
     create_knowledge_relation(
         session,
         source_type="document",
@@ -121,14 +125,17 @@ def test_re_asserting_the_same_edge_strengthens_it_instead_of_duplicating(sessio
     assert session.scalar(select(func.count()).select_from(KnowledgeRelation)) == 1
     assert again.weight == pytest.approx(0.9), "the stronger assertion wins, per ADR-0006"
     assert again.provenance and len(again.provenance) == 1
-    assert find_knowledge_relation(
-        session,
-        source_type="document",
-        source_id=document_row.id,
-        relation="ITEM_SUPPORTS",
-        target_type="knowledge_item",
-        target_id=knowledge_item.id,
-    ).id == again.id
+    assert (
+        find_knowledge_relation(
+            session,
+            source_type="document",
+            source_id=document_row.id,
+            relation="ITEM_SUPPORTS",
+            target_type="knowledge_item",
+            target_id=knowledge_item.id,
+        ).id
+        == again.id
+    )
 
 
 # --------------------------------------------------------------------------- refused writes
@@ -153,7 +160,9 @@ def test_an_unsupported_endpoint_type_is_refused(session, document_row, knowledg
         )
 
 
-def test_a_dangling_endpoint_is_refused_before_persistence(session, document_row, knowledge_item) -> None:
+def test_a_dangling_endpoint_is_refused_before_persistence(
+    session, document_row, knowledge_item
+) -> None:
     missing = new_id("ki")
     with pytest.raises(KnowledgeIntegrityError, match="does not exist") as caught:
         create_knowledge_relation(
@@ -166,7 +175,9 @@ def test_a_dangling_endpoint_is_refused_before_persistence(session, document_row
         )
     assert caught.value.context["endpoint_id"] == missing
     session.flush()
-    assert session.scalar(select(func.count()).select_from(KnowledgeRelation)) == 0, "a refused edge leaves nothing behind"
+    assert session.scalar(select(func.count()).select_from(KnowledgeRelation)) == 0, (
+        "a refused edge leaves nothing behind"
+    )
 
 
 @pytest.mark.parametrize(
@@ -182,7 +193,9 @@ def test_a_dangling_endpoint_is_refused_before_persistence(session, document_row
         ("document", "doc-1", "ITEM_SUPPORTS", "knowledge_item", "doc-1"),
     ],
 )
-def test_malformed_edges_are_refused(session, source_type: str, source_id: str, relation: str, target_type: str, target_id: str) -> None:
+def test_malformed_edges_are_refused(
+    session, source_type: str, source_id: str, relation: str, target_type: str, target_id: str
+) -> None:
     with pytest.raises(KnowledgeIntegrityError):
         validate_knowledge_relation(
             session,
@@ -194,7 +207,9 @@ def test_malformed_edges_are_refused(session, source_type: str, source_id: str, 
         )
 
 
-def test_a_weight_outside_the_unit_interval_is_refused(session, document_row, knowledge_item) -> None:
+def test_a_weight_outside_the_unit_interval_is_refused(
+    session, document_row, knowledge_item
+) -> None:
     for weight in (-0.1, 1.5):
         with pytest.raises(KnowledgeIntegrityError, match="between 0 and 1"):
             create_knowledge_relation(
@@ -209,7 +224,15 @@ def test_a_weight_outside_the_unit_interval_is_refused(session, document_row, kn
 
 
 # --------------------------------------------------------------------------- reporting old damage
-def _insert_edge_raw(session, *, source_type: str, source_id: str, target_type: str, target_id: str, relation: str = "ITEM_SUPPORTS") -> str:
+def _insert_edge_raw(
+    session,
+    *,
+    source_type: str,
+    source_id: str,
+    target_type: str,
+    target_id: str,
+    relation: str = "ITEM_SUPPORTS",
+) -> str:
     row_id = new_id("rel")
     session.execute(
         text(
@@ -217,7 +240,14 @@ def _insert_edge_raw(session, *, source_type: str, source_id: str, target_type: 
             " provenance, note, created_at, updated_at) values (:id, :st, :si, :rel, :tt, :ti, 1.0, '[]', NULL,"
             " '2026-01-01', '2026-01-01')"
         ),
-        {"id": row_id, "st": source_type, "si": source_id, "rel": relation, "tt": target_type, "ti": target_id},
+        {
+            "id": row_id,
+            "st": source_type,
+            "si": source_id,
+            "rel": relation,
+            "tt": target_type,
+            "ti": target_id,
+        },
     )
     return row_id
 
@@ -237,7 +267,9 @@ def test_an_edge_broken_by_a_delete_is_reported(session, document_row, knowledge
     session.execute(text("delete from knowledge_item where id = :id"), {"id": knowledge_item.id})
     session.expire_all()
     problems = check_knowledge_relations(session)
-    assert [problem.problem for problem in problems] == ["DANGLING_REFERENCE"], [problem.to_dict() for problem in problems]
+    assert [problem.problem for problem in problems] == ["DANGLING_REFERENCE"], [
+        problem.to_dict() for problem in problems
+    ]
     assert problems[0].row_id == edge_id
     assert problems[0].detail["target"].startswith("knowledge_item(")
     assert isinstance(problems[0], IntegrityProblem)
@@ -245,7 +277,9 @@ def test_an_edge_broken_by_a_delete_is_reported(session, document_row, knowledge
 
 
 def test_an_edge_naming_an_unknown_endpoint_type_is_reported(session) -> None:
-    edge_id = _insert_edge_raw(session, source_type="well", source_id="well-1", target_type="rumour", target_id="x")
+    edge_id = _insert_edge_raw(
+        session, source_type="well", source_id="well-1", target_type="rumour", target_id="x"
+    )
     problems = check_knowledge_relations(session)
     assert [(problem.problem, problem.row_id) for problem in problems] == [
         # Both halves of the edge are wrong and both are reported: "unsupported type" does

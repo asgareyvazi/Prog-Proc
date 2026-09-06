@@ -65,7 +65,9 @@ class _CellText(HTMLParser):
 
 def strip_html(fragment: str) -> str:
     text = _TAG.sub(" ", fragment or "")
-    text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ")
+    text = (
+        text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ")
+    )
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -82,7 +84,9 @@ def parse_table_html(html: str) -> list[list[str | None]]:
     for row_html in _TABLE_ROW.findall(html):
         row: list[str | None] = []
         cell_attrs: list[str] = []
-        for match in re.finditer(r"<t[dh]([^>]*)>(.*?)</t[dh]>", row_html, re.IGNORECASE | re.DOTALL):
+        for match in re.finditer(
+            r"<t[dh]([^>]*)>(.*?)</t[dh]>", row_html, re.IGNORECASE | re.DOTALL
+        ):
             cell_attrs.append(match.group(1))
             row.append(strip_html(match.group(2)))
         # Fill columns occupied by spans from previous rows.
@@ -146,7 +150,9 @@ def _spans_text(block: dict[str, Any]) -> tuple[str, list[tuple[float, float, fl
     return text, boxes
 
 
-def _union(boxes: list[tuple[float, float, float, float]]) -> tuple[float, float, float, float] | None:
+def _union(
+    boxes: list[tuple[float, float, float, float]],
+) -> tuple[float, float, float, float] | None:
     if not boxes:
         return None
     x0 = min(b[0] for b in boxes)
@@ -156,7 +162,9 @@ def _union(boxes: list[tuple[float, float, float, float]]) -> tuple[float, float
     return (x0, y0, x1, y1)
 
 
-def normalize_middle_json(payload: dict[str, Any], *, filename: str, document_id: str, version_id: str, sha256: str) -> tuple[Any, list[str]]:
+def normalize_middle_json(
+    payload: dict[str, Any], *, filename: str, document_id: str, version_id: str, sha256: str
+) -> tuple[Any, list[str]]:
     """middle.json -> NormalizedDocument.  Returns ``(document, diagnostics)``."""
     from ...core.provenance import PdfLocator
     from ...extraction.normalized import (
@@ -184,7 +192,10 @@ def normalize_middle_json(payload: dict[str, Any], *, filename: str, document_id
         parser_version=str(payload.get("_version_name") or ""),
         engine=f"MinerU {payload.get('_version_name', '?')} backend={payload.get('_backend', '?')}",
         page_count=len(pages),
-        extra={"mineru_backend": payload.get("_backend"), "mineru_version": payload.get("_version_name")},
+        extra={
+            "mineru_backend": payload.get("_backend"),
+            "mineru_version": payload.get("_version_name"),
+        },
     )
     document = NormalizedDocument(metadata=meta)
     paragraph_index = 0
@@ -196,7 +207,9 @@ def normalize_middle_json(payload: dict[str, Any], *, filename: str, document_id
             document_id=document_id,
             document_version_id=version_id or None,
             filename=filename,
-            locator=PdfLocator(page=page_number, block=block_index, paragraph=paragraph_index, bbox=bbox),
+            locator=PdfLocator(
+                page=page_number, block=block_index, paragraph=paragraph_index, bbox=bbox
+            ),
             parser=provenance_parser,
             excerpt=excerpt[:2000],
             source_sha256=sha256,
@@ -206,7 +219,9 @@ def normalize_middle_json(payload: dict[str, Any], *, filename: str, document_id
     for page_info in pages:
         if not isinstance(page_info, dict):
             continue
-        page_index = int(page_info.get("page_idx", page_info.get("page_no", len(document.pages))) or 0)
+        page_index = int(
+            page_info.get("page_idx", page_info.get("page_no", len(document.pages))) or 0
+        )
         page_number = page_index + 1
         size = page_info.get("page_size") or [0, 0]
         blocks = page_info.get("para_blocks") or page_info.get("preproc_blocks") or []
@@ -227,7 +242,12 @@ def normalize_middle_json(payload: dict[str, Any], *, filename: str, document_id
                             caption=str(block.get("table_caption") or "")[:200],
                             page=page_number,
                             anchor=f"bbox={_union([tuple(b) for b in [block['bbox']]] if isinstance(block.get('bbox'), list) else [])}",
-                            provenance=locate(page_number, block_index, _block_bbox(block), _table_text(rows)[:2000]),
+                            provenance=locate(
+                                page_number,
+                                block_index,
+                                _block_bbox(block),
+                                _table_text(rows)[:2000],
+                            ),
                             extra={"source": "mineru", "html_available": bool(html)},
                         )
                     )
@@ -242,7 +262,12 @@ def normalize_middle_json(payload: dict[str, Any], *, filename: str, document_id
                         kind=kind,
                         caption=str(block.get("img_caption") or "")[:200],
                         bbox=_block_bbox(block),
-                        provenance=locate(page_number, block_index, _block_bbox(block), _spans_text(block)[0][:200]),
+                        provenance=locate(
+                            page_number,
+                            block_index,
+                            _block_bbox(block),
+                            _spans_text(block)[0][:200],
+                        ),
                         text=_spans_text(block)[0][:4000],
                         extra={"image_path": block.get("image_path", "")},
                     )
@@ -308,15 +333,21 @@ def normalize_middle_json(payload: dict[str, Any], *, filename: str, document_id
         discarded = page_info.get("discarded_blocks") or []
         if discarded:
             meta.extra.setdefault("discarded_blocks", 0)
-            meta.extra["discarded_blocks"] = int(meta.extra.get("discarded_blocks", 0)) + len(discarded)
+            meta.extra["discarded_blocks"] = int(meta.extra.get("discarded_blocks", 0)) + len(
+                discarded
+            )
         document.pages.append(
             Page(
                 index=page_number,
                 text=clean_text("\n\n".join(page_texts)),
                 char_start=page_start,
                 char_end=char_cursor,
-                width=float(size[0] or 0) if isinstance(size, (list, tuple)) and len(size) > 0 else 0.0,
-                height=float(size[1] or 0) if isinstance(size, (list, tuple)) and len(size) > 1 else 0.0,
+                width=float(size[0] or 0)
+                if isinstance(size, (list, tuple)) and len(size) > 0
+                else 0.0,
+                height=float(size[1] or 0)
+                if isinstance(size, (list, tuple)) and len(size) > 1
+                else 0.0,
                 block_count=len(blocks),
             )
         )
@@ -393,7 +424,9 @@ def _table_text(rows: list[list[str | None]]) -> str:
     return "\n".join("\t".join("" if cell is None else str(cell) for cell in row) for row in rows)
 
 
-def normalize_content_list(payload: Any, *, filename: str, document_id: str, version_id: str, sha256: str) -> tuple[Any, list[str]]:
+def normalize_content_list(
+    payload: Any, *, filename: str, document_id: str, version_id: str, sha256: str
+) -> tuple[Any, list[str]]:
     """content_list.json (flat) -> NormalizedDocument, page-anchored provenance."""
     from ...core.provenance import PdfLocator
     from ...extraction.normalized import (
@@ -406,14 +439,20 @@ def normalize_content_list(payload: Any, *, filename: str, document_id: str, ver
     )
 
     items = payload if isinstance(payload, list) else []
-    diagnostics = ["MinerU content_list.json used instead of middle.json (section structure unavailable)"]
+    diagnostics = [
+        "MinerU content_list.json used instead of middle.json (section structure unavailable)"
+    ]
     document = NormalizedDocument(
         metadata=ExtractionMetadata(
             filename=filename,
             sha256=sha256,
             parser="mineru",
             engine="MinerU content_list",
-            page_count=max((int(item.get("page_idx", 0) or 0) for item in items if isinstance(item, dict)), default=0) + 1,
+            page_count=max(
+                (int(item.get("page_idx", 0) or 0) for item in items if isinstance(item, dict)),
+                default=0,
+            )
+            + 1,
         )
     )
     pages: dict[int, list[str]] = {}
@@ -424,7 +463,11 @@ def normalize_content_list(payload: Any, *, filename: str, document_id: str, ver
         page = int(item.get("page_idx", 0) or 0) + 1
         kind = str(item.get("type", "text"))
         bbox = item.get("bbox")
-        boxes = tuple(float(v) for v in bbox) if isinstance(bbox, (list, tuple)) and len(bbox) == 4 else None
+        boxes = (
+            tuple(float(v) for v in bbox)
+            if isinstance(bbox, (list, tuple)) and len(bbox) == 4
+            else None
+        )
         if kind == "table":
             rows = parse_table_html(str(item.get("table_body") or ""))
             if rows:
@@ -456,7 +499,10 @@ def normalize_content_list(payload: Any, *, filename: str, document_id: str, ver
                 index=index,
                 text=text,
                 page=page,
-                heading_level=int(item["text_level"]) if str(item.get("text_level") or "").isdigit() and int(item.get("text_level") or 0) > 0 else None,
+                heading_level=int(item["text_level"])
+                if str(item.get("text_level") or "").isdigit()
+                and int(item.get("text_level") or 0) > 0
+                else None,
                 style=kind,
                 provenance=Provenance(
                     document_id=document_id,
@@ -472,12 +518,20 @@ def normalize_content_list(payload: Any, *, filename: str, document_id: str, ver
         pages.setdefault(page, []).append(text)
         index += 1
     for page_number in sorted(pages):
-        document.pages.append(Page(index=page_number, text=clean_text("\n\n".join(pages[page_number])), label=f"page {page_number}"))
+        document.pages.append(
+            Page(
+                index=page_number,
+                text=clean_text("\n\n".join(pages[page_number])),
+                label=f"page {page_number}",
+            )
+        )
     document.text = clean_text("\n\n".join(p.text for p in document.pages))
     return document, diagnostics
 
 
-def normalize_markdown(text: str, *, filename: str, document_id: str, version_id: str, sha256: str) -> tuple[Any, list[str]]:
+def normalize_markdown(
+    text: str, *, filename: str, document_id: str, version_id: str, sha256: str
+) -> tuple[Any, list[str]]:
     """Markdown output -> NormalizedDocument with *line* provenance only.
 
     No page numbers exist in markdown, so provenance degrades to line ranges.
@@ -542,7 +596,9 @@ def normalize_markdown(text: str, *, filename: str, document_id: str, version_id
                     ),
                 )
             )
-            current_section = Section(heading=raw.lstrip("#").strip(), level=level, page=1, char_start=char_cursor)
+            current_section = Section(
+                heading=raw.lstrip("#").strip(), level=level, page=1, char_start=char_cursor
+            )
             document.sections.append(current_section)
             paragraph_index += 1
             char_cursor += len(raw) + 2
@@ -583,7 +639,11 @@ def normalize_markdown(text: str, *, filename: str, document_id: str, version_id
                     document_id=document_id,
                     document_version_id=version_id or None,
                     filename=filename,
-                    locator=TextLocator(line_start=block_start, line_end=end_line, section=(current_section.label if current_section else None)),
+                    locator=TextLocator(
+                        line_start=block_start,
+                        line_end=end_line,
+                        section=(current_section.label if current_section else None),
+                    ),
                     parser="mineru/markdown",
                     excerpt=raw[:2000],
                     source_sha256=sha256,
@@ -606,7 +666,15 @@ def normalize_markdown(text: str, *, filename: str, document_id: str, version_id
     if buffer:
         flush(len(lines))
 
-    document.pages.append(Page(index=1, text=clean_text(text), char_start=0, char_end=len(text), block_count=len(document.paragraphs)))
+    document.pages.append(
+        Page(
+            index=1,
+            text=clean_text(text),
+            char_start=0,
+            char_end=len(text),
+            block_count=len(document.paragraphs),
+        )
+    )
     document.metadata.page_count = 1
     document.text = clean_text("\n\n".join(p.text for p in document.paragraphs))
     diagnostics = [
@@ -617,7 +685,11 @@ def normalize_markdown(text: str, *, filename: str, document_id: str, version_id
 
 def _looks_like_markdown_table(block: str) -> bool:
     rows = [line for line in block.splitlines() if line.strip()]
-    return len(rows) >= 2 and rows[0].count("|") >= 2 and bool(re.match(r"^\s*\|?[\s:|-]+\|[\s:|-]*$", rows[1]))
+    return (
+        len(rows) >= 2
+        and rows[0].count("|") >= 2
+        and bool(re.match(r"^\s*\|?[\s:|-]+\|[\s:|-]*$", rows[1]))
+    )
 
 
 def _markdown_table_rows(block: str) -> list[list[str | None]]:
@@ -646,13 +718,23 @@ def load_mineru_outputs(directory: Path, stem: str) -> MinerURawOutput:
             middle = _read_json(candidate)
         elif name.endswith("content_list.json"):
             content_list = _read_json(candidate)
-        elif candidate.suffix == ".md" and (not stem or candidate.stem.lower().startswith(stem.lower()[:4])):
+        elif candidate.suffix == ".md" and (
+            not stem or candidate.stem.lower().startswith(stem.lower()[:4])
+        ):
             markdown = candidate.read_text(encoding="utf-8", errors="replace")
         elif candidate.suffix == ".pdf" and "layout" in name:
             layout_pdf = candidate
     if middle is None and content_list is None and not markdown:
-        raise ExtractionError(f"MinerU produced no readable output in {root} for {stem}", directory=str(root))
-    return MinerURawOutput(middle=middle, content_list=content_list, markdown=markdown, layout_pdf=layout_pdf, directory=root)
+        raise ExtractionError(
+            f"MinerU produced no readable output in {root} for {stem}", directory=str(root)
+        )
+    return MinerURawOutput(
+        middle=middle,
+        content_list=content_list,
+        markdown=markdown,
+        layout_pdf=layout_pdf,
+        directory=root,
+    )
 
 
 def _read_json(path: Path) -> Any:

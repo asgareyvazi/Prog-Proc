@@ -75,7 +75,9 @@ def fields_by_document(documents) -> dict[str, dict[str, list]]:
     ("field", "document"),
     [(field, document) for field, truth in GROUND_TRUTH.items() for document in truth["files"]],
 )
-def test_value_written_in_the_document_is_found(field: str, document: str, fields_by_document) -> None:
+def test_value_written_in_the_document_is_found(
+    field: str, document: str, fields_by_document
+) -> None:
     truth = GROUND_TRUTH[field]
     values = fields_by_document.get(document, {}).get(field, [])
     assert values, f"{field} was not extracted from {document}"
@@ -83,16 +85,26 @@ def test_value_written_in_the_document_is_found(field: str, document: str, field
         assert truth["value"] in values
         return
     assert any(
-        isinstance(value, (int, float)) and math.isclose(float(value), float(truth["value"]), rel_tol=1e-9) for value in values
+        isinstance(value, (int, float))
+        and math.isclose(float(value), float(truth["value"]), rel_tol=1e-9)
+        for value in values
     ), f"{field}: expected {truth['value']} in {values}"
 
 
-@pytest.mark.parametrize("case", NEGATIVE_TRUTH, ids=[f"{e['field']}@{e['file']}" for e in NEGATIVE_TRUTH])
+@pytest.mark.parametrize(
+    "case", NEGATIVE_TRUTH, ids=[f"{e['field']}@{e['file']}" for e in NEGATIVE_TRUTH]
+)
 def test_value_that_merely_looks_like_the_field_is_not_recorded(case, fields_by_document) -> None:
     values = fields_by_document.get(case["file"], {}).get(case["field"], [])
     for forbidden in case["forbidden"]:
-        offending = [value for value in values if isinstance(value, (int, float)) and math.isclose(value, forbidden, rel_tol=1e-9)]
-        assert not offending, f"{case['field']} in {case['file']} picked up {offending}: {case['why']}"
+        offending = [
+            value
+            for value in values
+            if isinstance(value, (int, float)) and math.isclose(value, forbidden, rel_tol=1e-9)
+        ]
+        assert not offending, (
+            f"{case['field']} in {case['file']} picked up {offending}: {case['why']}"
+        )
 
 
 def test_every_field_carries_its_unit_and_provenance(documents) -> None:
@@ -101,7 +113,9 @@ def test_every_field_carries_its_unit_and_provenance(documents) -> None:
     assert fields, "the program page should yield fields"
     for field in fields:
         assert field.name and field.value is not None
-        assert field.provenance is not None, f"{field.name}: a value without provenance cannot be audited"
+        assert field.provenance is not None, (
+            f"{field.name}: a value without provenance cannot be audited"
+        )
         assert field.provenance.ref.count(">") >= 1, f"{field.name}: provenance has no location"
         assert 0.0 < field.confidence <= 1.0
         assert field.method, "no method recorded"
@@ -117,6 +131,10 @@ def test_a_spreadsheet_label_becomes_the_canonical_field_key(documents) -> None:
     # A label that only starts with a field name describes something else.
     assert canonical_field_name("pressure test") is None
     assert canonical_field_name("Mud weight report date") is None
-    mud = [field for field in FieldExtractor().apply(documents["mud_report_well-a3.xlsx"]) if "mud_weight" in field.name]
+    mud = [
+        field
+        for field in FieldExtractor().apply(documents["mud_report_well-a3.xlsx"])
+        if "mud_weight" in field.name
+    ]
     assert mud, "the mud report has a mud weight row"
     assert any(field.name == "mud_weight" for field in mud), [field.name for field in mud]

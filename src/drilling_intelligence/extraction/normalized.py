@@ -233,7 +233,10 @@ class Table:
         return records
 
     def text(self) -> str:
-        lines = ["\t".join(self.cell(r, c) for c in range(self.column_count)) for r in range(self.row_count)]
+        lines = [
+            "\t".join(self.cell(r, c) for c in range(self.column_count))
+            for r in range(self.row_count)
+        ]
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
@@ -411,7 +414,9 @@ class NormalizedDocument:
                 return section
         return None
 
-    def search_units(self, *, include_tables: bool = True, max_chars: int = 1200) -> list[SearchUnit]:
+    def search_units(
+        self, *, include_tables: bool = True, max_chars: int = 1200
+    ) -> list[SearchUnit]:
         """Chunk the document for retrieval, each chunk anchored to one provenance.
 
         Chunking follows the document's own structure - heading, paragraph run, table row,
@@ -460,7 +465,11 @@ class NormalizedDocument:
             heading = (section.label or "").strip()
             if not heading:
                 continue
-            anchor = self.paragraph_at(section.paragraph_indices[0]) if section.paragraph_indices else None
+            anchor = (
+                self.paragraph_at(section.paragraph_indices[0])
+                if section.paragraph_indices
+                else None
+            )
             units.append(
                 SearchUnit(
                     text=heading,
@@ -479,7 +488,9 @@ class NormalizedDocument:
                 SearchUnit(
                     text=text,
                     unit_type="field",
-                    page=item.provenance.locator.page if item.provenance and item.provenance.locator.kind == "pdf" else None,
+                    page=item.provenance.locator.page
+                    if item.provenance and item.provenance.locator.kind == "pdf"
+                    else None,
                     section=item.name,
                     index=len(units),
                     provenance=item.provenance,
@@ -508,7 +519,9 @@ class NormalizedDocument:
                     header = " | ".join(h for h in table.header if h)
                     units.append(
                         SearchUnit(
-                            text=f"{table.caption or table.table_id}: {header}\n{rendered}"[: max_chars * 2],
+                            text=f"{table.caption or table.table_id}: {header}\n{rendered}"[
+                                : max_chars * 2
+                            ],
                             unit_type="table_row",
                             page=table.page,
                             section=table.sheet or (table.caption or ""),
@@ -536,7 +549,9 @@ class NormalizedDocument:
         }
 
     def to_json(self, *, indent: int | None = None) -> str:
-        return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, indent=indent, default=str)
+        return json.dumps(
+            self.to_dict(), ensure_ascii=False, sort_keys=True, indent=indent, default=str
+        )
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> NormalizedDocument:
@@ -554,7 +569,9 @@ class NormalizedDocument:
             paragraphs=[Paragraph.from_dict(p) for p in payload.get("paragraphs") or []],
             tables=[Table.from_dict(t) for t in payload.get("tables") or []],
             figures=[Figure.from_dict(f) for f in payload.get("figures") or []],
-            extracted_fields=[DataField.from_dict(f) for f in payload.get("extracted_fields") or []],
+            extracted_fields=[
+                DataField.from_dict(f) for f in payload.get("extracted_fields") or []
+            ],
             diagnostics=list(payload.get("diagnostics") or []),
             text=payload.get("text", "") or "",
         )

@@ -62,7 +62,13 @@ class MigrationStatus:
         return bool(self.head) and self.current == self.head
 
     def to_dict(self) -> dict[str, object]:
-        return {"mode": self.mode, "current": self.current, "head": self.head, "detail": self.detail, "up_to_date": self.up_to_date}
+        return {
+            "mode": self.mode,
+            "current": self.current,
+            "head": self.head,
+            "detail": self.detail,
+            "up_to_date": self.up_to_date,
+        }
 
 
 def _bare_config(directory: Path) -> object:
@@ -93,7 +99,9 @@ def current_revision(engine: Engine) -> str:
         return ""
 
 
-def upgrade(engine: Engine, revision: str = "head", *, allow_downgrade: bool = False) -> MigrationStatus:
+def upgrade(
+    engine: Engine, revision: str = "head", *, allow_downgrade: bool = False
+) -> MigrationStatus:
     """Bring the schema to ``revision``; report how it got there.
 
     Forward is the normal direction and the only one a workspace opening ever needs.
@@ -109,15 +117,25 @@ def upgrade(engine: Engine, revision: str = "head", *, allow_downgrade: bool = F
         return _run_upgrade(engine, directory, revision, allow_downgrade=allow_downgrade)
     if "alembic_version" not in existing:
         if not _looks_like_initial_schema(engine):
-            return MigrationStatus(mode="unavailable", detail="Database has neither alembic_version nor the platform tables")
+            return MigrationStatus(
+                mode="unavailable",
+                detail="Database has neither alembic_version nor the platform tables",
+            )
         return _create_and_stamp(engine, "pre-migration database stamped at head", stamp_only=True)
     if directory is None:
         head = ""
-        return MigrationStatus(mode="stamped-from-metadata", current=current_revision(engine), head=head, detail="migration scripts unavailable")
+        return MigrationStatus(
+            mode="stamped-from-metadata",
+            current=current_revision(engine),
+            head=head,
+            detail="migration scripts unavailable",
+        )
     return _run_upgrade(engine, directory, revision, allow_downgrade=allow_downgrade)
 
 
-def _run_upgrade(engine: Engine, directory: Path, revision: str, *, allow_downgrade: bool = False) -> MigrationStatus:
+def _run_upgrade(
+    engine: Engine, directory: Path, revision: str, *, allow_downgrade: bool = False
+) -> MigrationStatus:
     from alembic import command
     from alembic.config import Config
     from alembic.script import ScriptDirectory
@@ -134,13 +152,18 @@ def _run_upgrade(engine: Engine, directory: Path, revision: str, *, allow_downgr
     # ``walk_revisions`` yields head-first, so a *higher* index means an *older* revision.
     order = [step.revision for step in ScriptDirectory.from_config(config).walk_revisions()]
     head = ",".join(ScriptDirectory.from_config(config).get_heads())
-    behind = bool(before) and revision in order and before in order and order.index(revision) > order.index(before)
+    behind = (
+        bool(before)
+        and revision in order
+        and before in order
+        and order.index(revision) > order.index(before)
+    )
     if behind and not allow_downgrade:
         return MigrationStatus(
             mode="downgrade-required",
             current=before,
             head=head,
-                    detail=f"{revision} is older than the current revision {before}; pass allow_downgrade=True to roll back",
+            detail=f"{revision} is older than the current revision {before}; pass allow_downgrade=True to roll back",
         )
     if behind:
         command.downgrade(config, revision)
@@ -149,7 +172,13 @@ def _run_upgrade(engine: Engine, directory: Path, revision: str, *, allow_downgr
     after = current_revision(engine)
     if before and before == after == head:
         mode = "already-current"
-    elif before and after and before in order and after in order and order.index(after) > order.index(before):
+    elif (
+        before
+        and after
+        and before in order
+        and after in order
+        and order.index(after) > order.index(before)
+    ):
         mode = "downgraded"
     else:
         mode = "migrated"
@@ -176,10 +205,18 @@ def _create_and_stamp(engine: Engine, reason: str, *, stamp_only: bool = False) 
         head = ",".join(ScriptDirectory.from_config(config).get_heads())
     else:
         with engine.begin() as conn:
-            conn.execute(text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"))
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+                )
+            )
             conn.execute(text("DELETE FROM alembic_version"))
-            conn.execute(text("INSERT INTO alembic_version (version_num) VALUES (:rev)"), {"rev": head})
-    log.warning("schema stamped at %s: %s", head, reason, extra={"event": "db.stamp", "revision": head})
+            conn.execute(
+                text("INSERT INTO alembic_version (version_num) VALUES (:rev)"), {"rev": head}
+            )
+    log.warning(
+        "schema stamped at %s: %s", head, reason, extra={"event": "db.stamp", "revision": head}
+    )
     return MigrationStatus(mode="stamped-from-metadata", current=head, head=head, detail=reason)
 
 

@@ -73,7 +73,12 @@ class IntegrityProblem:
     detail: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"table": self.table, "row_id": self.row_id, "problem": self.problem, "detail": dict(self.detail or {})}
+        return {
+            "table": self.table,
+            "row_id": self.row_id,
+            "problem": self.problem,
+            "detail": dict(self.detail or {}),
+        }
 
     def __str__(self) -> str:  # pragma: no cover - formatting helper
         return f"{self.table}({self.row_id}): {self.problem}"
@@ -115,13 +120,19 @@ def check_current_version_invariants(session: Session) -> list[IntegrityProblem]
                         "document",
                         document.id,
                         "POINTER_FOREIGN",
-                        {"detail": f"pointer {document.current_version_id} but the document has no versions"},
+                        {
+                            "detail": f"pointer {document.current_version_id} but the document has no versions"
+                        },
                     )
                 )
             continue
         current = [version for version in owned if version.is_current]
         if len(current) == 0:
-            problems.append(IntegrityProblem("document", document.id, "NO_CURRENT_VERSION", {"versions": len(owned)}))
+            problems.append(
+                IntegrityProblem(
+                    "document", document.id, "NO_CURRENT_VERSION", {"versions": len(owned)}
+                )
+            )
         elif len(current) > 1:
             problems.append(
                 IntegrityProblem(
@@ -140,7 +151,10 @@ def check_current_version_invariants(session: Session) -> list[IntegrityProblem]
                         "document",
                         document.id,
                         "POINTER_MISSING",
-                        {"current_version_id": document.current_version_id, "expected": expected.id},
+                        {
+                            "current_version_id": document.current_version_id,
+                            "expected": expected.id,
+                        },
                     )
                 )
             elif pointer.document_id != document.id:
@@ -184,7 +198,14 @@ def check_current_version_invariants(session: Session) -> list[IntegrityProblem]
     document_ids = {document.id for document in documents}
     for version in versions:
         if version.document_id not in document_ids:
-            problems.append(IntegrityProblem("document_version", version.id, "ORPHAN_VERSION", {"document_id": version.document_id}))
+            problems.append(
+                IntegrityProblem(
+                    "document_version",
+                    version.id,
+                    "ORPHAN_VERSION",
+                    {"document_id": version.document_id},
+                )
+            )
 
     return problems
 
@@ -224,7 +245,10 @@ def _endpoint_exists(session: Session, endpoint_type: str, endpoint_id: str) -> 
         return True
     # Validate *before* persistence: an object added moments ago and not yet flushed
     # still counts, without forcing a flush that would defeat the point of checking.
-    return any(isinstance(pending, model) and getattr(pending, "id", None) == endpoint_id for pending in session.new)
+    return any(
+        isinstance(pending, model) and getattr(pending, "id", None) == endpoint_id
+        for pending in session.new
+    )
 
 
 def validate_knowledge_relation(
@@ -242,7 +266,10 @@ def validate_knowledge_relation(
     already exist (from a deleted row, a hand-edited file, an interrupted import) are
     found by :func:`check_knowledge_relations`.
     """
-    for label, endpoint_type, endpoint_id in (("source", source_type, source_id), ("target", target_type, target_id)):
+    for label, endpoint_type, endpoint_id in (
+        ("source", source_type, source_id),
+        ("target", target_type, target_id),
+    ):
         if not str(endpoint_type or "").strip():
             raise KnowledgeIntegrityError(f"knowledge relation {label}_type must not be empty")
         if endpoint_type not in RELATION_ENDPOINT_MODELS:
@@ -264,11 +291,19 @@ def validate_knowledge_relation(
     # enough to query against: snake_case, no spaces, no separators that invite aliases.
     normalised = str(relation).strip()
     if normalised != relation or " " in relation:
-        raise KnowledgeIntegrityError(f"knowledge relation {relation!r} must be a single snake_case token")
+        raise KnowledgeIntegrityError(
+            f"knowledge relation {relation!r} must be a single snake_case token"
+        )
 
 
 def find_knowledge_relation(
-    session: Session, *, source_type: str, source_id: str, relation: str, target_type: str, target_id: str
+    session: Session,
+    *,
+    source_type: str,
+    source_id: str,
+    relation: str,
+    target_type: str,
+    target_id: str,
 ) -> KnowledgeRelation | None:
     """The stored edge with the same five key columns, if there is one."""
     return session.execute(
@@ -312,7 +347,9 @@ def create_knowledge_relation(
         relation=relation,
     )
     if not 0.0 <= float(weight) <= 1.0:
-        raise KnowledgeIntegrityError(f"knowledge relation weight must be between 0 and 1, got {weight!r}")
+        raise KnowledgeIntegrityError(
+            f"knowledge relation weight must be between 0 and 1, got {weight!r}"
+        )
 
     existing = find_knowledge_relation(
         session,
@@ -363,7 +400,9 @@ def _strengthen(
     row.weight = max(float(row.weight or 0.0), float(weight))
     if provenance:
         seen = {str(item) for item in (row.provenance or [])}
-        row.provenance = list(row.provenance or []) + [item for item in provenance if str(item) not in seen]
+        row.provenance = list(row.provenance or []) + [
+            item for item in provenance if str(item) not in seen
+        ]
     if note:
         row.note = note
     return row
@@ -402,8 +441,18 @@ def check_knowledge_relations(session: Session) -> list[IntegrityProblem]:
                         {label: f"{endpoint_type}({endpoint_id})"},
                     )
                 )
-        if relation.source_type == relation.target_type and relation.source_id == relation.target_id:
-            problems.append(IntegrityProblem("knowledge_relation", relation.id, "SELF_REFERENCE", {"relation": relation.relation}))
+        if (
+            relation.source_type == relation.target_type
+            and relation.source_id == relation.target_id
+        ):
+            problems.append(
+                IntegrityProblem(
+                    "knowledge_relation",
+                    relation.id,
+                    "SELF_REFERENCE",
+                    {"relation": relation.relation},
+                )
+            )
     return problems
 
 
@@ -433,7 +482,9 @@ def check_extraction_cache(session: Session) -> list[IntegrityProblem]:
         .having(func.count(ExtractionCache.id) > 1)
     )
     problems: list[IntegrityProblem] = []
-    for sha, extractor, extractor_version, config_hash, ids, count in session.execute(statement).all():
+    for sha, extractor, extractor_version, config_hash, ids, count in session.execute(
+        statement
+    ).all():
         problems.append(
             IntegrityProblem(
                 "extraction_cache",
@@ -442,7 +493,12 @@ def check_extraction_cache(session: Session) -> list[IntegrityProblem]:
                 {
                     "entries": [str(item) for item in str(ids or "").split(",")],
                     "count": int(count),
-                    "key": {"sha256": sha[:16], "extractor": extractor, "extractor_version": extractor_version, "config_hash": config_hash},
+                    "key": {
+                        "sha256": sha[:16],
+                        "extractor": extractor,
+                        "extractor_version": extractor_version,
+                        "config_hash": config_hash,
+                    },
                 },
             )
         )

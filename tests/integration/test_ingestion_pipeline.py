@@ -54,7 +54,9 @@ def ingested(workspace, corpus: Path):
         well = repo.create_well("A-3", project_id=project.id)
         session.commit()
         ids = (ws_row.id, well.id)
-    pipeline = IngestionPipeline(settings=workspace.settings, workspace_root=workspace.root, database=workspace.database)
+    pipeline = IngestionPipeline(
+        settings=workspace.settings, workspace_root=workspace.root, database=workspace.database
+    )
     return pipeline, corpus, ids
 
 
@@ -87,16 +89,24 @@ def test_first_run_registers_and_extracts_every_file(ingested, workspace) -> Non
         assert len(documents) == len(EXPECTED)
         for document in documents:
             assert document.current_version_id, document.filename
-            assert document.identity_path == f"corpus/{document.filename.lower()}", document.identity_path
+            assert document.identity_path == f"corpus/{document.filename.lower()}", (
+                document.identity_path
+            )
             version = session.get(DocumentVersion, document.current_version_id)
-            extraction = session.scalar(select(Extraction).where(Extraction.document_version_id == version.id))
-            assert extraction is not None and extraction.status in {"OK", "CACHE_HIT"}, document.filename
+            extraction = session.scalar(
+                select(Extraction).where(Extraction.document_version_id == version.id)
+            )
+            assert extraction is not None and extraction.status in {"OK", "CACHE_HIT"}, (
+                document.filename
+            )
             if document.filename == "scanned_well_b11_report.pdf":
                 # A scan really has no text layer: the run must succeed *and* say so,
                 # rather than either failing the file or inventing content for it.
                 assert not extraction.text_blob.strip()
                 payload = extraction.document_json or {}
-                assert any("no extractable text" in line for line in payload.get("diagnostics") or []), payload
+                assert any(
+                    "no extractable text" in line for line in payload.get("diagnostics") or []
+                ), payload
             else:
                 assert extraction.text_blob.strip(), document.filename
 
@@ -130,9 +140,15 @@ def test_changed_file_becomes_a_new_version_and_keeps_its_links(ingested, worksp
     assert changed.change.value == "MODIFIED"
 
     with workspace.database.read_only() as session:
-        document = session.scalar(select(Document).where(Document.filename == "mud_report_well-a3.xlsx"))
+        document = session.scalar(
+            select(Document).where(Document.filename == "mud_report_well-a3.xlsx")
+        )
         versions = list(
-            session.scalars(select(DocumentVersion).where(DocumentVersion.document_id == document.id).order_by(DocumentVersion.version_number))
+            session.scalars(
+                select(DocumentVersion)
+                .where(DocumentVersion.document_id == document.id)
+                .order_by(DocumentVersion.version_number)
+            )
         )
         assert len(versions) == 2
         first, second = versions
@@ -141,7 +157,9 @@ def test_changed_file_becomes_a_new_version_and_keeps_its_links(ingested, worksp
         assert document.current_version_id == second.id
         assert document.sha256 == second.sha256 != first.sha256
         # Nothing is deleted and nothing is lost: the old version is still readable.
-        old_extraction = session.scalar(select(Extraction).where(Extraction.document_version_id == first.id))
+        old_extraction = session.scalar(
+            select(Extraction).where(Extraction.document_version_id == first.id)
+        )
         assert old_extraction is not None, "history must stay queryable"
         assert document.well_id == well_id, "carry-forward must keep the well link"
 
@@ -174,9 +192,13 @@ def test_the_better_cited_field_survives_into_storage(ingested, workspace) -> No
     pipeline, corpus, ids = ingested
     run(pipeline, corpus, ids)
     with workspace.database.read_only() as session:
-        document = session.scalar(select(Document).where(Document.filename == "mud_report_well-a3.xlsx"))
+        document = session.scalar(
+            select(Document).where(Document.filename == "mud_report_well-a3.xlsx")
+        )
         version = session.get(DocumentVersion, document.current_version_id)
-        extraction = session.scalar(select(Extraction).where(Extraction.document_version_id == version.id))
+        extraction = session.scalar(
+            select(Extraction).where(Extraction.document_version_id == version.id)
+        )
         fields = [
             field
             for field in (extraction.document_json or {}).get("extracted_fields") or []
@@ -186,7 +208,9 @@ def test_the_better_cited_field_survives_into_storage(ingested, workspace) -> No
         mud_weight = fields[0]
         assert float(mud_weight["value"]) == pytest.approx(10.2)
         assert mud_weight["unit"] == "ppg"
-        assert mud_weight["provenance"]["locator"]["cell"] == "B9", mud_weight["provenance"]["locator"]
+        assert mud_weight["provenance"]["locator"]["cell"] == "B9", mud_weight["provenance"][
+            "locator"
+        ]
         assert len(fields) == 1, "the same number must not be stored twice under one name"
 
 
@@ -208,7 +232,9 @@ def test_a_limited_run_does_not_report_the_rest_of_the_folder_as_missing(ingeste
     # run only touches one of the remaining five.
     (corpus / "npt_summary_2025-06.csv").unlink()
     after = pipeline.run(root=corpus, workspace_id=workspace_id, limit=1)
-    assert [item["filename"] for item in after.removed] == ["npt_summary_2025-06.csv"], after.removed
+    assert [item["filename"] for item in after.removed] == ["npt_summary_2025-06.csv"], (
+        after.removed
+    )
 
 
 def test_removed_file_is_reported_but_never_deleted(ingested, workspace) -> None:
@@ -222,7 +248,10 @@ def test_removed_file_is_reported_but_never_deleted(ingested, workspace) -> None
     # Ingestion never destroys the record: the file is gone from the folder, the
     # document and its provenance stay in the registry.
     with workspace.database.read_only() as session:
-        assert session.scalar(select(Document).where(Document.filename == "npt_summary_2025-06.csv")) is not None
+        assert (
+            session.scalar(select(Document).where(Document.filename == "npt_summary_2025-06.csv"))
+            is not None
+        )
         assert result.counts["PROCESSED"] == 0
 
 
@@ -239,10 +268,14 @@ def test_provenance_locator_matches_the_format(ingested, workspace) -> None:
         for name, kind in expected_kind.items():
             document = session.scalar(select(Document).where(Document.filename == name))
             version = session.get(DocumentVersion, document.current_version_id)
-            extraction = session.scalar(select(Extraction).where(Extraction.document_version_id == version.id))
+            extraction = session.scalar(
+                select(Extraction).where(Extraction.document_version_id == version.id)
+            )
             fields = (extraction.document_json or {}).get("extracted_fields") or []
             assert fields, name
-            locators = [field["provenance"]["locator"] for field in fields if field.get("provenance")]
+            locators = [
+                field["provenance"]["locator"] for field in fields if field.get("provenance")
+            ]
             assert locators, f"{name}: fields stored without provenance"
             assert all(locator["locator_kind"] == kind for locator in locators), (name, locators[0])
             if kind == "pdf":
@@ -283,21 +316,34 @@ def test_a_run_reports_a_registry_it_cannot_trust(ingested, workspace) -> None:
     assert clean.ok and clean.invariant_problems == [], clean.to_dict()
 
     with workspace.database.session() as session:
-        document_id = session.execute(text("select id from document order by identity_path limit 1")).scalar_one()
-        session.execute(text("update document set current_version_id = null where id = :id"), {"id": document_id})
+        document_id = session.execute(
+            text("select id from document order by identity_path limit 1")
+        ).scalar_one()
+        session.execute(
+            text("update document set current_version_id = null where id = :id"),
+            {"id": document_id},
+        )
         session.commit()
 
     result = run(pipeline, corpus, ids)
     assert result.ok, result.error
-    assert [problem["problem"] for problem in result.invariant_problems] == ["POINTER_MISSING"], result.invariant_problems
+    assert [problem["problem"] for problem in result.invariant_problems] == ["POINTER_MISSING"], (
+        result.invariant_problems
+    )
     assert result.invariant_problems[0]["row_id"] == document_id
-    assert any("registry invariant broken" in warning for warning in result.warnings), result.warnings
+    assert any("registry invariant broken" in warning for warning in result.warnings), (
+        result.warnings
+    )
 
     # The same statement is what the UI's status bar and the repair tool read.
     with workspace.database.session() as session:
-        raw = session.execute(text("select report from ingestion_run order by started_at desc limit 1")).scalar_one()
+        raw = session.execute(
+            text("select report from ingestion_run order by started_at desc limit 1")
+        ).scalar_one()
         stored = raw if isinstance(raw, dict) else json.loads(raw)
-        assert [problem["problem"] for problem in stored["invariant_problems"]] == ["POINTER_MISSING"], stored
+        assert [problem["problem"] for problem in stored["invariant_problems"]] == [
+            "POINTER_MISSING"
+        ], stored
         # ...and repairing the row makes the next run clean again.
         session.execute(
             text(

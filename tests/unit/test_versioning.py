@@ -20,7 +20,11 @@ from drilling_intelligence.documents.versioning import (
 
 
 def test_revision_markers_survive_every_naming_style() -> None:
-    for filename in ("well_a3_program_rev12.pdf", "well-a3-program-rev-12.pdf", "Program Rev. 12.pdf"):
+    for filename in (
+        "well_a3_program_rev12.pdf",
+        "well-a3-program-rev-12.pdf",
+        "Program Rev. 12.pdf",
+    ):
         info = parse_revision(filename)
         assert info.revision == "Rev 12", filename
         assert info.revision_key == 1200, filename
@@ -62,9 +66,14 @@ def test_status_markers_are_recognised_whatever_the_separator() -> None:
 
 
 def test_document_date_is_never_the_filesystem_stamp() -> None:
-    assert parse_revision("mudlog_2025-06-14.pdf").revision_date == datetime(2025, 6, 14, tzinfo=UTC)
+    assert parse_revision("mudlog_2025-06-14.pdf").revision_date == datetime(
+        2025, 6, 14, tzinfo=UTC
+    )
     # mtime says nothing about the document's revision date, so it is not substituted.
-    assert parse_revision("mudlog.pdf", file_modified=datetime(2020, 1, 1, tzinfo=UTC)).revision_date is None
+    assert (
+        parse_revision("mudlog.pdf", file_modified=datetime(2020, 1, 1, tzinfo=UTC)).revision_date
+        is None
+    )
 
 
 def test_missing_evidence_is_recorded_not_invented() -> None:
@@ -87,7 +96,9 @@ def test_latest_version_ranks_by_revision_then_mtime() -> None:
 
 
 def test_revision_info_serialises_for_the_database() -> None:
-    info = RevisionInfo(revision="Rev 2", revision_key=200, status=DocumentStatus.APPROVED, source="filename")
+    info = RevisionInfo(
+        revision="Rev 2", revision_key=200, status=DocumentStatus.APPROVED, source="filename"
+    )
     payload = info.to_dict()
     assert payload["status"] == "APPROVED" and payload["revision_key"] == 200
     assert payload["revision_date"] is None and payload["notes"] == []

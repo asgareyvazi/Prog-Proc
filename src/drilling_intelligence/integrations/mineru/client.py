@@ -93,17 +93,28 @@ class MinerUClient:
         if mode == "auto":
             # Prefer HTTP when an endpoint answers, else CLI.  The prober has the
             # authoritative view; here we only pick the transport.
-            mode = "http" if (self.endpoint and http_json("GET", self.endpoint + "/docs", timeout=3.0).get("ok")) else "cli"
+            mode = (
+                "http"
+                if (
+                    self.endpoint
+                    and http_json("GET", self.endpoint + "/docs", timeout=3.0).get("ok")
+                )
+                else "cli"
+            )
         if mode == "http":
             if not self.endpoint:
-                raise IntegrationUnavailableError("MinerU", "[mineru].endpoint is required for http mode")
+                raise IntegrationUnavailableError(
+                    "MinerU", "[mineru].endpoint is required for http mode"
+                )
             return self._parse_http(Path(source))
         return self._parse_cli(Path(source), filename_hint)
 
     # -- transports ---------------------------------------------------------
     def _parse_cli(self, source: Path, filename_hint: str = "") -> MinerURun:
         if not shutil.which(self.binary) and not Path(self.binary).expanduser().exists():
-            raise IntegrationUnavailableError("MinerU", f"executable {self.binary!r} not found on PATH")
+            raise IntegrationUnavailableError(
+                "MinerU", f"executable {self.binary!r} not found on PATH"
+            )
         workdir = Path(tempfile.mkdtemp(prefix=f"mineru-{short_hash(uuid.uuid4().hex, 8)}-"))
         outdir = workdir / "out"
         outdir.mkdir(parents=True, exist_ok=True)
@@ -136,7 +147,9 @@ class MinerUClient:
             except ExtractionError as exc:
                 error = str(exc)
         if not ok and not error:
-            error = f"mineru exited with code {code}: {stderr.strip()[:400] or stdout.strip()[:400]}"
+            error = (
+                f"mineru exited with code {code}: {stderr.strip()[:400] or stdout.strip()[:400]}"
+            )
         return MinerURun(
             ok=ok,
             mode="cli",
@@ -145,7 +158,9 @@ class MinerUClient:
             stderr=stderr[-4000:],
             duration_ms=duration,
             command=command,
-            output_dir=artefacts.directory if (artefacts and self.keep_artifacts) else (outdir if self.keep_artifacts else None),
+            output_dir=artefacts.directory
+            if (artefacts and self.keep_artifacts)
+            else (outdir if self.keep_artifacts else None),
             error=error,
             keep=self.keep_artifacts,
         )
@@ -169,18 +184,32 @@ class MinerUClient:
             )
         payload = response.get("json") or {}
         if not response.get("ok"):
-            raise IntegrationUnavailableError("MinerU", f"HTTP {response.get('status_code')}: {str(response.get('error'))[:200]}")
+            raise IntegrationUnavailableError(
+                "MinerU", f"HTTP {response.get('status_code')}: {str(response.get('error'))[:200]}"
+            )
         results = payload.get("results") if isinstance(payload, dict) else None
         if not isinstance(results, dict) or not results:
-            raise IntegrationUnavailableError("MinerU", f"unexpected /file_parse response: {str(payload)[:200]}")
+            raise IntegrationUnavailableError(
+                "MinerU", f"unexpected /file_parse response: {str(payload)[:200]}"
+            )
         entry = next(iter(results.values()))
         if not isinstance(entry, dict):
             raise IntegrationUnavailableError("MinerU", "malformed result entry")
         middle = _maybe_json(entry.get("middle_json"))
         content_list = _maybe_json(entry.get("content_list") or entry.get("content_list_json"))
         markdown = str(entry.get("md_content") or entry.get("markdown") or "")
-        artefacts = MinerURawOutput(middle=middle if isinstance(middle, dict) else None, content_list=content_list, markdown=markdown)
-        return MinerURun(ok=True, mode="http", artefacts=artefacts, duration_ms=float(response.get("duration_ms") or 0.0), error="")
+        artefacts = MinerURawOutput(
+            middle=middle if isinstance(middle, dict) else None,
+            content_list=content_list,
+            markdown=markdown,
+        )
+        return MinerURun(
+            ok=True,
+            mode="http",
+            artefacts=artefacts,
+            duration_ms=float(response.get("duration_ms") or 0.0),
+            error="",
+        )
 
 
 def _maybe_json(value: Any) -> Any:
@@ -191,7 +220,6 @@ def _maybe_json(value: Any) -> Any:
 
         return parse_json_loose(value)
     return None
-
 
 
 __all__ = ["MinerUClient", "MinerURun"]

@@ -26,8 +26,12 @@ from .normalized import (
 )
 
 _MD_HEADING = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<title>.+?)\s*$")
-_NUMBERED_HEADING = re.compile(r"^\s*(?P<number>\d+(?:\.\d+){0,3})\.?\s+(?P<title>[A-Z][^\n]{1,120})$")
-UNDERLINE_HEADING = re.compile(r"^(?P<title>[A-Za-z0-9 ()/\"'\-.,&]{3,120})\n(?P<underline>[=\-~^]{3,})$")
+_NUMBERED_HEADING = re.compile(
+    r"^\s*(?P<number>\d+(?:\.\d+){0,3})\.?\s+(?P<title>[A-Z][^\n]{1,120})$"
+)
+UNDERLINE_HEADING = re.compile(
+    r"^(?P<title>[A-Za-z0-9 ()/\"'\-.,&]{3,120})\n(?P<underline>[=\-~^]{3,})$"
+)
 
 
 class TextExtractor:
@@ -59,12 +63,16 @@ class TextExtractor:
             complexity.reasons.append(f"probe failed: {type(exc).__name__}: {exc}")
         return complexity
 
-    def extract(self, context: ExtractionContext, provenance: ProvenanceBuilder) -> NormalizedDocument:
+    def extract(
+        self, context: ExtractionContext, provenance: ProvenanceBuilder
+    ) -> NormalizedDocument:
         max_bytes = int(context.option("text_max_bytes", 8 * 1024 * 1024) or 8 * 1024 * 1024)
         try:
             text, truncated = _read_text_full(context.path, max_bytes)
         except Exception as exc:
-            raise ExtractionError(f"Cannot read {context.filename}: {type(exc).__name__}: {exc}") from exc
+            raise ExtractionError(
+                f"Cannot read {context.filename}: {type(exc).__name__}: {exc}"
+            ) from exc
         if truncated:
             text += "\n\n[truncated at configured text_max_bytes]"
 
@@ -85,12 +93,20 @@ class TextExtractor:
         else:
             self._extract_lines(document, text, provenance)
 
-        document.text = clean_text("\n\n".join([p.text for p in document.paragraphs if p.text] + [t.text() for t in document.tables]) or text)
+        document.text = clean_text(
+            "\n\n".join(
+                [p.text for p in document.paragraphs if p.text]
+                + [t.text() for t in document.tables]
+            )
+            or text
+        )
         document.metadata.page_count = len(document.pages) or 1
         return document
 
     # ------------------------------------------------------------------ lines
-    def _extract_lines(self, document: NormalizedDocument, text: str, provenance: ProvenanceBuilder) -> None:
+    def _extract_lines(
+        self, document: NormalizedDocument, text: str, provenance: ProvenanceBuilder
+    ) -> None:
         lines = text.splitlines()
         blocks: list[tuple[int, int, list[str]]] = []
         start = 1
@@ -116,7 +132,13 @@ class TextExtractor:
             heading = _block_heading(raw)
             page = (block_start - 1) // page_lines + 1
             while len(document.pages) < page:
-                document.pages.append(Page(index=len(document.pages) + 1, text="", label=f"Lines {(len(document.pages)) * page_lines + 1}"))
+                document.pages.append(
+                    Page(
+                        index=len(document.pages) + 1,
+                        text="",
+                        label=f"Lines {(len(document.pages)) * page_lines + 1}",
+                    )
+                )
             if heading is not None:
                 paragraph = Paragraph(
                     index=index,
@@ -127,9 +149,17 @@ class TextExtractor:
                     style="heading",
                     char_start=char_cursor,
                     char_end=char_cursor + len(raw),
-                    provenance=provenance.text(line_start=block_start, line_end=block_end, excerpt=raw[:2000]),
+                    provenance=provenance.text(
+                        line_start=block_start, line_end=block_end, excerpt=raw[:2000]
+                    ),
                 )
-                current_section = Section(heading=heading[1], level=heading[0], page=page, number=heading[2], char_start=char_cursor)
+                current_section = Section(
+                    heading=heading[1],
+                    level=heading[0],
+                    page=page,
+                    number=heading[2],
+                    char_start=char_cursor,
+                )
                 document.sections.append(current_section)
                 document.paragraphs.append(paragraph)
                 index += 1
@@ -163,7 +193,13 @@ class TextExtractor:
             page_obj.char_end = sum(len(line) + 1 for line in lines[first : first + page_lines])
 
     # --------------------------------------------------------------- delimited
-    def _extract_delimited(self, document: NormalizedDocument, text: str, context: ExtractionContext, provenance: ProvenanceBuilder) -> None:
+    def _extract_delimited(
+        self,
+        document: NormalizedDocument,
+        text: str,
+        context: ExtractionContext,
+        provenance: ProvenanceBuilder,
+    ) -> None:
         delimiter = "\t" if context.extension.lower() == ".tsv" else ","
         sample = "\n".join(text.splitlines()[:5])
         try:
@@ -185,7 +221,11 @@ class TextExtractor:
                 caption=f"{document.metadata.filename} data",
                 page=1,
                 anchor=f"rows 1-{len(rows)}",
-                provenance=provenance.text(line_start=1, line_end=len(rows), excerpt="\n".join("\t".join(r) for r in rows[:8])[:2000]),
+                provenance=provenance.text(
+                    line_start=1,
+                    line_end=len(rows),
+                    excerpt="\n".join("\t".join(r) for r in rows[:8])[:2000],
+                ),
                 extra={"delimiter": delimiter},
             )
         )
@@ -202,7 +242,11 @@ def _block_heading(raw: str) -> tuple[int, str, str] | None:
         return len(markdown.group("hashes")), markdown.group("title").strip(), ""
     numbered = _NUMBERED_HEADING.match(line)
     if numbered:
-        return numbered.group("number").count(".") + 1, numbered.group("title").strip(), numbered.group("number")
+        return (
+            numbered.group("number").count(".") + 1,
+            numbered.group("title").strip(),
+            numbered.group("number"),
+        )
     return None
 
 

@@ -151,7 +151,9 @@ class DeterministicClassifier:
                         )
                     )
             # --- extension evidence (weak by itself, never decisive)
-            if extension and extension.lower().lstrip(".") in {ext.lstrip(".") for ext in signature.extensions}:
+            if extension and extension.lower().lstrip(".") in {
+                ext.lstrip(".") for ext in signature.extensions
+            }:
                 scores[signature.classification.value] += 0.02 * self.weights["extension"] * 10
                 evidence.append(
                     Evidence(
@@ -176,7 +178,7 @@ class DeterministicClassifier:
                     pages[paragraph.page] += paragraph.text + "\n"
 
         if body:
-            scan = body[: 400_000]
+            scan = body[:400_000]
             front = scan[: self.front_matter_chars]
             for signature in TAXONOMY:
                 for pattern, weight in signature.content_patterns:
@@ -186,7 +188,9 @@ class DeterministicClassifier:
                     bonus = 1.15 if re.search(pattern, front, re.IGNORECASE | re.DOTALL) else 1.0
                     page = self._page_of(scan, match.start(), pages, document)
                     source_provenance = self._provenance_for(document, scan, match.start())
-                    scores[signature.classification.value] += weight * self.weights["content"] * bonus
+                    scores[signature.classification.value] += (
+                        weight * self.weights["content"] * bonus
+                    )
                     evidence.append(
                         Evidence(
                             source="content",
@@ -213,11 +217,21 @@ class DeterministicClassifier:
 
             # Structural evidence: a table-heavy workbook is a report, not a book.
             table_count = len(getattr(document, "tables", []) or [])
-            sheets = len(getattr(getattr(document, "metadata", None), "extra", {}).get("workbook", {}).get("sheets", [])) if document is not None else 0
+            sheets = (
+                len(
+                    getattr(getattr(document, "metadata", None), "extra", {})
+                    .get("workbook", {})
+                    .get("sheets", [])
+                )
+                if document is not None
+                else 0
+            )
             if table_count >= 3 or sheets >= 3:
                 for signature in TAXONOMY:
                     if signature.tabular:
-                        scores[signature.classification.value] += 0.06 * self.weights["structure"] * 10
+                        scores[signature.classification.value] += (
+                            0.06 * self.weights["structure"] * 10
+                        )
                         evidence.append(
                             Evidence(
                                 source="structure",
@@ -237,14 +251,18 @@ class DeterministicClassifier:
         raw = max(0.0, scores[best])
         runner = max(0.0, ordered[1][1]) if len(ordered) > 1 else 0.0
         separation = raw / (raw + runner) if raw else 0.0
-        confidence = min(0.98, separation * min(1.0, raw / STRONG_EVIDENCE)) if raw > NOISE_SCORE else 0.0
+        confidence = (
+            min(0.98, separation * min(1.0, raw / STRONG_EVIDENCE)) if raw > NOISE_SCORE else 0.0
+        )
         if content_evidence_missing:
             confidence = min(confidence, 0.45)
         notes: list[str] = []
         if content_evidence_missing:
             # Recorded on both branches: "we could not read it" is the reason, and the
             # UI needs it whether the answer is OTHER or a filename-only hint.
-            notes.append("no text content available: classified from filename and extension only (OCR/MinerU required)")
+            notes.append(
+                "no text content available: classified from filename and extension only (OCR/MinerU required)"
+            )
         if raw <= NOISE_SCORE:
             best = DocumentClassification.OTHER.value
             confidence = 0.0
@@ -268,7 +286,9 @@ class DeterministicClassifier:
             scores=scores,
             evidence=evidence,
             notes=notes,
-            authority_tier=authority_for(classification, status=declared_status, is_current=is_current),
+            authority_tier=authority_for(
+                classification, status=declared_status, is_current=is_current
+            ),
         )
         return result
 
@@ -320,4 +340,13 @@ class DeterministicClassifier:
             return None
 
 
-__all__ = ["MIN_MARGIN", "NOISE_SCORE", "STRONG_EVIDENCE", "WEAK_CONFIDENCE", "WEIGHTS", "ClassificationResult", "DeterministicClassifier", "Evidence"]
+__all__ = [
+    "MIN_MARGIN",
+    "NOISE_SCORE",
+    "STRONG_EVIDENCE",
+    "WEAK_CONFIDENCE",
+    "WEIGHTS",
+    "ClassificationResult",
+    "DeterministicClassifier",
+    "Evidence",
+]

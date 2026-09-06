@@ -83,7 +83,8 @@ class DataField:
             "name": self.name,
             "value": self.value,
             "unit": self.unit,
-            "dimension": self.dimension or (resolve_unit(self.unit).dimension.value if self.unit else ""),
+            "dimension": self.dimension
+            or (resolve_unit(self.unit).dimension.value if self.unit else ""),
             "quality": self.quality.value,
             "confidence": self.confidence,
             "method": self.method,
@@ -189,7 +190,11 @@ class FindingSet:
         return tally
 
     def to_dict(self) -> dict[str, Any]:
-        return {"result": self.result.value, "counts": self.counts(), "checks": [c.to_dict() for c in self.checks]}
+        return {
+            "result": self.result.value,
+            "counts": self.counts(),
+            "checks": [c.to_dict() for c in self.checks],
+        }
 
 
 @dataclass

@@ -142,7 +142,14 @@ _reg(
 _reg(Unit("lb/ft3", "pound per cubic foot", Dimension.DENSITY, LB_KG / FT_M**3), "pcf")
 # Continental density spellings: 1 kg/l == 1 t/m3 == 1000 kg/m3 (and the SG a mud
 # engineer quotes is numerically the same number, by the water=1000 kg/m3 convention).
-_reg(Unit("kg/l", "kilogram per litre", Dimension.DENSITY, 1000.0), "kg/dm3", "t/m3", "t/m\u00b3", "tonnes/m3", "g/l")
+_reg(
+    Unit("kg/l", "kilogram per litre", Dimension.DENSITY, 1000.0),
+    "kg/dm3",
+    "t/m3",
+    "t/m\u00b3",
+    "tonnes/m3",
+    "g/l",
+)
 # Volume
 _reg(Unit("m3", "cubic metre", Dimension.VOLUME, 1.0), "m³", "cum")
 _reg(Unit("bbl", "barrel (42 US gal)", Dimension.VOLUME, BBL_M3), "bbls", "stb")
@@ -189,8 +196,14 @@ _reg(Unit("d", "day", Dimension.TIME, 86400.0), "day", "days")
 # Angle / curvature
 _reg(Unit("deg", "degree", Dimension.ANGLE, math.pi / 180.0), "degree", "o")
 _reg(Unit("rad", "radian", Dimension.ANGLE, 1.0))
-_reg(Unit("deg/100ft", "degrees per 100 feet", Dimension.CURVATURE, math.pi / 180.0 / (100 * FT_M)), "deg/100 ft")
-_reg(Unit("deg/30m", "degrees per 30 metres", Dimension.CURVATURE, math.pi / 180.0 / 30.0), "deg/30 m")
+_reg(
+    Unit("deg/100ft", "degrees per 100 feet", Dimension.CURVATURE, math.pi / 180.0 / (100 * FT_M)),
+    "deg/100 ft",
+)
+_reg(
+    Unit("deg/30m", "degrees per 30 metres", Dimension.CURVATURE, math.pi / 180.0 / 30.0),
+    "deg/30 m",
+)
 _reg(Unit("deg/m", "degrees per metre", Dimension.CURVATURE, math.pi / 180.0))
 # Gradient
 _reg(Unit("psi/ft", "pound per square inch per foot", Dimension.PRESSURE_GRADIENT, PSI_PA / FT_M))
@@ -198,7 +211,14 @@ _reg(Unit("kPa/m", "kilopascal per metre", Dimension.PRESSURE_GRADIENT, 1e3))
 _reg(Unit("bar/m", "bar per metre", Dimension.PRESSURE_GRADIENT, 1e5))
 _reg(Unit("MPa/m", "megapascal per metre", Dimension.PRESSURE_GRADIENT, 1e6))
 _reg(Unit("psi/m", "pound per square inch per metre", Dimension.PRESSURE_GRADIENT, PSI_PA))
-_reg(Unit("ppg/ft", "ppg per foot (equivalent MW gradient)", Dimension.PRESSURE_GRADIENT, LB_KG / GAL_US_M3 / FT_M))
+_reg(
+    Unit(
+        "ppg/ft",
+        "ppg per foot (equivalent MW gradient)",
+        Dimension.PRESSURE_GRADIENT,
+        LB_KG / GAL_US_M3 / FT_M,
+    )
+)
 # Temperature
 _reg(Unit("K", "kelvin", Dimension.TEMPERATURE, 1.0))
 _reg(Unit("degC", "degree Celsius", Dimension.TEMPERATURE, 1.0, offset=273.15), "C", "c", "deg c")
@@ -252,7 +272,9 @@ class Quantity:
         if unit is None:
             raise UnitError("Quantity requires an explicit unit", value=value)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise UnitError(f"Quantity value must be a number, got {type(value).__name__}", value=value)
+            raise UnitError(
+                f"Quantity value must be a number, got {type(value).__name__}", value=value
+            )
         if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
             raise UnitError("Quantity value must be finite", value=value, unit=unit.symbol)
         self._value = float(value)
@@ -399,7 +421,9 @@ class Quantity:
             if convertible(self.dimension, other.dimension):
                 return self.base_value / other.base_value  # type: ignore[return-value]
             raise DimensionMismatchError(
-                "Cannot divide incompatible dimensions", left=self._unit.symbol, right=other.unit.symbol
+                "Cannot divide incompatible dimensions",
+                left=self._unit.symbol,
+                right=other.unit.symbol,
             )
         if isinstance(other, (int, float)) and not isinstance(other, bool):
             return Quantity(self._value / float(other), self._unit)
@@ -488,14 +512,22 @@ def resolve_unit(token: str | Unit) -> Unit:
         return _UNITS[raw]
     key = re.sub(r"\s+", "", raw).lower()
     # unicode approximations that appear in drilling reports
-    key = key.replace("³", "3").replace("²", "2").replace("µ", "u").replace("′", "'").replace("″", '"')
+    key = (
+        key.replace("³", "3")
+        .replace("²", "2")
+        .replace("µ", "u")
+        .replace("′", "'")
+        .replace("″", '"')
+    )
     if key in _ALIASES:
         return _UNITS[_ALIASES[key]]
     # "pounds/gal", "PPG" and trailing punctuation from PDF text
     trimmed = key.rstrip(". ")
     if trimmed in _ALIASES:
         return _UNITS[_ALIASES[trimmed]]
-    raise UnknownUnitError(f"Unknown unit {token!r}", token=token, known_examples=sorted(_UNITS)[:24])
+    raise UnknownUnitError(
+        f"Unknown unit {token!r}", token=token, known_examples=sorted(_UNITS)[:24]
+    )
 
 
 def known_units() -> list[str]:

@@ -44,12 +44,20 @@ class MinerUProber:
             if self._cached is not None and not refresh:
                 return self._cached
             self._cached = self._probe()
-            log.info(self._cached.summary(), extra={"event": "mineru.probe", "available": self._cached.available})
+            log.info(
+                self._cached.summary(),
+                extra={"event": "mineru.probe", "available": self._cached.available},
+            )
             return self._cached
 
     def available(self) -> tuple[bool, str]:
         status = self.status()
-        return status.available, status.reason if not status.available else f"MinerU {status.version or '?'} via {status.mode}"
+        return (
+            status.available,
+            status.reason
+            if not status.available
+            else f"MinerU {status.version or '?'} via {status.mode}",
+        )
 
     def reset(self) -> None:
         with self._lock:
@@ -104,15 +112,25 @@ class MinerUProber:
                 return status
 
         if not status.reason:
-            cli_reason = next((c.get("reason") for c in status.checks if c.get("mode") == "cli"), None)
-            http_reason = next((c.get("reason") for c in status.checks if c.get("mode") == "http"), None)
+            cli_reason = next(
+                (c.get("reason") for c in status.checks if c.get("mode") == "cli"), None
+            )
+            http_reason = next(
+                (c.get("reason") for c in status.checks if c.get("mode") == "http"), None
+            )
             status.reason = f"no usable runtime found (cli: {cli_reason}; http: {http_reason})"
         return status
 
     def _probe_cli(self, mineru: object, backend: str) -> dict[str, object]:
         binary = str(getattr(mineru, "binary", "mineru") or "mineru")
         path = which(binary)
-        record: dict[str, object] = {"mode": "cli", "available": False, "version": "", "binary": path, "reason": ""}
+        record: dict[str, object] = {
+            "mode": "cli",
+            "available": False,
+            "version": "",
+            "binary": path,
+            "reason": "",
+        }
         if not path:
             record["reason"] = f"executable {binary!r} not found on PATH"
             return record
@@ -121,21 +139,39 @@ class MinerUProber:
             # Older builds have no --version; fall back to --help presence.
             help_result = run_command([path, "--help"], timeout=60.0)
             if int(help_result["returncode"]) != 0:
-                record["reason"] = f"{binary} --version failed: {str(result['stderr'])[:160] or str(help_result['stderr'])[:160]}"
+                record["reason"] = (
+                    f"{binary} --version failed: {str(result['stderr'])[:160] or str(help_result['stderr'])[:160]}"
+                )
                 return record
-            record["version"] = _VERSION_RE.findall(str(help_result["stdout"]))[0] if _VERSION_RE.findall(str(help_result["stdout"])) else "unknown"
+            record["version"] = (
+                _VERSION_RE.findall(str(help_result["stdout"]))[0]
+                if _VERSION_RE.findall(str(help_result["stdout"]))
+                else "unknown"
+            )
             record["available"] = True
             record["binary"] = path
             return record
         found = _VERSION_RE.findall(str(result["stdout"]) + str(result["stderr"]))
-        record["version"] = found[0] if found else str(result["stdout"]).strip().splitlines()[0][:32] if str(result["stdout"]).strip() else "unknown"
+        record["version"] = (
+            found[0]
+            if found
+            else str(result["stdout"]).strip().splitlines()[0][:32]
+            if str(result["stdout"]).strip()
+            else "unknown"
+        )
         record["available"] = True
         record["binary"] = path
         return record
 
     def _probe_http(self, mineru: object) -> dict[str, object]:
         endpoint = str(getattr(mineru, "endpoint", "") or "").rstrip("/")
-        record: dict[str, object] = {"mode": "http", "available": False, "version": "", "endpoint": endpoint, "reason": ""}
+        record: dict[str, object] = {
+            "mode": "http",
+            "available": False,
+            "version": "",
+            "endpoint": endpoint,
+            "reason": "",
+        }
         if not endpoint:
             record["reason"] = "[mineru].endpoint is empty"
             return record
@@ -146,7 +182,9 @@ class MinerUProber:
                 record["endpoint"] = endpoint + path
                 payload = response.get("json")
                 if isinstance(payload, dict):
-                    record["version"] = str(payload.get("version") or payload.get("version_name") or "")
+                    record["version"] = str(
+                        payload.get("version") or payload.get("version_name") or ""
+                    )
                 return record
         record["reason"] = f"no HTTP response from {endpoint} (checked /health, /docs, /)"
         return record

@@ -38,7 +38,12 @@ _RESERVED = set(vars(logging.LogRecord("", 0, "", 0, "", (), None)))
 
 def _mask(value: Any, sensitive: tuple[str, ...]) -> Any:
     if isinstance(value, Mapping):
-        return {str(k): (REDACTED if any(s in str(k).lower() for s in sensitive) else _mask(v, sensitive)) for k, v in value.items()}
+        return {
+            str(k): (
+                REDACTED if any(s in str(k).lower() for s in sensitive) else _mask(v, sensitive)
+            )
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple, set)):
         return [_mask(v, sensitive) for v in value]
     if isinstance(value, str):
@@ -56,7 +61,8 @@ class _JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created)) + f".{int(record.msecs):03d}Z",
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(record.created))
+            + f".{int(record.msecs):03d}Z",
             "level": record.levelname,
             "logger": record.name,
             "message": _mask(record.getMessage(), self.sensitive),
@@ -77,9 +83,13 @@ class _TextFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         base = super().format(record)
-        extras = {k: v for k, v in record.__dict__.items() if k not in _RESERVED and not k.startswith("_")}
+        extras = {
+            k: v for k, v in record.__dict__.items() if k not in _RESERVED and not k.startswith("_")
+        }
         if extras:
-            rendered = " ".join(f"{k}={_mask(v, self.sensitive)}" for k, v in sorted(extras.items()))
+            rendered = " ".join(
+                f"{k}={_mask(v, self.sensitive)}" for k, v in sorted(extras.items())
+            )
             base = f"{base} | {rendered}"
         return base
 
@@ -103,7 +113,9 @@ def configure_logging(
     for handler in list(root.handlers):
         root.removeHandler(handler)
     sensitive = tuple(k.lower() for k in (sensitive_keys or _DEFAULT_SENSITIVE_KEYS))
-    formatter: logging.Formatter = _JsonFormatter(sensitive) if format == "json" else _TextFormatter(sensitive)
+    formatter: logging.Formatter = (
+        _JsonFormatter(sensitive) if format == "json" else _TextFormatter(sensitive)
+    )
     stream = logging.StreamHandler(sys.stderr)
     stream.setFormatter(formatter)
     root.addHandler(stream)
@@ -144,7 +156,12 @@ class PlatformLogger(logging.LoggerAdapter[logging.Logger]):
         self.event(name, logging.WARNING, **fields)
 
     def error_event(self, name: str, **fields: object) -> None:
-        self.event(name, logging.ERROR, exception=bool(fields.get("exc_info")), **{k: v for k, v in fields.items() if k != "exc_info"})
+        self.event(
+            name,
+            logging.ERROR,
+            exception=bool(fields.get("exc_info")),
+            **{k: v for k, v in fields.items() if k != "exc_info"},
+        )
 
     def process(self, msg: object, kwargs: dict[str, object]) -> tuple[object, dict[str, object]]:  # type: ignore[override]
         kwargs.setdefault("extra", {"component": self.name})
@@ -168,7 +185,9 @@ def log_event(
 class timed:
     """Context manager logging duration of a block under a named event."""
 
-    def __init__(self, logger: logging.Logger, event: str, level: int = logging.INFO, **fields: Any) -> None:
+    def __init__(
+        self, logger: logging.Logger, event: str, level: int = logging.INFO, **fields: Any
+    ) -> None:
         self.logger = logger
         self.event = event
         self.level = level
@@ -184,7 +203,14 @@ class timed:
         if exc_type is None:
             log_event(self.logger, self.level, self.event, self.duration_ms, **self.fields)
         else:
-            log_event(self.logger, logging.ERROR, f"{self.event}.failed", self.duration_ms, error=str(exc), **self.fields)
+            log_event(
+                self.logger,
+                logging.ERROR,
+                f"{self.event}.failed",
+                self.duration_ms,
+                error=str(exc),
+                **self.fields,
+            )
         return False
 
 
