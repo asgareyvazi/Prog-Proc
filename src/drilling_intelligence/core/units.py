@@ -189,9 +189,13 @@ _reg(Unit("kN.m", "kilonewton metre", Dimension.TORQUE, 1e3), "kNm")
 _reg(Unit("ft.lbf", "foot pound-force", Dimension.TORQUE, LBF_N * FT_M), "ft-lbf", "ftlb", "ft-lb")
 _reg(Unit("in.lbf", "inch pound-force", Dimension.TORQUE, LBF_N * IN_M), "in-lbf", "in-lb")
 # Time
-_reg(Unit("s", "second", Dimension.TIME, 1.0), "sec", "second")
-_reg(Unit("min", "minute", Dimension.TIME, 60.0), "minute")
-_reg(Unit("h", "hour", Dimension.TIME, 3600.0), "hr", "hour", "hri")
+#
+# The plural spellings are registered rather than stripped, so "90 minutes" and "90 minute" are one unit
+# and the parser has no guess to make.  A report that writes a duration out in full is normal in a
+# lessons document, and reading it as an unknown quantity would throw the number away.
+_reg(Unit("s", "second", Dimension.TIME, 1.0), "sec", "secs", "second", "seconds")
+_reg(Unit("min", "minute", Dimension.TIME, 60.0), "mins", "minute", "minutes")
+_reg(Unit("h", "hour", Dimension.TIME, 3600.0), "hr", "hrs", "hour", "hours", "hri")
 _reg(Unit("d", "day", Dimension.TIME, 86400.0), "day", "days")
 # Angle / curvature
 _reg(Unit("deg", "degree", Dimension.ANGLE, math.pi / 180.0), "degree", "o")

@@ -89,3 +89,22 @@ def test_unit_registry_is_interned_and_reportable() -> None:
     assert "ppg" in known_units() and "bbl" in known_units()
     assert resolve_unit("lb/gal") is resolve_unit("ppg")
     assert format_number(1234.56789) == "1234.57"
+
+
+def test_time_units_are_registered_in_the_shapes_a_report_uses() -> None:
+    """``90 min`` and ``90 minutes`` are one quantity, and both reach hours.
+
+    The duration columns store hours because hours are what an NPT sheet states, but a lessons document,
+    a tool-time table and a European report say minutes, and a programme says days.  Registering the
+    plural spellings rather than stripping an "s" in a caller means the conversion is one table lookup in
+    the unit authority - and that a cell nobody can read stays unknown instead of becoming a plausible
+    number in the wrong unit.
+    """
+    assert Quantity.parse("90 min").value_in("h") == pytest.approx(1.5)
+    assert Quantity.parse("90 minutes").value_in("h") == pytest.approx(1.5)
+    assert Quantity.parse("45 mins").value_in("h") == pytest.approx(0.75)
+    assert Quantity.parse("6.5 hours").value_in("h") == pytest.approx(6.5)
+    assert Quantity.parse("1.5 days").value_in("h") == pytest.approx(36.0)
+    assert Quantity.parse("30 s").value_in("min") == pytest.approx(0.5)
+    with pytest.raises(UnitError):
+        Quantity.parse("90 fathoms")

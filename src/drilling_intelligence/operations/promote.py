@@ -52,8 +52,9 @@ from ..core.enums import (
     KnowledgeRelationType,
     RecordState,
 )
+from ..core.errors import UnitError
 from ..core.hashing import sha256_obj
-from ..core.units import parse_decimal
+from ..core.units import Quantity, parse_decimal
 from ..core.vocabulary import problem_type
 from ..database.models import (
     DdrReport,
@@ -242,6 +243,12 @@ def _hours(text: Any) -> float | None:
 
     Returning ``0.0`` for an unreadable cell would turn a formatting quirk into a claim that nothing
     was lost, and the aggregate cannot tell the two apart afterwards.
+
+    A cell that carries a *different* time unit is converted rather than discarded: sheets say
+    ``90 min`` and lessons say ``1.5 days``, and hours are the unit the row stores.  The conversion is
+    :mod:`drilling_intelligence.core.units`' arithmetic, not a division written here, and the wording the
+    report used is kept beside the number as ``duration_text`` - so a 1.5 h from a "90 min" cell is
+    traceable to the cell rather than looking like someone measured 1.5 hours.
     """
     raw = str(text if text is not None else "").strip()
     if not raw:
@@ -249,11 +256,14 @@ def _hours(text: Any) -> float | None:
     if isinstance(text, int | float) and not isinstance(text, bool):
         return float(text)
     cleaned = re.sub(r"(?i)\s*(h|hr|hrs|hours|hour)\s*$", "", raw).strip()
-    if not cleaned:
-        return None
+    if cleaned:
+        try:
+            return float(parse_decimal(cleaned))
+        except (TypeError, ValueError):
+            pass
     try:
-        return float(parse_decimal(cleaned))
-    except (TypeError, ValueError):
+        return Quantity.parse(raw).value_in("h")
+    except (UnitError, ValueError):  # a cell that is not a duration at all: unknown, not zero
         return None
 
 

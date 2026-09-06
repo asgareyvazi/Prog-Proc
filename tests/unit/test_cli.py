@@ -1006,3 +1006,83 @@ class TestKnowledgeCommands:
         assert remaining["count"] == 1, (
             "a rejected attempt leaves the argument open, it does not close it"
         )
+
+
+class TestIngestPromoteFlag:
+    """``ingest --promote`` is opt-in, and the flag is the only thing that makes it happen.
+
+    The decision (ADR-0010) is that reading a file and turning its tables into records are two acts: a
+    re-ingest of a superseded revision must not quietly rewrite what a person has been confirming.  So the
+    default path has to leave the operational tables alone - and the flag has to actually promote, because
+    a flag that parses and does nothing is worse than no flag.
+    """
+
+    def _ingest(self, workspace_root: Path, config: Path, *extra: str) -> dict:
+        code, out, err = run(
+            "ingest",
+            str(workspace_root / "corpus"),
+            "--workspace",
+            str(workspace_root),
+            "--config",
+            str(config),
+            "--json",
+            *extra,
+        )
+        assert code == 0, err
+        return payload(out)
+
+    def test_ingest_without_the_flag_leaves_the_records_alone(self, live_workspace) -> None:
+        workspace_root, config, _settings = live_workspace
+        first = self._ingest(workspace_root, config)
+        assert "promotion" not in first, first.keys()
+        summary = payload(
+            run(
+                "records",
+                "summary",
+                "--well",
+                "A-3",
+                "--workspace",
+                str(workspace_root),
+                "--config",
+                str(config),
+                "--json",
+            )[1]
+        )
+        assert not (summary.get("npt") or {}).get("rows"), summary
+        assert not summary.get("reports"), summary
+
+    def test_the_flag_promotes_and_promotes_idempotently(self, live_workspace) -> None:
+        workspace_root, config, _settings = live_workspace
+        # The documents are filed under A-3 as they are ingested, which is what lets the daily report's
+        # own rows become that well's records; the NPT sheet's B-11 lines stay unplaceable because no
+        # B-11 exists here, and they are reported rather than filed under the well that happens to be known.
+        promoted = self._ingest(workspace_root, config, "--well", "A-3", "--promote")
+        outcome = promoted["promotion"]
+        assert outcome["versions"] >= 1, outcome
+        assert outcome["totals"]["created"] > 0, outcome["counts"]
+        assert outcome["counts"]["report"]["created"] >= 1, outcome["counts"]
+        skipped = outcome["skipped"] or {}
+        assert "WELL_NOT_FOUND" in skipped, skipped
+        summary = payload(
+            run(
+                "records",
+                "summary",
+                "--well",
+                "A-3",
+                "--workspace",
+                str(workspace_root),
+                "--config",
+                str(config),
+                "--json",
+            )[1]
+        )
+        assert summary["npt"]["rows"] > 0 and summary["reports"] > 0, summary
+        assert summary["npt"]["promoted"] == summary["npt"]["rows"], summary
+        created = outcome["totals"]["created"]
+
+        again = self._ingest(workspace_root, config, "--well", "A-3", "--promote")
+        assert again["promotion"]["totals"]["created"] == 0, again["promotion"]
+        assert again["promotion"]["totals"]["unchanged"] == created, again["promotion"]
+        # The flag is also scope-aware: asking for one well cannot write another's rows.
+        scoped = self._ingest(workspace_root, config, "--promote", "--well", "A-3")
+        assert scoped["promotion"]["totals"]["created"] == 0, scoped["promotion"]

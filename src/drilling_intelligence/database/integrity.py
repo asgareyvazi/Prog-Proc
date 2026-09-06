@@ -33,6 +33,7 @@ from .models import (
     BestPractice,
     Calculation,
     Company,
+    CostItem,
     DdrReport,
     Document,
     DocumentVersion,
@@ -62,9 +63,14 @@ __all__ = [
     "RELATION_ENDPOINT_MODELS",
     "IntegrityProblem",
     "KnowledgeIntegrityError",
+    "check_cross_well_links",
     "check_current_version_invariants",
     "check_extraction_cache",
     "check_knowledge_relations",
+    "check_operational_integrity",
+    "check_promoted_evidence",
+    "check_revision_chains",
+    "check_well_hierarchy",
     "create_knowledge_relation",
     "describe_problems",
     "require_current_version_invariants",
@@ -550,3 +556,375 @@ def check_extraction_cache(session: Session) -> list[IntegrityProblem]:
             )
         )
     return problems
+
+
+# --------------------------------------------------------------------------- operations
+#: Which link columns point from one well's record to another record that must belong to the same well.
+#:
+#: A derived foreign key is the schema's promise that the row exists; it says nothing about whether the two
+#: rows describe the same hole.  A stuck-pipe problem filed against well A-3 that links to an NPT record on
+#: B-11 satisfies every constraint in the database and produces a number that is simply wrong - and it is
+#: the kind of wrong that a promoter writing rows from a spreadsheet with a mistyped well column will produce
+#: first, which is why the pair is checked here rather than trusted.
+_SAME_WELL_LINKS: tuple[tuple[type, str, type], ...] = (
+    (NptRecord, "event_id", WellEvent),
+    (NptRecord, "report_id", DdrReport),
+    (WellOperation, "report_id", DdrReport),
+    (WellEvent, "report_id", DdrReport),
+    (WellEvent, "operation_id", WellOperation),
+    (NptRecord, "operation_id", WellOperation),
+    (ProblemOccurrence, "npt_id", NptRecord),
+    (ProblemOccurrence, "event_id", WellEvent),
+    (ProblemOccurrence, "operation_id", WellOperation),
+    (CostItem, "npt_id", NptRecord),
+)
+
+#: Section-scoped rows: the section must be a section *of the well the row is filed under*.
+_SECTION_OWNERS: tuple[type, ...] = (
+    WellOperation,
+    WellEvent,
+    NptRecord,
+    ProblemOccurrence,
+    RiskRecord,
+    LessonLearned,
+)
+
+#: The tables whose revisions form a chain, and whether "current" is a column they carry.
+_REVISION_CHAINS: tuple[tuple[type, bool], ...] = (
+    (ProcedureRecord, True),
+    (DrillingProgram, True),
+    (LessonLearned, True),
+    (BestPractice, True),
+    (RiskRecord, False),
+)
+
+#: Rows a document could have produced, and so rows that must be able to show the document.
+_PROMOTED_MODELS: tuple[type, ...] = (
+    DdrReport,
+    WellOperation,
+    WellEvent,
+    NptRecord,
+    ProblemOccurrence,
+    CostItem,
+    ProcedureRecord,
+    DrillingProgram,
+)
+
+
+def check_well_hierarchy(session: Session) -> list[IntegrityProblem]:
+    """Every well, section and scoped row agrees about who contains whom.
+
+    The containment chain (project → field → well → section → operation/event/NPT/problem) is spread
+    across five tables, so nothing in the schema can state it.  This checks the two ways it actually
+    breaks: a well filed under a field of another project, and a section whose own numbers do not make
+    sense - because a section whose bottom is above its top turns every depth query that uses it into an
+    empty answer that looks like an honest one.
+    """
+    problems: list[IntegrityProblem] = []
+    for well in session.execute(select(Well).order_by(Well.name, Well.id)).scalars():
+        if well.field_id:
+            field = session.get(Field, str(well.field_id))
+            if field is None:
+                problems.append(
+                    IntegrityProblem(
+                        "well",
+                        well.id,
+                        "cites a field that does not exist",
+                        {"field_id": str(well.field_id)},
+                    )
+                )
+            elif well.project_id and field.project_id and field.project_id != well.project_id:
+                problems.append(
+                    IntegrityProblem(
+                        "well",
+                        well.id,
+                        "is in a field that belongs to another project",
+                        {
+                            "well_project_id": str(well.project_id),
+                            "field_project_id": str(field.project_id),
+                            "field_id": str(well.field_id),
+                        },
+                    )
+                )
+        if well.project_id and session.get(Project, str(well.project_id)) is None:
+            problems.append(
+                IntegrityProblem("well", well.id, "cites a project that does not exist")
+            )
+
+    by_well: dict[str, list[Any]] = {}
+    for section in session.execute(
+        select(WellSection).order_by(WellSection.well_id, WellSection.sequence, WellSection.id)
+    ).scalars():
+        by_well.setdefault(str(section.well_id), []).append(section)
+        if (
+            section.top_depth_value is not None
+            and section.bottom_depth_value is not None
+            and float(section.bottom_depth_value) <= float(section.top_depth_value)
+        ):
+            problems.append(
+                IntegrityProblem(
+                    "well_section",
+                    section.id,
+                    "bottom depth is not below its top",
+                    {
+                        "top_depth_value": section.top_depth_value,
+                        "bottom_depth_value": section.bottom_depth_value,
+                        "unit": section.bottom_depth_unit or section.top_depth_unit,
+                    },
+                )
+            )
+        if (
+            section.planned_duration_days is not None and float(section.planned_duration_days) < 0
+        ) or (section.actual_duration_days is not None and float(section.actual_duration_days) < 0):
+            problems.append(
+                IntegrityProblem(
+                    "well_section",
+                    section.id,
+                    "states a negative duration",
+                    {
+                        "planned_duration_days": section.planned_duration_days,
+                        "actual_duration_days": section.actual_duration_days,
+                    },
+                )
+            )
+    for well_id, sections in by_well.items():
+        seen: dict[int, str] = {}
+        for section in sections:
+            owner = seen.get(int(section.sequence or 0))
+            if owner is not None:
+                problems.append(
+                    IntegrityProblem(
+                        "well_section",
+                        section.id,
+                        "shares a sequence with another section of the same well",
+                        {
+                            "well_id": well_id,
+                            "sequence": section.sequence,
+                            "other_section_id": owner,
+                        },
+                    )
+                )
+            seen[int(section.sequence or 0)] = str(section.id)
+    return problems
+
+
+def check_revision_chains(session: Session) -> list[IntegrityProblem]:
+    """No revision chain dangles, forks, or comes round again.
+
+    A superseding row is a new row, so the chain is a linked list the database cannot constrain: the
+    earlier revision has to exist, only one revision of a code may be current, and a row that another row
+    supersedes must not still claim to be current.  The cycle check is not paranoia - a script that
+    revised ``A`` from ``B`` and then ``B`` from ``A`` leaves every individual row perfectly valid and
+    makes "which procedure are we drilling to?" unanswerable.
+    """
+    problems: list[IntegrityProblem] = []
+    for model, has_current in _REVISION_CHAINS:
+        rows = list(session.execute(select(model).order_by(model.id)).scalars())
+        known = {str(row.id) for row in rows}
+        superseded: set[str] = set()
+        reported: set[frozenset[str]] = set()
+        for row in rows:
+            wanted = str(getattr(row, "supersedes_id", None) or "")
+            if not wanted:
+                continue
+            if wanted not in known:
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        row.id,
+                        "cites a revision that does not exist",
+                        {"supersedes_id": wanted},
+                    )
+                )
+                continue
+            superseded.add(wanted)
+            seen = {str(row.id)}
+            walker = session.get(model, wanted)
+            while walker is not None:
+                seen.add(str(walker.id))
+                nxt = str(getattr(walker, "supersedes_id", None) or "")
+                if not nxt:
+                    break
+                if nxt in seen:
+                    # One report per cycle, not one per row in it: two rows pointing at each other is one
+                    # problem, and a doctor that printed it twice would read as two.
+                    shape = frozenset(seen)
+                    if shape not in reported:
+                        reported.add(shape)
+                        problems.append(
+                            IntegrityProblem(
+                                model.__tablename__,
+                                row.id,
+                                "revision chain is a cycle",
+                                {"cycle": sorted(seen)},
+                            )
+                        )
+                    break
+                walker = session.get(model, nxt)
+        if not has_current:
+            continue
+        for row in rows:
+            if str(row.id) in superseded and bool(getattr(row, "is_current", False)):
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        row.id,
+                        "is superseded and still marked current",
+                    )
+                )
+        currents: dict[str, list[str]] = {}
+        for row in rows:
+            if not bool(getattr(row, "is_current", False)):
+                continue
+            code = str(getattr(row, "code", "") or "")
+            if code:
+                currents.setdefault(code, []).append(str(row.id))
+        for code, ids in sorted(currents.items()):
+            if len(ids) > 1:
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        ids[0],
+                        "two revisions are current for one code",
+                        {"code": code, "ids": ids},
+                    )
+                )
+    return problems
+
+
+def check_cross_well_links(session: Session) -> list[IntegrityProblem]:
+    """A link between two records of two different wells, or a link to a row that is not there.
+
+    Reported separately from the schema's own foreign keys on purpose: SQLite does not enforce them by
+    default, so a dangling ``npt_id`` is possible in exactly the deployments this platform runs on.
+    """
+    problems: list[IntegrityProblem] = []
+    for model, column, target in _SAME_WELL_LINKS:
+        for row in session.execute(select(model).order_by(model.id)).scalars():
+            wanted = str(getattr(row, column, None) or "")
+            if not wanted:
+                continue
+            other = session.get(target, wanted)
+            if other is None:
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        row.id,
+                        f"links a {target.__tablename__} that does not exist",
+                        {column: wanted},
+                    )
+                )
+                continue
+            mine, theirs = getattr(row, "well_id", None), getattr(other, "well_id", None)
+            if mine and theirs and str(mine) != str(theirs):
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        row.id,
+                        f"links a {target.__tablename__} on another well",
+                        {column: wanted, "well_id": str(mine), "other_well_id": str(theirs)},
+                    )
+                )
+    sections = {
+        str(row.id): str(row.well_id)
+        for row in session.execute(select(WellSection.id, WellSection.well_id)).all()
+    }
+    for model in _SECTION_OWNERS:
+        for row in session.execute(select(model).order_by(model.id)).scalars():
+            section_id = str(getattr(row, "section_id", None) or "")
+            if not section_id:
+                continue
+            owner = sections.get(section_id)
+            if owner is None:
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        row.id,
+                        "cites a section that does not exist",
+                        {"section_id": section_id},
+                    )
+                )
+            elif getattr(row, "well_id", None) and str(row.well_id) != owner:
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        row.id,
+                        "is filed under a section of another well",
+                        {"section_id": section_id, "section_well_id": owner},
+                    )
+                )
+    for model in _PROMOTED_MODELS:
+        columns = {column.name for column in model.__table__.columns}
+        if "document_id" not in columns or "document_version_id" not in columns:
+            continue
+        for row in session.execute(select(model).order_by(model.id)).scalars():
+            version_id = str(row.document_version_id or "")
+            if not version_id:
+                continue
+            version = session.get(DocumentVersion, version_id)
+            if version is None:
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        row.id,
+                        "cites a document version that does not exist",
+                        {"document_version_id": version_id},
+                    )
+                )
+            elif row.document_id and str(version.document_id) != str(row.document_id):
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        row.id,
+                        "names a document that is not its version's document",
+                        {
+                            "document_id": str(row.document_id),
+                            "version_document_id": str(version.document_id),
+                        },
+                    )
+                )
+    return problems
+
+
+def check_promoted_evidence(session: Session) -> list[IntegrityProblem]:
+    """A row that came from a document can still show the document.
+
+    ``origin`` says where a row came from, and provenance is the promise that goes with it.  A derived row
+    with no evidence is the failure mode this platform exists to prevent: somebody quotes a number from
+    the database, and there is nowhere to go back to.  The repair is not to invent a source - it is to
+    re-promote from the file, or to mark the row as something a person asserted.
+    """
+    from ..core.enums import KnowledgeOrigin
+
+    problems: list[IntegrityProblem] = []
+    for model in _PROMOTED_MODELS:
+        columns = {column.name for column in model.__table__.columns}
+        if "origin" not in columns or "provenance" not in columns:
+            continue
+        statement = select(model).where(model.origin == KnowledgeOrigin.DERIVED.value)
+        for row in session.execute(statement.order_by(model.id)).scalars():
+            evidence = list(row.provenance or [])
+            if not evidence:
+                problems.append(
+                    IntegrityProblem(
+                        model.__tablename__,
+                        row.id,
+                        "is derived from a document and cites no evidence",
+                        {"document_version_id": str(getattr(row, "document_version_id", "") or "")},
+                    )
+                )
+    return problems
+
+
+def check_operational_integrity(session: Session) -> list[IntegrityProblem]:
+    """All four operational checks in one call, which is what ``doctor`` and a test both want.
+
+    Grouped because they answer one question - can these rows be read as a field's history? - and because
+    a partial answer would be misread as a clean bill of health.
+    """
+    return (
+        check_well_hierarchy(session)
+        + check_revision_chains(session)
+        + check_cross_well_links(session)
+        + check_promoted_evidence(session)
+    )

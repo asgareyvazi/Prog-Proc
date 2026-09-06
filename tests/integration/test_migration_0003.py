@@ -155,8 +155,13 @@ def test_the_upgrade_adds_the_columns_it_promises_and_keeps_every_row(tmp_path) 
         build_legacy_database(engine)
         before = snapshot(engine)
 
-        status = upgrade(engine, "head")
-        assert status.up_to_date and status.current == heads()[0] == "0003", status.to_dict()
+        # Up to *this* revision, not to head: a later migration must not be able to make the 0003 test
+        # fail, and it must not quietly stop checking what 0003 itself promised.
+        status = upgrade(engine, "0003")
+        assert status.mode == "migrated" and status.current == "0003", status.to_dict()
+        assert status.head != "0003", (
+            "head has moved on, which is the whole reason this pins a revision"
+        )
 
         columns = {column["name"] for column in inspect(engine).get_columns("knowledge_item")}
         assert set(ADDED_COLUMNS) <= columns, sorted(set(ADDED_COLUMNS) - columns)
@@ -191,12 +196,19 @@ def test_the_upgrade_adds_the_columns_it_promises_and_keeps_every_row(tmp_path) 
         assert rows[0]["entity_type"] is None and rows[0]["entity_id"] is None, (
             "a legacy row is not silently given a subject it never claimed"
         )
+        # The models-versus-schema comparison only means something at head: at 0003 the later
+        # migrations' tables are legitimately absent.  Running it here after taking the database the rest
+        # of the way up is what catches a 0003 column that was added by hand to the models but never put
+        # into a revision.
+        status = upgrade(engine, "head")
+        assert status.up_to_date and status.current == heads()[0], status.to_dict()
         assert schema_diff(engine) == {
             "missing_tables": [],
             "extra_tables": [],
             "missing_columns": [],
             "extra_columns": [],
         }, "the migrated schema must match the models exactly"
+        assert snapshot(engine) == before, "the later migrations must not touch what 0003 carried"
     finally:
         engine.dispose()
 

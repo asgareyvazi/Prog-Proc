@@ -290,3 +290,192 @@ invariants, and the system of record has to stay one file); storing the ranking'
 but the audit trail; running a model over the corpus to fill gaps (an engineering value either comes
 from a cell or it does not exist); and rewriting the Excel extractor to emit facts directly (the
 artefact is the contract between extraction and knowledge, and both sides are testable because of it).
+
+
+---
+
+## ADR-0009 — The engineering domain is tables in this database, not a second system next to it
+
+**Status:** accepted (2026-09-06)
+
+**Context.** Phase 1 asked for a persistent engineering core: reports, operations, NPT, problems,
+programmes, procedures, lessons, risks, costs, rigs and service companies - queryable apart from the
+document registry, and with the same evidence rule the knowledge layer already keeps. Three designs are
+available and two of them are traps. Bolting columns onto `document` gives a table that is a spreadsheet
+and a filing cabinet at once, and every engineering query becomes a query over files. Mirroring each
+source format with its own model (`Well2`, `NptRow`, `ExcelDdr`) reproduces the duplication the platform
+exists to remove. And building a second provenance mechanism - a `source_note` column on every table, or
+a per-table citation format - means the same document supports a fact in one place and an occurrence in
+another, with nothing forcing the two to agree.
+
+**Decision.**
+
+*   **One database, one metadata, one `Base`.** Migration 0004 adds sixteen tables to the same SQLite
+    file: the operational spine (`ddr_report`, `well_operation`, `well_event`, `npt_record`,
+    `problem_occurrence`), the versioned engineering record (`procedure_record`, `drilling_program`,
+    `program_target`, `risk_record`), what was learnt (`lesson_learned`), what to do next
+    (`best_practice`, `recommendation`, `field_pattern`), who and how much (`rig`, `service_company`,
+    `cost_item`). There is no shadow model of anything: `Well` is the well, and `WellSection` is the hole
+    section, and the new rows point at those ids.
+*   **Evidence is inherited, not reimplemented.** Every record table carries
+    `document_id`, `document_version_id`, a JSON `provenance` list, `origin` and `created_by`, and joins
+    the existing graph through `knowledge_relation` rather than a parallel edge table - which is why
+    `RELATION_ENDPOINT_MODELS` is the one registry of what an edge may point at, and why a table missing
+    from it is a *rejected write* rather than a dangling edge. `check_promoted_evidence` closes the loop:
+    a row that says it came from a document and cites nothing is reported.
+*   **The repository owns the write, the service owns the transaction, the CLI owns the argument
+    parsing.** A repository method takes a `Session` and does not commit; a service method may commit
+    because it owns the unit of work; a command is a thin wrapper over a service call and prints what that
+    call returned. `records list` renders the same dictionaries `--json` prints, from the same
+    repository query, so a number on a screen and a number in a pipe cannot disagree.
+*   **The verbatim wording lives in the row, the interpretation in a column.** `report_date_text`,
+    `npt_record.duration_text`, `cost_item.attributes["source_wording"]` and the vocabulary functions'
+    `VocabMatch(raw=...)` exist so that "what did the file say" stays answerable after a classifier
+    changes. A token nobody recognises is kept as `("rig_move", recognised=False)`, not discarded and not
+    coerced to `other`.
+*   **SQLite now, PostgreSQL later, by staying in the common subset.** Partial unique indexes carry the
+    one-current-revision rules; no `ARRAY`, no `JSONB` operators, no enum types; `PRAGMA foreign_keys=ON`
+    on connect makes the schema's foreign keys real here as well as there.
+*   **Two documented deviations, stated rather than hidden.** `ddr_report.report_date` is nullable with
+    `report_date_text` beside it: a daily report that writes "14 June 2025" in prose would otherwise have
+    forced promotion to invent a date or fail, and inventing is the one thing this layer is not for. And
+    `risk_record` preserves supplied scores with a default `MATRIX_5X5` scale rather than computing
+    severity: no scoring methodology was agreed, so none was smuggled in (the earlier "severity is always
+    computed" rule is reversed by the Phase 1 brief).
+
+**Consequences.** The domain is queryable without touching a file, `schema_diff` still returns nothing
+after the upgrade, and the knowledge layer's rebuild-and-rederive semantics carry over unchanged. Because
+the tables are ordinary tables, the integrity checks that the schema cannot express live beside the
+existing ones in `database/integrity.py` and run inside `doctor` (ADR-0007's pattern). Because the
+provenance columns are per-row, a lesson can never be approved on a document that has since been
+superseded without that being visible.
+
+**Rejected.** A separate engineering database (two files, two backups, one question with two answers);
+a `document_engineering_record` JSON blob (unqueryable, and it makes the index the authority); storing a
+timeline table (ADR-0011); and giving each new table its own citation format.
+
+
+---
+
+## ADR-0010 — Promotion is a separate, idempotent, self-reporting act; stated time and computed time are different evidence
+
+**Status:** accepted (2026-09-06)
+
+**Context.** Once the tables exist, the tempting implementation is to fill them during ingestion: the
+artefact is right there, and a folder that has been ingested "should" have its NPT rows. That is how a
+platform ends up with numbers nobody can trace, because the mapping from a file to a record is the part
+that is allowed to be wrong. It is also how a missing value becomes a zero. The two rules below exist to
+keep both out.
+
+**Decision.**
+
+*   **Promotion is its own step, and ingestion never does it implicitly.** `drillintel ingest` leaves the
+    operational tables alone unless `--promote` is passed; `records promote` takes a scope (`--document`
+    and `--version`, or `--well`/`--field`/`--project`, or none, which is the whole workspace) and reports
+    what it touched. The sweep is scoped through `_candidate_versions`, which counts the versions it
+    matched *before* writing anything, because a scope built from a broken `IN` subselect returns "success,
+    zero rows" - which is exactly the bug this counter exists to catch.
+*   **Write once, then never again.** The generic record API is create-or-return: `record_operation`,
+    `record_event`, `record_npt`, `record_problem` find the row whose `identity_key` matches and return it
+    rather than updating it. A promoted row is `CANDIDATE`, `origin=DERIVED`, `created_by="promoter"`,
+    with `root_cause_status=UNKNOWN`; a person moves it to `CONFIRMED` through `set_record_status`, which
+    refuses to record a decision with no author. Nothing in the pipeline writes `CONFIRMED`.
+*   **Rows that cannot be placed are reported, not placed somewhere plausible.** A record naming an
+    unknown well is skipped and counted; a zero-hour NPT line is skipped (it is a section header in most
+    exports); a total line never becomes an activity; a duration that cannot be parsed is counted as an
+    unknown duration rather than zeroed.
+*   **A duration is a claim with a basis.** `duration_hours` sits beside `started_at`/`ended_at` with a
+    `duration_basis` of `STATED` or `COMPUTED`, because a report that says "6.5 h" and a clock that says
+    09:00→15:30 are not the same evidence and must not be averaged together. Times are nullable on purpose,
+    and an unreadable duration stays `NULL` and is counted as an unknown duration rather than as zero. The
+    row stores hours and not the sketch's minutes because hours are what an NPT sheet states and what every
+    aggregate here adds up; a cell that states another unit - `90 min`, `1.5 days` - is converted through
+    `core.units`, which is the unit authority, and its wording is kept verbatim in `duration_text`. The
+    daily report's time-breakdown hours are kept in `duration_text` as written, and the field's 59.25 h is
+    the sum of *records*, not of distinct incidents - which is why the number is printed with its row count
+    beside it.
+*   **A window filters dated rows; it does not invent dates.** `since`/`until` exclude undated rows unless
+    `include_undated` asks for them, and then they are reported as undated. An aggregate with nothing to
+    aggregate is `None`, never `0.0`.
+*   **Re-running is the test.** Promotion is idempotent by content identity, and a second pass reports
+    `unchanged`. Orphan removal is a sweep of `delete_orphans` by `identity_key` for the swept tables, with
+    `DdrReport` deliberately never swept: a report row is a filing decision about a file, not a line
+    someone might restate.
+*   **Nothing is promoted by a model.** A cause, a severity or a root cause that the source did not state
+    is absent, not inferred; `CauseStatus` is `{KNOWN, INFERRED, UNKNOWN, CONFLICTED}` and `INFERRED`
+    means a *person* inferred it and said so.
+
+**Consequences.** `records promote` is safe to put in a cron job and in a runbook, and the corpus test
+enumerates the numbers: 22 rows created, a re-run that creates nothing, `ZERO_NPT` and
+`TOTAL_ALREADY_COUNTED` reported as skips rather than as silence, and `conflict 0`. `doctor` prints the
+counts as `notes` rather than `findings`, since findings flip the exit code and "nothing promoted yet" is
+context, not an alarm. The cost layer follows the same shape: a line's only NPT link is `cost_item.npt_id`
+(a column, not an edge), and a summary never filters cost lines by the state of the record they cite.
+
+**Rejected.** Promoting inside ingestion (a mapping failure would corrupt the ingest path's guarantees);
+LLM-assisted promotion behind a flag (there is no flag, because there is no version of this where a model
+is the authority for a number); upsert-with-overwrite (a confirmed row must not be erased by a re-read of
+a file); and filling unknown durations with zero to make the arithmetic run.
+
+
+---
+
+## ADR-0011 — An answer is computed on demand; only a reviewed snapshot is stored, and it stores its own query
+
+**Status:** accepted (2026-09-06)
+
+**Context.** "Which wells in this field lost time to stuck pipe, and how much" is a join over
+`npt_record` and `problem_occurrence`, not a column. Caching it means the answer outlives the records that
+produced it; not caching it means a person reviewing a pattern last month cannot tell the platform what
+they reviewed. The domain also needs to link a pattern to its evidence and a risk to what it mitigates,
+and if every aggregate gets its own edge table then the graph is only as reliable as the sum of its
+copies.
+
+**Decision.**
+
+*   **Derived answers are not persisted.** `FieldIntelligence`, `build_timeline` and `record_summary`
+    read rows and return dictionaries; nothing in `intelligence/` writes, except where the next bullet
+    says otherwise. A timeline entry exists only because a record carries its own timestamp - the timeline
+    is a projection over the tables, and a table called `well_timeline` would be a lie waiting to drift.
+*   **One thing is stored: a reviewed `field_pattern` snapshot**, and it stores the `query` that produced
+    it alongside the counts it found. `staleness()` re-runs that stored query and reports the difference
+    (`{"occurrence_count": {"stored": 2, "now": 3}}`) rather than silently refreshing, because the
+    question a reviewer asks is "has what I confirmed changed", not "what is the number now". Its status
+    moves only with an author.
+*   **Re-asserting a fact is not an insert.** The edges that say which wells and which evidence rows a
+    pattern rests on are ordinary `knowledge_relation` edges, so `link_rows` is idempotent - a second pass
+    adds nothing - and `snapshot()` with evidence linking disabled leaves the stored evidence alone. A
+    graph that grows an edge every time someone asks the same question is a graph nobody can count.
+*   **A recommendation is proposed by code and decided by a person.** `propose_recommendation` writes a
+    `PROPOSED` row with the pattern's query and a reason built from the counts; `decide_recommendation`
+    moves it, requires an author and a reason, and the signature deduplicates the same advice for the same
+    scope. Best practices are derived only from `APPROVED` lessons, carry their evidence, and never list
+    their own author as an approver.
+*   **Numbers keep their units.** Costs are totalled per currency and never across currencies - no rate,
+    no conversion, no inflation, no AFE. A variance is `None` unless both sides exist; planned-only and
+    actual-only lines are counted separately so an absent side is visible as absent; unpriced and
+    unattributed items are reported rather than dropped.
+*   **The CLI covers what a terminal user verifies, not every table.** `records`, `timeline`, `fields`,
+    `patterns` and `lessons` are commands; procedures, programmes, risks, costs and rigs/service
+    companies are reached through repositories and services (and, for the versioned records, through the
+    revision and approval methods). A lesson's approval is deliberately *not* a CLI verb: it is the one
+    decision in this domain that a person should make while looking at the evidence, and a flag is not
+    that.
+*   **Recurrence is a query with thresholds, not a prediction.** `find_recurring` takes
+    `min_occurrences`/`min_wells` and returns what the rows support, with `limit=0` meaning "everything";
+    offset candidates compare a well against other wells that recorded the same problem types
+    (`same_field_only` by default, off with a flag) - an inference about what to read, never about what
+    will happen.
+
+**Consequences.** Every number in `--json` output is reproducible from the rows in the same breath, and
+`records summary`/`fields summary` disagree only when a row was edited between the two calls. A snapshot
+that has drifted is an actionable report rather than a stale row, and the tests pin all of it: 21 timeline
+entries for a well of which 11 are undated, five NPT rows totalling 59.25 h with two undated, `stuck_pipe`
+across two wells at 28.75 h, and a pattern whose stored count is 2 while the records now say 3. The
+boundaries are code-review boundaries too: there is no UI, no model call, no RAG and no predictor in
+`intelligence/`, and `docs/DOMAIN.md` keeps that promise in writing.
+
+**Rejected.** A materialised-view cache per aggregate; a `well_timeline` table; auto-refreshing a
+snapshot on read (the reviewer's baseline would vanish); summing costs with a default exchange rate;
+promoting a pattern to `CONFIRMED` when its counts grow; and a CLI verb for every table, which would put
+an approval workflow in a place with no evidence viewer.

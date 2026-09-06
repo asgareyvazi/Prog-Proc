@@ -150,11 +150,14 @@ class OperationalService:
         if project_id:
             statement = statement.where(Document.project_id == project_id)
         if field_id:
+            # A document is scoped to a field through its well.  Note which id is being matched: an
+            # ``in_`` over ``select(Well.id)`` would compare document ids against well ids, find nothing,
+            # and report a successful promotion of zero documents.
             statement = statement.where(
                 Document.id.in_(
-                    select(Well.id)
+                    select(Document.id)
+                    .join(Well, Document.well_id == Well.id)
                     .where(Well.field_id == field_id)
-                    .join(Document, Document.well_id == Well.id)
                 )
             )
         statement = statement.order_by(Document.identity_path, Document.current_version_id)

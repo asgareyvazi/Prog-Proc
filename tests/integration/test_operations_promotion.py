@@ -10,11 +10,20 @@ feature would only prove the feature works on a corpus it invented.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from sqlalchemy import func, select
-from tests.fixtures.generate import build_corpus
+from tests.fixtures.fieldops import (
+    DDR_ACTIVITIES,
+    DDR_NPT_LINES,
+    DDR_TOTAL,
+    STATED,
+    ZERO_HOURS,
+    fetch,
+    field_id,
+    ingest,
+    promote,
+    well_id_for,
+)
 
 from drilling_intelligence.core.enums import (
     CauseStatus,
@@ -25,7 +34,6 @@ from drilling_intelligence.core.enums import (
 from drilling_intelligence.database.models import (
     DdrReport,
     Document,
-    Field,
     KnowledgeRelation,
     NptRecord,
     ProblemOccurrence,
@@ -33,75 +41,13 @@ from drilling_intelligence.database.models import (
     WellEvent,
     WellOperation,
 )
-from drilling_intelligence.ingestion.pipeline import IngestionPipeline
 from drilling_intelligence.operations.promote import VersionPromoter
 from drilling_intelligence.operations.repository import OperationsRepository
 from drilling_intelligence.operations.service import OperationalService
-from drilling_intelligence.wells.repository import WellRepository
-
-#: The three lines of ``npt_summary_2025-06.csv`` that state lost time (well, date, hours, code).
-STATED = (
-    ("A-3", "2025-06-13", 6.5, "NPT-STUCK"),
-    ("A-3", "2025-06-14", 12.0, "NPT-EQUIP"),
-    ("B-11", "2025-04-02", 22.25, "NPT-STUCK"),
-)
-#: The fourth line, which states that nothing was lost.
-ZERO_HOURS = 0.0
-#: The daily report's "Activity / Hours" sheet: six activity rows, two of them coded NPT.
-DDR_ACTIVITIES = 6
-DDR_NPT_LINES = (6.5, 12.0)
-#: ...and the summary field beside them, which adds up to 18.5 h and is therefore not a seventh row.
-DDR_TOTAL = 18.5
-
-
-def prepare(workspace, *, wells: tuple[str, ...] = ("A-3", "B-11")) -> Path:
-    """Register the field and its wells, build the corpus on disk, and ingest it."""
-    with workspace.database.session() as session:
-        repository = WellRepository(session)
-        repository.get_or_create_workspace(str(workspace.root), name="North Cormorant")
-        project = repository.get_or_create_project("North Cormorant")
-        field = repository.get_or_create_field("North Cormorant", project=project)
-        for name in wells:
-            repository.create_well(name, project_id=project.id, field_id=field.id)
-        well_id = session.scalar(select(Well.id).where(Well.name == wells[0]))
-        session.commit()
-    root = workspace.root / "corpus"
-    build_corpus(root)
-    pipeline = IngestionPipeline(
-        settings=workspace.settings,
-        workspace_root=workspace.root,
-        database=workspace.database,
-    )
-    result = pipeline.run(root=root, well_id=well_id)
-    assert result.ok, result.error
-    assert result.failures == 0, [item.error for item in result.failures_report()]
-    return root
-
-
-def promote(workspace) -> dict:
-    return OperationalService.for_workspace(workspace).promote_workspace()
-
-
-def fetch(workspace, model: type, **filters: object) -> list:
-    with workspace.database.read_only() as session:
-        statement = select(model)
-        for key, value in filters.items():
-            statement = statement.where(getattr(model, key) == value)
-        return list(session.scalars(statement.order_by(model.id)))
-
-
-def field_id(workspace) -> str:
-    with workspace.database.read_only() as session:
-        return str(session.scalar(select(Field.id)) or "")
-
-
-def well_id_for(workspace, name: str) -> str:
-    with workspace.database.read_only() as session:
-        return str(session.scalar(select(Well.id).where(Well.name == name)) or "")
 
 
 def test_promotion_writes_the_rows_the_sheet_states(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     summary = promote(workspace)
     counts = summary["counts"]
     # Two report-shaped documents in the corpus: the NPT export and the daily report.
@@ -122,7 +68,7 @@ def test_promotion_writes_the_rows_the_sheet_states(workspace) -> None:
 
 
 def test_each_row_says_which_well_and_which_file_it_came_from(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     rows = fetch(workspace, NptRecord)
     hours: dict[str, list[float]] = {}
@@ -148,7 +94,7 @@ def test_a_row_from_another_well_is_not_charged_to_this_reports_well(workspace) 
     filed under makes "everything this report produced" return another well's hours, and every total
     built on that query is wrong in two wells at once.
     """
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     b11 = fetch(workspace, NptRecord, well_id=well_id_for(workspace, "B-11"))
     a3 = fetch(workspace, NptRecord, well_id=well_id_for(workspace, "A-3"))
@@ -158,7 +104,7 @@ def test_a_row_from_another_well_is_not_charged_to_this_reports_well(workspace) 
 
 
 def test_the_zero_hour_line_produces_no_row(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     assert ZERO_HOURS not in {row.duration_hours for row in fetch(workspace, NptRecord)}
     assert not [
@@ -167,7 +113,7 @@ def test_the_zero_hour_line_produces_no_row(workspace) -> None:
 
 
 def test_promotion_is_idempotent(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     first = promote(workspace)
     second = promote(workspace)
     assert first["totals"]["created"] > 0, first
@@ -184,7 +130,7 @@ def test_promotion_is_idempotent(workspace) -> None:
 
 def test_a_row_naming_an_unknown_well_is_refused_not_moved(workspace) -> None:
     """Only A-3 exists, so the B-11 line is reported and left out - never charged to A-3."""
-    prepare(workspace, wells=("A-3",))
+    ingest(workspace, wells=("A-3",))
     summary = promote(workspace)
     assert summary["skipped"].get("WELL_NOT_FOUND") == 1, summary["skipped"]
     detail = next(
@@ -198,7 +144,7 @@ def test_a_row_naming_an_unknown_well_is_refused_not_moved(workspace) -> None:
 
 
 def test_cause_is_stated_and_root_cause_stays_unknown(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     problems = fetch(workspace, ProblemOccurrence)
     assert problems
@@ -220,7 +166,7 @@ def test_cause_is_stated_and_root_cause_stays_unknown(workspace) -> None:
 
 def test_the_daily_report_total_is_not_promoted_beside_its_own_lines(workspace) -> None:
     """18.5 h is the sum of the report's two NPT lines; promoting both would count it twice."""
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     with workspace.database.read_only() as session:
         document = session.scalar(
@@ -240,7 +186,7 @@ def test_the_daily_report_total_is_not_promoted_beside_its_own_lines(workspace) 
 
 
 def test_summary_counts_what_is_missing_as_well_as_what_is_there(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     with workspace.database.session() as session:
         summary = OperationsRepository(session).record_summary(field_id=field_id(workspace))
@@ -259,7 +205,7 @@ def test_summary_counts_what_is_missing_as_well_as_what_is_there(workspace) -> N
 
 
 def test_identity_keys_are_content_addresses(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     first = [row.identity_key for row in fetch(workspace, NptRecord)]
     assert all(key and key.startswith("promote:") for key in first), first
@@ -277,7 +223,7 @@ def test_a_conflicting_edit_is_reported_not_overwritten(workspace) -> None:
     rewriting a row on the strength of a file would erase a decision the platform has no record of
     how to make.
     """
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     with workspace.database.session() as session:
         row = session.scalar(
@@ -294,7 +240,7 @@ def test_a_conflicting_edit_is_reported_not_overwritten(workspace) -> None:
 
 
 def test_promoting_a_document_that_is_not_a_report_changes_nothing(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     with workspace.database.read_only() as session:
         document = session.scalar(
             select(Document).where(Document.filename == "well_a3_program_rev12.pdf")
@@ -310,7 +256,7 @@ def test_promoting_a_document_that_is_not_a_report_changes_nothing(workspace) ->
 
 
 def test_report_rows_keep_the_day_the_file_gave_them(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     reports = fetch(workspace, DdrReport)
     assert len(reports) == 2, reports
@@ -338,7 +284,7 @@ def test_report_rows_keep_the_day_the_file_gave_them(workspace) -> None:
 
 def test_promotion_links_the_report_to_what_came_out_of_it(workspace) -> None:
     """The graph, not only the foreign keys: every promoted row is reachable from its report."""
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     with workspace.database.read_only() as session:
         counts = dict(
@@ -357,7 +303,7 @@ def test_promotion_links_the_report_to_what_came_out_of_it(workspace) -> None:
 
 def test_delete_promoted_leaves_a_manual_row_alone(workspace) -> None:
     """Re-promoting a version removes what that version derived, and nothing a person wrote."""
-    prepare(workspace)
+    ingest(workspace)
     promote(workspace)
     with workspace.database.session() as session:
         repository = OperationsRepository(session)
@@ -376,7 +322,7 @@ def test_delete_promoted_leaves_a_manual_row_alone(workspace) -> None:
 
 
 def test_promoter_reports_a_version_with_nothing_to_promote(workspace) -> None:
-    prepare(workspace)
+    ingest(workspace)
     with workspace.database.read_only() as session:
         document = session.scalar(
             select(Document).where(Document.filename == "mud_report_well-a3.xlsx")
@@ -390,3 +336,57 @@ def test_promoter_reports_a_version_with_nothing_to_promote(workspace) -> None:
     assert outcome.counts == {} or set(outcome.counts) <= {"removed"}, outcome.counts
     assert any(entry["reason"] == "NOT_A_REPORT" for entry in outcome.skipped), outcome.skipped
     assert all(row.document_id != document_id for row in fetch(workspace, NptRecord))
+
+
+def test_a_field_scope_promotes_the_field_it_names(workspace) -> None:
+    """``--field`` once selected documents by comparing document ids against well ids.
+
+    The scoped sweep matched no version at all, so it returned ``created 0`` and exited successfully - the
+    worst shape a bug in a batch tool can take, because nothing was written and nothing was reported, and
+    the next person's spreadsheet was quietly 59 hours short.  So the assertion counts versions and rows,
+    not just the absence of an exception; and the empty-scope half proves a scope that matches nothing
+    neither invents rows nor deletes the ones it never looked at.
+    """
+    ingest(workspace)
+    service = OperationalService.for_workspace(workspace)
+    with workspace.database.session() as session:
+        outcome = service.promote_workspace(session=session, field_id=field_id(workspace))
+        session.commit()
+    assert outcome["versions"] == 2, outcome
+    assert outcome["totals"]["created"] == 22, outcome["counts"]
+    assert outcome["totals"]["conflict"] == 0, outcome["counts"]
+    assert len(fetch(workspace, NptRecord)) == len(STATED) + len(DDR_NPT_LINES)
+
+    with workspace.database.session() as session:
+        empty = OperationalService.for_workspace(workspace).promote_workspace(
+            session=session, field_id="0" * 32
+        )
+        session.rollback()
+    assert empty["versions"] == 0 and empty["totals"]["created"] == 0, empty
+    assert len(fetch(workspace, NptRecord)) == len(STATED) + len(DDR_NPT_LINES), (
+        "a scope that matched nothing deleted rows it never touched"
+    )
+
+
+def test_a_stated_duration_keeps_its_unit_and_an_unreadable_one_stays_unknown() -> None:
+    """``90 min`` is a duration the report stated, not a cell nobody could read.
+
+    The row stores hours, so a sheet that says minutes is converted - through ``core.units``, which is the
+    unit authority, rather than by a division written next to the parser.  What must not happen is either of
+    the two failure modes: reading "90 min" as 90 hours, or reading it as nothing and reporting a field
+    with one less lost hour than it has.  Anything genuinely not a duration returns ``None`` so it is counted
+    as an unknown duration, and a zero is never the answer to "the cell said something odd".
+    """
+    from drilling_intelligence.operations.promote import _hours
+
+    assert _hours(6.5) == 6.5
+    assert _hours("6,5") == pytest.approx(6.5), "the decimal-comma convention, still"
+    assert _hours("6.5 h") == 6.5 and _hours("6.5 hrs") == 6.5
+    assert _hours("90 min") == pytest.approx(1.5)
+    assert _hours("90 minutes") == pytest.approx(1.5)
+    assert _hours("1.5 days") == pytest.approx(36.0)
+    assert _hours("45") == 45.0, "a bare number is hours, because that is what the column means"
+    assert _hours("soon") is None
+    assert _hours("") is None and _hours(None) is None
+    assert _hours("N/A") is None, "a placeholder is not zero lost time"
+    assert _hours(-3) == -3.0, "the parser reports; the database's CHECK is what refuses a negative"

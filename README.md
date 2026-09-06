@@ -12,7 +12,7 @@ part of this repository serves that sentence.
 
 ## Status
 
-Phase 0 plus the knowledge layer. What exists and runs today:
+Phase 0, the knowledge layer, and the engineering domain core. What exists and runs today:
 
 | area | state |
 | --- | --- |
@@ -24,7 +24,12 @@ Phase 0 plus the knowledge layer. What exists and runs today:
 | Schema and migrations | **implemented** (Alembic owns the schema; SQLite per workspace) |
 | Search: BM25 over chunks, filters, cited results, optional re-verification against the file | **implemented** (a disposable SQLite sidecar, rebuilt rather than migrated) |
 | Knowledge: typed facts with per-value provenance, entities, edges, conflict records and human resolutions | **implemented, tested end to end** (`docs/DECISIONS.md` ADR-0008) |
+| Operational records: DDR as a first-class record, operations, events, NPT, problems — written by an idempotent, self-reporting promotion | **implemented, tested end to end** (`docs/DECISIONS.md` ADR-0010) |
+| Engineering records: programmes with targets, versioned procedures, lessons, best practices, recommendations, risks, costs, rigs, service companies | **implemented, tested** (revision chains and lifecycles enforced in the schema) |
+| Field intelligence: derived timelines, NPT/problem rollups, offset candidates, recurring patterns with staleness checks | **implemented, tested on a two-well golden field** (`docs/DOMAIN.md`) |
+| Domain CLI: `records`, `timeline`, `fields`, `patterns`, `lessons`, and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
 | Skills, AI providers, engineering calculations, desktop UI | planned — see `docs/DECISIONS.md` for the constraints they inherit |
+| Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards, records indexed into search | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
 Nothing here needs a GPU, a model download, or a server. `mineru` (for scanned pages)
 and Ollama (for optional AI) are both opt-in and absent by default.
@@ -33,7 +38,7 @@ and Ollama (for optional AI) are both opt-in and absent by default.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-PYTHONPATH=src .venv/bin/python -m pytest            # 440 tests: unit, engineering, integration
+PYTHONPATH=src .venv/bin/python -m pytest            # 553 tests: unit, engineering, integration
 .venv/bin/ruff check src tests migrations --output-format=concise
 .venv/bin/ruff format --check src tests migrations
 ```
@@ -83,6 +88,10 @@ src/drilling_intelligence/
                   derivation from stored artefacts, conflict detection and resolution
   search/         chunking (documents and facts), index, ranking, the query service
   wells/          workspace and well/project/company repositories
+  operations/     the operational spine: reports, operations, events, NPT, problems; the promoter
+  engineering/    programmes and targets, procedures, plan-vs-actual, risks, costs
+  lessons/        lessons learned, best practices, recommendations and their decisions
+  intelligence/   timelines, field rollups, recurring patterns and their snapshots
   ingestion/      scanner, planner (incremental decisions), pipeline
   integrations/   MinerU client (subprocess/HTTP), disabled by default
 migrations/       Alembic chain; alembic.ini carries no URL by design
@@ -133,6 +142,39 @@ Three rules hold this together, and each is enforced by a test rather than by in
   a parser produced. A note a person typed survives, which is the difference between a
   repair command and a data-loss command.
 
+## The operational record
+
+The domain layer answers the question a document search cannot: not "where is this written" but "what
+happened, how long did it cost, and has it happened before". Its rows are promoted from stored artefacts by
+a deterministic pass, they keep the citation of the version they came from, and they arrive as `CANDIDATE`
+— a promotion proposes, a person confirms.
+
+```bash
+drillintel records promote --field "North Cormorant"      # idempotent: re-running reports `unchanged`
+drillintel records list --table npt --field "North Cormorant" --json
+drillintel timeline --well A-3 --since 2025-06-13 --until 2025-06-14
+drillintel fields summary --field "North Cormorant"
+drillintel patterns find --field "North Cormorant"        # recurrence in the rows, not a prediction
+drillintel patterns stale 3f7c1a…                         # what has moved since a snapshot was reviewed
+drillintel lessons counts --project "North Cormorant"
+```
+
+```
+$ drillintel fields summary --field "North Cormorant"
+field: North Cormorant (2 well(s))
+non-productive time: 59.25 h over 5 record(s); 2 undated, 0 without a duration
+by category: equipment_failure 12 h in 1 row(s) on 1 well(s), other 18.5 h in 2 row(s) on 1 well(s), stuck_pipe 28.75 h in 2 row(s) on 2 well(s)
+problems: 3 occurrence(s) of equipment_failure x1 (1 well(s)), stuck_pipe x2 (2 well(s))
+events: 3, lessons: 0, reports: 2
+hours are summed per record: if two files describe one event, both are counted, and the record that says so is `drillintel records list --table npt`
+```
+
+Read that last line as the layer's whole philosophy: the hours are what the records claim, each with the
+basis it was stated on, and the tool tells you which row to open rather than smoothing the number for you.
+`docs/DOMAIN.md` maps the tables, the promotion rules, the CLI surface and — most of it — the things this
+layer refuses to compute: no invented risk scores, no inferred root causes, no currency conversion, no
+stored timeline, no model in the numeric path.
+
 ## Conventions this project keeps
 
 - **Every extracted value cites a location.** A field without provenance is not stored.
@@ -150,6 +192,9 @@ Three rules hold this together, and each is enforced by a test rather than by in
 - **An answer names its source, and a dispute names both sides.** `citation()` is rendered by
   the same locator code as every other reference; a fact, a search hit and a conflict
   candidate all cite the same way, so a reader can open the cell.
+- **A record is not a document and not a fact.** Promotion writes rows that cite a version; it never
+  edits a file's record, never confirms itself, and never fills a gap the source left open. A stated
+  duration and a computed one are kept apart by `duration_basis` so they cannot be averaged together.
 - **No fake implementations.** If a subsystem is not built, it is absent from the tree —
   there are no stubs that return plausible-looking data.
 
