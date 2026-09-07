@@ -57,6 +57,13 @@ from .chunking import (
     fact_chunks,
 )
 from .ranking import IndexStatistics, rank_chunks
+from .structured import (
+    KIND_STRUCTURED,
+    StructuredRecord,
+    structured_records,
+    structured_row_ids,
+    structured_searchable_ids,
+)
 from .tokenize import parse_query
 
 log = get_logger("search.index")
@@ -84,6 +91,10 @@ __all__ = [
 MAX_CANDIDATES = 4000
 
 FTS_TABLE = "search_chunk_fts"
+
+#: The FTS mirror of the structured projection.  Same optional-extension story as the document
+#: FTS table: candidate acceleration only, never the ranking.
+STRUCTURED_FTS_TABLE = "search_structured_fts"
 
 #: How many candidate chunks one query fetches from the index before Python scores them.
 RETRIEVAL_CAP = MAX_CANDIDATES * 4
@@ -153,6 +164,36 @@ search_chunk_table = Table(
     Column("source_sha256", String(64), nullable=False, default=""),
 )
 
+#: The structured half of the projection: one row per authoritative operational/domain record.
+#: The primary key is the deterministic ``structured:<type>:<id>`` identity (see
+#: :mod:`drilling_intelligence.search.structured`); the filterable columns are the same ones the
+#: document half denormalises (well/project/company/names) plus the structured-only ``category``
+#: (problem type / NPT category / event category / lesson problem type) and ``record_date``.
+search_structured_table = Table(
+    "search_structured",
+    search_metadata,
+    Column("record_id", String(96), primary_key=True),
+    Column("record_type", String(40), nullable=False, index=True),
+    Column("source_id", String(36), nullable=False, index=True),
+    Column("text", Text, nullable=False, default=""),
+    Column("well_id", String(36), nullable=False, default="", index=True),
+    Column("project_id", String(36), nullable=False, default="", index=True),
+    Column("field_id", String(36), nullable=False, default="", index=True),
+    Column("company_id", String(36), nullable=False, default="", index=True),
+    Column("well_name", String(200), nullable=False, default=""),
+    Column("project_name", String(200), nullable=False, default=""),
+    Column("company_name", String(200), nullable=False, default=""),
+    Column("category", String(64), nullable=False, default="", index=True),
+    Column("status", String(32), nullable=False, default=""),
+    Column("record_date", String(32), nullable=False, default="", index=True),
+    Column("title", String(400), nullable=False, default=""),
+    Column("locator_ref", String(400), nullable=False, default=""),
+    Column("provenance_json", Text, nullable=True),
+    Column("terms_json", Text, nullable=False, default="{}"),
+    Column("length", Integer, nullable=False, default=0),
+    Column("char_count", Integer, nullable=False, default=0),
+)
+
 search_meta_table = Table(
     "search_meta",
     search_metadata,
@@ -183,6 +224,12 @@ class SearchFilters:
     date_to: str | None = None
     kinds: tuple[str, ...] | None = None
     include_superseded: bool = False
+    #: Structured-only narrowing: which authoritative record types to keep, a field scope, and a
+    #: problem/category token.  These have no document analogue, so when one is set the document
+    #: half matches nothing - the filter is applied where the metadata exists and nowhere else.
+    record_types: tuple[str, ...] | None = None
+    field_id: str | None = None
+    category: str | None = None
 
     def applies_to(self, document: IndexDocument, chunk: IndexChunk | None = None) -> bool:
         """Python-side filtering, shared by both backends so they cannot disagree.
@@ -191,6 +238,9 @@ class SearchFilters:
         implementations quietly start answering different questions; the index is filtered after
         retrieval on purpose, and the retrieval step is only ever an accelerator.
         """
+        if self.record_types or self.field_id or self.category:
+            # Structured-only filters: a document chunk has no record type, field or category.
+            return False
         if self.workspace_id and document.workspace_id != self.workspace_id:
             return False
         if self.project_id and document.project_id != self.project_id:
@@ -232,6 +282,49 @@ class SearchFilters:
                 return False
         return True
 
+    def applies_to_structured(self, record: StructuredRecord) -> bool:
+        """The structured half of the same filter, so the two source types cannot disagree.
+
+        Shared filters (well/project/company/date/status/kinds) apply to both; the structured-only
+        filters (``record_types``, ``field_id``, ``category``) apply only here; and the document-only
+        filters (type, revision, parser, sheet, page) exclude a structured record, because a
+        structured row has none of those to satisfy them with.
+        """
+        if self.record_types and record.record_type not in set(self.record_types):
+            return False
+        # ``workspace_id`` is deliberately not applied here: structured rows carry no workspace id,
+        # and their scope is expressed through well/project/field, which the filters above cover.
+        if self.project_id and record.project_id != self.project_id:
+            return False
+        if self.company_id and record.company_id != self.company_id:
+            return False
+        if self.well_id and record.well_id != self.well_id:
+            return False
+        if self.field_id and record.field_id != self.field_id:
+            return False
+        if self.category and record.category != self.category:
+            return False
+        if self.status and record.status != self.status:
+            return False
+        if self.date_from and record.record_date and record.record_date < self.date_from:
+            return False
+        if self.date_to and record.record_date and record.record_date > self.date_to:
+            return False
+        if self.kinds and KIND_STRUCTURED not in set(self.kinds):
+            return False
+        # A document-only filter has no structured analogue, so a structured record cannot
+        # satisfy it and is excluded.
+        return not (
+            self.document_type
+            or self.document_types
+            or self.revision
+            or self.processing_status
+            or self.parser
+            or self.sheet
+            or self.page_from is not None
+            or self.page_to is not None
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             key: value for key, value in self.__dict__.items() if value not in (None, False, (), "")
@@ -269,6 +362,21 @@ class Hit:
     term_scores: dict[str, float] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class StructuredHit:
+    """A backend's answer for one structured record: the row, the score, and why it scored.
+
+    Kept a distinct type from :class:`Hit` on purpose: a structured record is a different *source
+    type* than a document chunk, and the service must present it with that distinction intact
+    rather than dressing it up as a chunk.
+    """
+
+    record: StructuredRecord
+    score: float
+    matched_terms: tuple[str, ...] = ()
+    term_scores: dict[str, float] = field(default_factory=dict)
+
+
 @dataclass
 class IndexStats:
     """What the index holds, and whether it can be trusted to be current."""
@@ -287,6 +395,15 @@ class IndexStats:
     #: Current registry versions with nothing indexed - the "the index was never built" case,
     #: and the reason a search can legitimately return nothing for a file that exists.
     missing_versions: int = 0
+    #: Structured projection health, reported separately because a structured entry outliving or
+    #: missing its authoritative row is a different diagnosis from the same condition on documents.
+    structured_records: int = 0
+    #: Searchable structured rows with nothing indexed (a rebuild away from being searchable).
+    structured_missing: int = 0
+    #: Indexed structured rows whose source is no longer searchable (rejected/superseded; prunable).
+    structured_stale: int = 0
+    #: Indexed structured rows whose authoritative row has been deleted entirely.
+    structured_orphaned: int = 0
     fts_available: bool = False
     schema_version: int = SCHEMA_VERSION
     built_at: str = ""
@@ -311,6 +428,10 @@ class SearchIndex(Protocol):
 
     def store(self, chunk_set: ChunkSet) -> int: ...
 
+    def store_structured(self, records: Iterable[StructuredRecord]) -> int: ...
+
+    def remove_structured(self, record_ids: Iterable[str]) -> int: ...
+
     def remove_version(self, version_id: str) -> int: ...
 
     def remove_document(self, document_id: str) -> int: ...
@@ -322,7 +443,9 @@ class SearchIndex(Protocol):
 
     def rebuild(self, *, repository: DocumentRepository | None = None) -> IndexStats: ...
 
-    def search(self, request: SearchRequest) -> tuple[list[Hit], dict[str, Any]]: ...
+    def search(
+        self, request: SearchRequest
+    ) -> tuple[list[Hit | StructuredHit], dict[str, Any]]: ...
 
     def stats(self, *, repository: DocumentRepository | None = None) -> IndexStats: ...
 
@@ -499,18 +622,24 @@ def _now_iso() -> str:
 
 def _score(
     pairs: Sequence[tuple[IndexChunk, IndexDocument]],
+    records: Sequence[StructuredRecord],
     request: SearchRequest,
     *,
     statistics: IndexStatistics,
-) -> tuple[list[Hit], bool, bool]:
+) -> tuple[list[Hit | StructuredHit], bool, bool]:
     """Score, filter and cut down to the limit: ``(hits, truncated, matched_any)``.
 
     Retrieval is a superset and this is the decision: BM25 over the query's terms, the phrase
     requirements of a quoted query, the kind weighting, and the filter set - all from
-    :mod:`drilling_intelligence.search.ranking`, on the same ``rows`` in both backends.
+    :mod:`drilling_intelligence.search.ranking`, over document chunks and structured records
+    together so the one result list is a single deterministic ranking, not two glued side by side.
     """
     triples = [
         (chunk, chunk.terms, max(1, chunk.length), chunk.kind, chunk.text) for chunk, _ in pairs
+    ]
+    triples += [
+        (record, record.terms, max(1, record.length), KIND_STRUCTURED, record.text)
+        for record in records
     ]
     matches = rank_chunks(
         triples,
@@ -521,16 +650,29 @@ def _score(
         limit=0,
     )
     by_id = {chunk.chunk_id: (chunk, document) for chunk, document in pairs}
-    hits: list[Hit] = []
+    hits: list[Hit | StructuredHit] = []
     for item in matches:
-        pair = by_id.get(item.row.chunk_id)
+        row = item.row
+        if isinstance(row, StructuredRecord):
+            # Filters are applied *after* ranking on purpose, and the distinction matters for the
+            # fallback below: "no unit contains these words" and "the units that do belong to a
+            # scope you did not ask about" are different answers, and only the first one justifies
+            # broadening the query.
+            if not request.filters.applies_to_structured(row):
+                continue
+            hits.append(
+                StructuredHit(
+                    record=row,
+                    score=round(item.score, 6),
+                    matched_terms=item.matched_terms,
+                    term_scores=dict(item.term_scores),
+                )
+            )
+            continue
+        pair = by_id.get(row.chunk_id)
         if pair is None:  # pragma: no cover - candidates came from this same map
             continue
-        # Filters are applied *after* ranking on purpose, and the distinction matters for the
-        # fallback below: "no chunk contains these words" and "the chunks that do belong to a
-        # well you did not ask about" are different answers, and only the first one justifies
-        # broadening the query.
-        if not request.filters.applies_to(pair[1], item.row):
+        if not request.filters.applies_to(pair[1], row):
             continue
         hits.append(
             Hit(
@@ -548,45 +690,56 @@ def _score(
     return hits[:limit], truncated, bool(matches)
 
 
+@dataclass
+class _Candidates:
+    """Document pairs and structured records fetched for one query reading."""
+
+    pairs: list[tuple[IndexChunk, IndexDocument]]
+    records: list[StructuredRecord]
+
+    def __len__(self) -> int:  # pragma: no cover - readability for the candidate count
+        return len(self.pairs) + len(self.records)
+
+
 def score_candidates(
     request: SearchRequest,
     *,
     statistics: IndexStatistics,
-    candidates_for: Callable[[str], Sequence[tuple[IndexChunk, IndexDocument]]],
+    candidates_for: Callable[[str], _Candidates],
     total_chunks: int,
     fts_used: bool,
     retrieval_truncated: Callable[[str], bool] | None = None,
-) -> tuple[list[Hit], dict[str, Any]]:
+) -> tuple[list[Hit | StructuredHit], dict[str, Any]]:
     """Run one query, with the broadened reading as an explicit, reported fallback.
 
     The single place the "nothing satisfied every term, so try any term" decision is made, so
     the two backends cannot answer the same query differently.  ``candidates_for(mode)`` is
-    asked for the pairs to score under each reading - a backend that can accelerate the strict
+    asked for the units to score under each reading - a backend that can accelerate the strict
     reading still has to widen its retrieval for the fallback, which is why this is a callback
     rather than a pre-fetched list.
     """
     mode = request.mode if request.mode in ("all", "any") else "all"
-    pairs = list(candidates_for(mode))
+    candidates = candidates_for(mode)
     hits, scoring_truncated, matched_any = _score(
-        pairs, replace(request, mode=mode), statistics=statistics
+        candidates.pairs, candidates.records, replace(request, mode=mode), statistics=statistics
     )
     truncated = scoring_truncated or bool(retrieval_truncated and retrieval_truncated(mode))
-    candidates = len(pairs)
+    candidate_count = len(candidates)
     if not hits and matched_any is False and mode == "all" and len(request.terms) > 1:
         # Reported, never silent: "nothing matched the whole query" and "here is what matched
         # any word of it" are different answers about a well, and a caller must be able to tell
         # which one it was given.
         mode = "any"
-        pairs = list(candidates_for(mode))
-        candidates = len(pairs)
+        candidates = candidates_for(mode)
+        candidate_count = len(candidates)
         hits, scoring_truncated, _ = _score(
-            pairs, replace(request, mode=mode), statistics=statistics
+            candidates.pairs, candidates.records, replace(request, mode=mode), statistics=statistics
         )
         truncated = truncated or scoring_truncated
     return hits, {
         "mode": mode,
         "truncated": truncated,
-        "candidates": candidates,
+        "candidates": candidate_count,
         "total_chunks": total_chunks,
         "fts_used": fts_used,
     }
@@ -600,6 +753,7 @@ class InMemorySearchIndex:
         self._documents: dict[str, IndexDocument] = {}
         self._chunks: dict[str, IndexChunk] = {}
         self._by_version: dict[str, list[str]] = {}
+        self._records: dict[str, StructuredRecord] = {}
         self._repository = repository
         self.built_at = ""
         self.registry_revision = ""
@@ -624,6 +778,20 @@ class InMemorySearchIndex:
         self._by_version[chunk_set.document.version_id] = ids
         return len(ids)
 
+    def store_structured(self, records: Iterable[StructuredRecord]) -> int:
+        stored = 0
+        for record in records:
+            self._records[record.record_id] = record
+            stored += 1
+        return stored
+
+    def remove_structured(self, record_ids: Iterable[str]) -> int:
+        removed = 0
+        for record_id in set(record_ids):
+            if self._records.pop(record_id, None) is not None:
+                removed += 1
+        return removed
+
     def remove_version(self, version_id: str) -> int:
         removed = 0
         for chunk_id in self._by_version.pop(version_id, []):
@@ -640,21 +808,26 @@ class InMemorySearchIndex:
         return removed
 
     def prune_obsolete(self, *, repository: DocumentRepository | None = None) -> int:
+        repository = _need_repository(repository, self._repository)
         obsolete = [
             version_id
             for version_id in list(self._documents)
-            if version_id
-            not in _current_version_ids(_need_repository(repository, self._repository))
+            if version_id not in _current_version_ids(repository)
         ]
         for version_id in obsolete:
             self.remove_version(version_id)
-        return len(obsolete)
+        # Structured half: keep only rows that still correspond to a searchable authoritative row.
+        searchable = structured_searchable_ids(repository.session)
+        stale = [record_id for record_id in self._records if record_id not in searchable]
+        self.remove_structured(stale)
+        return len(obsolete) + len(stale)
 
     def clear(self) -> int:
-        count = len(self._chunks)
+        count = len(self._chunks) + len(self._records)
         self._chunks.clear()
         self._documents.clear()
         self._by_version.clear()
+        self._records.clear()
         return count
 
     def rebuild(self, *, repository: DocumentRepository | None = None) -> IndexStats:
@@ -662,6 +835,7 @@ class InMemorySearchIndex:
         self.clear()
         for document_id, version_id in _current_pairs(repository):
             self.upsert(document_id, version_id, repository=repository)
+        self.store_structured(structured_records(repository.session))
         stats = self._tally(repository=repository)
         self.built_at = stats.built_at = _now_iso()
         self.registry_revision = stats.registry_revision = _registry_revision(repository)
@@ -675,9 +849,10 @@ class InMemorySearchIndex:
             if chunk.version_id in self._documents
         ]
 
-    def search(self, request: SearchRequest) -> tuple[list[Hit], dict[str, Any]]:
+    def search(self, request: SearchRequest) -> tuple[list[Hit | StructuredHit], dict[str, Any]]:
         pairs = self.pairs()
-        if not pairs:
+        records = list(self._records.values())
+        if not pairs and not records:
             return [], {
                 "mode": request.mode,
                 "truncated": False,
@@ -688,18 +863,21 @@ class InMemorySearchIndex:
         return score_candidates(
             request,
             statistics=self._statistics(request.terms),
-            candidates_for=lambda mode: pairs,
-            total_chunks=len(self._chunks),
+            candidates_for=lambda mode: _Candidates(pairs=pairs, records=records),
+            total_chunks=len(self._chunks) + len(records),
             fts_used=False,
         )
 
     def _statistics(self, terms: Sequence[str]) -> IndexStatistics:
         total_length = sum(chunk.length for chunk in self._chunks.values())
+        total_length += sum(record.length for record in self._records.values())
         frequencies = {
-            term: sum(1 for chunk in self._chunks.values() if term in chunk.terms) for term in terms
+            term: sum(1 for chunk in self._chunks.values() if term in chunk.terms)
+            + sum(1 for record in self._records.values() if term in record.terms)
+            for term in terms
         }
         return IndexStatistics(
-            total_chunks=len(self._chunks),
+            total_chunks=len(self._chunks) + len(self._records),
             total_length=total_length,
             document_frequency=frequencies,
         )
@@ -715,6 +893,7 @@ class InMemorySearchIndex:
             knowledge_chunks=sum(
                 1 for chunk in self._chunks.values() if chunk.kind == KIND_KNOWLEDGE
             ),
+            structured_records=len(self._records),
             fts_available=False,
         )
         if repository is not None:
@@ -723,6 +902,15 @@ class InMemorySearchIndex:
                 if version_id not in current:
                     stats.stale_versions += 1
             stats.missing_versions = len(current - set(self._documents))
+            searchable = structured_searchable_ids(repository.session)
+            rows = structured_row_ids(repository.session)
+            stored = set(self._records)
+            for record_id in stored:
+                if record_id not in rows:
+                    stats.structured_orphaned += 1
+                elif record_id not in searchable:
+                    stats.structured_stale += 1
+            stats.structured_missing = len(searchable - stored)
         return stats
 
     def close(self) -> None:
@@ -785,8 +973,13 @@ class SqliteSearchIndex:
                 f"create virtual table if not exists {FTS_TABLE} using fts5("
                 "body, chunk_id UNINDEXED, tokenize = 'unicode61 remove_diacritics 2')"
             )
+            structured = (
+                f"create virtual table if not exists {STRUCTURED_FTS_TABLE} using fts5("
+                "body, record_id UNINDEXED, tokenize = 'unicode61 remove_diacritics 2')"
+            )
             with self.engine.begin() as connection:
                 connection.execute(sa_text(statement))
+                connection.execute(sa_text(structured))
         self._set_meta("schema_version", str(SCHEMA_VERSION))
 
     def schema_is_current(self) -> bool:
@@ -862,6 +1055,23 @@ class SqliteSearchIndex:
                     )
         return len(chunk_set.chunks)
 
+    def store_structured(self, records: Iterable[StructuredRecord]) -> int:
+        """Write the structured projection's rows in one transaction (FTS mirror included)."""
+        stored = 0
+        with self.engine.begin() as connection:
+            for record in records:
+                connection.execute(insert(search_structured_table).values(**record.to_row()))
+                if self.fts_available():
+                    connection.execute(
+                        sa_text(
+                            f"insert into {STRUCTURED_FTS_TABLE} (rowid, body, record_id)"  # noqa: S608 - FTS5 is not in Core; values are bound
+                            " values ((select rowid from search_structured where record_id = :id), :body, :id)"
+                        ),
+                        {"id": record.record_id, "body": " ".join(record.terms)},
+                    )
+                stored += 1
+        return stored
+
     def _delete(self, connection: Any, version_id: str) -> int:
         if self.fts_available():
             connection.execute(
@@ -877,6 +1087,34 @@ class SqliteSearchIndex:
             delete(search_document_table).where(search_document_table.c.version_id == version_id)
         )
         return int(removed or 0)
+
+    def _delete_structured(self, connection: Any, record_ids: Sequence[str]) -> int:
+        if not record_ids:
+            return 0
+        ids = list(dict.fromkeys(record_ids))
+        removed = 0
+        for batch in _batches(ids):
+            placeholders = ", ".join(f":id_{index}" for index in range(len(batch)))
+            params = {f"id_{index}": batch[index] for index in range(len(batch))}
+            if self.fts_available():
+                connection.execute(
+                    sa_text(
+                        f"delete from {STRUCTURED_FTS_TABLE} where record_id in "  # noqa: S608 - FTS5 is not in Core; ids are bound
+                        f"(select record_id from search_structured where record_id in ({placeholders}))"
+                    ),
+                    params,
+                )
+            removed += connection.execute(
+                delete(search_structured_table).where(
+                    search_structured_table.c.record_id.in_(tuple(batch))
+                )
+            ).rowcount
+        return int(removed or 0)
+
+    def remove_structured(self, record_ids: Sequence[str]) -> int:
+        """Drop structured rows (and their FTS mirror) by identity."""
+        with self.engine.begin() as connection:
+            return self._delete_structured(connection, list(record_ids))
 
     def remove_version(self, version_id: str) -> int:
         """Chunk rows dropped for one version."""
@@ -896,13 +1134,16 @@ class SqliteSearchIndex:
             return sum(self._delete(connection, version_id) for version_id in versions)
 
     def prune_obsolete(self, *, repository: DocumentRepository | None = None) -> int:
-        """Drop indexed versions the registry no longer considers current (or no longer has).
+        """Drop indexed units the registry no longer considers current (or no longer has).
 
         This is what keeps "searchable" equal to "up to date" without the index pretending to
         be the record: the registry says which version is current, everything else leaves the
-        searchable state - and stays in the registry, cited and reachable by id.
+        searchable state - and stays in the registry, cited and reachable by id.  The structured
+        half is pruned the same way: a row that was rejected or superseded, or deleted outright,
+        leaves the projection.
         """
-        current = _current_version_ids(_need_repository(repository, self._repository))
+        repository = _need_repository(repository, self._repository)
+        current = _current_version_ids(repository)
         with self.engine.connect() as connection:
             stored = [
                 str(row[0])
@@ -911,7 +1152,15 @@ class SqliteSearchIndex:
         obsolete = [version_id for version_id in stored if version_id not in current]
         for version_id in obsolete:
             self.remove_version(version_id)
-        return len(obsolete)
+        searchable = structured_searchable_ids(repository.session)
+        with self.engine.connect() as connection:
+            stored_records = [
+                str(row[0])
+                for row in connection.execute(select(search_structured_table.c.record_id)).all()
+            ]
+        stale_records = [record_id for record_id in stored_records if record_id not in searchable]
+        self.remove_structured(stale_records)
+        return len(obsolete) + len(stale_records)
 
     def clear(self) -> int:
         with self.engine.begin() as connection:
@@ -921,10 +1170,18 @@ class SqliteSearchIndex:
                 ).scalar_one()
                 or 0
             )
+            count += int(
+                connection.execute(
+                    select(func.count()).select_from(search_structured_table)
+                ).scalar_one()
+                or 0
+            )
             if self.fts_available():
                 connection.execute(sa_text(f"delete from {FTS_TABLE}"))  # noqa: S608 - module constant
+                connection.execute(sa_text(f"delete from {STRUCTURED_FTS_TABLE}"))  # noqa: S608 - module constant
             connection.execute(delete(search_chunk_table))
             connection.execute(delete(search_document_table))
+            connection.execute(delete(search_structured_table))
         return count
 
     def rebuild(self, *, repository: DocumentRepository | None = None) -> IndexStats:
@@ -933,6 +1190,7 @@ class SqliteSearchIndex:
         self.clear()
         for document_id, version_id in _current_pairs(repository):
             self.upsert(document_id, version_id, repository=repository)
+        self.store_structured(structured_records(repository.session))
         stats = self.stats(repository=repository)
         stats.built_at = _now_iso()
         stats.registry_revision = _registry_revision(repository)
@@ -943,35 +1201,44 @@ class SqliteSearchIndex:
             documents=stats.documents,
             versions=stats.versions,
             chunks=stats.chunks,
+            structured=stats.structured_records,
             fts=stats.fts_available,
             schema=stats.schema_version,
         )
         return stats
 
     # -- reads --------------------------------------------------------------
-    def search(self, request: SearchRequest) -> tuple[list[Hit], dict[str, Any]]:
+    def search(self, request: SearchRequest) -> tuple[list[Hit | StructuredHit], dict[str, Any]]:
         if not request.terms and not request.phrases:
             return [], {
                 "mode": request.mode,
                 "truncated": False,
                 "candidates": 0,
-                "total_chunks": self._counts()["chunks"],
+                "total_chunks": self._counts()["chunks"] + self._structured_counts()["records"],
                 "fts_used": False,
                 "empty_query": True,
             }
         terms = request.terms
-        total = self._counts()["chunks"]
+        total = self._counts()["chunks"] + self._structured_counts()["records"]
         statistics = self._statistics(terms)
-        cache: dict[str, tuple[list[tuple[IndexChunk, IndexDocument]], bool]] = {}
+        cache: dict[str, tuple[_Candidates, bool]] = {}
 
-        def candidates_for(mode: str) -> list[tuple[IndexChunk, IndexDocument]]:
+        def candidates_for(mode: str) -> _Candidates:
             if mode not in cache:
                 chunk_ids, retrieval_truncated = self._candidate_ids(terms, mode)
+                record_ids, structured_truncated = self._structured_candidate_ids(terms, mode)
                 if chunk_ids is None:
                     # The scan path takes the first RETRIEVAL_CAP chunks in id order, so it is
                     # truncated exactly when the corpus is bigger than that - and says so.
-                    retrieval_truncated = total > RETRIEVAL_CAP
-                cache[mode] = (self._rows(chunk_ids), retrieval_truncated)
+                    retrieval_truncated = self._counts()["chunks"] > RETRIEVAL_CAP
+                if record_ids is None:
+                    structured_truncated = self._structured_counts()["records"] > RETRIEVAL_CAP
+                cache[mode] = (
+                    _Candidates(
+                        pairs=self._rows(chunk_ids), records=self._structured_rows(record_ids)
+                    ),
+                    retrieval_truncated or structured_truncated,
+                )
             return cache[mode][0]
 
         def retrieval_truncated(mode: str) -> bool:
@@ -1022,6 +1289,67 @@ class SqliteSearchIndex:
             return None, False
         truncated = len(rows) > RETRIEVAL_CAP
         return [str(row[0]) for row in rows[:RETRIEVAL_CAP]], truncated
+
+    def _structured_candidate_ids(
+        self, terms: Sequence[str], mode: str
+    ) -> tuple[list[str] | None, bool]:
+        """Structured record ids to score, or ``None`` for "scan the table".
+
+        Mirrors :meth:`_candidate_ids` for the structured projection: the FTS body is the row's
+        own indexed vocabulary, quoted per term so operators like ``500/300`` tokenise the same
+        on both sides, and any rejected expression falls back to the scan.  Acceleration only,
+        never the ranking.
+        """
+        if not self.fts_available() or not terms:
+            return None, False
+        unique = list(dict.fromkeys(terms))
+        joiner = " OR " if mode == "any" else " "
+        match = joiner.join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in unique)
+        statement = sa_text(
+            f"select record_id from {STRUCTURED_FTS_TABLE} where {STRUCTURED_FTS_TABLE} match :match order by record_id limit :cap"  # noqa: S608 - FTS5 MATCH is not in Core; :match is bound
+        )
+        try:
+            with self.engine.connect() as connection:
+                rows = connection.execute(
+                    statement, {"match": match, "cap": RETRIEVAL_CAP + 1}
+                ).all()
+        except Exception:  # noqa: BLE001 - a malformed expression means "use the scan"
+            log.warning("search.fts_query_failed", match=match[:200], level=25)
+            return None, False
+        truncated = len(rows) > RETRIEVAL_CAP
+        return [str(row[0]) for row in rows[:RETRIEVAL_CAP]], truncated
+
+    def _structured_rows(self, record_ids: Sequence[str] | None) -> list[StructuredRecord]:
+        statement = select(search_structured_table)
+        if record_ids is not None:
+            ordered = sorted(set(record_ids))
+            rows: list[dict[str, Any]] = []
+            with self.engine.connect() as connection:
+                for batch in _batches(ordered):
+                    rows.extend(
+                        dict(row)
+                        for row in connection.execute(
+                            statement.where(
+                                search_structured_table.c.record_id.in_(batch)
+                            ).order_by(search_structured_table.c.record_id)
+                        ).mappings()
+                    )
+        else:
+            with self.engine.connect() as connection:
+                rows = [
+                    dict(row)
+                    for row in connection.execute(
+                        statement.order_by(search_structured_table.c.record_id).limit(RETRIEVAL_CAP)
+                    ).mappings()
+                ]
+        return [StructuredRecord.from_row(row) for row in rows]
+
+    def _structured_counts(self) -> dict[str, int]:
+        with self.engine.connect() as connection:
+            records = connection.execute(
+                select(func.count()).select_from(search_structured_table)
+            ).scalar_one()
+        return {"records": int(records or 0)}
 
     def _rows(self, chunk_ids: Sequence[str] | None) -> list[tuple[IndexChunk, IndexDocument]]:
         """Chunk rows (in ``chunk_id`` order) paired with their document rows.
@@ -1077,6 +1405,11 @@ class SqliteSearchIndex:
                     func.count(), func.coalesce(func.sum(search_chunk_table.c.length), 0)
                 ).select_from(search_chunk_table)
             ).one()
+            structured_chunks, structured_length = connection.execute(
+                select(
+                    func.count(), func.coalesce(func.sum(search_structured_table.c.length), 0)
+                ).select_from(search_structured_table)
+            ).one()
             frequencies: dict[str, int] = {}
             for term in terms:
                 needle = f'"{term}":'
@@ -1085,10 +1418,15 @@ class SqliteSearchIndex:
                     .select_from(search_chunk_table)
                     .where(sa_text("instr(terms_json, :needle) > 0").bindparams(needle=needle))
                 ).scalar_one()
-                frequencies[term] = int(count or 0)
+                structured_count = connection.execute(
+                    select(func.count())
+                    .select_from(search_structured_table)
+                    .where(sa_text("instr(terms_json, :needle) > 0").bindparams(needle=needle))
+                ).scalar_one()
+                frequencies[term] = int(count or 0) + int(structured_count or 0)
         return IndexStatistics(
-            total_chunks=int(total_chunks or 0),
-            total_length=int(total_length or 0),
+            total_chunks=int(total_chunks or 0) + int(structured_chunks or 0),
+            total_length=int(total_length or 0) + int(structured_length or 0),
             document_frequency=frequencies,
         )
 
@@ -1122,6 +1460,7 @@ class SqliteSearchIndex:
             versions=counts["versions"],
             chunks=counts["chunks"],
             knowledge_chunks=counts["knowledge_chunks"],
+            structured_records=self._structured_counts()["records"],
             fts_available=self.fts_available(),
             schema_version=_int(self._meta("schema_version", str(SCHEMA_VERSION))),
             built_at=self._meta("built_at"),
@@ -1142,12 +1481,24 @@ class SqliteSearchIndex:
                     str(row[0])
                     for row in connection.execute(select(search_document_table.c.version_id)).all()
                 }
+                stored_records = {
+                    str(row[0])
+                    for row in connection.execute(select(search_structured_table.c.record_id)).all()
+                }
             for version_id in stored:
                 if version_id not in known:
                     stats.orphaned += 1
                 elif version_id not in current:
                     stats.stale_versions += 1
             stats.missing_versions = len(current - stored)
+            searchable = structured_searchable_ids(repository.session)
+            rows = structured_row_ids(repository.session)
+            for record_id in stored_records:
+                if record_id not in rows:
+                    stats.structured_orphaned += 1
+                elif record_id not in searchable:
+                    stats.structured_stale += 1
+            stats.structured_missing = len(searchable - stored_records)
         return stats
 
     def close(self) -> None:

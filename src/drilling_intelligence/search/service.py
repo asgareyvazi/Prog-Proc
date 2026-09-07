@@ -44,8 +44,10 @@ from .index import (
     SearchIndex,
     SearchRequest,
     SqliteSearchIndex,
+    StructuredHit,
     chunk_set_for,
 )
+from .structured import KIND_STRUCTURED
 from .tokenize import highlight
 
 log = get_logger("search.service")
@@ -86,6 +88,11 @@ class SearchResult:
     matched_terms: tuple[str, ...] = ()
     term_scores: dict[str, float] = field(default_factory=dict)
     verification: dict[str, Any] | None = None
+    #: Which source type produced this result: ``"document"`` (a chunk of extracted text) or
+    #: ``"structured"`` (an authoritative operational/domain record).  The two are ranked in one
+    #: list, so a result must say which one it is rather than leave a caller to guess from the
+    #: shape of its fields.
+    source_type: str = "document"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +101,7 @@ class SearchResult:
             "version_number": self.version_number,
             "chunk_id": self.chunk_id,
             "kind": self.kind,
+            "source_type": self.source_type,
             "score": self.score,
             "snippet": self.snippet,
             "highlights": [list(span) for span in self.highlights],
@@ -299,6 +307,9 @@ class SearchService:
         date_to: str | None = None,
         kinds: Sequence[str] | None = None,
         include_superseded: bool = False,
+        record_types: Sequence[str] | None = None,
+        field_id: str | None = None,
+        category: str | None = None,
         limit: int | None = None,
         verify: bool = False,
     ) -> SearchResponse:
@@ -321,6 +332,9 @@ class SearchService:
             date_to=_date(date_to),
             kinds=tuple(kinds) if kinds else None,
             include_superseded=include_superseded,
+            record_types=tuple(record_types) if record_types else None,
+            field_id=field_id,
+            category=category,
         )
         request = SearchRequest(
             query=str(query or ""), filters=filters, limit=int(limit or self.default_limit)
@@ -355,7 +369,19 @@ class SearchService:
 
     # -- presentation of one hit -------------------------------------------
     def _result(
-        self, hit: Hit, meta: Mapping[str, Any], repository: DocumentRepository, *, verify: bool
+        self,
+        hit: Hit | StructuredHit,
+        meta: Mapping[str, Any],
+        repository: DocumentRepository,
+        *,
+        verify: bool,
+    ) -> SearchResult:
+        if isinstance(hit, StructuredHit):
+            return self._structured_result(hit, verify=verify)
+        return self._document_result(hit, repository=repository, verify=verify)
+
+    def _document_result(
+        self, hit: Hit, repository: DocumentRepository, *, verify: bool
     ) -> SearchResult:
         chunk, document = hit.chunk, hit.document
         # Highlight what the query actually matched; on the broadened fallback that can be a
@@ -427,6 +453,69 @@ class SearchService:
         if verify:
             return _with_verification(result, hit, repository=repository)
         return result
+
+    def _structured_result(self, hit: StructuredHit, *, verify: bool) -> SearchResult:
+        """Present one structured record, distinctly from a document chunk.
+
+        A structured result is *not* a quotation from a file: it is the record's own row, cited by
+        its own identity (``structured:<type>:<id>``).  It carries no page, sheet, revision or
+        filename, so the document-shaped fields are left empty and the distinction is explicit in
+        ``source_type`` and ``kind`` instead of being papered over with invented values.  The
+        provenance the projection kept - the row's own ``document_id``/``document_version_id``
+        links, when it was promoted from a report - stays in ``provenance``, so the trail from a
+        record back to the file that asserted it is still reachable.
+        """
+        record = hit.record
+        snippet, spans = highlight(
+            record.text, list(hit.matched_terms), context=self.snippet_context
+        )
+        provenance = dict(record.provenance or {})
+        document_id = str(record.provenance.get("document_id") or "") if record.provenance else ""
+        return SearchResult(
+            document_id=document_id,
+            version_id="",
+            version_number=0,
+            chunk_id=record.record_id,
+            kind=KIND_STRUCTURED,
+            source_type="structured",
+            score=hit.score,
+            snippet=snippet,
+            highlights=tuple(spans),
+            text=record.text,
+            page=None,
+            sheet="",
+            locator_ref=record.locator_ref or f"{record.record_type} {record.source_id}",
+            provenance=provenance,
+            citation=record.locator_ref or f"{record.record_type} {record.source_id}",
+            cited=True,
+            verbatim=True,
+            metadata={
+                "record_id": record.record_id,
+                "record_type": record.record_type,
+                "source_id": record.source_id,
+                "title": record.title,
+                "category": record.category,
+                "status": record.status,
+                "record_date": record.record_date,
+                "well_id": record.well_id,
+                "well_name": record.well_name,
+                "project_id": record.project_id,
+                "project_name": record.project_name,
+                "field_id": record.field_id,
+                "company_id": record.company_id,
+                "company_name": record.company_name,
+            },
+            matched_terms=tuple(hit.matched_terms),
+            term_scores=dict(hit.term_scores),
+            verification=(
+                {
+                    "status": "NOT_APPLICABLE",
+                    "detail": "a structured record cites its own row, not a file",
+                }
+                if verify
+                else None
+            ),
+        )
 
 
 def _is_verbatim(text: str, excerpt: str) -> bool:

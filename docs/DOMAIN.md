@@ -170,25 +170,34 @@ belong in a review screen rather than behind a flag a shell history can re-run.
 
 ## How this coexists with search and knowledge
 
-The search index carries two kinds of chunk - document text (and diagnostics) and knowledge facts - and
-that is still the whole index. Records are **not** chunked into FTS in this phase, deliberately:
+The search index carries three kinds of unit, all ranked through the one BM25 path in
+`search/ranking.py` and rebuilt/pruned by the one sidecar:
 
-- a record row's text is one or two sentences of the source's own wording, already reachable by an
-  indexed document chunk that cites the same version, so the index would hold a third copy of a sentence
-  with a third lifecycle of its own;
-- the useful half of a record - its hours, its category, its well, its status - is filterable in SQL today
-  and would have to be re-rendered into text that goes stale when `set_record_status` moves a row to
-  `CONFIRMED`. ADR-0008's rule for facts is the same one: lifecycle state stays out of indexed text;
-- a record's `provenance` list and its `document_version_id` are what a search hit cites, so the two
-  layers meet at a locator (`Summary!B9`, `page 12`) rather than at a duplicated row.
+- **document chunks** — extracted text (and diagnostics), cited to a page/sheet/cell;
+- **knowledge-fact chunks** — the facts derived from those artefacts, weighted above the prose they came
+  from;
+- **structured records** — one unit per authoritative operational/domain row (`problem_definition`,
+  `problem_occurrence`, `npt_record`, `well_event`, `lesson_learned`, `recommendation`), projected by
+  `search/structured.py` into the same sidecar under a deterministic identity `structured:<type>:<row id>`.
 
-So: search answers "where is this written, and in which file", knowledge answers "what does that source
-assert about this well", and the domain answers "what happened, how long it took, what it cost and what was
-learnt". A `drillintel search "stuck pipe"` hit and a `drillintel records list --table npt` row are
-expected to point at the same version; neither is a copy of the other, and `SourceLocator.ref` is shared by
-both. If record chunks are ever added, they go through the one chunker in
-`extraction/normalized.search_units`'s module and the index sidecar's rebuild - not through a new query
-path in the CLI.
+The structured projection is the same idea as the document half, stated once: the database is the
+authority, the sidecar is disposable, and a record's text is its own deterministic fields — never a copy of
+the source document's sentence. A promoted `NptRecord` whose wording is also reachable as an indexed
+document chunk is *not* re-chunked as prose; it is one record row whose provenance keeps the
+`document_id`/`document_version_id` links, so the two source types meet at a locator rather than at a
+duplicated row. Evidence multiplicity is not record multiplicity: a row with three evidence relationships
+is still one searchable record, and the evidence stays in its provenance.
+
+Lifecycle is respected at build time, by the domain's own rules, and lifecycle state stays out of indexed
+text (ADR-0008): a rejected `NptRecord`/`WellEvent`/`ProblemOccurrence`, a superseded lesson revision, or
+a superseded recommendation leaves the searchable projection the way a superseded document version does,
+while its row remains in the registry — reachable by id, but not presented as "what to act on".
+
+So: search answers "where is this written, in which file — or which record says it", knowledge answers
+"what does that source assert about this well", and the domain answers "what happened, how long it took,
+what it cost and what was learnt". A `drillintel search "stuck pipe"` hit and a
+`drillintel records list --table npt` row are expected to point at the same version; neither is a copy of
+the other, and `SourceLocator.ref` is shared by both.
 
 ## Names in the schema, where they differ from the sketch
 

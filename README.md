@@ -30,7 +30,7 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Field intelligence: derived timelines, NPT/problem rollups, offset candidates, recurring patterns with staleness checks | **implemented, tested on a two-well golden field** (`docs/DOMAIN.md`) |
 | Domain CLI: `records`, `timeline`, `fields`, `patterns`, `lessons`, and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
 | Skills, AI providers, desktop UI, and engineering-calculation *engines* | planned — the record that stores a result exists and cites its evidence; nothing in this repository computes one, and `docs/DECISIONS.md` ADR-0012 keeps that split |
-| Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards, records indexed into search | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
+| Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
 Nothing here needs a GPU, a model download, or a server. `mineru` (for scanned pages)
 and Ollama (for optional AI) are both opt-in and absent by default.
@@ -87,7 +87,7 @@ src/drilling_intelligence/
   documents/      registry (identity, versions, revisions), repository, versioning
   knowledge/      facts and predicates, entity references, the item/edge/conflict repository,
                   derivation from stored artefacts, conflict detection and resolution
-  search/         chunking (documents and facts), index, ranking, the query service
+  search/         chunking (documents and facts), the structured record projection, index, ranking, the query service
   wells/          workspace and well/project/company repositories
   operations/     the operational spine: reports, operations, events, NPT, problems; the promoter
   engineering/    programmes and targets, procedures, plan-vs-actual, risks, costs
@@ -175,6 +175,26 @@ basis it was stated on, and the tool tells you which row to open rather than smo
 `docs/DOMAIN.md` maps the tables, the promotion rules, the CLI surface and — most of it — the things this
 layer refuses to compute: no invented risk scores, no inferred root causes, no currency conversion, no
 stored timeline, no model in the numeric path.
+
+## Search spans documents, facts and structured records
+
+`drillintel search` is the one boundary for everything the platform has indexed, and a single query can
+return three source types in one ranked list:
+
+- **document** — a chunk of extracted text, cited to a page/sheet/cell and (optionally) re-verified against
+  the file it came from;
+- **fact** — a knowledge assertion rendered as a `knowledge_fact` chunk, weighted above the prose it was
+  derived from;
+- **structured** — one authoritative operational/domain record (`problem_definition`, `problem_occurrence`,
+  `npt_record`, `well_event`, `lesson_learned`, `recommendation`), cited to its own row id
+  (`structured:<type>:<id>`) rather than to a page.
+
+Each result says which of the three it is (`source_type`), and the structured half carries its own
+filters — `record_types`, `field`, and a problem/category token — alongside the well/project/date filters
+the document half already understood. The database stays authoritative and the sidecar stays disposable:
+structured rows are projected into the same index, rebuilt and pruned by the same `rebuild`/`prune` passes,
+and a record that is rejected or superseded leaves the searchable state exactly as a superseded document
+version does. Nothing in the projection is ever written back to the domain tables.
 
 ## Conventions this project keeps
 

@@ -198,11 +198,15 @@ def phrase_join(phrases: Iterable[str]) -> str:
 
 
 def _document_id(row: Any) -> str:
-    return str(
-        getattr(row, "document_id", "")
-        or (row.get("document_id") if isinstance(row, Mapping) else "")
-        or ""
-    )
+    value = getattr(row, "document_id", "") or ""
+    if not value:
+        # Structured records carry a ``record_id`` instead of a ``document_id``: the tie-break is
+        # still "lowest authoritative identity first", which keeps a mixed document + structured
+        # result deterministic regardless of the order the two sources were indexed in.
+        value = getattr(row, "record_id", "") or ""
+    if not value and isinstance(row, Mapping):
+        value = row.get("document_id") or row.get("record_id") or ""
+    return str(value)
 
 
 def _chunk_index(row: Any) -> int:

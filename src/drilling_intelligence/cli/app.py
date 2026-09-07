@@ -364,6 +364,21 @@ def command_search(args: argparse.Namespace) -> int:
             header += "  [candidate cap reached: more matched than were scored]"
         lines = [header]
         for number, hit in enumerate(response.results, start=1):
+            if hit.source_type == "structured":
+                lines.append(
+                    f"{number:>3}. {hit.metadata.get('title') or hit.metadata.get('record_id')}  "
+                    f"({hit.metadata.get('record_type')}, score {hit.score:.3f})"
+                )
+                for row in _wrapped(hit.snippet, 96):
+                    lines.append(f"     {row}")
+                where = hit.locator_ref or "structured record"
+                label = f"{hit.metadata.get('record_type', '')}"
+                if hit.metadata.get("well_name"):
+                    label += f", well {hit.metadata['well_name']}"
+                if hit.metadata.get("record_date"):
+                    label += f", dated {hit.metadata['record_date'][:10]}"
+                lines.append(f"     at {where}   [{label}]")
+                continue
             lines.append(
                 f"{number:>3}. {hit.metadata['filename']}  ({hit.kind}, score {hit.score:.3f}, revision {hit.version_number})"
             )
