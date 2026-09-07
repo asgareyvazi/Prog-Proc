@@ -1368,12 +1368,13 @@ class ProgramTarget(Base, TimestampMixin):
 
 
 class RiskRecord(Base, TimestampMixin):
-    """A risk, with its score kept as the two axes plus the product the matrix defines.
+    """A risk, with its assessment kept exactly as the source stated it.
 
-    ``probability`` and ``impact`` are 1-5 by the platform's own matrix, and ``severity`` is written
-    by :func:`drilling_intelligence.engineering.risk.score_risk` and nowhere else.  A row with one
-    axis missing has no severity - a half-scored risk presented as a whole one is how a "medium"
-    ends up in a report nobody can defend.
+    ``probability`` and ``impact`` are bounded 1-5 by a check constraint, and ``severity`` /
+    ``severity_band`` are stored as the source wrote them - nothing in this layer computes a score
+    (ADR-0009: no scoring methodology was agreed, so none was smuggled in).  A row with one axis
+    missing has no severity, and a half-scored risk is left half-scored rather than completed, so a
+    "medium" that nobody actually assigned never ends up in a report nobody can defend.
     """
 
     __tablename__ = "risk_record"
@@ -1413,9 +1414,9 @@ class RiskRecord(Base, TimestampMixin):
     depth_to_unit: Mapped[str] = mapped_column(String(16), default="m")
     probability: Mapped[int | None] = mapped_column(Integer)
     impact: Mapped[int | None] = mapped_column(Integer)
-    #: ``probability * impact`` on the 5x5 matrix, written by the deterministic scorer only.
+    #: The severity as the source stated it - stored, never recomputed from the two axes.
     severity: Mapped[int | None] = mapped_column(Integer)
-    #: The band the matrix calls that score ("LOW"/"MEDIUM"/"HIGH"/"CRITICAL").
+    #: The band word as the source wrote it ("LOW"/"MEDIUM"/"HIGH"/"CRITICAL"), when it wrote one.
     severity_band: Mapped[str | None] = mapped_column(String(16))
     #: The scale the score is on, because a 5x5 12 is not a 4x4 12.
     scale: Mapped[str] = mapped_column(String(24), default="MATRIX_5X5", nullable=False)

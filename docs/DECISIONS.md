@@ -34,14 +34,15 @@ breaks on the floor (it did, and `database/session.py` now closes the cursor by 
 **Status:** accepted (2026-09-05)
 
 **Context.** Everything must work offline on a rig laptop with a folder of PDFs, XLSX and
-DOCX files, no server, and no installer for a database daemon. Retrieval needs FTS5 and
-vector search.
+DOCX files, no server, and no installer for a database daemon. Retrieval needs ranked
+full-text search (with vector search as a deferred, optional extension).
 
 **Decision.** One SQLite file per workspace under `.drillintel/database/` is the source of
 truth: documents, versions, extractions, provenance, knowledge, skills, calculations and
 the audit trail. The search index is a **separate** SQLite file (`index/search_index.db`,
-FTS5 plus `sqlite-vec`) that is rebuilt from the record database and therefore carries no
-migrations and no authority.
+BM25-ranked, with FTS5 as an optional candidate-acceleration pass when the SQLite build
+provides it; vector search via `sqlite-vec` is not part of the index) that is rebuilt from
+the record database and therefore carries no migrations and no authority.
 
 **Consequences.** Backing up a workspace is copying a directory. A corrupt or stale index
 costs a rebuild, not data. WAL mode and `PRAGMA foreign_keys=ON` are set per connection.

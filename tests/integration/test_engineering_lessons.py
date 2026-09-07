@@ -446,6 +446,22 @@ def test_a_band_word_is_stored_and_an_unknown_one_is_refused(session, hierarchy)
     assert [row.id for row in listed] == [unscored.id]
 
 
+def test_a_stated_scale_is_never_silently_replaced(session, hierarchy) -> None:
+    """The grid a risk's numbers belong to travels with the row, and is never defaulted away."""
+    repository = RiskRepository(session)
+    defaulted = repository.create_risk(title="default grid", severity=12, severity_band="high")
+    assert defaulted.scale == DEFAULT_SCALE, (
+        "no grid stated means the platform's own, and it says so"
+    )
+    custom = repository.create_risk(
+        title="4x4 grid", probability=4, impact=3, severity=12, scale="MATRIX_4X4"
+    )
+    assert custom.scale == "MATRIX_4X4", "a stated scale is preserved, not normalised away"
+    # Updating a risk never touches the scale unless the caller asks it to.
+    repository.update_risk(custom.id, owner="d.okafor")
+    assert custom.scale == "MATRIX_4X4"
+
+
 def test_the_register_counts_what_is_open_and_says_what_is_unscored(session, hierarchy) -> None:
     repository = RiskRepository(session)
     repository.create_risk(
@@ -865,6 +881,53 @@ def test_a_recommendation_is_proposed_and_only_a_person_decides_it(session, hier
     assert counts["without_evidence"] == 0, "the lesson was captured with a provenance entry"
     assert counts["practices"] == 0
     assert counts["recommendations_open"] == 0, "both recommendations were decided"
+
+
+def test_a_recommendation_points_at_the_lesson_revision_it_was_derived_from(
+    session, hierarchy
+) -> None:
+    """L1 -> R1, L1r2 -> R2: the link is a plain foreign key to the *revision*, never re-pointed.
+
+    A recommendation records what a specific revision of a lesson said; when the lesson is revised, the
+    older recommendation must keep pointing at the revision it was derived from, and a fresh
+    recommendation must point at the current one.  Neither is silently migrated.
+    """
+    repository = LessonRepository(session)
+    lesson = repository.capture(
+        lesson="Trip on the first washout signature.", field_id=hierarchy["field"].id
+    )
+    repository.update_lesson(lesson.id, provenance=_provenance())
+    repository.approve(lesson.id, by="d.okafor")
+
+    recommendation = repository.propose_recommendation(
+        statement="Add a washout check to the pre-trip checklist.",
+        reason="one washout below the motor",
+        lesson_id=lesson.id,
+        field_id=hierarchy["field"].id,
+    )
+    assert recommendation.lesson_id == lesson.id
+
+    revised = repository.revise(
+        lesson.id,
+        by="k.adeyemi",
+        changes={"lesson": "Trip on the first washout signature, full stop."},
+    )
+    assert revised.revision == 2 and revised.is_current is True
+    assert lesson.is_current is False
+
+    newer = repository.propose_recommendation(
+        statement="Add a washout check, and log the torque response.",
+        reason="two washouts below the motor",
+        lesson_id=revised.id,
+        field_id=hierarchy["field"].id,
+    )
+    assert newer.lesson_id == revised.id, "the new advice cites the current revision"
+    assert recommendation.lesson_id == lesson.id, (
+        "the old advice keeps citing the revision it was derived from, not the one that replaced it"
+    )
+    # Current-read semantics are explicit: ask for the revision, get its recommendations only.
+    assert repository.list_recommendations(lesson_id=revised.id) == [newer]
+    assert repository.list_recommendations(lesson_id=lesson.id) == [recommendation]
 
 
 def test_two_current_revisions_cannot_be_written(db, session, hierarchy) -> None:

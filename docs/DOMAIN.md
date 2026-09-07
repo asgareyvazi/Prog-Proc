@@ -62,7 +62,7 @@ Layer owns.
 
 Things this layer does *not* do, each because doing it would make a number unaccountable:
 
-- **It does not compute a risk score.** `likelihood`, `consequence` and `severity` are preserved when a
+- **It does not compute a risk score.** `probability`, `impact` and `severity` are preserved when a
   source states them, with the scale they were stated on (`risk_record.scale`, default `MATRIX_5X5`);
   when they are absent they stay `NULL`. There is no scoring methodology in this repository to invent one
   with, and a score that a platform derived from a 5×5 nobody agreed is the kind of number that ends up

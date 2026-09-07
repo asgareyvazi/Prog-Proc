@@ -239,3 +239,86 @@ def test_a_cost_row_needs_a_description_and_a_known_scope(session) -> None:
         repository.get("cost-nope")
     with pytest.raises(ValidationError, match="unknown cost scope"):
         repository.summary(rig_id="ncf-1")
+
+
+def test_a_category_total_never_crosses_currencies(session) -> None:
+    """The one rule the whole module states: figures in different currencies are never added.
+
+    ``by_currency`` always split them; the category grouping is the same promise one level down.  Two
+    lines in the same category, one in USD and one in NOK, must not come back as a single ``planned``
+    number - there is no rate in the database to justify the sum.
+    """
+    repository = CostRepository(session)
+    repository.record_item(description="day rate", category="drilling", planned_value=1000.0)
+    repository.record_item(
+        description="offshore allowance",
+        category="drilling",
+        planned_value=9000.0,
+        planned_unit="NOK",
+    )
+    session.flush()
+    [entry] = repository.summary()["by_category"].values()
+    assert entry["lines"] == 2
+    assert entry["currencies"] == ["NOK", "USD"]
+    assert entry["mixed_currency"] is True
+    assert entry["by_currency"]["USD"]["planned"] == 1000.0
+    assert entry["by_currency"]["NOK"]["planned"] == 9000.0
+    # The mix is reported as a question, never resolved into one number.
+    assert "planned" not in entry, "a cross-currency sum must not be published as a total"
+
+
+def test_the_cost_adversary_matrix(session) -> None:
+    """Planned/actual/both/neither, zero, credit, and the identity rules around re-imports."""
+    repository = CostRepository(session)
+    both = repository.record_item(description="both sides", planned_value=100.0, actual_value=110.0)
+    planned_only = repository.record_item(description="planned only", planned_value=50.0)
+    actual_only = repository.record_item(description="actual only", actual_value=25.0)
+    neither = repository.record_item(description="neither side")
+    zero = repository.record_item(description="a stated zero", planned_value=0.0)
+    credit = repository.record_item(description="a credit", planned_value=-500.0)
+    session.flush()
+
+    summary = repository.summary()
+    assert summary["items"] == 6
+    assert summary["priced"] == 5 and summary["unpriced"] == 1
+    usd = summary["by_currency"]["USD"]
+    assert usd["planned"] == round(100.0 + 50.0 + 0.0 - 500.0, 4)
+    assert usd["actual"] == 110.0 + 25.0
+    assert usd["planned_lines"] == 4 and usd["actual_lines"] == 2
+    # Both sides present, so a variance is computed; per-currency only, so no rate is implied.
+    assert usd["variance"] == round((110.0 + 25.0) - (100.0 + 50.0 + 0.0 - 500.0), 4)
+
+    # A value of zero is a stated number, not a blank: it is priced and it does not vanish.
+    assert zero[0].planned_value == 0.0
+    # A credit is a negative number and is preserved as such, never clamped to zero.
+    assert credit[0].planned_value == -500.0
+
+    # A line with only a plan has no actual side, and its variance is "not comparable", not zero.
+    assert planned_only[0].actual_value is None
+    assert actual_only[0].planned_value is None
+    assert neither[0].planned_value is None and neither[0].actual_value is None
+
+    # Re-importing the same line is a no-op; changing a value is a *new* line, not an edit.
+    again, created_again = repository.record_item(
+        description="both sides re-worded", planned_value=100.0, actual_value=110.0
+    )
+    assert not created_again and again.id == both[0].id
+    changed, created_changed = repository.record_item(
+        description="both sides", planned_value=101.0, actual_value=110.0
+    )
+    assert created_changed and changed.id != both[0].id
+    assert len(session.query(CostItem).all()) == 7
+
+
+def test_a_rate_is_not_a_currency_and_is_never_folded_into_one(session) -> None:
+    """``USD/t`` is a rate; it must group on its own, never become ``USD`` and be added to dollars."""
+    repository = CostRepository(session)
+    repository.record_item(description="day rate", planned_value=1000.0, planned_unit="USD")
+    repository.record_item(description="per-tonne", planned_value=12.0, planned_unit="USD/t")
+    session.flush()
+    summary = repository.summary()
+    assert summary["currencies"] == ["USD", "USD/T"]
+    assert summary["mixed_currency"] is True
+    assert summary["by_currency"]["USD"]["planned"] == 1000.0
+    assert summary["by_currency"]["USD/T"]["planned"] == 12.0
+    assert summary["by_currency"]["USD/T"]["actual_lines"] == 0

@@ -322,17 +322,22 @@ class CostRepository:
                 # than resolved because the answer - which currency the well was actually paid in - is not
                 # in this database.
                 mixed_lines += 1
+            # A category is grouped per currency too: two lines in the same category that were stated in
+            # different currencies must not be added together any more than two lines in different
+            # categories would be, because there is still no rate in the database to justify the sum.
             entry = by_category.setdefault(
                 str(row.category or "other"),
-                {"lines": 0, "planned": 0.0, "actual": 0.0, "currencies": set()},
+                {"lines": 0, "by_currency": {}},
             )
             entry["lines"] += 1
-            entry["currencies"].add(planned_currency)
-            entry["currencies"].add(actual_currency)
-            if row.planned_value is not None:
-                entry["planned"] = round(entry["planned"] + float(row.planned_value), 4)
-            if row.actual_value is not None:
-                entry["actual"] = round(entry["actual"] + float(row.actual_value), 4)
+            for currency, value, name in (
+                (planned_currency, row.planned_value, "planned"),
+                (actual_currency, row.actual_value, "actual"),
+            ):
+                if value is None:
+                    continue
+                bucket = entry["by_currency"].setdefault(currency, {"planned": 0.0, "actual": 0.0})
+                bucket[name] = round(float(bucket[name]) + float(value), 4)
         priced = sum(
             1 for row in rows if row.planned_value is not None or row.actual_value is not None
         )
@@ -361,9 +366,12 @@ class CostRepository:
             "by_category": {
                 key: {
                     "lines": entry["lines"],
-                    "planned": entry["planned"],
-                    "actual": entry["actual"],
-                    "currencies": sorted(entry["currencies"]),
+                    "currencies": sorted(entry["by_currency"]),
+                    "mixed_currency": len(entry["by_currency"]) > 1,
+                    "by_currency": {
+                        currency: {"planned": bucket["planned"], "actual": bucket["actual"]}
+                        for currency, bucket in sorted(entry["by_currency"].items())
+                    },
                 }
                 for key, entry in sorted(
                     by_category.items(), key=lambda item: (-item[1]["lines"], item[0])
