@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+venv*/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local runtime state: never commit real well data or databases
+/data/
+/cache/
+/logs/
+*.db
+*.db-wal
+*.db-shm
+workspace/.drillintel/
+.drillintel/
+
+# MinerU / extraction artefacts produced during evaluation runs
+/var/
+*.pdf.txt
+experiments/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
