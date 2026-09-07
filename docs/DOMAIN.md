@@ -42,7 +42,7 @@ Three kinds of claim live side by side and are not interchangeable:
 
 ## What the domain adds to the schema, and what it refuses to
 
-Two migrations carry the domain. **0004** is the shape: sixteen tables, their indexes, four partial unique
+Three migrations carry the domain. **0004** is the shape: sixteen tables, their indexes, four partial unique
 indexes carrying the "one current revision per code" rule, and no backfill of anything - a workspace that
 has documents but no promoted records upgrades into sixteen empty tables and stays exactly as readable as
 it was. **0005** is a correction found while auditing the layer against its own brief: `calculation` and
@@ -50,8 +50,10 @@ it was. **0005** is a correction found while auditing the layer against its own 
 evidence convention, so it could not record where its numbers came from. 0005 adds `origin`, `created_by`,
 `identity_key`, `document_id`, `document_version_id` and `attributes` to `calculation`, plus the unique
 index the "re-run is not a second copy" rule needs, and backfills `origin = 'MANUAL'` on every existing row
-- the honest statement that nobody has seen its source. Neither migration renames or drops a column, and
-neither touches a table the Knowledge Layer owns.
+- the honest statement that nobody has seen its source. **0006** restores the legacy document hash index
+that the 0002 SQLite batch rebuild omitted, so historical downgrade paths can safely remove it; it is
+otherwise a no-op for the domain schema. No migration renames or drops a column, and none touches a table
+the Knowledge Layer owns.
 
 Things this layer does *not* do, each because doing it would make a number unaccountable:
 

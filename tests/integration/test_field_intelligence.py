@@ -416,6 +416,25 @@ def test_a_recurring_pattern_needs_more_than_one_well_and_carries_its_query(
         assert len(find_recurring(session, field_id=field, min_occurrences=1, limit=1)) == 1
 
 
+def test_a_bounded_pattern_keeps_event_and_npt_rollups_inside_the_window(field_workspace) -> None:
+    with field_workspace.database.session() as session:
+        field = field_id(field_workspace)
+        candidate = find_recurring(
+            session,
+            field_id=field,
+            since=date(2025, 6, 13),
+            until=date(2025, 6, 13),
+            min_occurrences=1,
+            min_wells=1,
+        )[0]
+        assert candidate["occurrence_count"] == 1
+        assert candidate["event_count"] == 1
+        assert candidate["total_npt_hours"] == 6.5
+        row = snapshot(session, candidate, link_evidence=False)
+        assert len(row.evidence) == 1
+        assert row.evidence[0]["occurred_at"].startswith("2025-06-13")
+
+
 def test_a_snapshot_is_taken_once_and_refreshed_rather_than_duplicated(field_workspace) -> None:
     with field_workspace.database.session() as session:
         field = field_id(field_workspace)

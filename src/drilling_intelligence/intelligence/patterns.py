@@ -25,7 +25,7 @@ The signature is a digest of the parameters, which is what makes re-running the 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -151,6 +151,16 @@ def find_recurring(
         )
         .group_by(ProblemOccurrence.problem_type, ProblemOccurrence.hole_size_in)
     )
+    # The event rollup is a measurement of the same filtered occurrence set.  Without
+    # these predicates a bounded query would report occurrence_count for the window but
+    # event_count for the entire field, which is especially misleading when one event has
+    # multiple problem rows.
+    if since is not None:
+        event_statement = event_statement.where(ProblemOccurrence.occurred_at >= _boundary(since))
+    if until is not None:
+        event_statement = event_statement.where(
+            ProblemOccurrence.occurred_at <= _boundary(until, end=True)
+        )
     events = {
         (str(type_value or ""), None if hole is None else round(float(hole), 4)): int(count)
         for type_value, hole, count in session.execute(event_statement)
@@ -176,6 +186,8 @@ def find_recurring(
                     project_id=project_id,
                     problem_type=str(type_value or ""),
                     hole_size_in=hole,
+                    since=since,
+                    until=until,
                 ),
                 "query": {
                     "field_id": field_id or None,
@@ -203,6 +215,9 @@ def find_recurring(
 def _boundary(value: object, *, end: bool = False) -> datetime:
     if isinstance(value, datetime):
         return value
+    if isinstance(value, date):
+        parsed = datetime.combine(value, datetime.min.time())
+        return parsed.replace(hour=23, minute=59, second=59) if end else parsed
     if isinstance(value, str):
         text = value.strip()
         if len(text) == 10:  # a date, as the CLI accepts them
@@ -227,6 +242,8 @@ def _hours(
     project_id: str,
     problem_type: str,
     hole_size_in: object,
+    since: object = None,
+    until: object = None,
 ) -> float | None:
     """The NPT hours the problems of one grouping cost, summed where the rows state a duration.
 
@@ -251,6 +268,10 @@ def _hours(
         statement = statement.where(hours.c.problem_type == problem_type)
     if hole_size_in is not None:
         statement = statement.where(hours.c.hole_size_in == float(hole_size_in))
+    if since is not None:
+        statement = statement.where(hours.c.occurred_at >= _boundary(since))
+    if until is not None:
+        statement = statement.where(hours.c.occurred_at <= _boundary(until, end=True))
     value = session.execute(statement).scalar_one_or_none()
     return None if value is None else round(float(value), 4)
 
@@ -262,6 +283,8 @@ def evidence_for(
     project_id: str = "",
     problem_type: str = "",
     hole_size_in: object = None,
+    since: object = None,
+    until: object = None,
     limit: int = MAX_LINKED_EVIDENCE,
 ) -> list[dict[str, Any]]:
     """The problem rows behind a grouping, oldest first, with their well and date.
@@ -295,6 +318,10 @@ def evidence_for(
         statement = statement.where(ProblemOccurrence.problem_type == problem_type)
     if hole_size_in is not None:
         statement = statement.where(ProblemOccurrence.hole_size_in == float(hole_size_in))
+    if since is not None:
+        statement = statement.where(ProblemOccurrence.occurred_at >= _boundary(since))
+    if until is not None:
+        statement = statement.where(ProblemOccurrence.occurred_at <= _boundary(until, end=True))
     if clauses:
         statement = statement.where(or_(*clauses))
     return [
@@ -352,7 +379,11 @@ def snapshot(
     # The evidence is part of the measurement, not part of the graph: what the snapshot counted stays on
     # the row whether or not the caller also wants the edges written.
     entries = list(candidate.get("evidence") or []) or evidence_for(
-        session, limit=MAX_LINKED_EVIDENCE, **scope
+        session,
+        limit=MAX_LINKED_EVIDENCE,
+        since=parameters.get("since"),
+        until=parameters.get("until"),
+        **scope,
     )
     if row is None:
         row = FieldPattern(

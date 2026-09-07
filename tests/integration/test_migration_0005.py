@@ -403,7 +403,7 @@ def test_head_still_matches_the_models_and_the_knowledge_layer_is_intact(tmp_pat
             )
         status = upgrade(engine, "head")
         assert status.up_to_date and status.current == heads()[0], status.to_dict()
-        assert heads() == ["0005"], heads()
+        assert heads() == ["0006"], heads()
         assert schema_diff(engine) == {
             "missing_tables": [],
             "extra_tables": [],

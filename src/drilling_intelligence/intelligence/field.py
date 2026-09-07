@@ -63,6 +63,7 @@ def problem_hours() -> Any:
             ProblemOccurrence.well_id.label("well_id"),
             ProblemOccurrence.problem_type.label("problem_type"),
             ProblemOccurrence.hole_size_in.label("hole_size_in"),
+            ProblemOccurrence.occurred_at.label("occurred_at"),
             NptRecord.duration_hours.label("hours"),
         )
         .join(NptRecord, NptRecord.id == ProblemOccurrence.npt_id)
@@ -74,6 +75,7 @@ def problem_hours() -> Any:
             ProblemOccurrence.well_id,
             ProblemOccurrence.problem_type,
             ProblemOccurrence.hole_size_in,
+            ProblemOccurrence.occurred_at,
             NptRecord.duration_hours,
         )
         .join(NptRecord, NptRecord.event_id == ProblemOccurrence.event_id)

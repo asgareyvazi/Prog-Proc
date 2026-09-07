@@ -665,8 +665,10 @@ def downgrade() -> None:
     with op.batch_alter_table("document", schema=None) as batch_op:
         batch_op.drop_index("ix_document_well")
         batch_op.drop_index("ix_document_status")
-        batch_op.drop_index(batch_op.f("ix_document_sha256"))
         batch_op.drop_index("ix_document_classification")
+    # 0002's SQLite batch rebuild can legitimately leave this legacy index absent.
+    # Conditional SQL keeps downgrade safe for both pre- and post-0002 databases.
+    op.execute("DROP INDEX IF EXISTS ix_document_sha256")
 
     op.drop_table("document")
     with op.batch_alter_table("well", schema=None) as batch_op:
