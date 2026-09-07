@@ -58,6 +58,7 @@ from ..database.models import (
     Document,
     DocumentVersion,
     NptRecord,
+    ProblemDefinition,
     ProblemOccurrence,
     Well,
     WellEvent,
@@ -845,6 +846,40 @@ class OperationsRepository:
         return totals
 
     # -- problems -------------------------------------------------------------
+    def get_or_create_problem_definition(
+        self,
+        problem_type: str,
+        *,
+        name: str = "",
+        description: str | None = None,
+        provenance: Sequence[Mapping[str, Any]] | None = None,
+        origin: str = KnowledgeOrigin.MANUAL.value,
+        created_by: str = "system",
+    ) -> ProblemDefinition:
+        """Return the one reusable definition for a canonical problem token."""
+        match = match_problem(problem_type)
+        if not match.raw:
+            raise ValidationError("a problem definition needs a type")
+        token = match.token
+        row = self.session.scalar(
+            select(ProblemDefinition).where(ProblemDefinition.canonical_key == token)
+        )
+        if row is not None:
+            return row
+        row = ProblemDefinition(
+            id=new_id("pdef"),
+            canonical_key=token,
+            problem_type=token,
+            name=(name.strip() or token.replace("_", " ").title()),
+            description=description,
+            provenance=[dict(item) for item in provenance or ()] or None,
+            origin=str(getattr(origin, "value", origin)),
+            created_by=created_by,
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
     def record_problem(
         self,
         *,
@@ -896,9 +931,13 @@ class OperationsRepository:
                 "a problem needs a type or the source's own code",
                 hint="an empty problem row would be counted as a problem of no kind",
             )
+        definition = self.get_or_create_problem_definition(
+            match.token, provenance=provenance, origin=origin, created_by=created_by
+        )
         row = ProblemOccurrence(
             id=new_id("prob"),
             well_id=well.id,
+            problem_definition_id=definition.id,
             section_id=self._require_section(section_id, well_id=well.id) or None,
             operation_id=self._require_row(
                 WellOperation, operation_id, label="operation", well_id=well.id

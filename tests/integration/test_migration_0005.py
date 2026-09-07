@@ -144,11 +144,11 @@ def test_the_upgrade_adds_the_columns_and_leaves_the_rows_alone(tmp_path) -> Non
             row["document_id"] is None and row["document_version_id"] is None for row in rows
         ), "no citation is invented for a row that never had one"
         assert schema_diff(engine) == {
-            "missing_tables": [],
+            "missing_tables": ["problem_definition"],
             "extra_tables": [],
-            "missing_columns": [],
+            "missing_columns": ["problem_occurrence.problem_definition_id"],
             "extra_columns": [],
-        }, "the migrated schema must match the models exactly"
+        }, "0005 is intentionally before the problem-definition migration"
     finally:
         engine.dispose()
 
@@ -252,7 +252,7 @@ def test_a_dangling_citation_is_reported_on_a_migrated_file(tmp_path) -> None:
         build_legacy_database(engine)
         add_calculation(engine, "calc-no-evidence")
         add_calculation(engine, "calc-bad-version")
-        upgrade(engine, "0005")
+        upgrade(engine, "head")
         with engine.begin() as connection:
             connection.execute(
                 text("update calculation set origin = 'DERIVED' where id = 'calc-no-evidence'")
@@ -306,16 +306,19 @@ def test_the_downgrade_is_the_exact_inverse(tmp_path) -> None:
         assert snapshot(engine) == before, "downgrading the schema must not downgrade the data"
         diff = schema_diff(engine)
         assert sorted(diff["missing_columns"]) == sorted(
-            f"calculation.{column}" for column in ADDED_COLUMNS
+            [
+                *(f"calculation.{column}" for column in ADDED_COLUMNS),
+                "problem_occurrence.problem_definition_id",
+            ]
         ), diff
 
         again = upgrade(engine, "0005")
         assert again.mode == "migrated" and again.current == "0005", again.to_dict()
         assert snapshot(engine) == before
         assert schema_diff(engine) == {
-            "missing_tables": [],
+            "missing_tables": ["problem_definition"],
             "extra_tables": [],
-            "missing_columns": [],
+            "missing_columns": ["problem_occurrence.problem_definition_id"],
             "extra_columns": [],
         }
     finally:
@@ -403,7 +406,7 @@ def test_head_still_matches_the_models_and_the_knowledge_layer_is_intact(tmp_pat
             )
         status = upgrade(engine, "head")
         assert status.up_to_date and status.current == heads()[0], status.to_dict()
-        assert heads() == ["0006"], heads()
+        assert heads() == ["0007"], heads()
         assert schema_diff(engine) == {
             "missing_tables": [],
             "extra_tables": [],

@@ -25,6 +25,7 @@ from drilling_intelligence.database.serialize import record_to_dict
 from drilling_intelligence.engineering.repository import EngineeringRepository
 from drilling_intelligence.engineering.risk import DEFAULT_SCALE, RiskRepository
 from drilling_intelligence.lessons.repository import LessonRepository
+from drilling_intelligence.operations.repository import OperationsRepository
 from drilling_intelligence.wells.repository import WellRepository
 
 
@@ -491,6 +492,26 @@ def test_the_register_counts_what_is_open_and_says_what_is_unscored(session, hie
     assert closed.id in {row.id for row in repository.list_risks(field_id=hierarchy["field"].id)}
 
 
+def test_problem_definitions_are_reused_and_occurrences_link_to_them(session, hierarchy) -> None:
+    repository = OperationsRepository(session)
+    first = repository.get_or_create_problem_definition(" STUCK PIPE ")
+    second = repository.get_or_create_problem_definition("stuck_pipe")
+    assert first.id == second.id
+    one = repository.record_problem(
+        well_id=hierarchy["well_a"].id,
+        problem_type="STUCK PIPE",
+        identity_key="problem-one",
+    )
+    two = repository.record_problem(
+        well_id=hierarchy["well_b"].id,
+        problem_type="stuck_pipe",
+        identity_key="problem-two",
+    )
+    assert one.problem_definition_id == first.id
+    assert two.problem_definition_id == first.id
+    assert one.id != two.id
+
+
 def test_risk_evidence_and_control_edges_are_real(session, hierarchy) -> None:
     from datetime import UTC, datetime
 
@@ -500,6 +521,7 @@ def test_risk_evidence_and_control_edges_are_real(session, hierarchy) -> None:
     from drilling_intelligence.database.models import (
         KnowledgeRelation,
         NptRecord,
+        ProblemDefinition,
         ProblemOccurrence,
     )
 
@@ -528,9 +550,18 @@ def test_risk_evidence_and_control_edges_are_real(session, hierarchy) -> None:
         origin="DERIVED",
         created_by="promoter",
     )
+    definition = ProblemDefinition(
+        id="problem-definition-stuck",
+        canonical_key="stuck_pipe",
+        problem_type="stuck_pipe",
+        name="Stuck Pipe",
+        origin="MANUAL",
+        created_by="test",
+    )
     problem = ProblemOccurrence(
         id="problem-evidence",
         well_id=hierarchy["well_a"].id,
+        problem_definition_id=definition.id,
         npt_id=npt.id,
         code="NPT-STUCK",
         problem_type="stuck_pipe",
@@ -543,7 +574,7 @@ def test_risk_evidence_and_control_edges_are_real(session, hierarchy) -> None:
         origin="DERIVED",
         created_by="promoter",
     )
-    session.add_all([npt, problem])
+    session.add_all([definition, npt, problem])
     session.flush()
 
     assert repository.cite_evidence(risk.id, npt_ids=[npt.id], problem_ids=[problem.id]) == 2

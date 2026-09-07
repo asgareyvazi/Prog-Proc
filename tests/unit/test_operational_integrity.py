@@ -189,6 +189,7 @@ def test_a_dangling_link_needs_a_database_whose_constraints_are_off(tmp_path) ->
                     # A well id this file has never heard of, which is only writable because nothing here
                     # enforces anything: exactly the state a restored database can be in.
                     well_id="well-not-here",
+                    problem_definition_id="pdef-not-here",
                     problem_type="stuck_pipe",
                     description="the bit was not where we left it",
                     npt_id="npt-not-here",

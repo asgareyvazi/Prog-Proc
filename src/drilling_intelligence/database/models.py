@@ -1033,6 +1033,26 @@ class NptRecord(Base, TimestampMixin):
         return self.duration_hours is not None
 
 
+class ProblemDefinition(Base, TimestampMixin):
+    """Reusable canonical problem concept; evidence belongs to its occurrences."""
+
+    __tablename__ = "problem_definition"
+    __table_args__ = (
+        UniqueConstraint("canonical_key", name="uq_problem_definition_canonical_key"),
+        Index("ix_problem_definition_type", "problem_type"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    canonical_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    problem_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(24), default="ACTIVE", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+
+
 class ProblemOccurrence(Base, TimestampMixin):
     """A problem, seen once, at one well.
 
@@ -1047,6 +1067,7 @@ class ProblemOccurrence(Base, TimestampMixin):
         Index("ix_problem_well", "well_id", "problem_type"),
         Index("ix_problem_version", "document_version_id"),
         Index("ix_problem_type_time", "problem_type", "occurred_at"),
+        Index("ix_problem_occurrence_definition", "problem_definition_id"),
         UniqueConstraint("identity_key", name="uq_problem_identity"),
     )
 
@@ -1054,6 +1075,9 @@ class ProblemOccurrence(Base, TimestampMixin):
     well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
     section_id: Mapped[str | None] = mapped_column(
         ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    problem_definition_id: Mapped[str] = mapped_column(
+        ForeignKey("problem_definition.id", ondelete="RESTRICT"), nullable=False
     )
     operation_id: Mapped[str | None] = mapped_column(
         ForeignKey("well_operation.id", ondelete="SET NULL")

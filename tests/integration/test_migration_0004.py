@@ -239,9 +239,10 @@ def test_the_upgrade_creates_every_table_the_models_declare(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'empty.db'}")
     try:
         build_legacy_database(engine)
-        assert sorted(schema_diff(engine)["missing_tables"]) == sorted(NEW_TABLES), schema_diff(
-            engine
-        )
+        initial_missing = [
+            name for name in schema_diff(engine)["missing_tables"] if name in NEW_TABLES
+        ]
+        assert sorted(initial_missing) == sorted(NEW_TABLES), schema_diff(engine)
 
         status = upgrade(engine, "0004")
         assert status.mode == "migrated" and status.current == "0004", status.to_dict()
@@ -515,7 +516,7 @@ def test_the_downgrade_removes_the_domain_and_keeps_the_workspace(tmp_path) -> N
         assert not set(NEW_TABLES) & tables, sorted(set(NEW_TABLES) & tables)
         assert snapshot(engine) == before, "downgrading the schema must not downgrade the data"
         diff = schema_diff(engine)
-        assert sorted(diff["missing_tables"]) == sorted(NEW_TABLES), diff
+        assert sorted(diff["missing_tables"]) == sorted((*NEW_TABLES, "problem_definition")), diff
 
         again = upgrade(engine, heads()[0])
         assert again.mode == "migrated" and again.current == heads()[0], again.to_dict()

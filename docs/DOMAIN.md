@@ -21,7 +21,10 @@ company ── project ── field ── well ── well_section ── well_
 rig ── service_company        procedure_record        risk_record        lesson_learned
                                                        best_practice      recommendation
                                                        field_pattern
+problem_definition ──< problem_occurrence
 ```
+
+`problem_definition` is the reusable normalized concept (`stuck_pipe`, `lost_circulation`, and so on); `problem_occurrence` is the evidence-backed instance at a well, section, operation, event, or NPT. The definition is canonicalized by the existing vocabulary matcher, while occurrence provenance remains authoritative. A definition without source provenance is valid when it is a system/domain concept rather than an extracted claim.
 
 `company`, `project`, `field`, `well` and `well_section` are the hierarchy the well registry owns; nothing
 below re-parents anything above. The five tables on the first line are the operational spine, and each of
@@ -52,8 +55,10 @@ evidence convention, so it could not record where its numbers came from. 0005 ad
 index the "re-run is not a second copy" rule needs, and backfills `origin = 'MANUAL'` on every existing row
 - the honest statement that nobody has seen its source. **0006** restores the legacy document hash index
 that the 0002 SQLite batch rebuild omitted, so historical downgrade paths can safely remove it; it is
-otherwise a no-op for the domain schema. No migration renames or drops a column, and none touches a table
-the Knowledge Layer owns.
+otherwise a no-op for the domain schema. **0007** adds `problem_definition`, links every existing
+`problem_occurrence` to one deterministic canonical definition, and preserves the occurrence's identity,
+timestamps and evidence. No migration renames or drops a column, and none touches a table the Knowledge
+Layer owns.
 
 Things this layer does *not* do, each because doing it would make a number unaccountable:
 
