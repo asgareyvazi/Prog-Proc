@@ -975,24 +975,38 @@ class EngineeringRepository:
                 section_statement.order_by(WellSection.sequence, WellSection.id)
             ).scalars()
         )
+        if not sections:
+            return []
+        # A comparison is against the program a well is being drilled on - the *current* revision -
+        # not against every revision anybody ever wrote.  Naming a program is the one explicit
+        # exception: asking for ``program_id`` asks for that program, current or not, because a
+        # reviewer reopening an old revision wants its numbers, not the latest ones.
         target_statement = select(ProgramTarget)
         if program_id:
             target_statement = target_statement.where(ProgramTarget.program_id == program_id)
-        elif well_id:
-            target_statement = target_statement.where(
-                ProgramTarget.program_id.in_(
-                    select(DrillingProgram.id).where(DrillingProgram.well_id == well_id)
+        else:
+            program_scope = select(DrillingProgram.id).where(DrillingProgram.is_current.is_(True))
+            if well_id:
+                program_scope = program_scope.where(DrillingProgram.well_id == well_id)
+            else:
+                # A section-scoped comparison is against the programs governing that section's well,
+                # never against the whole workspace's targets.
+                program_scope = program_scope.where(
+                    DrillingProgram.well_id.in_({section.well_id for section in sections})
                 )
-            )
+            target_statement = target_statement.where(ProgramTarget.program_id.in_(program_scope))
         targets = list(
             self.session.execute(
                 target_statement.order_by(ProgramTarget.sequence, ProgramTarget.id)
             ).scalars()
         )
+        # NPT hours are summed once per section, not once per section inside the loop: a ten-section
+        # well must not become eleven round trips.
+        npt_hours = self._npt_hours_by_section([section.id for section in sections])
         payload: list[dict[str, Any]] = []
         for section in sections:
             match = self._match_target(section, targets)
-            actuals = self._section_actuals(section)
+            actuals = self._section_actuals(section, npt_hours=npt_hours.get(section.id))
             for metric in PLAN_ACTUAL_METRICS:
                 planned = None if match is None else getattr(match, metric.planned_column, None)
                 actual = actuals.get(metric.actual_key)
@@ -1051,26 +1065,45 @@ class EngineeringRepository:
             return "NO_ACTUAL"
         return "ON_PLAN" if float(planned) == float(actual) else "VARIANCE"
 
-    def _section_actuals(self, section: WellSection) -> dict[str, Any]:
+    def _section_actuals(self, section: WellSection, *, npt_hours: float | None) -> dict[str, Any]:
         """The numbers a section actually achieved, including the one only the records know.
 
         Depth is the section's bottom depth, duration its actual days, mud weight its actual column -
-        and NPT hours are summed from the NPT rows dated in the section, because there is no "actual
-        NPT" column on a section and the events are the honest definition of one.  A section with no
-        dated rows yields ``None``, not 0: "nothing was recorded" and "nothing was lost" are different
+        and NPT hours are the sum of the NPT rows dated in the section, because there is no "actual
+        NPT" column on a section and the events are the honest definition of one.  ``npt_hours`` is
+        precomputed once for the whole scope by :meth:`_npt_hours_by_section`; a section with no dated
+        rows carries ``None``, not 0: "nothing was recorded" and "nothing was lost" are different
         claims about the world.
         """
         depth = getattr(section, "bottom_depth_value", None)
-        hours = self.session.execute(
-            select(func.sum(NptRecord.duration_hours))
-            .where(NptRecord.section_id == section.id)
-            .where(NptRecord.duration_hours.is_not(None))
-        ).scalar_one_or_none()
         return {
             "depth_md": None if depth is None else float(depth),
             "duration_days": getattr(section, "actual_duration_days", None),
             "mud_weight": getattr(section, "actual_mud_weight_value", None),
-            "npt_hours": None if hours is None else round(float(hours), 4),
+            "npt_hours": npt_hours,
+        }
+
+    def _npt_hours_by_section(self, section_ids: Sequence[str]) -> dict[str, float | None]:
+        """NPT hours per section in one grouped query, ``None`` where a section has no dated rows.
+
+        The per-section alternative would issue one ``SUM`` per section - an N+1 that turns a
+        ten-section well into eleven round trips - so the whole scope is summed in a single
+        ``GROUP BY`` and looked up here.  A section with no dated NPT rows is simply absent from the
+        result and reads back as ``None``, the same "nothing was recorded" the per-section query gave.
+        """
+        if not section_ids:
+            return {}
+        rows = self.session.execute(
+            select(NptRecord.section_id, func.sum(NptRecord.duration_hours))
+            .where(
+                NptRecord.section_id.in_(list(section_ids)),
+                NptRecord.duration_hours.is_not(None),
+            )
+            .group_by(NptRecord.section_id)
+        ).all()
+        return {
+            str(section_id): (None if hours is None else round(float(hours), 4))
+            for section_id, hours in rows
         }
 
     def record_calculation(
