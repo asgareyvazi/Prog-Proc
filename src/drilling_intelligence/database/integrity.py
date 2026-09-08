@@ -347,6 +347,16 @@ def validate_knowledge_relation(
         raise KnowledgeIntegrityError(
             f"knowledge relation {relation!r} must be a single snake_case token"
         )
+    # A self-reference is not a relationship, and :func:`check_knowledge_relations` reports one as
+    # ``SELF_REFERENCE``.  The write path must refuse what its own checker calls a problem - otherwise
+    # ``repository.link`` happily stores a ``well -> well`` edge that ``doctor`` then flags as damage,
+    # which is exactly the "write it, then complain" split this function exists to prevent.
+    if source_type == target_type and source_id == target_id:
+        raise KnowledgeIntegrityError(
+            "a knowledge relation must not point at its own source",
+            endpoint_type=source_type,
+            endpoint_id=source_id,
+        )
 
 
 def find_knowledge_relation(

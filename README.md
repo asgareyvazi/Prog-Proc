@@ -39,7 +39,7 @@ and Ollama (for optional AI) are both opt-in and absent by default.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-PYTHONPATH=src .venv/bin/python -m pytest            # 646 tests: unit, engineering, integration
+PYTHONPATH=src .venv/bin/python -m pytest            # 681 tests: unit, engineering, integration
 .venv/bin/ruff check src tests migrations --output-format=concise
 .venv/bin/ruff format --check src tests migrations
 ```
