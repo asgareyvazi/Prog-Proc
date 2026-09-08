@@ -24,7 +24,7 @@ Three rules that make the answers trustworthy:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import Select, func, or_, select, union_all
@@ -89,6 +89,12 @@ def problem_hours() -> Any:
 
 
 def _stamp(value: object) -> datetime | None:
+    """The timestamp a *record* carries.  Lenient on purpose: it reads what the data has, and a
+    value it cannot parse is reported as undated rather than raised from a read path.
+
+    Window *bounds* are different - they are the question a caller asked - and those go through
+    :func:`parse_boundary`, which refuses to answer the wrong question.
+    """
     if isinstance(value, datetime):
         return value
     if isinstance(value, date):
@@ -100,6 +106,41 @@ def _stamp(value: object) -> datetime | None:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def parse_boundary(value: object, *, end: bool = False) -> datetime | None:
+    """A date-window bound, strictly.
+
+    ``None`` and the empty string mean "no bound" - the window is open on that side.  Anything else
+    must parse, or the call fails: a caller who asked for "NPT from June" and mistyped the date must
+    not get the whole field back under a filter the answer does not carry.  A bound with no time of
+    day covers the whole day (a window ending on 2025-06-01 includes the last second of it), which
+    is the reading a date on a report line has.
+
+    Aware datetimes are normalised to naive UTC, the representation the SQLite store round-trips,
+    so a bound compares with the stored rows the way the rows compare with each other.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            return value.astimezone(UTC).replace(tzinfo=None)
+        return value
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.max.time() if end else datetime.min.time())
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as err:
+        raise ValidationError(
+            f"a date bound must be an ISO date or datetime, got {text!r}",
+            value=text[:60],
+        ) from err
+    if len(text) == 10:  # a date, as the CLI accepts them - the window covers the whole day
+        return datetime.combine(parsed.date(), datetime.max.time() if end else datetime.min.time())
+    return parsed
 
 
 def _iso(value: object) -> str | None:
@@ -117,11 +158,18 @@ class FieldIntelligence:
     def _wells(
         self, *, field_id: str, project_id: str, well_id: str = ""
     ) -> Select[tuple[Any, ...]]:
-        """The well ids in scope, as a subquery - the one place scope is decided for every aggregation."""
+        """The well ids in scope, as a subquery - the one place scope is decided for every aggregation.
+
+        A named well is the whole scope: ``well_id`` takes precedence over ``field_id`` and
+        ``project_id`` rather than joining them, the same rule the timeline applies.  A union would
+        answer "field A's NPT" when the caller asked for "well W's NPT in field A", and a well that
+        is not in the field would ride along with the field's numbers under a scope label that names
+        one well.
+        """
         statement = select(Well.id)
-        clauses: list[Any] = []
         if well_id:
-            clauses.append(Well.id == well_id)
+            return statement.where(Well.id == well_id)
+        clauses: list[Any] = []
         if field_id:
             clauses.append(Well.field_id == field_id)
         if project_id:
@@ -133,25 +181,17 @@ class FieldIntelligence:
             )
         return statement.where(or_(*clauses))
 
-    def _scoped(
-        self, statement: Any, model: Any, *, field_id: str, project_id: str, well_id: str = ""
-    ) -> Any:
-        if well_id:
-            return statement.where(model.well_id == well_id)
-        return statement.where(
-            model.well_id.in_(self._wells(field_id=field_id, project_id=project_id))
-        )
-
     def _window(self, column: Any, since: object, until: object) -> list[Any]:
         """The date predicates for one timestamp column.
 
         Only the bounds the caller gave are applied; ``None`` means "no bound", not "no rows" - and
         there is deliberately no ``IS NULL`` clause here, because a row with no date is reported by
-        :meth:`_undated`, not quietly included in a filtered count.
+        :meth:`_undated`, not quietly included in a filtered count.  Bounds are parsed strictly
+        (:func:`parse_boundary`): a mistyped date is an error, never a silently dropped filter.
         """
         predicates: list[Any] = []
-        low = _stamp(since)
-        high = _stamp(until)
+        low = parse_boundary(since)
+        high = parse_boundary(until, end=True)
         if low is not None:
             predicates.append(column >= low)
         if high is not None:
@@ -389,7 +429,10 @@ class FieldIntelligence:
                     "occurrences": 0,
                     "wells": set(),
                     "sections": set(),
-                    "npt_hours": 0.0,
+                    # None, not 0.0: "no NPT hours are linked to this type" and "it cost exactly
+                    # zero" are different answers, and the patterns layer keeps the same
+                    # distinction - a type with no linked hours must not read as a free problem.
+                    "npt_hours": None,
                     "root_cause_known": 0,
                     "first_seen_at": None,
                     "last_seen_at": None,
@@ -408,7 +451,9 @@ class FieldIntelligence:
                 if entry["last_seen_at"] is None or stamp > entry["last_seen_at"]:
                     entry["last_seen_at"] = stamp
             if row.id in grouped_hours:
-                entry["npt_hours"] = round(entry["npt_hours"] + float(grouped_hours[row.id]), 4)
+                entry["npt_hours"] = round(
+                    (entry["npt_hours"] or 0.0) + float(grouped_hours[row.id]), 4
+                )
         return {
             "scope": {
                 "field_id": field_id or None,
@@ -526,36 +571,40 @@ class FieldIntelligence:
         exactly as trustworthy as the count says.
         """
         statement = select(LessonLearned)
-        clauses: list[Any] = []
         if well_id:
-            clauses.append(LessonLearned.well_id == well_id)
-        if field_id:
-            clauses.append(
-                or_(
-                    LessonLearned.field_id == field_id,
-                    LessonLearned.well_id.in_(self._wells(field_id=field_id, project_id="")),
+            # A named well is the whole scope, as in :meth:`_wells` - a lesson written against the
+            # field still counts when the question is about the well it was learnt on.
+            statement = statement.where(LessonLearned.well_id == well_id)
+        else:
+            clauses: list[Any] = []
+            if field_id:
+                clauses.append(
+                    or_(
+                        LessonLearned.field_id == field_id,
+                        LessonLearned.well_id.in_(self._wells(field_id=field_id, project_id="")),
+                    )
                 )
-            )
-        if project_id:
-            clauses.append(
-                or_(
-                    LessonLearned.project_id == project_id,
-                    LessonLearned.well_id.in_(self._wells(field_id="", project_id=project_id)),
+            if project_id:
+                clauses.append(
+                    or_(
+                        LessonLearned.project_id == project_id,
+                        LessonLearned.well_id.in_(self._wells(field_id="", project_id=project_id)),
+                    )
                 )
-            )
-        if not clauses:
-            raise ValidationError(
-                "a lesson list needs field_id, project_id or well_id",
-                hint="scope it to a well, a field or a project",
-            )
-        statement = statement.where(or_(*clauses), LessonLearned.is_current.is_(True))
+            if not clauses:
+                raise ValidationError(
+                    "a lesson list needs field_id, project_id or well_id",
+                    hint="scope it to a well, a field or a project",
+                )
+            statement = statement.where(or_(*clauses))
+        statement = statement.where(LessonLearned.is_current.is_(True))
         if approved_only:
             statement = statement.where(LessonLearned.status == "APPROVED")
         rows = list(
             self.session.execute(
                 statement.order_by(
                     LessonLearned.approved_at.desc().nulls_last(), LessonLearned.id
-                ).limit(max(1, int(limit)))
+                ).limit(limit if limit and limit > 0 else None)
             ).scalars()
         )
         return {
@@ -673,32 +722,38 @@ class FieldIntelligence:
         not a similarity claim: the answer a reader wants is "these three wells had the same stuck-pipe
         signature at the same depth, and here are the events", so the rows are returned with their
         problem types and hours rather than a single opaque number.
+
+        ``same_field_only`` compares within the well's own field; ``False`` reaches the well's whole
+        project.  Both scope by a recorded column - and a well without that column has no candidates
+        rather than a fabricated comparison set.
         """
         well = self.session.get(Well, str(well_id))
         if well is None:
             raise ValidationError(f"no well {well_id!r}")
-        scope_field = well.field_id if same_field_only else ""
-        scope_project = "" if same_field_only else well.project_id
-        mine = self._problem_signature(well_id)
+        # The comparison is scoped to the well's own field or project.  A well that has no field
+        # (or no project) has nothing to compare against - an empty list, because answering "every
+        # field's wells" to "which of my neighbours" would be an invented geography.
+        if same_field_only:
+            if well.field_id is None:
+                return []
+            scope = [Well.field_id == well.field_id]
+        else:
+            if well.project_id is None:
+                return []
+            scope = [Well.project_id == well.project_id]
         candidates = list(
-            self.session.execute(
-                select(Well.id, Well.name).where(
-                    Well.id != well.id,
-                    *(
-                        [Well.field_id == scope_field]
-                        if scope_field
-                        else (
-                            [Well.project_id == scope_project]
-                            if scope_project
-                            else [Well.field_id.is_not(None)]
-                        )
-                    ),
-                )
-            ).all()
+            self.session.execute(select(Well.id, Well.name).where(Well.id != well.id, *scope)).all()
         )
+        # One pair of queries for every candidate well, not one per well: the signatures are the
+        # problems of the whole candidate set in a single select, with the hours summed per problem
+        # in the grouped subquery beside it.  A field of sixty wells is two round trips, not sixty.
+        signatures = self._problem_signatures(
+            [str(well.id), *[str(other_id) for other_id, _ in candidates]]
+        )
+        mine = signatures.get(str(well.id), self._empty_signature())
         payload: list[dict[str, Any]] = []
         for other_id, other_name in candidates:
-            theirs = self._problem_signature(str(other_id))
+            theirs = signatures.get(str(other_id), self._empty_signature())
             shared_types = sorted(mine["types"] & theirs["types"])
             shared_holes = sorted(mine["holes"] & theirs["holes"])
             if not shared_types and not shared_holes:
@@ -725,16 +780,46 @@ class FieldIntelligence:
                 row["well_id"],
             )
         )
-        return payload[: max(1, int(limit))]
+        return payload if not (limit and limit > 0) else payload[: int(limit)]
 
-    def _problem_signature(self, well_id: str) -> dict[str, Any]:
-        """The problems of one well, with the hours behind them and the dates that bracket them.
+    @staticmethod
+    def _empty_signature() -> dict[str, Any]:
+        return {
+            "rows": [],
+            "types": set(),
+            "holes": set(),
+            "hours": None,
+            "first": None,
+            "last": None,
+        }
+
+    @staticmethod
+    def _signature_from_rows(rows: list[Any]) -> dict[str, Any]:
+        """The signature of one well's problems from preloaded rows.
+
+        ``hours`` is the sum of the linked NPT durations, and ``None`` - not 0.0 - when the rows
+        link no duration at all: "no timed NPT to compare" and "lost no time" are different
+        reasons to look at a well.
+        """
+        stamps = [_iso(row[0].occurred_at) for row in rows if _iso(row[0].occurred_at) is not None]
+        values = [float(row[1]) for row in rows if row[1] is not None]
+        return {
+            "rows": [row[0] for row in rows],
+            "types": {str(row[0].problem_type) for row in rows if row[0].problem_type},
+            "holes": {row[0].hole_size_in for row in rows if row[0].hole_size_in is not None},
+            "hours": round(sum(values), 4) if values else None,
+            "first": min(stamps) if stamps else None,
+            "last": max(stamps) if stamps else None,
+        }
+
+    def _problem_signatures(self, well_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """The problems of a set of wells, with the hours behind them, in two queries.
 
         The hours come from :func:`problem_hours`, the same subquery the field aggregation and the
         pattern grouping use, so "what did this problem cost" has exactly one answer in this codebase.
-        An earlier version joined only ``npt_id`` here, which quietly reported a well whose problems were
-        linked through their event as a well that lost no time at all - the kind of wrong number that
-        makes an offset comparison worthless.
+        An earlier version joined only ``npt_id`` here, which quietly reported a well whose problems
+        were linked through their event as a well that lost no time at all - the kind of wrong number
+        that makes an offset comparison worthless.
         """
         grouped = problem_hours()
         per_problem = (
@@ -746,19 +831,13 @@ class FieldIntelligence:
             self.session.execute(
                 select(ProblemOccurrence, per_problem.c.hours)
                 .outerjoin(per_problem, per_problem.c.problem_id == ProblemOccurrence.id)
-                .where(ProblemOccurrence.well_id == well_id)
+                .where(ProblemOccurrence.well_id.in_(list(well_ids) or [""]))
             ).all()
         )
-        stamps = [_iso(row[0].occurred_at) for row in rows if _iso(row[0].occurred_at) is not None]
-        values = [float(row[1]) for row in rows if row[1] is not None]
-        return {
-            "rows": [row[0] for row in rows],
-            "types": {str(row[0].problem_type) for row in rows if row[0].problem_type},
-            "holes": {row[0].hole_size_in for row in rows if row[0].hole_size_in is not None},
-            "hours": round(sum(values), 4) if values else None,
-            "first": min(stamps) if stamps else None,
-            "last": max(stamps) if stamps else None,
-        }
+        by_well: dict[str, list[Any]] = {}
+        for row in rows:
+            by_well.setdefault(str(row[0].well_id), []).append(row)
+        return {well: self._signature_from_rows(bucket) for well, bucket in by_well.items()}
 
     # -- one call for a screen or a CLI --------------------------------------
     def summary(

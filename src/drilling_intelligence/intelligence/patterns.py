@@ -25,7 +25,7 @@ The signature is a digest of the parameters, which is what makes re-running the 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -38,7 +38,7 @@ from ..core.ids import new_id
 from ..core.lifecycle import CONFIRMATION_LIFECYCLE as CONFIRMATION
 from ..database.integrity import create_knowledge_relation
 from ..database.models import FieldPattern, ProblemOccurrence, Recommendation, Well
-from ..intelligence.field import problem_hours
+from ..intelligence.field import parse_boundary, problem_hours
 
 __all__ = [
     "DEFAULT_MIN_OCCURRENCES",
@@ -112,6 +112,11 @@ def find_recurring(
             "a pattern query needs a field or a project",
             hint="a pattern is a statement about a place; pass field_id or project_id",
         )
+    # The same convention the field aggregations apply: None and "" both mean "no bound", so a
+    # caller who forwards an empty flag gets the unfiltered answer, not an error about a bound
+    # the answer does not carry.
+    since = None if since in (None, "") else since
+    until = None if until in (None, "") else until
     clauses: list[Any] = []
     if field_id:
         clauses.append(Well.field_id == field_id)
@@ -165,30 +170,48 @@ def find_recurring(
         (str(type_value or ""), None if hole is None else round(float(hole), 4)): int(count)
         for type_value, hole, count in session.execute(event_statement)
     }
+    # The NPT hours behind every grouping, in one grouped query over the same subquery the field
+    # aggregation uses - not one query per grouping, which is how a field with sixty problem types
+    # becomes sixty-one round trips for one answer.  The predicates are the same ones the occurrence
+    # count was run with, so the hours belong to the same rows.
+    hours = problem_hours()
+    hours_statement = (
+        select(hours.c.problem_type, hours.c.hole_size_in, func.sum(hours.c.hours))
+        .select_from(hours)
+        .join(Well, Well.id == hours.c.well_id)
+        .group_by(hours.c.problem_type, hours.c.hole_size_in)
+    )
+    if clauses:
+        hours_statement = hours_statement.where(or_(*clauses))
+    if problem_type:
+        hours_statement = hours_statement.where(hours.c.problem_type == problem_type)
+    if since is not None:
+        hours_statement = hours_statement.where(hours.c.occurred_at >= _boundary(since))
+    if until is not None:
+        hours_statement = hours_statement.where(hours.c.occurred_at <= _boundary(until, end=True))
+    hours_by_group: dict[tuple[str, float | None], float] = {
+        (str(type_value or ""), None if hole is None else round(float(hole), 4)): round(
+            float(total), 4
+        )
+        for type_value, hole, total in session.execute(hours_statement)
+    }
     rows = []
     for type_value, hole, occurrences, wells, first, last in session.execute(statement):
         if int(occurrences) < max(1, int(min_occurrences)) or int(wells) < max(1, int(min_wells)):
             continue
+        group_key = (str(type_value or ""), None if hole is None else round(float(hole), 4))
         rows.append(
             {
                 "problem_type": str(type_value or "uncategorised"),
                 "hole_size_in": None if hole is None else float(hole),
                 "occurrence_count": int(occurrences),
-                "event_count": events.get(
-                    (str(type_value or ""), None if hole is None else round(float(hole), 4)), 0
-                ),
+                "event_count": events.get(group_key, 0),
                 "well_count": int(wells),
                 "first_seen_at": _iso(first),
                 "last_seen_at": _iso(last),
-                "total_npt_hours": _hours(
-                    session,
-                    field_id=field_id,
-                    project_id=project_id,
-                    problem_type=str(type_value or ""),
-                    hole_size_in=hole,
-                    since=since,
-                    until=until,
-                ),
+                # None, not 0.0: a grouping with no linked duration has no cost to state, and a
+                # snapshot taken from it says so rather than quoting a free problem.
+                "total_npt_hours": hours_by_group.get(group_key),
                 "query": {
                     "field_id": field_id or None,
                     "project_id": project_id or None,
@@ -213,18 +236,18 @@ def find_recurring(
 
 
 def _boundary(value: object, *, end: bool = False) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, date):
-        parsed = datetime.combine(value, datetime.min.time())
-        return parsed.replace(hour=23, minute=59, second=59) if end else parsed
-    if isinstance(value, str):
-        text = value.strip()
-        if len(text) == 10:  # a date, as the CLI accepts them
-            parsed = datetime.fromisoformat(text)
-            return parsed.replace(hour=23, minute=59, second=59) if end else parsed
-        return datetime.fromisoformat(text)
-    raise ValidationError("a date bound must be an ISO date or datetime", value=repr(value)[:60])
+    """The strict window bound, as used by the field aggregations and the timeline.
+
+    One parser in the whole intelligence package, so ``since="2025-06-01"`` means the same window
+    in every answer, and a mistyped date is a :class:`ValidationError` rather than a raw
+    ``ValueError`` or a silently dropped filter.
+    """
+    parsed = parse_boundary(value, end=end)
+    if parsed is None:
+        raise ValidationError(
+            "a date bound must be an ISO date or datetime", value=repr(value)[:60]
+        )
+    return parsed
 
 
 def _iso(value: object) -> str | None:
@@ -233,47 +256,6 @@ def _iso(value: object) -> str | None:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
-
-
-def _hours(
-    session: Session,
-    *,
-    field_id: str,
-    project_id: str,
-    problem_type: str,
-    hole_size_in: object,
-    since: object = None,
-    until: object = None,
-) -> float | None:
-    """The NPT hours the problems of one grouping cost, summed where the rows state a duration.
-
-    Counted over :func:`~drilling_intelligence.intelligence.field.problem_hours`, i.e. only through rows
-    that are linked to a *problem* of this grouping - by ``npt_id``, or by the shared event when there is
-    no direct link.  An NPT row that cost hours on a well but produced no problem record is not evidence
-    of this pattern, and folding it in would inflate a recurring problem with time nobody attributed to
-    it.
-    """
-    clauses: list[Any] = []
-    if field_id:
-        clauses.append(Well.field_id == field_id)
-    if project_id:
-        clauses.append(Well.project_id == project_id)
-    hours = problem_hours()
-    statement = (
-        select(func.sum(hours.c.hours)).select_from(hours).join(Well, Well.id == hours.c.well_id)
-    )
-    if clauses:
-        statement = statement.where(or_(*clauses))
-    if problem_type and problem_type != "uncategorised":
-        statement = statement.where(hours.c.problem_type == problem_type)
-    if hole_size_in is not None:
-        statement = statement.where(hours.c.hole_size_in == float(hole_size_in))
-    if since is not None:
-        statement = statement.where(hours.c.occurred_at >= _boundary(since))
-    if until is not None:
-        statement = statement.where(hours.c.occurred_at <= _boundary(until, end=True))
-    value = session.execute(statement).scalar_one_or_none()
-    return None if value is None else round(float(value), 4)
 
 
 def evidence_for(
@@ -292,6 +274,8 @@ def evidence_for(
     Returned as ids rather than ORM rows: the snapshot stores them, a screen shows the first few, and a
     reader who wants the text can fetch the row - which is the point of the evidence existing at all.
     """
+    since = None if since in (None, "") else since
+    until = None if until in (None, "") else until
     clauses: list[Any] = []
     if field_id:
         clauses.append(Well.field_id == field_id)
@@ -312,7 +296,7 @@ def evidence_for(
             ProblemOccurrence.occurred_at.asc().nulls_last(),
             ProblemOccurrence.id,
         )
-        .limit(max(1, int(limit)))
+        .limit(limit if limit and limit > 0 else None)
     )
     if problem_type and problem_type != "uncategorised":
         statement = statement.where(ProblemOccurrence.problem_type == problem_type)
@@ -344,6 +328,42 @@ def evidence_for(
             well_name,
         ) in session.execute(statement)
     ]
+
+
+def _grouping_well_ids(session: Session, parameters: Mapping[str, Any]) -> list[str]:
+    """Every well the stored grouping counted, oldest-rows-first is irrelevant - a sorted set.
+
+    The predicates mirror :func:`find_recurring`'s main query exactly (scope, type, hole size,
+    window), which is what makes ``well_ids`` the complete well set behind ``well_count`` rather
+    than a slice of the capped evidence list.
+    """
+    field_id = parameters.get("field_id")
+    project_id = parameters.get("project_id")
+    clauses: list[Any] = []
+    if field_id:
+        clauses.append(Well.field_id == field_id)
+    if project_id:
+        clauses.append(Well.project_id == project_id)
+    statement = select(func.distinct(ProblemOccurrence.well_id)).where(
+        ProblemOccurrence.problem_type == str(parameters.get("problem_type") or "")
+    )
+    hole = parameters.get("hole_size_in")
+    statement = statement.where(
+        ProblemOccurrence.hole_size_in.is_(None)
+        if hole is None
+        else ProblemOccurrence.hole_size_in == float(hole)
+    )
+    since = parameters.get("since") or None
+    until = parameters.get("until") or None
+    if since is not None:
+        statement = statement.where(ProblemOccurrence.occurred_at >= _boundary(since))
+    if until is not None:
+        statement = statement.where(ProblemOccurrence.occurred_at <= _boundary(until, end=True))
+    if clauses:
+        statement = statement.where(
+            ProblemOccurrence.well_id.in_(select(Well.id).where(or_(*clauses)))
+        )
+    return sorted({str(well_id) for well_id in session.execute(statement).scalars()})
 
 
 def snapshot(
@@ -385,6 +405,11 @@ def snapshot(
         until=parameters.get("until"),
         **scope,
     )
+    # ``well_ids`` is the complete "which wells" answer the reviewer checks first, so it comes from
+    # the grouping itself - not from ``entries``, which is capped at MAX_LINKED_EVIDENCE.  A pattern
+    # over thirty wells must still name all thirty, or the row would under-report the very fact it
+    # was counted to state.
+    well_ids = _grouping_well_ids(session, parameters)
     if row is None:
         row = FieldPattern(
             id=new_id("pat"),
@@ -400,9 +425,7 @@ def snapshot(
             first_seen_at=_parse(candidate.get("first_seen_at")),
             last_seen_at=_parse(candidate.get("last_seen_at")),
             evidence=entries,
-            well_ids=sorted(
-                {str(entry.get("well_id")) for entry in entries if entry.get("well_id")}
-            ),
+            well_ids=well_ids,
             query=dict(parameters),
             status=str(CONFIRMATION.parse(status) if status is not None else CONFIRMATION.initial),
             detected_by=str(detected_by or "") or "intelligence",
@@ -424,9 +447,7 @@ def snapshot(
         row.stale_at = None
         row.stale_snapshot = {}
         row.evidence = entries
-        row.well_ids = sorted(
-            {str(entry.get("well_id")) for entry in entries if entry.get("well_id")}
-        )
+        row.well_ids = well_ids
         session.flush()
     if link_evidence:
         link_rows(session, row)
@@ -517,6 +538,11 @@ def _link(
 def staleness(session: Session, pattern_id: str) -> dict[str, Any]:
     """Re-run a snapshot's own query and report what has moved since it was taken.
 
+    The re-run carries the stored parameters in full - scope *and window* - because the numbers a
+    snapshot freezes are the numbers the stored query produced.  A snapshot taken over June must be
+    judged against June, not against the whole field: judged against the field, it goes stale every
+    time anything happens anywhere, and misses a change inside June that the field total absorbs.
+
     The stored numbers are not touched.  A pattern that quietly updated itself overnight would be
     indistinguishable from one that had been reviewed, and the whole value of the reviewed figure is
     that it is frozen - with a difference report beside it.
@@ -530,6 +556,8 @@ def staleness(session: Session, pattern_id: str) -> dict[str, Any]:
         problem_type=str(parameters.get("problem_type") or ""),
         min_occurrences=1,
         min_wells=1,
+        since=parameters.get("since") or None,
+        until=parameters.get("until") or None,
         limit=500,
     )
     hole = parameters.get("hole_size_in")
@@ -622,7 +650,7 @@ def list_patterns(
         session.execute(
             statement.order_by(
                 FieldPattern.occurrence_count.desc(), FieldPattern.problem_type, FieldPattern.id
-            ).limit(max(1, int(limit)))
+            ).limit(limit if limit and limit > 0 else None)
         ).scalars()
     )
 
@@ -651,15 +679,23 @@ def propose_recommendation(
     reason: str = "",
     by: str = "intelligence",
 ) -> Recommendation:
-    """Turn a pattern into advice a person can decide on, with the pattern's own evidence attached.
+    """Turn a *confirmed* pattern into advice a person can decide on, with its own evidence attached.
 
-    The recommendation stores the pattern's ``query`` as well as its ids, so the advice can be re-derived
-    and argued with; and it starts ``PROPOSED``, because what a grouping of history licenses is a
-    proposal, not a change to somebody's programme.
+    The confirmation is the gate: what a grouping of history licenses is a proposal to *somebody
+    who looked at the grouping*, and a pattern nobody has confirmed is an opinion the platform
+    would be circulating on its own authority.  The recommendation stores the pattern's ``query`` as
+    well as its ids, so the advice can be re-derived and argued with; and it starts ``PROPOSED``,
+    because a proposal - even one resting on a confirmed pattern - is still not a change to
+    somebody's programme.
     """
     from ..lessons.repository import LessonRepository
 
     row = get_pattern(session, pattern_id)
+    if CONFIRMATION.parse(row.status) is not ConfirmationStatus.CONFIRMED:
+        raise ValidationError(
+            f"pattern {pattern_id!r} is {row.status}; a recommendation is proposed from a confirmed pattern",
+            hint="confirm the pattern first (patterns confirm --status CONFIRMED --by <who>)",
+        )
     evidence = [
         {
             "kind": "pattern",

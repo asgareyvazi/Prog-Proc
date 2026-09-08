@@ -458,7 +458,12 @@ copies.
     `PROPOSED` row with the pattern's query and a reason built from the counts; `decide_recommendation`
     moves it, requires an author and a reason, and the signature deduplicates the same advice for the same
     scope. Best practices are derived only from `APPROVED` lessons, carry their evidence, and never list
-    their own author as an approver.
+    their own author as an approver. **Amended (2026-09-08):** the proposal itself is gated on the
+    pattern's status - `propose_recommendation` refuses a pattern that is not `CONFIRMED`
+    (`ValidationError`), because what a grouping of history licenses is a proposal to *someone who
+    looked at the grouping*, and a pattern nobody confirmed is an opinion the platform would be
+    circulating on its own authority. The gate is one check on the stored status; it changes no
+    lifecycle, and a pattern confirmed and then rejected can no longer spawn advice.
 *   **Numbers keep their units.** Costs are totalled per currency and never across currencies - no rate,
     no conversion, no inflation, no AFE. A variance is `None` unless both sides exist; planned-only and
     actual-only lines are counted separately so an absent side is visible as absent; unpriced and

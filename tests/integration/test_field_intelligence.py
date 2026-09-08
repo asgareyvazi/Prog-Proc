@@ -579,6 +579,12 @@ def test_a_recommendation_is_proposed_once_and_waits_for_a_decision(field_worksp
         field = field_id(field_workspace)
         row = snapshot(session, find_recurring(session, field_id=field)[0])
         session.commit()
+        with pytest.raises(ValidationError, match="confirmed pattern"):
+            # A pattern nobody has looked at is a proposal to no one: the advice path is gated on
+            # the confirmation, so a CANDIDATE pattern cannot produce a recommendation at all.
+            propose_recommendation(session, row.id, statement="no one has confirmed this yet")
+        set_pattern_status(session, row.id, ConfirmationStatus.CONFIRMED.value, by="k.adeyemi")
+        session.commit()
         first = propose_recommendation(
             session,
             row.id,
@@ -645,7 +651,8 @@ def test_a_recommendation_is_proposed_once_and_waits_for_a_decision(field_worksp
         session.commit()
         assert declined.status == RecommendationLifecycle.DECLINED.value
         assert declined.decline_reason.startswith("we already ream")
-        assert get_pattern(session, row.id).status == ConfirmationStatus.CANDIDATE.value
+        # Deciding the advice never writes back to the pattern that licensed it.
+        assert get_pattern(session, row.id).status == ConfirmationStatus.CONFIRMED.value
 
 
 def test_the_service_snapshots_the_field_and_counts_what_it_touched(field_workspace) -> None:

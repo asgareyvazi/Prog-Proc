@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -43,6 +43,7 @@ from ..database.models import (
     WellEvent,
     WellOperation,
 )
+from .field import parse_boundary
 
 __all__ = ["TIMELINE_KINDS", "TimelineEntry", "build_timeline", "entry_comparator"]
 
@@ -217,8 +218,10 @@ def build_timeline(
         raise ValidationError(
             f"no timeline kind named {', '.join(unknown)}", known=list(TIMELINE_KINDS)
         )
-    low = _stamp(since)
-    high = _stamp(until)
+    # Bounds are the caller's question, so they are parsed strictly: a mistyped date is a
+    # ValidationError, and a date with no time covers the whole day on both sides.
+    low = parse_boundary(since)
+    high = parse_boundary(until, end=True)
     # ``None`` means "follow the window".  A timeline asked for a period answers with the records that can
     # be placed inside it - an undated record is neither inside nor outside, and quietly keeping it would
     # make a windowed answer look like a complete one.  A timeline asked for a whole well lists the undated
@@ -677,14 +680,28 @@ def _scope_lesson(statement: Any, *, well_id: str, field_id: str, project_id: st
     return statement.where(or_(*scopes))
 
 
+def _compare_instant(value: datetime) -> datetime:
+    """An instant as the store carries it: naive UTC.
+
+    The SQLite round-trip drops the zone, so a row read back is naive; comparing it with an
+    aware bound would raise, and comparing it with a bound read in another timezone would order
+    the same day differently on different machines.  Both sides of the comparison are brought to
+    the one representation before the window decides.
+    """
+    if value.tzinfo is not None:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    return value
+
+
 def _within(
     entry: TimelineEntry, low: datetime | None, high: datetime | None, include_undated: bool
 ) -> bool:
     if entry.at is None:
         return include_undated
-    if low is not None and entry.at < low:
+    at = _compare_instant(entry.at)
+    if low is not None and at < low:
         return False
-    return not (high is not None and entry.at > high)
+    return not (high is not None and at > high)
 
 
 def _join(*parts: object) -> str:
