@@ -1190,6 +1190,13 @@ class EngineeringRepository:
             "outputs": dict(outputs) if outputs is not None else None,
             "assumptions": list(assumptions or []),
             "validation": dict(validation or {}),
+            # The result's quality is part of the claim, so it belongs in the identity: two runs that
+            # agree on the numbers but disagree on the uncertainty, confidence or how they were
+            # triggered are different records, and collapsing them would silently drop the newer
+            # assessment (ADR-0012 lists all three in the canonical payload).
+            "uncertainty": dict(uncertainty) if uncertainty is not None else None,
+            "confidence": float(confidence) if confidence is not None else None,
+            "triggered_by": str(triggered_by or "cli"),
             "provenance": provenance_list,
         }
         key = str(identity_key or "").strip() or "calc:" + sha256_obj(content)[:32]
