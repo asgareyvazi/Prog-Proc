@@ -199,6 +199,11 @@ what it cost and what was learnt". A `drillintel search "stuck pipe"` hit and a
 `drillintel records list --table npt` row are expected to point at the same version; neither is a copy of
 the other, and `SourceLocator.ref` is shared by both.
 
+And because the sidecar is a projection that can be stale, a hit is not yet evidence: the retrieval layer
+(ADR-0013) re-reads every search candidate from the authoritative database before it may answer, drops
+what no longer is - with the reason - and returns the rest as deterministic, provenance-carrying records
+that a reader can cite without re-checking.
+
 ## Names in the schema, where they differ from the sketch
 
 The Phase 1 brief listed the fields each entity must support. Five of them arrived under different names or

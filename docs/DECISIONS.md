@@ -549,3 +549,92 @@ and change the fresh-install schema); a new `engineering_record` table beside th
 concept, and the old one stays readable either way); a `record_calculation` that recomputes and overwrites the
 parent (a superseded number that no longer exists cannot be audited); and storing the timeline-style
 "current" flag as a column on `calculation`, which every other versioned table needs an index to keep honest.
+
+## ADR-0013 — Retrieval verifies what search locates; a stale sidecar row is not evidence
+
+**Status:** accepted (2026-09-08)
+
+**Context.** The platform answers questions with citations, and search already locates candidates:
+BM25 over a disposable SQLite sidecar (ADR-0003), three source kinds (document chunks, knowledge facts
+rendered as `knowledge_fact` chunks, and the six structured record types projected at build time). But
+the sidecar is, by design, a projection that can be stale - a record rejected, superseded, revised or
+deleted after the last rebuild is still in it, and a new row is not. Nothing above search was allowed
+to trust that projection past the point of discovery: a future reader - human, UI, or an AI layer that
+this repository deliberately does not build (ADR-0005, ADR-0012) - must be handed records that were
+re-read from the authoritative database, with a lifecycle and a scope that hold, and with provenance
+that the record actually carries. The gap was not a second search engine; it was the verification
+boundary between "the index says this exists" and "this is authoritative evidence now".
+
+**Decision.**
+
+*   **One new layer, `drilling_intelligence.retrieval`, with three value objects.**
+    `RetrievalRequest` (query, scope, `source_types`, `lifecycle`, `limit`, date bounds),
+    `EvidenceItem` (a verified record) and `EvidenceBundle` (the answer). The layer's pipeline is
+    *search discovers, retrieval verifies*: candidates come only from the existing
+    `SearchService.search` - the same index, the same BM25 ranking, the same tie-breaks - and every
+    candidate is re-read from the authoritative tables by its own identity before it may appear in the
+    answer. There is no second search engine, no second ranking, and no embedding/vector path.
+*   **Identities are the records' own, never retrieval inventions.** A structured row is
+    `structured:<record_type>:<row id>` (the domain's primary key), a knowledge fact is
+    `knowledge:<item id>`, a document citation is `document:<document>:<version>:<chunk>`. The same
+    row retrieved with a different query, a different limit or a different insertion order carries the
+    same identity, because the identity is built from the authoritative row, not from content, a
+    timestamp or a position in a result list.
+*   **Provenance is carried, never fabricated.** Every field a record does not hold is empty. A manual
+    lesson has `document_id=""` and `locator_ref=""`; a diagnostic or page chunk - which has no recorded
+    location - is dropped with the reason `not citable (no recorded location)` instead of being dressed
+    up as a citation. A bundle in which every item resolves to a real row is asserted bundle-wide.
+*   **Scope is a single level, decided by the platform's precedence, and re-checked against the
+    authoritative row.** A named well is the whole scope; `well_id` beats `field_id` beats
+    `project_id`. Only the winning level is passed to search (passing both well and field would make
+    search AND them; OR-ing them is exactly the union the precedence forbids), and the re-check is
+    applied to the row's own scope columns. A scope that names a row the database does not have is a
+    caller error (`ValidationError`), not a silently empty answer.
+*   **Current and history are explicit policies, per source type, using the domain's own lifecycle
+    rules.** `current` returns only the rows the domain answers "now": a lesson only while
+    `is_current`, an occurrence/NPT/event while not `REJECTED`, a recommendation while not
+    `SUPERSEDED`, a knowledge item while not `SUPERSEDED`/`RETIRED`, a document version while
+    `is_current`. `history` returns those plus the historical rows, each labelled with its state and
+    `current=False`. Nothing is "latest by timestamp". A `CONFLICTED` knowledge item is still current
+    evidence and is returned *with* its conflict status, never silently resolved to one value. The
+    honest boundary is recorded rather than hidden: the search projection stores only the domain's
+    current structured rows, and a clean rebuild prunes superseded document versions, so history
+    surfaces exactly what the index still holds - retrieval verifies it, and never invents rows the
+    index has pruned.
+*   **Drops are reported, not absorbed.** A candidate the re-read rejects appears in
+    `EvidenceBundle.dropped` with its identity and the reason - `no longer in the authoritative
+    database` (deleted, or a fact the registry no longer holds), `outside the requested scope`,
+    `not current (...)` or `not citable (...)`. The mandatory forensic is pinned by test: build the
+    index, mutate or delete the authoritative row, do not rebuild, and a retrieval must not return the
+    stale row as evidence.
+*   **Read-only, caller's transaction is the caller's, reads are bounded.** A retrieval opens a
+    read-only session (or borrows the caller's, in which case it reads inside the caller's
+    transaction and still never commits it). A fingerprint over the authoritative rows is unchanged by
+    any retrieval. Candidates are re-read in batches - one `id IN (...)` per structured type actually
+    present, plus a few for versions, documents, knowledge items and scope names - so a result of one,
+    ten or a hundred rows costs a handful of queries, asserted by counting the cursors.
+*   **The bundle is a deterministic snapshot.** It is a frozen value object of strings, numbers,
+    booleans and plain mappings (asserted JSON-serialisable, with no reprs, addresses or call
+    timestamps), records the request that produced it (query, scope, policy), and orders its items by
+    the discovery rank with an identity tie-break. It contains no ORM rows, sessions or detached
+    objects.
+
+**Consequences.** `tests/integration/test_retrieval_forensics.py` (50 tests, real SQLite, real
+repositories, real sidecar, no mocks) pins the whole boundary: identity and determinism; the
+authoritative re-read (deleted rows, rejected/superseded/retired rows, deleted and demoted document
+versions, deleted knowledge facts); the scope topology Project A { Field A { A1, A2 }, Field B { B1 } }
+plus Project B { Field C { C1 } } with the same text in every well, so any leak is caught; all six
+structured record types through the one mechanism; CURRENT/HISTORY per type; conflict preservation;
+bundle-wide citation integrity; provenance per source class; read-only fingerprints; caller-transaction
+safety (including a pending modification seen through a caller session but never committed); bounded
+query counts; and the empty/malformed request semantics (empty query, invalid lifecycle, negative
+limit, unknown source type, malformed date bound). The layer adds no tables, no migrations (head stays
+0007) and no dependencies, and it changes no existing search behaviour - `SearchService` answers
+exactly what it answered before; retrieval is a new, higher, verifiable boundary above it.
+
+**Rejected.** A retrieval service that trusts the sidecar past discovery (it would make a stale row
+authoritative evidence, the exact failure the boundary exists to prevent); a direct database scan as
+the discovery path (a second, unranked search engine beside the ranked one, and the two would drift);
+OR-ing well and field into one scope (it would return a well's neighbours, which the precedence exists
+to forbid); inventing a `latest by timestamp` "current" (the domain's lifecycle rules are the current);
+and storing retrieval results (a snapshot of a read is not a new record, and the next read is cheap).

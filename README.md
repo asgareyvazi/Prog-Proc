@@ -23,6 +23,7 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Registry: versions, supersede/duplicate links, revisions, status, audit trail | **implemented, tested** |
 | Schema and migrations | **implemented** (Alembic owns the schema; SQLite per workspace) |
 | Search: BM25 over chunks, filters, cited results, optional re-verification against the file | **implemented** (a disposable SQLite sidecar, rebuilt rather than migrated) |
+| Retrieval & Evidence: search locates candidates, retrieval re-reads each from the authoritative database and returns verified, deterministic, provenance-carrying evidence (or the reason a candidate is not authoritative) | **implemented, tested forensically** (`docs/DECISIONS.md` ADR-0013) |
 | Knowledge: typed facts with per-value provenance, entities, edges, conflict records and human resolutions | **implemented, tested end to end** (`docs/DECISIONS.md` ADR-0008) |
 | Operational records: DDR as a first-class record, operations, events, NPT, problems — written by an idempotent, self-reporting promotion | **implemented, tested end to end** (`docs/DECISIONS.md` ADR-0010) |
 | Engineering records: programmes with targets, versioned procedures, lessons, best practices, recommendations, risks, costs, rigs, service companies | **implemented, tested** (revision chains and lifecycles enforced in the schema) |
@@ -39,7 +40,7 @@ and Ollama (for optional AI) are both opt-in and absent by default.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-PYTHONPATH=src .venv/bin/python -m pytest            # 740 tests: unit, engineering, integration
+PYTHONPATH=src .venv/bin/python -m pytest            # 790 tests: unit, engineering, integration
 .venv/bin/ruff check src tests migrations --output-format=concise
 .venv/bin/ruff format --check src tests migrations
 ```
@@ -88,6 +89,8 @@ src/drilling_intelligence/
   knowledge/      facts and predicates, entity references, the item/edge/conflict repository,
                   derivation from stored artefacts, conflict detection and resolution
   search/         chunking (documents and facts), the structured record projection, index, ranking, the query service
+  retrieval/      the verified-evidence boundary above search: locate via search, re-read from the
+                  authoritative database, return deterministic provenance-carrying evidence (ADR-0013)
   wells/          workspace and well/project/company repositories
   operations/     the operational spine: reports, operations, events, NPT, problems; the promoter
   engineering/    programmes and targets, procedures, plan-vs-actual, risks, costs
