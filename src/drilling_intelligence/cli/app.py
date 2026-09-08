@@ -411,6 +411,89 @@ def command_search(args: argparse.Namespace) -> int:
         workspace.close()
 
 
+def command_evidence(args: argparse.Namespace) -> int:
+    """``drillintel evidence``: the verified evidence for a set of topics, addressed by content.
+
+    Each topic is answered through retrieval - the search candidates re-read from the authoritative
+    database - so what is printed has been verified, not merely located.  The package's identity is
+    its content address: the same database state and the same question earn the same address, and
+    ``evidence query --expect <identity>`` re-asks the question and reports whether the evidence
+    still holds (FRESH) or has moved (STALE, exit 1).
+    """
+    workspace = _open_workspace(args)
+    try:
+        from ..evidence.contract import EvidenceQuery
+        from ..evidence.service import EvidenceQueryService
+
+        scope = _scope(args, workspace, required=False)
+        try:
+            query = EvidenceQuery(
+                topics=tuple(args.topic),
+                well_id=scope.get("well_id", ""),
+                field_id=scope.get("field_id", ""),
+                project_id=scope.get("project_id", ""),
+                source_types=tuple(args.source or ()),
+                lifecycle=args.lifecycle,
+                limit=args.limit,
+                date_from=args.since,
+                date_to=args.until,
+            )
+        except ValueError as exc:
+            raise DrillingIntelligenceError(
+                str(exc),
+                hint="check the topics, scope, --source types, --lifecycle, --limit and date bounds",
+            ) from exc
+        service = EvidenceQueryService.for_workspace(workspace)
+        package = service.query(query)
+        if args.expect:
+            fresh = package.identity == args.expect
+            payload = {
+                "expected": args.expect,
+                "current": package.identity,
+                "fresh": fresh,
+                "package": package.to_dict(),
+            }
+            lines = [
+                f"expected  {args.expect}",
+                f"current   {package.identity}",
+                "fresh: the package still matches the authoritative database"
+                if fresh
+                else "STALE: the evidence moved - the package no longer matches",
+            ]
+            _emit(payload, as_json=args.json, lines=lines)
+            return 0 if fresh else 1
+        payload = package.to_dict()
+        lines = [
+            f"evidence package {package.identity[:16]}…  "
+            f"({package.count} item(s), {len(package.coverage)} topic(s), {package.policy})"
+        ]
+        for entry in package.coverage:
+            note = " [broadened: no record matched every term]" if entry.broadened else ""
+            lines.append(
+                f"  topic {entry.topic!r}: {entry.returned} returned, {entry.dropped} dropped{note}"
+            )
+            for reason in entry.drop_reasons:
+                lines.append(f"    dropped {reason['identity']}: {reason['reason']}")
+        for number, entry in enumerate(package.items, start=1):
+            item = entry.item
+            state = "" if item.current else " [not current]"
+            lines.append(
+                f"{number:>3}. {item.title or item.identity}  "
+                f"({item.source_type}/{item.record_type}{state}; found by: {', '.join(entry.found_by)})"
+            )
+            where = item.locator_ref or item.well_name or "structured record"
+            label = item.status or "no status recorded"
+            lines.append(f"     at {where}   [{label}]")
+            for row in _wrapped(item.text, 96)[:2]:
+                lines.append(f"     {row}")
+        if not package.items:
+            lines.append("no verified evidence answered; see the topic coverage above")
+        _emit(payload, as_json=args.json, lines=lines)
+        return 0
+    finally:
+        workspace.close()
+
+
 def _wrapped(text: str, width: int) -> list[str]:
     """Snippets are one paragraph of a document: keep them readable, never lose the numbers."""
     out: list[str] = []
@@ -1549,6 +1632,52 @@ def build_parser() -> argparse.ArgumentParser:
         "--rebuild", action="store_true", help="rebuild the index from the registry first"
     )
     search.set_defaults(handler=command_search)
+
+    evidence = sub.add_parser(
+        "evidence",
+        help="verified evidence for a set of topics, addressed by content",
+        parents=[common],
+    )
+    ev_sub = evidence.add_subparsers(dest="evidence_command", required=True)
+    for name, help_text in (
+        (
+            "query",
+            "compose the deterministic evidence package (with --expect: report whether it still holds)",
+        ),
+    ):
+        action = ev_sub.add_parser(name, help=help_text, parents=[common])
+        action.add_argument(
+            "--topic",
+            action="append",
+            required=True,
+            help="a question (repeatable): each is answered through retrieval",
+        )
+        action.add_argument("--well", help="this well (id or name); beats --field/--project")
+        action.add_argument("--field", help="every well in this field (id or name)")
+        action.add_argument("--project", help="every well in this project (id or name)")
+        action.add_argument(
+            "--source",
+            action="append",
+            choices=("structured", "document", "knowledge"),
+            help="only these source kinds (repeatable)",
+        )
+        action.add_argument(
+            "--lifecycle",
+            choices=("current", "history"),
+            default="current",
+            help="current answers with what is now; history adds the superseded rows",
+        )
+        action.add_argument("--since", help="records dated on or after this ISO date")
+        action.add_argument("--until", help="records dated on or before this ISO date")
+        action.add_argument(
+            "--limit", type=int, default=0, help="per topic, at most N (0 = no limit)"
+        )
+        action.add_argument(
+            "--expect",
+            metavar="IDENTITY",
+            help="the identity a stored package carries; re-ask and report FRESH (exit 0) or STALE (exit 1)",
+        )
+        action.set_defaults(handler=command_evidence)
 
     index = sub.add_parser(
         "index", help="inspect, rebuild or prune the derived search index", parents=[common]

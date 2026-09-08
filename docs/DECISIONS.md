@@ -642,3 +642,74 @@ the discovery path (a second, unranked search engine beside the ranked one, and 
 OR-ing well and field into one scope (it would return a well's neighbours, which the precedence exists
 to forbid); inventing a `latest by timestamp` "current" (the domain's lifecycle rules are the current);
 and storing retrieval results (a snapshot of a read is not a new record, and the next read is cheap).
+
+## ADR-0014 — An evidence package is an addressable, re-askable read: composed only from retrieval, stale only by a named diff
+
+**Status:** accepted (2026-09-08)
+
+**Context.** The P9 boundary (ADR-0013) proved the direction: search locates, retrieval verifies, and a
+stale sidecar row is not evidence. But the layer that had to *consume* verified evidence - a person at
+the terminal, a script, or the AI surface the platform deliberately does not build yet (ADR-0005) - had
+nothing to point at. `RetrievalService` answers one question at a time, its bundles carry no stable
+address, and the CLI that every other layer of this repository exposes had no way to ask for *the
+evidence*. Every future consumer would otherwise re-invent composition, deduplication and
+"does this still hold?" - and each reinvention is a chance to read the sidecar past discovery. The gap
+was not another query; it was an *addressable answer*.
+
+**Decision.**
+
+*   **One new layer, `drilling_intelligence.evidence`, with one rule: evidence is only ever produced by
+    retrieval.** `EvidenceQueryService` holds a `RetrievalService` and nothing else that can see the
+    database; a service built without one raises rather than degrading to a raw search or a direct
+    scan. Every topic of an `EvidenceQuery` becomes one `RetrievalRequest` - same scope precedence,
+    same lifecycle policy, same authoritative re-read, same drop reasons.
+*   **A package composes topics into one deduplicated answer, and says so per topic.** An item two
+    topics find is one item carrying `found_by` in topic order; `TopicCoverage` records, for each
+    topic, how many verified items it answered with, how many candidates the re-read rejected (with
+    each reason), and whether discovery was broadened. An empty topic is a statement - `returned: 0` -
+    not an error, and a broadened topic keeps its label end to end.
+*   **The package's identity addresses the evidence, not its presentation.** `evpkg:` + sha256 over the
+    canonical request (topics sorted, scope, source kinds, lifecycle, limit, date bounds) and each item's
+    authoritative state (identity, source, status, current), plus per-topic coverage - never over scores
+    or display order, because ranking belongs to the disposable index and the same evidence must earn the
+    same address under any rendering of it. Topic order changes the display, not the address; inserting
+    the same rows in a different order does not either.
+*   **A package stores its own query, and staleness is a named diff, not a timestamp.**
+    `check_freshness` re-runs the stored query against the live authoritative state and reports
+    `added` / `removed` / `changed` identities. A package is either fresh (identity equal, no diff) or
+    stale with the exact evidence that moved - including a status move on a row that is still indexed
+    (`changed`), which an identity-only comparison would miss. This is ADR-0011's rule - "only a
+    snapshot is stored, and it stores its own query" - applied to reads instead of patterns: nothing
+    here is persisted, and nothing here trusts a `created_at`.
+*   **The boundary the sidecar makes is pinned, not papered over.** A new authoritative row is not
+    evidence until a rebuild puts it in the index, so a package stays *fresh* across an unindexed insert
+    and goes stale - with the new identity in `added` - only once the rebuild has run. Retrieval
+    verifies what discovery can see; the package says what discovery saw, and never the other way round.
+*   **The terminal gets the same promise as every other command.** `drillintel evidence query --topic …`
+    prints the package (aligned text, or one JSON document under `--json`), and
+    `drillintel evidence query --topic … --expect <identity>` re-asks the question and exits 0 when the
+    evidence still holds, 1 when it has moved - a freshness check a pipeline can branch on.
+
+**Consequences.** `tests/integration/test_evidence_package_forensics.py` (25 tests, real SQLite, real
+repositories, real sidecar, no mocks) pins the boundary: identity stability across service instances,
+topic order, and insertion order; composition and per-topic coverage; the any-of label in coverage;
+deterministic ordering under score ties; package-wide citation integrity; a CONFLICTED knowledge pair
+carried, not resolved; the well/field/project scope topology with leak detection; superseded-lesson
+current/history under a stale sidecar; freshness over unchanged data; the mandated
+index→mutate→no-rebuild→check forensic with a named `removed` diff; rebuild-driven `added`/`removed`;
+the unindexed-insert boundary; status-move `changed` detection; malformed-query rejection; the
+refusal to run without retrieval; a whole-database read-only fingerprint; bounded authoritative query
+counts across more rows; and the CLI's determinism plus its freshness exit codes. The layer adds no
+tables, no migrations (head stays 0007) and no dependencies, writes nothing, and changes no existing
+behaviour - retrieval and search answer exactly what they answered before; the package is a higher,
+addressable boundary above them.
+
+**Rejected.** Persisting packages (ADR-0013's "a snapshot of a read is not a new record" still holds -
+the freshness check is a re-read, and storage would add a second thing that can go stale); hashing
+scores or display order into the identity (ranking is the disposable index's property, and an address
+that changes when the index is rebuilt is not an address); letting the package discover candidates
+itself (a second discovery path beside search's is exactly the drift ADR-0003 exists to prevent);
+reporting staleness as a timestamp (a package is stale because the answer moved, and the answer is
+found by re-asking, not by the clock); and a free-text "ask" surface (the topics are questions a
+person or a script states deliberately; parsing intent is the AI layer's job, and that layer will
+consume these packages rather than replace them).

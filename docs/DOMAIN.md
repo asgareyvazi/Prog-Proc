@@ -204,6 +204,13 @@ And because the sidecar is a projection that can be stale, a hit is not yet evid
 what no longer is - with the reason - and returns the rest as deterministic, provenance-carrying records
 that a reader can cite without re-checking.
 
+The evidence package (ADR-0014) is the answer a reader actually keeps: a set of topics composed through
+retrieval into one deduplicated set of verified records, with a per-topic account of what was returned,
+dropped and broadened, and a content identity that the same database state always earns for the same
+question. A package stores its own query, so "is this still true?" is answered by re-asking and diffing -
+added, removed, changed - never by a timestamp. Nothing about a package is stored; it is a read with an
+address, and the read is the only thing that can go stale.
+
 ## Names in the schema, where they differ from the sketch
 
 The Phase 1 brief listed the fields each entity must support. Five of them arrived under different names or
