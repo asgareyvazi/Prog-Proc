@@ -27,6 +27,10 @@ The rules it keeps, each of which a forensic test pins down:
 *   **Bounded reads.**  Candidates are re-read in batches by identity - one ``id IN (...)`` per
     structured type actually present, plus a few for versions, documents and the scope names - so a
     result of one, ten or a hundred rows costs a bounded number of queries, not one per row.
+*   **Broadened discovery is labelled.**  Retrieval never broadens a query itself, but when the
+    exact all-terms AND finds nothing the search layer falls back to any-of-the-terms, and the
+    bundle carries that as ``discovery_broadened`` so a broadened answer is never read as an exact
+    one.
 """
 
 from __future__ import annotations
@@ -208,19 +212,23 @@ class RetrievalService:
         )
         with self._authority(session) as active:
             scope = self._resolve_scope(active, req)
-            candidates = self._discover(req)
-            return self._verify(active, req, scope, candidates)
+            candidates, broadened = self._discover(req)
+            return self._verify(active, req, scope, candidates, broadened)
 
     # -- discovery: search is the only candidate source ------------------------
-    def _discover(self, req: RetrievalRequest) -> list[Any]:
-        """The ranked candidates from the search layer, before any authoritative check.
+    def _discover(self, req: RetrievalRequest) -> tuple[list[Any], bool]:
+        """The ranked candidates from the search layer, plus whether discovery was broadened.
 
         An empty query has no terms to match, so there is nothing to verify and the answer is
         empty - an empty bundle, not an error, because "no question" is a valid, deterministic
         answer (and a search over no terms is already defined to match nothing).
+
+        The second element is search's own ``broadened`` flag: retrieval never broadens a query on
+        its own, but when the exact all-terms AND finds nothing the search layer falls back to
+        any-of-the-terms, and the bundle must say so - broadened discovery is not an exact match.
         """
         if not str(req.query or "").strip():
-            return []
+            return [], False
         if self._search is None:
             raise ValidationError(
                 "no search service is bound; retrieval discovers candidates through search",
@@ -252,7 +260,7 @@ class RetrievalService:
             include_superseded=req.lifecycle == LIFECYCLE_HISTORY,
             **scope_kwargs,
         )
-        return list(response.results)
+        return list(response.results), response.broadened
 
     # -- scope ----------------------------------------------------------------
     def _resolve_scope(self, active: Any, req: RetrievalRequest) -> _Scope:
@@ -296,7 +304,12 @@ class RetrievalService:
 
     # -- verification ---------------------------------------------------------
     def _verify(
-        self, active: Any, req: RetrievalRequest, scope: _Scope, candidates: Sequence[Any]
+        self,
+        active: Any,
+        req: RetrievalRequest,
+        scope: _Scope,
+        candidates: Sequence[Any],
+        broadened: bool,
     ) -> EvidenceBundle:
         wanted = set(req.source_types) or {SOURCE_STRUCTURED, SOURCE_DOCUMENT, SOURCE_KNOWLEDGE}
         # Partition the candidates by what must be re-read, so each authoritative table is queried
@@ -344,6 +357,7 @@ class RetrievalService:
             dropped=tuple(dropped),
             policy=req.lifecycle,
             scope=scope_dict,
+            discovery_broadened=broadened,
         )
 
     def _candidate_key(self, result: Any) -> tuple[str, str, str, str]:

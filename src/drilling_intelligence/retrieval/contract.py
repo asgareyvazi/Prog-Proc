@@ -218,6 +218,10 @@ class EvidenceBundle:
     dropped: tuple[dict[str, Any], ...] = ()
     policy: str = LIFECYCLE_CURRENT
     scope: dict[str, Any] = field(default_factory=dict)
+    #: True when discovery relaxed the query: the exact all-terms AND matched nothing and the
+    #: search layer fell back to any-of-the-terms.  Retrieval never broadens on its own, but it
+    #: refuses to let a reader mistake broadened discovery for an exact match either.
+    discovery_broadened: bool = False
 
     @property
     def count(self) -> int:
@@ -229,6 +233,7 @@ class EvidenceBundle:
             "policy": self.policy,
             "scope": dict(self.scope),
             "count": len(self.items),
+            "discovery_broadened": self.discovery_broadened,
             "items": [item.to_dict() for item in self.items],
             "dropped": [dict(entry) for entry in self.dropped],
         }

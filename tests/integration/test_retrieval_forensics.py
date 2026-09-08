@@ -781,6 +781,15 @@ class TestBundleIntegrity:
         assert bundle.request["query"] == SHARED_TERM
         assert bundle.scope["level"] == "all"
         assert bundle.policy == "current"
+        # And how the question was discovered: the exact query was answered exactly, while a query
+        # no record satisfies as a whole is answered by search's any-of fallback - and the bundle
+        # carries the label, so a broadened answer is never mistaken for an exact one.
+        assert bundle.to_dict()["discovery_broadened"] is False
+        broadened = world.retrieve(query=f"{SHARED_TERM} zzzqqq", limit=0)
+        assert broadened.count > 0
+        assert broadened.discovery_broadened is True
+        assert broadened.to_dict()["discovery_broadened"] is True
+        assert all(item.verified for item in broadened.items)
 
 
 # ============================================================================ provenance
@@ -1054,8 +1063,13 @@ class TestEmptyAndFailureSemantics:
         # "No question" and "no matches" are both valid, deterministic, empty answers.
         empty = world.retrieve(query="   ", limit=0)
         assert empty.count == 0 and empty.items == () and empty.dropped == ()
+        assert empty.discovery_broadened is False  # no question, so nothing was broadened
         unmatched = world.retrieve(query="a word no one wrote zzzqqq", limit=0)
         assert unmatched.count == 0 and unmatched.dropped == ()
+        # No unit satisfied every term, so search's documented fallback broadened the query to
+        # any-of-the-terms.  An empty answer must still say the exact question was not what was
+        # asked - the label travels on the bundle.
+        assert unmatched.discovery_broadened is True
 
     def test_invalid_request_fields_are_rejected(self, world) -> None:
         with pytest.raises(ValueError):

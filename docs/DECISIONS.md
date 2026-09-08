@@ -617,7 +617,10 @@ boundary between "the index says this exists" and "this is authoritative evidenc
     booleans and plain mappings (asserted JSON-serialisable, with no reprs, addresses or call
     timestamps), records the request that produced it (query, scope, policy), and orders its items by
     the discovery rank with an identity tie-break. It contains no ORM rows, sessions or detached
-    objects.
+    objects. It also records *how* the question was discovered: retrieval never broadens a query on
+    its own, but when the exact all-terms AND finds nothing the search layer's documented fallback
+    answers any-of-the-terms, and the bundle carries that as `discovery_broadened` - a broadened
+    answer is never mistaken for an exact one.
 
 **Consequences.** `tests/integration/test_retrieval_forensics.py` (50 tests, real SQLite, real
 repositories, real sidecar, no mocks) pins the whole boundary: identity and determinism; the
@@ -627,8 +630,9 @@ plus Project B { Field C { C1 } } with the same text in every well, so any leak 
 structured record types through the one mechanism; CURRENT/HISTORY per type; conflict preservation;
 bundle-wide citation integrity; provenance per source class; read-only fingerprints; caller-transaction
 safety (including a pending modification seen through a caller session but never committed); bounded
-query counts; and the empty/malformed request semantics (empty query, invalid lifecycle, negative
-limit, unknown source type, malformed date bound). The layer adds no tables, no migrations (head stays
+query counts; the broadened-discovery label, and the empty/malformed request
+semantics (empty query, invalid lifecycle, negative limit, unknown source type, malformed
+date bound). The layer adds no tables, no migrations (head stays
 0007) and no dependencies, and it changes no existing search behaviour - `SearchService` answers
 exactly what it answered before; retrieval is a new, higher, verifiable boundary above it.
 
