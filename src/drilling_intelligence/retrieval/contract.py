@@ -161,6 +161,11 @@ class EvidenceItem:
     document_version_id: str = ""
     locator_ref: str = ""
     provenance: dict[str, Any] | list[Any] = field(default_factory=dict)
+    #: For a document or knowledge citation: whether the item's text reads as a quotation of the
+    #: cited region (the excerpt appears in it).  A view carved out of a larger region is not
+    #: verbatim, and its citation can only be checked against the source file's hash, never by
+    #: excerpt comparison - a correct citation would otherwise report itself as broken.
+    verbatim: bool = False
     #: Display content, read from the authoritative row.
     title: str = ""
     text: str = ""
@@ -193,6 +198,7 @@ class EvidenceItem:
                 if isinstance(self.provenance, Mapping)
                 else list(self.provenance)
             ),
+            "verbatim": self.verbatim,
             "title": self.title,
             "text": self.text,
             "record_date": self.record_date,

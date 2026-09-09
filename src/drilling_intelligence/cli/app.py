@@ -488,6 +488,23 @@ def command_evidence(args: argparse.Namespace) -> int:
                 lines.append(f"     {row}")
         if not package.items:
             lines.append("no verified evidence answered; see the topic coverage above")
+        if args.verify:
+            from ..evidence.verify import CitationAuditor
+
+            audit = CitationAuditor.for_workspace(workspace).audit(package)
+            payload["audit"] = audit.to_dict()
+            lines.append("  citations:")
+            for check in audit.checks:
+                mark = f"{check.citation or '(no file citation)'}"
+                note = f"  [{check.check}]" if check.check else ""
+                detail = f"  - {check.detail}" if check.detail else ""
+                lines.append(f"    {check.status:<13} {mark}{note}{detail}")
+            tally = audit.counts
+            lines.append(
+                f"  {len(audit.checks)} citation check(s): "
+                f"{tally['MATCH']} verified, {tally['MISMATCH']} broken, "
+                f"{tally['UNREADABLE']} unreadable, {tally['NOT_CHECKABLE']} not checkable"
+            )
         _emit(payload, as_json=args.json, lines=lines)
         return 0
     finally:
@@ -1676,6 +1693,11 @@ def build_parser() -> argparse.ArgumentParser:
             "--expect",
             metavar="IDENTITY",
             help="the identity a stored package carries; re-ask and report FRESH (exit 0) or STALE (exit 1)",
+        )
+        action.add_argument(
+            "--verify",
+            action="store_true",
+            help="re-read each item's source file and report whether its citation still holds",
         )
         action.set_defaults(handler=command_evidence)
 

@@ -211,6 +211,16 @@ question. A package stores its own query, so "is this still true?" is answered b
 added, removed, changed - never by a timestamp. Nothing about a package is stored; it is a read with an
 address, and the read is the only thing that can go stale.
 
+The citation audit (ADR-0015) answers the one question the re-reads above do not: *does the file still
+say what the citation recorded?* Retrieval proves the row exists; the package proves the answer holds;
+the audit re-opens each item's source file and re-checks the recorded citation against it - the file's
+hash, and, where the item quotes its region, the recorded location re-read and compared with the recorded
+excerpt. The states are explicit, not a silent pass: a mutated source is a named `MISMATCH` (with the
+recorded and the current hash), a deleted one `UNREADABLE`, and a row that cites no file is
+`NOT_CHECKABLE` - counted, not invented away. A table cited as a whole is excerpted as its rendered rows,
+so on a hash-verified file the audit reports file identity rather than a false content mismatch. It is a
+read that re-checks what the evidence cites, opt-in via `evidence query --verify`, and it stores nothing.
+
 ## Names in the schema, where they differ from the sketch
 
 The Phase 1 brief listed the fields each entity must support. Five of them arrived under different names or

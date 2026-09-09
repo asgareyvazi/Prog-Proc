@@ -713,3 +713,82 @@ reporting staleness as a timestamp (a package is stale because the answer moved,
 found by re-asking, not by the clock); and a free-text "ask" surface (the topics are questions a
 person or a script states deliberately; parsing intent is the AI layer's job, and that layer will
 consume these packages rather than replace them).
+
+## ADR-0015 — A citation is verified by re-reading the file, not by trusting the row: the citation auditor
+
+**Status:** accepted (2026-09-09)
+
+**Context.** The certified chain proves two things at a time: retrieval (ADR-0013) re-reads each search
+candidate from the authoritative database, so an item's *row* still exists and is current; the evidence
+package (ADR-0014) re-asks its stored query, so the *answer* still holds. Neither proves the third
+thing a reader actually relies on - that the item's *citation* still holds. A record can say "mud
+weight 10.2 ppg, read from `mud_report.xlsx`, Sheet `Summary`, cell B9, excerpt '10.2', sha256 …", and
+every row-level and package-level check can pass while that cell no longer contains 10.2, or the file
+no longer exists, or the file has been re-saved and the bytes have moved. The core already had the
+primitive for exactly this - `core.provenance.verify_provenance` (hash pre-check, then re-read the
+recorded location and compare with the recorded excerpt, fuzzy ≥ 0.9) - but it was reachable only
+through search's `--verify`, one hit at a time, and the evidence layer had never exposed it: "verified
+evidence" verified row existence, not citation truth.
+
+**Decision.**
+
+*   **One new read-only object, `CitationAuditor`, on the evidence layer, that audits a package rather
+    than a query.** It takes an `EvidencePackage` (already composed, already verified at the row level)
+    and returns a `CitationAuditReport`: one `CitationCheck` per item, in item-identity order, with an
+    explicit tally. It never writes, never reads the search sidecar, and never re-runs discovery - it
+    re-reads what the *items* claim to cite, so the audit is a property of the evidence it was given,
+    not of a fresh search that could drift.
+*   **The states are explicit and are never collapsed into an empty success.** `MATCH` (the citation was
+    re-read and the content still holds), `MISMATCH` (the source no longer contains what the citation
+    claims), `UNREADABLE` (the file or the recorded location cannot be re-read), `NOT_CHECKABLE` (there
+    is no file citation to check, or no recorded hash to fall back on). `all_verified` is true only when
+    nothing is `MISMATCH` or `UNREADABLE`; `NOT_CHECKABLE` items are counted and labelled, not silently
+    passed - a manually entered row that cites the row itself is `NOT_CHECKABLE`, and the report says so.
+*   **The check kind follows what the citation honestly claims, using the same rule search's `--verify`
+    uses.** A document or knowledge item that reads as a *quotation* of its region (`verbatim`, computed
+    by search against the full chunk text and now carried on the `EvidenceItem`) is verified by re-reading
+    the recorded location and comparing the excerpt (`check="excerpt"`). A *view* of a larger region has
+    nothing at its location that reads as its text, so it is verified by the source file's hash alone
+    (`check="source"`) - weaker, and labelled as such. A structured row's citation is the row itself
+    (retrieval re-read it); each document it cites through its evidence list is re-read, and the row folds
+    its citations to the worst of them.
+*   **A verified file whose recorded excerpt is a rendering is not reported broken.** The audit's first
+    run exposed a real subtlety: a table cited as a whole is excerpted as its *rendered* rows (a CSV's
+    tab-joined cells, a docx table's `|`-joined cells), not a raw slice of the file, so a raw re-read of
+    the unchanged file legitimately differs from the recorded excerpt. Where the source hash matches the
+    extraction's hash, the file is byte-for-byte the extraction's file and cannot have lost its content -
+    so the audit reports `MATCH` with `check="source"` and the explanation, rather than a false
+    `MISMATCH`. The rendering is normalised away by the hash; the audit does not invent a stricter
+    content claim than the citation makes.
+*   **It composes, it does not duplicate.** The excerpt/hash comparison is the core's
+    `verify_provenance`; the version-to-file resolution is the document repository's
+    `resolve_source_path` (recorded absolute path, then workspace-relative - provenance survives a moved
+    workspace). The audit adds the layer around them: batch the version ids the package cites, read them
+    in one `IN` query, hash each cited file once, and interpret the outcome per the rule above.
+*   **The terminal gets it as opt-in, not as a slow default.** `drillintel evidence query --topic …
+    --verify` re-reads the sources and prints an `audit` section (one line per item: status, citation,
+    check kind, and the hashes where relevant), because re-reading files is the expensive half. Without
+    `--verify` the command is byte-for-byte what it was.
+
+**Consequences.** `tests/integration/test_evidence_citation_forensics.py` (21 tests, real workspace, real
+SQLite, real generated files, no mocks) pins the boundary: a clean corpus verifies, and the check kind
+follows verbatimness; a *mutated* source is a `MISMATCH` while the row still verifies and the package
+keeps its identity (the exact gap P11 closes); restoring the source restores verification; a *deleted*
+source is `UNREADABLE` and localised to its citing items; a structured row citing documents verifies
+through its evidence; a rendered excerpt of a hash-verified file is `MATCH`, not `MISMATCH`; a structured
+row with no file citation is `NOT_CHECKABLE`, not passed; a broken second citation folds the row to the
+worst; a citation at a version missing from the registry, and a malformed stored provenance, are
+`NOT_CHECKABLE`, not crashes; the audit is byte-deterministic, order-independent, one batched
+authoritative query, and read-only (whole-DB fingerprint and every workspace file byte-identical after).
+The layer adds no tables, no migrations (head stays 0007) and no dependencies, writes nothing, and
+changes no existing behaviour - retrieval and the package answer exactly what they answered before; the
+auditor is a read that re-checks what they cite.
+
+**Rejected.** Persisting the audit result (a re-read is the audit; storing its outcome would create a
+second thing that can go stale - the same rule ADR-0014 applied to the package); making `--verify` the
+default (it opens source files; on a large workspace that is a slow command nobody asked for); reporting
+a rendering mismatch as `MISMATCH` (it would report a correct citation as broken every time a table was
+cited as a whole); a free "check everything" sweep independent of a package (the audit is about *this*
+evidence's citations, in identity order - a whole-workspace sweep is `doctor`'s job, and the two stay
+separate); and re-reading the search sidecar to learn what to check (the citation rides on the verified
+item, and the sidecar is the disposable projection the chain exists not to trust).

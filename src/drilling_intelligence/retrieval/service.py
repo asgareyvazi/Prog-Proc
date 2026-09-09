@@ -623,6 +623,9 @@ class RetrievalService:
             document_version_id=version_id,
             locator_ref=str(result.locator_ref or ""),
             provenance=dict(result.provenance or {}),
+            # Computed by search against the full chunk text: a citation check later can only be
+            # an excerpt comparison when the item actually reads as a quotation of its region.
+            verbatim=bool(result.verbatim),
             title=str(document.title or document.filename or ""),
             text=result.snippet or result.text or "",
             record_date=_iso(document.document_date),
@@ -677,6 +680,9 @@ class RetrievalService:
             document_version_id=str(item.document_version_id or version_id),
             locator_ref=str(result.locator_ref or ""),
             provenance=dict(result.provenance or {}),
+            # A fact is a rendering of the source cell, not a quotation of it - its citation is
+            # checkable by the source file's hash, and by excerpt only when the chunk does quote it.
+            verbatim=bool(result.verbatim),
             title=str(item.predicate or ""),
             text=result.snippet or result.text or "",
             record_date=_iso(item.valid_from),

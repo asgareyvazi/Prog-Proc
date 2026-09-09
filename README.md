@@ -25,12 +25,13 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Search: BM25 over chunks, filters, cited results, optional re-verification against the file | **implemented** (a disposable SQLite sidecar, rebuilt rather than migrated) |
 | Retrieval & Evidence: search locates candidates, retrieval re-reads each from the authoritative database and returns verified, deterministic, provenance-carrying evidence (or the reason a candidate is not authoritative) | **implemented, tested forensically** (`docs/DECISIONS.md` ADR-0013) |
 | Evidence packages: a set of topics composed into one deduplicated, content-addressed answer that stores its own query and reports staleness as a named diff (added / removed / changed) | **implemented, tested forensically** (`docs/DECISIONS.md` ADR-0014) |
+| Citation auditor: re-reads each item's source file (hash + recorded location) and reports whether the citation still holds - MATCH / MISMATCH / UNREADABLE / NOT_CHECKABLE, opt-in via `evidence query --verify` | **implemented, tested forensically** (`docs/DECISIONS.md` ADR-0015) |
 | Knowledge: typed facts with per-value provenance, entities, edges, conflict records and human resolutions | **implemented, tested end to end** (`docs/DECISIONS.md` ADR-0008) |
 | Operational records: DDR as a first-class record, operations, events, NPT, problems — written by an idempotent, self-reporting promotion | **implemented, tested end to end** (`docs/DECISIONS.md` ADR-0010) |
 | Engineering records: programmes with targets, versioned procedures, lessons, best practices, recommendations, risks, costs, rigs, service companies | **implemented, tested** (revision chains and lifecycles enforced in the schema) |
 | The generic engineering record: a computed number stored with its method, version, inputs and units, assumptions, validation, confidence and evidence | **implemented, tested** (`record_calculation`; re-running is a no-op, superseding keeps the old row) |
 | Field intelligence: derived timelines, NPT/problem rollups, offset candidates, recurring patterns with staleness checks | **implemented, tested on a two-well golden field** (`docs/DOMAIN.md`) |
-| Domain CLI: `records`, `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
+| Domain CLI: `records`, `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
 | Skills, AI providers, desktop UI, and engineering-calculation *engines* | planned — the record that stores a result exists and cites its evidence; nothing in this repository computes one, and `docs/DECISIONS.md` ADR-0012 keeps that split |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
@@ -41,7 +42,7 @@ and Ollama (for optional AI) are both opt-in and absent by default.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-PYTHONPATH=src .venv/bin/python -m pytest            # 815 tests: unit, engineering, integration
+PYTHONPATH=src .venv/bin/python -m pytest            # 836 tests: unit, engineering, integration
 .venv/bin/ruff check src tests migrations --output-format=concise
 .venv/bin/ruff format --check src tests migrations
 ```
@@ -93,7 +94,8 @@ src/drilling_intelligence/
   retrieval/      the verified-evidence boundary above search: locate via search, re-read from the
                   authoritative database, return deterministic provenance-carrying evidence (ADR-0013)
   evidence/       addressable, re-askable packages composed only from retrieval: content identity,
-                  per-topic coverage, and staleness as a named diff (ADR-0014)
+                  per-topic coverage, staleness as a named diff (ADR-0014), and the read-only citation
+                  auditor that re-reads each item's source file (ADR-0015)
   wells/          workspace and well/project/company repositories
   operations/     the operational spine: reports, operations, events, NPT, problems; the promoter
   engineering/    programmes and targets, procedures, plan-vs-actual, risks, costs
