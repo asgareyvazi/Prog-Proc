@@ -14,7 +14,14 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
-from tests.fixtures.fieldops import TOTAL_NPT_HOURS, add_casing_program, field_id, ingest, promote
+from tests.fixtures.fieldops import (
+    TOTAL_NPT_HOURS,
+    add_casing_program,
+    field_id,
+    ingest,
+    promote,
+    well_id_for,
+)
 
 from drilling_intelligence.cli.app import main
 
@@ -282,3 +289,105 @@ def test_a_command_without_a_scope_says_so(ready) -> None:
     assert payload["ok"] is False
     assert payload["message"] == "this command needs a scope"
     assert "--well" in payload["context"]["hint"]
+
+
+def _record_a_dependency(workspace) -> tuple[str, str]:
+    """One real calculation, recorded through the service, citing a canonical subject.
+
+    Written through the engineering service rather than by hand so the row the CLI reads is the row a
+    user would actually have: a real well id, a real transaction, a real canonical key.
+    """
+    from drilling_intelligence.core.ids import subject_key
+    from drilling_intelligence.engineering.repository import EngineeringRepository
+
+    well = well_id_for(workspace, "A-3")
+    key = subject_key(well_id=well, property_name="mud_weight", record_state="ACTUAL")
+    with workspace.database.unit_of_work() as session:
+        row, _ = EngineeringRepository(session).record_calculation(
+            method_id="hydraulics.ecd",
+            method_version="1.0",
+            inputs={"mw": {"value": "10.2 ppg", "subject_key": key}},
+            outputs={"ecd_ppg": 11.4},
+            well_id=well,
+        )
+        session.flush()
+        return key, row.id
+
+
+def test_records_impact_reports_the_dependency_and_says_it_resolved_the_subject(ready) -> None:
+    key, calculation_id = _record_a_dependency(ready)
+    payload = call(ready, "records", "impact", key)
+    assert payload["resolved"] is True
+    assert payload["subject_kind"] == "well"
+    assert payload["calculations"] == 1
+    assert payload["counts"]["CURRENT"] == 1
+    assert [entry["calculation_id"] for entry in payload["entries"]] == [calculation_id]
+    assert payload["entries"][0]["method_id"] == "hydraulics.ecd"
+
+
+def test_records_impact_distinguishes_an_unrecognised_subject_from_an_unaffected_one(
+    ready,
+) -> None:
+    """The distinction the command exists for, checked on the exit code as well as the text."""
+    from drilling_intelligence.core.ids import subject_key
+
+    _record_a_dependency(ready)
+    unaffected = call(
+        ready,
+        "records",
+        "impact",
+        subject_key(well_id=well_id_for(ready, "A-3"), property_name="nothing_here"),
+    )
+    assert unaffected["resolved"] is True and unaffected["calculations"] == 0
+
+    code, out, _ = _capture(ready, "records", "impact", "mud_report.xlsx!Summary!B9")
+    unresolved = json.loads(out)
+    assert unresolved["resolved"] is False, unresolved
+    assert code == 1, "an unresolved subject is not a success"
+
+
+def test_records_impact_prints_the_same_answer_as_text_and_as_json(ready) -> None:
+    key, calculation_id = _record_a_dependency(ready)
+    out, err = StringIO(), StringIO()
+    saved = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+    try:
+        code = main(["records", "impact", key, "--workspace", str(ready.root)])
+    finally:
+        sys.stdout, sys.stderr = saved
+    assert code == 0, err.getvalue()
+    text = out.getvalue()
+    assert not text.startswith("{"), "the default output is text, not JSON"
+    assert calculation_id in text and "hydraulics.ecd" in text
+    assert "CURRENT" in text
+    assert json.loads(json.dumps(call(ready, "records", "impact", key)))["calculations"] == 1
+
+
+def test_records_impact_does_not_write_anything(ready) -> None:
+    """A read-only inspection, compared as a fingerprint of both calculation tables."""
+    import hashlib
+
+    from sqlalchemy import select
+
+    from drilling_intelligence.database.models import Calculation, CalculationInput
+
+    key, _ = _record_a_dependency(ready)
+
+    def fingerprint() -> str:
+        with ready.database.session() as session:
+            rows = []
+            for model in (Calculation, CalculationInput):
+                for row in session.execute(select(model).order_by(model.id)).scalars():
+                    rows.append(
+                        sorted(
+                            (str(k), str(v))
+                            for k, v in row.__dict__.items()
+                            if k != "_sa_instance_state"
+                        )
+                    )
+        return hashlib.sha256(repr(rows).encode("utf-8")).hexdigest()
+
+    before = fingerprint()
+    call(ready, "records", "impact", key)
+    call(ready, "records", "impact", "mud_report.xlsx!Summary!B9", expect=1)
+    assert fingerprint() == before

@@ -32,6 +32,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
+from sqlalchemy import and_ as sa_and
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -47,7 +48,13 @@ from ..core.enums import (
 )
 from ..core.errors import UnitError, ValidationError
 from ..core.hashing import sha256_obj
-from ..core.ids import new_id
+from ..core.ids import (
+    LEGACY_KIND,
+    MAX_RENDERED_LENGTH,
+    SubjectKey,
+    is_canonical_subject,
+    new_id,
+)
 from ..core.lifecycle import PROCEDURE_LIFECYCLE, PROGRAM_LIFECYCLE
 from ..core.units import Quantity, resolve_unit
 from ..core.vocabulary import snake_token
@@ -175,6 +182,78 @@ def _token(value: object, fallback: str = "general") -> str:
     """A stable snake_case token for an open-vocabulary column, with a documented fallback."""
     token = snake_token(value)
     return token or fallback
+
+
+#: The dependency states :meth:`EngineeringRepository.calculation_impact` reports, and the
+#: vocabulary ``doctor`` prints.  They are deliberately three, not two: an input the platform
+#: cannot resolve is a different answer from one whose source is still current, and collapsing
+#: the two is how "nothing is affected" comes to mean "I could not tell" (ADR-0016).
+DEPENDENCY_CURRENT = "CURRENT"
+DEPENDENCY_STALE = "STALE"
+DEPENDENCY_UNRESOLVED = "UNRESOLVED"
+
+
+def resolve_input_subject(raw: str) -> tuple[str | None, str | None, str | None]:
+    """Turn a caller's subject string into ``(stored key, subject kind, subject id)``.
+
+    Three outcomes, and the difference between them is the whole point of ADR-0016:
+
+    *   **nothing** - an empty or whitespace-only subject is not a dependency at all, and all
+        three come back ``None`` (the same behaviour this method has always had);
+    *   **canonical** - a string that round-trips through :class:`~drilling_intelligence.core.ids.SubjectKey`
+        and names a durable anchor is normalised (``property:MUD_WEIGHT`` and
+        ``property:mud weight`` become one key), stored in that canonical form, and resolved into
+        its ``(kind, id)`` pair, so the change-impact query is a lookup on columns;
+    *   **legacy** - anything else (``well:A-3|mud_weight`` with no ``property:`` component, a
+        spreadsheet cell reference, a bare token) is preserved *verbatim* and labelled
+        ``legacy`` with no id.  Guessing an identity for it would be a fabricated dependency,
+        which is worse than an honest "I cannot resolve this".
+
+    A canonical key too long for the column is stored as its deterministic digest rather than
+    truncated, because a truncated write followed by an exact-match read loses the row to the
+    caller who wrote it.  A *legacy* value that is too long is refused outright: silently cutting
+    free text produces a string that means something different from what was passed.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return (None, None, None)
+    if is_canonical_subject(text):
+        subject = SubjectKey.parse(text)
+        kind, identifier = subject.anchor()
+        return (subject.storage_key(), kind, identifier[:64] or None)
+    if len(text) > MAX_RENDERED_LENGTH:
+        raise ValidationError(
+            "this input's subject is too long to store and is not a canonical subject key",
+            hint=(
+                "build it with core.ids.SubjectKey so it can be stored as a digest, or shorten it"
+            ),
+            length=len(text),
+            limit=MAX_RENDERED_LENGTH,
+        )
+    return (text, LEGACY_KIND, None)
+
+
+def _input_provenance(entry: Mapping[str, Any], row: Calculation) -> dict[str, Any] | None:
+    """The evidence for one input: what the caller supplied, else what the record itself cites.
+
+    An input that names a subject but carries no provenance used to store ``NULL``, which left the
+    dependency edge without the citation the rest of this platform requires of a derived value.
+    Inheriting the *record's own* citation is not an invention - it is the document version the
+    calculation already declares, recorded on the input so the edge can be audited on its own -
+    and it happens only when the caller gave none and the record actually has one.  A record that
+    cites nothing still yields ``None``: nothing is manufactured here.
+    """
+    supplied = dict(entry.get("provenance") or {})
+    if supplied:
+        return supplied
+    inherited: dict[str, Any] = {}
+    if row.document_version_id:
+        inherited["document_version_id"] = str(row.document_version_id)
+    if row.document_id:
+        inherited["document_id"] = str(row.document_id)
+    if inherited:
+        inherited["inherited_from"] = "calculation"
+    return inherited or None
 
 
 class EngineeringRepository:
@@ -1281,7 +1360,8 @@ class EngineeringRepository:
                     dimension_text = resolve_unit(unit_text).dimension.value
                 except (UnitError, ValueError, KeyError):
                     dimension_text = ""
-            subject = str(entry.get("subject_key") or entry.get("source") or "").strip()
+            raw_subject = str(entry.get("subject_key") or entry.get("source") or "").strip()
+            stored_subject, subject_kind, subject_id = resolve_input_subject(raw_subject)
             self.session.add(
                 CalculationInput(
                     id=new_id("cain"),
@@ -1291,10 +1371,12 @@ class EngineeringRepository:
                     unit=unit_text[:24],
                     dimension=dimension_text[:32],
                     source_kind=str(
-                        entry.get("source_kind") or ("knowledge" if subject else "user")
+                        entry.get("source_kind") or ("knowledge" if raw_subject else "user")
                     )[:24],
-                    subject_key=subject[:300] or None,
-                    provenance=dict(entry.get("provenance") or {}) or None,
+                    subject_key=stored_subject,
+                    subject_kind=subject_kind,
+                    subject_id=subject_id,
+                    provenance=_input_provenance(entry, row),
                 )
             )
             added += 1
@@ -1316,26 +1398,203 @@ class EngineeringRepository:
             ).scalars()
         )
 
-    def calculations_using(self, subject_key: str) -> list[Calculation]:
+    def calculations_using(
+        self,
+        subject_key: str,
+        *,
+        current_only: bool = False,
+        well_id: str = "",
+        section_id: str = "",
+        project_id: str = "",
+    ) -> list[Calculation]:
         """Every record that consumed this input - the change-impact question, answered by index.
 
-        A subject key is a document field, a knowledge item or a well attribute, named the way the input
-        named it.  When that source changes, this is how a person finds the numbers that have to be
-        re-run, without a scan of every payload in the workspace.
+        A subject key is a document field, a knowledge item or a well attribute.  When that source
+        changes, this is how a person finds the numbers that have to be re-run, without a scan of
+        every payload in the workspace.
+
+        Since ADR-0016 the match is on the *resolved* subject (``subject_kind`` + ``subject_id``)
+        plus the canonical rendering, not on the caller's spelling, so ``property:MUD_WEIGHT`` and
+        ``property:mud_weight`` find the same records and a key too long for the column is found by
+        its digest.  A subject the platform cannot resolve is still matched literally - a legacy
+        row remains reachable by the exact string it was written with.
+
+        Each calculation appears **once**, however many of its inputs named the subject.
+        ``current_only`` and the scope arguments narrow the answer the same way
+        :meth:`calculations_for` does.  Use :meth:`calculation_impact` when the caller needs to
+        distinguish "nothing depends on this" from "this subject is not one I recognise".
         """
         wanted = str(subject_key or "").strip()
         if not wanted:
             raise ValidationError(
                 "no input subject was named", hint="pass the subject key to look up"
             )
-        return list(
-            self.session.execute(
-                select(Calculation)
-                .join(CalculationInput, CalculationInput.calculation_id == Calculation.id)
-                .where(CalculationInput.subject_key == wanted)
-                .order_by(Calculation.created_at.desc(), Calculation.id.desc())
-            ).scalars()
+        statement = (
+            select(Calculation)
+            .join(CalculationInput, CalculationInput.calculation_id == Calculation.id)
+            .where(self._subject_predicate(wanted))
         )
+        if well_id:
+            statement = statement.where(Calculation.well_id == well_id)
+        if section_id:
+            statement = statement.where(Calculation.section_id == section_id)
+        if project_id:
+            statement = statement.where(Calculation.project_id == project_id)
+        if current_only:
+            # "Nobody has superseded it", read off the chain rather than the status column - the
+            # same rule ``calculations_for`` uses, so the two cannot disagree.
+            superseded = select(Calculation.supersedes_id).where(
+                Calculation.supersedes_id.is_not(None)
+            )
+            statement = statement.where(Calculation.id.not_in(superseded))
+        # DISTINCT, because a calculation whose two inputs name one subject is one affected
+        # calculation, not two.  The ordering columns are in the select list so the distinct is
+        # well-defined on every backend.
+        statement = statement.distinct().order_by(
+            Calculation.created_at.desc(), Calculation.id.desc()
+        )
+        return list(self.session.execute(statement).scalars())
+
+    @staticmethod
+    def _subject_predicate(wanted: str) -> Any:
+        """How a caller's subject string is matched against stored inputs.
+
+        A canonical subject is matched by its resolved ``(kind, id)`` *and* its canonical
+        rendering, which is what makes two spellings of one subject the same query.  Anything
+        else is matched literally, so a legacy row stays reachable by exactly the text it holds.
+        """
+        stored_key, kind, identifier = resolve_input_subject(wanted)
+        if kind and kind != LEGACY_KIND and identifier:
+            return sa_and(
+                CalculationInput.subject_kind == kind,
+                CalculationInput.subject_id == identifier,
+                CalculationInput.subject_key == stored_key,
+            )
+        return CalculationInput.subject_key == (stored_key or wanted)
+
+    def calculation_impact(
+        self,
+        subject_key: str,
+        *,
+        current_only: bool = False,
+        well_id: str = "",
+        section_id: str = "",
+        project_id: str = "",
+    ) -> dict[str, Any]:
+        """The change-impact answer as data: what depends on this subject, and how current it is.
+
+        The report distinguishes the three outcomes a bare list cannot (ADR-0016):
+
+        *   ``resolved`` false - the subject is not a canonical key the platform recognises.  The
+            answer is *"I cannot resolve this"*, not *"nothing depends on it"*, and the caller is
+            told which it is;
+        *   an input whose cited document version is no longer the current one is ``STALE``;
+        *   everything else is ``CURRENT``.
+
+        Read-only and deterministic: nothing is recomputed, nothing is invalidated, no row is
+        written, and no guess is made about which new version should replace an old one - that is
+        an engineering decision, and this method exists to put it in front of a person.
+        """
+        wanted = str(subject_key or "").strip()
+        if not wanted:
+            raise ValidationError(
+                "no input subject was named", hint="pass the subject key to look up"
+            )
+        stored_key, kind, identifier = resolve_input_subject(wanted)
+        resolved = bool(kind and kind != LEGACY_KIND and identifier)
+        calculations = self.calculations_using(
+            wanted,
+            current_only=current_only,
+            well_id=well_id,
+            section_id=section_id,
+            project_id=project_id,
+        )
+        by_id = {row.id: row for row in calculations}
+        inputs = (
+            list(
+                self.session.execute(
+                    select(CalculationInput)
+                    .where(
+                        CalculationInput.calculation_id.in_(sorted(by_id)),
+                        self._subject_predicate(wanted),
+                    )
+                    .order_by(CalculationInput.calculation_id, CalculationInput.name)
+                ).scalars()
+            )
+            if by_id
+            else []
+        )
+        current_versions = self._current_version_ids(
+            {
+                str(item.provenance.get("document_version_id") or "")
+                for item in inputs
+                if isinstance(item.provenance, dict)
+            }
+            | {str(row.document_version_id or "") for row in calculations}
+        )
+        entries: list[dict[str, Any]] = []
+        for item in inputs:
+            row = by_id[item.calculation_id]
+            cited = str(
+                (item.provenance or {}).get("document_version_id")
+                if isinstance(item.provenance, dict)
+                else ""
+            ) or str(row.document_version_id or "")
+            if not resolved:
+                state = DEPENDENCY_UNRESOLVED
+            elif cited and cited not in current_versions:
+                state = DEPENDENCY_STALE
+            else:
+                state = DEPENDENCY_CURRENT
+            entries.append(
+                {
+                    "calculation_id": row.id,
+                    "method_id": row.method_id,
+                    "method_version": row.method_version,
+                    "status": row.status,
+                    "revision": int(row.revision or 1),
+                    "well_id": str(row.well_id or ""),
+                    "input_name": item.name,
+                    "subject_key": item.subject_key or "",
+                    "subject_kind": item.subject_kind or "",
+                    "subject_id": item.subject_id or "",
+                    "document_version_id": cited,
+                    "dependency": state,
+                }
+            )
+        entries.sort(key=lambda entry: (entry["calculation_id"], entry["input_name"]))
+        counts = {
+            DEPENDENCY_CURRENT: 0,
+            DEPENDENCY_STALE: 0,
+            DEPENDENCY_UNRESOLVED: 0,
+        }
+        for entry in entries:
+            counts[entry["dependency"]] += 1
+        return {
+            "subject": wanted,
+            "resolved": resolved,
+            "subject_key": stored_key or wanted,
+            "subject_kind": kind or "",
+            "subject_id": identifier or "",
+            "calculations": len(by_id),
+            "counts": counts,
+            "entries": entries,
+        }
+
+    def _current_version_ids(self, version_ids: set[str]) -> set[str]:
+        """Which of these document versions the registry still calls current - in one query."""
+        wanted = {value for value in version_ids if value}
+        if not wanted:
+            return set()
+        return {
+            str(row_id)
+            for (row_id,) in self.session.execute(
+                select(DocumentVersion.id).where(
+                    DocumentVersion.id.in_(sorted(wanted)),
+                    DocumentVersion.is_current.is_(True),
+                )
+            ).all()
+        }
 
     # -- calculations ---------------------------------------------------------
     def calculations_for(

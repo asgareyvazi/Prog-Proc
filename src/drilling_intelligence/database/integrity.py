@@ -63,6 +63,7 @@ __all__ = [
     "RELATION_ENDPOINT_MODELS",
     "IntegrityProblem",
     "KnowledgeIntegrityError",
+    "check_calculation_dependencies",
     "check_cross_well_links",
     "check_current_version_invariants",
     "check_extraction_cache",
@@ -929,8 +930,97 @@ def check_promoted_evidence(session: Session) -> list[IntegrityProblem]:
     return problems
 
 
+def check_calculation_dependencies(session: Session) -> list[IntegrityProblem]:
+    """An engineering input whose dependency cannot be trusted to answer "what must I re-run?".
+
+    ``check_promoted_evidence`` asks whether a derived row cites *anything*; this asks the
+    question that only matters once it does - whether the dependency edge is still usable
+    (ADR-0016).  Two findings, both deterministic and both read-only:
+
+    ``UNRESOLVED_SUBJECT``  the input names a subject the platform cannot resolve to a durable
+                            thing (a free-form string from before 0008, or one a caller passed
+                            instead of a canonical key).  It is reachable only by its exact text,
+                            so a change to the thing it describes will not find it.
+    ``STALE_INPUT_VERSION`` the input cites a document version that is no longer the current one.
+                            The number is not wrong - it was computed from what the file said at
+                            the time - but a decision made on it today is being made on a
+                            superseded source, and nothing else in the schema says so.
+
+    Neither is repaired here, and neither is guessed at: this reports, and re-running a
+    calculation is an engineering act with a method and a reviewer, never a side effect of a
+    consistency check.
+    """
+    from ..core.ids import LEGACY_KIND
+    from .models import CalculationInput
+
+    problems: list[IntegrityProblem] = []
+    rows = list(
+        session.execute(
+            select(CalculationInput)
+            .where(CalculationInput.subject_key.is_not(None), CalculationInput.subject_key != "")
+            .order_by(CalculationInput.calculation_id, CalculationInput.name, CalculationInput.id)
+        ).scalars()
+    )
+    if not rows:
+        return problems
+    cited = {
+        str((row.provenance or {}).get("document_version_id") or "")
+        for row in rows
+        if isinstance(row.provenance, dict)
+    }
+    current = (
+        {
+            str(row_id)
+            for (row_id,) in session.execute(
+                select(DocumentVersion.id).where(
+                    DocumentVersion.id.in_(sorted(value for value in cited if value)),
+                    DocumentVersion.is_current.is_(True),
+                )
+            ).all()
+        }
+        if any(cited)
+        else set()
+    )
+    for row in rows:
+        if not row.subject_kind or row.subject_kind == LEGACY_KIND or not row.subject_id:
+            problems.append(
+                IntegrityProblem(
+                    "calculation_input",
+                    row.id,
+                    "names a subject that cannot be resolved to a well, section, document or project",
+                    {
+                        "calculation_id": str(row.calculation_id),
+                        "input": str(row.name),
+                        "subject_key": str(row.subject_key or ""),
+                        "finding": "UNRESOLVED_SUBJECT",
+                    },
+                )
+            )
+            continue
+        version = str(
+            (row.provenance or {}).get("document_version_id")
+            if isinstance(row.provenance, dict)
+            else ""
+        )
+        if version and version not in current:
+            problems.append(
+                IntegrityProblem(
+                    "calculation_input",
+                    row.id,
+                    "cites a document version that is no longer current",
+                    {
+                        "calculation_id": str(row.calculation_id),
+                        "input": str(row.name),
+                        "document_version_id": version,
+                        "finding": "STALE_INPUT_VERSION",
+                    },
+                )
+            )
+    return problems
+
+
 def check_operational_integrity(session: Session) -> list[IntegrityProblem]:
-    """All four operational checks in one call, which is what ``doctor`` and a test both want.
+    """All five operational checks in one call, which is what ``doctor`` and a test both want.
 
     Grouped because they answer one question - can these rows be read as a field's history? - and because
     a partial answer would be misread as a clean bill of health.
@@ -940,4 +1030,5 @@ def check_operational_integrity(session: Session) -> list[IntegrityProblem]:
         + check_revision_chains(session)
         + check_cross_well_links(session)
         + check_promoted_evidence(session)
+        + check_calculation_dependencies(session)
     )

@@ -49,6 +49,16 @@ ADDED_COLUMNS = (
 )
 ADDED_INDEX = "uq_calculation_identity"
 ADDED_FOREIGN_KEYS = ("fk_calculation_document_id", "fk_calculation_document_version_id")
+#: What the migrations *after* 0005 add.  A file stopped at 0005 is legitimately missing these, so
+#: they are listed here rather than baked into each assertion: when a later revision adds a column,
+#: this tuple is where it is declared, and the schema comparisons below stay exact.
+LATER_MIGRATION_COLUMNS = (
+    "problem_occurrence.problem_definition_id",  # 0007
+    "calculation_input.subject_kind",  # 0008
+    "calculation_input.subject_id",  # 0008
+)
+LATER_MIGRATION_TABLES = ("problem_definition",)  # 0007
+
 #: The foreign keys ``calculation`` already had; a table rebuild that loses one of these is a data bug.
 PRE_EXISTING_FOREIGN_KEYS = (
     "fk_calculation_well_id_well",
@@ -144,11 +154,11 @@ def test_the_upgrade_adds_the_columns_and_leaves_the_rows_alone(tmp_path) -> Non
             row["document_id"] is None and row["document_version_id"] is None for row in rows
         ), "no citation is invented for a row that never had one"
         assert schema_diff(engine) == {
-            "missing_tables": ["problem_definition"],
+            "missing_tables": sorted(LATER_MIGRATION_TABLES),
             "extra_tables": [],
-            "missing_columns": ["problem_occurrence.problem_definition_id"],
+            "missing_columns": sorted(LATER_MIGRATION_COLUMNS),
             "extra_columns": [],
-        }, "0005 is intentionally before the problem-definition migration"
+        }, "0005 is intentionally before the later migrations"
     finally:
         engine.dispose()
 
@@ -308,7 +318,7 @@ def test_the_downgrade_is_the_exact_inverse(tmp_path) -> None:
         assert sorted(diff["missing_columns"]) == sorted(
             [
                 *(f"calculation.{column}" for column in ADDED_COLUMNS),
-                "problem_occurrence.problem_definition_id",
+                *LATER_MIGRATION_COLUMNS,
             ]
         ), diff
 
@@ -316,9 +326,9 @@ def test_the_downgrade_is_the_exact_inverse(tmp_path) -> None:
         assert again.mode == "migrated" and again.current == "0005", again.to_dict()
         assert snapshot(engine) == before
         assert schema_diff(engine) == {
-            "missing_tables": ["problem_definition"],
+            "missing_tables": sorted(LATER_MIGRATION_TABLES),
             "extra_tables": [],
-            "missing_columns": ["problem_occurrence.problem_definition_id"],
+            "missing_columns": sorted(LATER_MIGRATION_COLUMNS),
             "extra_columns": [],
         }
     finally:
@@ -406,7 +416,7 @@ def test_head_still_matches_the_models_and_the_knowledge_layer_is_intact(tmp_pat
             )
         status = upgrade(engine, "head")
         assert status.up_to_date and status.current == heads()[0], status.to_dict()
-        assert heads() == ["0007"], heads()
+        assert heads() == ["0008"], heads()
         assert schema_diff(engine) == {
             "missing_tables": [],
             "extra_tables": [],

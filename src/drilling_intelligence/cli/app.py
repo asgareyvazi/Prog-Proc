@@ -973,6 +973,72 @@ def command_records(args: argparse.Namespace) -> int:
             )
             return 1 if totals.get("conflict") else 0
 
+        if args.action == "impact":
+            # Read-only, and deliberately narrow: it answers "what consumed this subject, and is
+            # any of it computed from a superseded source" and does nothing about the answer.
+            # Re-running a calculation is an engineering act with a method and a reviewer
+            # (ADR-0012), so this command never recomputes and never invalidates.
+            from ..engineering.repository import EngineeringRepository
+
+            scope = _scope(args, workspace, required=False)
+            with workspace.database.session() as session:
+                payload = EngineeringRepository(session).calculation_impact(
+                    args.subject,
+                    current_only=args.current_only,
+                    well_id=str(scope.get("well_id") or ""),
+                    project_id=str(scope.get("project_id") or ""),
+                )
+            counts = payload["counts"]
+            header = (
+                f"{payload['calculations']} calculation(s) depend on {payload['subject']!r}"
+                if payload["resolved"]
+                else f"subject not recognised: {payload['subject']!r}"
+            )
+            lines = [header]
+            if payload["resolved"]:
+                lines.append(
+                    f"resolved to {payload['subject_kind']}:{payload['subject_id']}  "
+                    f"[{payload['subject_key']}]"
+                )
+            else:
+                # The distinction the whole command exists for: "nothing depends on this" and "I
+                # cannot resolve this" are different answers and must never print the same way.
+                lines.append(
+                    "this is not a canonical subject key, so it matches only its exact text; "
+                    "any dependency on the thing it describes cannot be found from it"
+                )
+            lines.append(
+                "dependencies: "
+                + ", ".join(f"{key} {counts[key]}" for key in sorted(counts))
+                + ("" if payload["entries"] else "  (nothing recorded)")
+            )
+            lines.extend(
+                _table(
+                    payload["entries"],
+                    (
+                        ("calculation_id", 38),
+                        ("method_id", 24),
+                        ("input_name", 18),
+                        ("status", 12),
+                        ("dependency", 12),
+                        ("document_version_id", 38),
+                    ),
+                )
+            )
+            if counts["STALE"]:
+                lines.append(
+                    "a STALE row cites a superseded document version: nothing is re-run here, "
+                    "and which revision replaces it is an engineering decision"
+                )
+            _emit(payload, as_json=args.json, lines=lines)
+            # Non-zero for anything a script must not read as a clean bill of health: a stale
+            # dependency, an input whose subject cannot be resolved, or - the case a bare count
+            # would hide - a *question* that could not be resolved, where an empty result means
+            # "I could not look" rather than "nothing depends on this".
+            if not payload["resolved"] or counts["STALE"] or counts["UNRESOLVED"]:
+                return 1
+            return 0
+
         if args.action == "summary":
             # A well scope is accepted here because ``record_summary`` answers it: the flag exists on the
             # parser, so refusing it after parsing would be a CLI that argues with itself.
@@ -1819,9 +1885,13 @@ def build_parser() -> argparse.ArgumentParser:
         ("list", "the rows a promotion wrote, one table at a time"),
         ("summary", "how many rows of each kind a scope holds, and how many are promoted"),
         ("promote", "turn a document version's tables into operations, events, NPT and problems"),
+        (
+            "impact",
+            "which engineering records consumed a subject, and whether their source is current",
+        ),
     ):
         action = records_sub.add_parser(name, help=help_text, parents=[common])
-        if name != "promote":
+        if name not in ("promote", "impact"):
             action.add_argument(
                 "--table",
                 choices=sorted(_LIST_COLUMNS),
@@ -1831,6 +1901,20 @@ def build_parser() -> argparse.ArgumentParser:
         action.add_argument("--well", help="restrict to this well (id or name)")
         action.add_argument("--field", help="restrict to this field (id or name)")
         action.add_argument("--project", help="restrict to this project (id or name)")
+        if name == "impact":
+            # A read-only inspection: a subject to look up, and one flag to ignore superseded
+            # records.  No mutation, no recomputation, no re-index (ADR-0016).
+            action.add_argument(
+                "subject",
+                help='the subject key, e.g. "well:<id>|property:mud_weight|state:ACTUAL"',
+            )
+            action.add_argument(
+                "--current-only",
+                action="store_true",
+                help="only records nobody has superseded",
+            )
+            action.set_defaults(handler=command_records)
+            continue
         if name != "summary":
             action.add_argument("--since", help="records dated on or after this ISO date")
             action.add_argument("--until", help="records dated on or before this ISO date")

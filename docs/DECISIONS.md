@@ -792,3 +792,113 @@ cited as a whole); a free "check everything" sweep independent of a package (the
 evidence's citations, in identity order - a whole-workspace sweep is `doctor`'s job, and the two stay
 separate); and re-reading the search sidecar to learn what to check (the citation rides on the verified
 item, and the sidecar is the disposable projection the chain exists not to trust).
+
+---
+
+## ADR-0016 — A calculation input names the durable thing it consumed, or admits it cannot
+
+**Status:** accepted (2026-09-09)
+
+**Context.** The certified chain answers "where did this number come from?" - source file, document,
+version, extraction, provenance, fact, record, search, retrieval, evidence, citation audit. The
+engineering record answers the inverse question, and it answered it wrongly. `calculation_input.subject_key`
+had been free text since 0001: `record_calculation` stored `subject_key or source`, stripped and cut to
+300 characters, and `calculations_using` compared it with `=`. Auditing that pair against real repository
+code reproduced six distinct false negatives on one physical quantity - a subject spelled
+`property:MUD_WEIGHT` did not find `property:mud_weight`, a permuted component order found nothing, a
+key longer than the column was truncated on the way in and so was unfindable by the key its own author
+had used, and `SubjectKey.render()` escaped nothing, so a property name containing `|` collided with a
+different subject. Worse than any single case: the query returned `[]`, which reads as *"nothing depends
+on this"* and is indistinguishable from *"I could not resolve what you asked about"*. An engineering
+platform whose premise is that a decision needs a source cannot answer "this source changed; which
+decisions rest on it?" with a silent empty list.
+
+The canonical mechanism already existed. `core.ids.SubjectKey` is the knowledge layer's grouping key -
+`KnowledgeFact.lookup_key()` is built from it, and a fact's content-addressed id includes it - so this is
+not a missing identity framework. It is an existing one that the single subsystem written for it (its own
+docstring says *"which calculations used this mud weight?"*) did not call.
+
+**Decision.**
+
+*   **`core.ids.SubjectKey` is the one canonical subject identity, and it is now safe to be one.**
+    Rendering is deterministic and component order is fixed, so a caller cannot change a key by changing
+    the order it passed things in. `|`, `:` and `\` inside a component are escaped, so two distinct
+    subjects can no longer render identically; `parse` reverses the escaping, so the round trip is exact.
+    Escaping touches *only* components that contain those characters, which is why every key the
+    knowledge layer has ever written - opaque hex ids, snake_case predicates - renders byte-for-byte as
+    it always did, and no stored `lookup_key` or `knowledge_item.id` moves.
+*   **The normalization rule for a property name is written down, not implied.** A property name is a
+    token, not prose: lowercased, with spaces, hyphens, dots and tabs becoming underscores and runs of
+    underscores collapsing to one (`normalize_property`). `Mud Weight`, `MUD_WEIGHT` and `mud-weight` are
+    one property. A record state is the same rule in upper case (`normalize_state`), because
+    `RecordState` is an enum of tokens. Ids keep their case: they are opaque, and `Well-A` is not
+    `well-a`. Every predicate the extractors emit is already in this form, so normalising is a no-op on
+    the data in existing workspaces.
+*   **A subject resolves to an anchor, and the anchor is stored as columns.** Migration 0008 adds
+    `calculation_input.subject_kind` and `subject_id` plus `ix_calc_input_subject_ref`, so change impact
+    is a lookup on `(kind, id)` rather than string equality. The anchor kinds are the durable things this
+    schema already has - `well`, `section`, `document_version`, `document`, `project`. No foreign key, and
+    for a reason 0005 recorded for `calculation`'s citation columns and which applies twice as hard here:
+    there is no single FK target, so a constraint would have to name one of five tables and forbid the
+    rest. `check_calculation_dependencies` polices it instead, which is this repository's standing pattern
+    for an invariant a constraint cannot state (ADR-0007).
+*   **What cannot be recognised is labelled, never guessed.** A string that does not round-trip through
+    `SubjectKey` and name an anchor is legacy free text (`mud_report.xlsx!Summary!B9`, or
+    `well:A-3|mud_weight` with no `property:` component). It is stored *verbatim*, labelled
+    `subject_kind='legacy'` with a NULL id, and stays reachable by its exact text. The backfill in 0008
+    follows the same rule: it resolves only a leading `<known anchor>:<id>` with a non-empty id and no
+    escape character anywhere, and leaves everything else alone. A fabricated dependency is worse than an
+    admitted unknown, which is the same choice 0005 made when it backfilled `origin='MANUAL'` rather than
+    inventing a source.
+*   **A long subject is digested, never truncated.** A canonical rendering wider than the column is
+    stored as `k256:` + sha256 of that rendering, computed identically on the write path and the read
+    path, so a long subject is still found by the key its author used. A *legacy* value that is too long
+    is refused with an error: free text has no canonical form to digest, and silently cutting it produces
+    a string that means something else.
+*   **Three answers, because there are three.** `calculation_impact` reports `CURRENT`, `STALE` (the
+    input cites a document version the registry no longer calls current) and `UNRESOLVED` (the subject is
+    not one the platform can resolve), and says separately whether the subject itself was `resolved`.
+    "Nothing depends on this" and "I cannot tell" are different sentences and never print the same way.
+    The query de-duplicates (a calculation whose two inputs name one subject is one affected calculation),
+    orders deterministically by `(created_at desc, id desc)`, and takes the same `current_only` and scope
+    arguments as `calculations_for`, read off the supersession chain rather than the `status` column.
+*   **It reports; it never acts.** Nothing here re-runs a calculation, invalidates one, rewrites a
+    historical input or guesses which new version replaces an old one. A superseded source makes a
+    dependency *reportable as stale* - the number stays exactly what a decision was made on (ADR-0012),
+    and re-running it is an engineering act with a method and a reviewer, not a side effect of a
+    consistency check. `doctor` gains the two findings and no new command; `drillintel records impact` is
+    a read-only inspection with a `--json` twin and a non-zero exit when anything is stale or unresolved.
+*   **Identity is not touched.** `calculation.identity_key` hashes the payload the caller stored. 0008
+    writes only to `calculation_input`, adds no column to `calculation` and rewrites no `inputs` JSON, so
+    a historical record keeps the identity it was recorded under and re-recording it stays a no-op. Two
+    different stored spellings therefore remain two records - the *index* resolves them to one
+    dependency, which is the point, while rewriting either row's identity would break a reference
+    somebody may already have quoted.
+
+**Consequences.** `tests/integration/test_change_impact_forensics.py` (40 tests) pins the five cases the
+audit reproduced - canonical lookup, equivalent representations, delimiter collisions and distinct
+subjects, over-long subjects, and the full revision/supersession forensic (source version → input →
+re-ingest → supersede → currency check) - plus de-duplication, deterministic ordering, lifecycle and
+scope filtering, unresolved-versus-not-affected, input-level provenance, idempotent re-recording,
+identity-key stability, a read-only whole-table fingerprint and a bounded query count.
+`tests/integration/test_migration_0008.py` pins the additive upgrade, the exact downgrade, the
+byte-identical preservation of every pre-existing value, the deterministic backfill against twelve real
+subject shapes, and the offline `--sql` rendering with no table rebuild. Migration head becomes 0008 and
+`schema_diff` against a fresh `create_all` stays empty. An input that names a subject now also carries
+evidence: where the caller supplied none and the record itself cites a document version, the input
+inherits that citation (labelled `inherited_from`), which closes the case where a realistic derived
+calculation left its dependency edge with NULL provenance - and a record that cites nothing still yields
+nothing, because nothing is manufactured.
+
+**Rejected.** A second identity framework beside `SubjectKey` (the bug was that the existing one was
+bypassed, and a parallel convention is how one question gets two answers); a foreign key on
+`subject_id` (there is no single target, and a constraint naming one table would forbid four legitimate
+kinds); rewriting legacy strings into canonical keys during the migration (that is guessing an
+identity, and the rows it would silently re-point are exactly the ones a person needs to review);
+normalising `calculation.inputs` JSON or re-keying `identity_key` (it changes what a historical record
+*is*); making the impact query re-run or invalidate anything (ADR-0012 keeps arithmetic out of this
+layer, and an automatic invalidation is a decision the platform is not entitled to make); truncating a
+long key as before (a write the reader cannot reproduce is the defect, not the mitigation); and
+admitting `calculation` into the structured search projection to make it retrievable (a real question,
+but a different one - the chain's six record types are ADR-0013's scope, and widening it to fix a
+dependency bug would broaden search for the wrong reason).

@@ -714,10 +714,23 @@ class CalculationInput(Base):
     ``subject_key`` names the *source* of an input (a document field, a
     knowledge item, or a well/section attribute).  When that source changes, the
     platform can list every calculation that consumed it.
+
+    ``subject_kind`` and ``subject_id`` (migration 0008, ADR-0016) are that name resolved into
+    the durable thing it hangs off - ``("well", "well-1a2b…")``, ``("document_version",
+    "ver-…")`` - so the change-impact query is a lookup on structured columns rather than an
+    exact match on a free-form string.  They are nullable on purpose: a subject the platform
+    cannot recognise is stored verbatim in ``subject_key`` and labelled
+    ``subject_kind='legacy'`` with a NULL ``subject_id``, because a migration or a write path
+    that guesses an identity is worse than one that admits it does not know.
     """
 
     __tablename__ = "calculation_input"
-    __table_args__ = (Index("ix_calc_input_subject", "subject_key"),)
+    __table_args__ = (
+        Index("ix_calc_input_subject", "subject_key"),
+        # The change-impact lookup: "everything that consumed this durable thing".  A plain
+        # (non-unique) composite index, because one subject legitimately feeds many inputs.
+        Index("ix_calc_input_subject_ref", "subject_kind", "subject_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     calculation_id: Mapped[str] = mapped_column(
@@ -729,6 +742,12 @@ class CalculationInput(Base):
     dimension: Mapped[str] = mapped_column(String(32), default="")
     source_kind: Mapped[str] = mapped_column(String(24), default="user")
     subject_key: Mapped[str | None] = mapped_column(String(300))
+    # No foreign key, and for the reason 0005 documents for ``calculation``'s citation columns:
+    # there is no single FK target - a subject may be a well, a hole section, a document version,
+    # a document or a project - so a constraint would have to name one of them and forbid the
+    # rest.  ``check_calculation_dependencies`` is what polices these instead (ADR-0016).
+    subject_kind: Mapped[str | None] = mapped_column(String(32))
+    subject_id: Mapped[str | None] = mapped_column(String(64))
     provenance: Mapped[dict | None] = mapped_column(JSON)
 
     calculation: Mapped[Calculation] = relationship(back_populates="input_records")
