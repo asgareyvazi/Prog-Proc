@@ -108,6 +108,11 @@ def upgrade() -> None:
             (separator_at > 0, sa.func.substr(remainder, 1, separator_at - 1)),
             else_=remainder,
         )
+        # What follows the anchor, "" when the anchor is the whole key.
+        tail = sa.case(
+            (separator_at > 0, sa.func.substr(remainder, separator_at + 1)),
+            else_=sa.literal(""),
+        )
         op.execute(
             _INPUT.update()
             .where(
@@ -118,6 +123,24 @@ def upgrade() -> None:
                 # would no longer agree with core.ids.SubjectKey.parse.  Such a row is left for
                 # the legacy pass rather than resolved approximately.
                 sa.not_(_INPUT.c.subject_key.like("%\\%")),
+                # The anchor id must be a single opaque token.  A ":" inside it means the string
+                # is not the shape it looks like ("well:a:b|property:x" is not a well called
+                # "a:b" - core.ids would have escaped that colon), so resolving it would invent
+                # an identity the runtime rule does not agree with.
+                position(anchor_id, ":") == 0,
+                anchor_id != "",
+                # Whatever follows the anchor must itself be a recognised component.  Without
+                # this, free text that merely starts with a known prefix - "well:A-3|mud_weight",
+                # which has no "property:" component and is therefore *not* a canonical key -
+                # would be silently promoted to a real well reference.  That is precisely the
+                # guessing this migration promises not to do, so such a row stays legacy.
+                sa.or_(
+                    tail == "",
+                    *(
+                        tail.like(f"{field}:%")
+                        for field in ("well", "section", "property", "state", "document", "project")
+                    ),
+                ),
             )
             .values(subject_kind=kind, subject_id=anchor_id)
         )

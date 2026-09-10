@@ -48,8 +48,18 @@ CASES: tuple[tuple[str, str, str | None], ...] = (
     ("project:prj-2|property:budget|state:PLANNED", "project", "prj-2"),
     # an anchor with no further component is still an anchor
     ("well:well-4", "well", "well-4"),
-    # free-form values: recognised as legacy, never interpreted
-    ("well:A-3|mud_weight", "well", "A-3"),  # leading anchor is real; the tail is not our business
+    # free-form values: recognised as legacy, never interpreted.
+    #
+    # ``well:A-3|mud_weight`` looks like an anchor followed by a property, but it has no
+    # ``property:`` component, so ``core.ids`` does *not* consider it canonical.  Resolving it
+    # here would label a row ``well``/``A-3`` that the runtime resolver calls legacy - the
+    # migration and the write path would then disagree about what the same string means, and the
+    # impact query (which trusts the runtime rule) would never find the row the migration had
+    # confidently indexed.  The tail must therefore itself be a recognised component.
+    ("well:A-3|mud_weight", "legacy", None),
+    # A colon inside the anchor id means the string is not the shape it appears to be: a real
+    # ``a:b`` id would have been escaped by ``core.ids``, so this is free text.
+    ("well:a:b|property:x", "legacy", None),
     ("mud_report.xlsx!Summary!B9", "legacy", None),
     ("just-a-token", "legacy", None),
     ("property:mud_weight|state:ACTUAL", "legacy", None),  # no anchor at all
@@ -244,3 +254,100 @@ def test_the_migration_renders_offline_sql(tmp_path) -> None:
     # No table rebuild: a copy-and-move would show up as a temporary table.
     assert "_alembic_tmp_calculation_input" not in sql, sql
     assert "DROP TABLE" not in sql.upper(), sql
+
+
+def test_the_backfill_and_the_write_path_agree_on_every_shape(tmp_path) -> None:
+    """The defect this file exists to prevent from returning: **one rule, two implementations**.
+
+    The backfill resolves subjects in SQL; ``resolve_input_subject`` resolves them in Python on
+    every write.  They are the same rule expressed twice, and when they disagree the platform
+    lies in a specific, silent way: a row the migration labels ``well``/``A-3`` that the runtime
+    calls legacy is indexed under an identity no query will ever ask for, so the calculation
+    depending on it becomes invisible to exactly the question the columns were added to answer.
+
+    Comparing them row by row is the only assertion that catches a future edit to either side.
+    """
+    from drilling_intelligence.engineering.repository import resolve_input_subject
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'agree.db'}")
+    try:
+        build_legacy_database(engine)
+        for index, (subject, _kind, _identifier) in enumerate(CASES):
+            add_input(engine, f"cain-{index:02d}", subject)
+        upgrade(engine, "0008")
+        with engine.connect() as connection:
+            rows = {
+                row["id"]: row
+                for row in connection.execute(
+                    text("select id, subject_key, subject_kind, subject_id from calculation_input")
+                )
+                .mappings()
+                .all()
+            }
+        disagreements = []
+        for index, (subject, _kind, _identifier) in enumerate(CASES):
+            row = rows[f"cain-{index:02d}"]
+            _stored, runtime_kind, runtime_id = resolve_input_subject(subject)
+            if (row["subject_kind"], row["subject_id"]) != (runtime_kind, runtime_id):
+                disagreements.append(
+                    (
+                        subject,
+                        f"migration={row['subject_kind']}/{row['subject_id']}",
+                        f"runtime={runtime_kind}/{runtime_id}",
+                    )
+                )
+        # One documented, deliberate exception, and it is safe in one direction only.  A key
+        # containing an escape character would need the full unescaping grammar to be parsed
+        # correctly, which SQL cannot express, so the backfill declines and leaves the row
+        # ``legacy`` rather than resolving it approximately.  Under-resolving is recoverable -
+        # ``_subject_predicate`` still finds such a row by its exact text, and ``doctor`` reports
+        # it as unresolved - whereas over-resolving would silently invent an identity.  The
+        # assertion below pins *which* rows may differ, so a new disagreement still fails.
+        assert [item[0] for item in disagreements] == ["well:w\\|1|property:x"], disagreements
+        assert all(item[1] == "migration=legacy/None" for item in disagreements), (
+            "the migration may only ever be more conservative than the write path, never less"
+        )
+    finally:
+        engine.dispose()
+
+
+def test_the_backfill_never_promotes_free_text_to_an_identity(tmp_path) -> None:
+    """A string that merely *starts* with a known prefix is not a reference to that thing."""
+    engine = create_engine(f"sqlite:///{tmp_path / 'noguess.db'}")
+    try:
+        build_legacy_database(engine)
+        # None of these is a canonical key; all of them begin with a real anchor kind.
+        #
+        # A *bare* ``<anchor>:<id>`` is deliberately absent: that is the canonical one-component
+        # form, ``core.ids`` accepts it, and an id is an opaque token, so ``document:report.xlsx``
+        # is a genuine reference to a document with an awkward id, not free text.  The shapes
+        # below all carry a second component that proves they are not canonical keys.
+        shapes = (
+            "well:A-3|mud_weight",  # no "property:" component
+            "well:a:b|property:x",  # unescaped colon inside the id
+            "well:|property:x",  # empty id
+            "document:report.xlsx!B9|sheet:Summary",  # unrecognised trailing component
+            "project:2024 drilling campaign|notes",
+        )
+        for index, subject in enumerate(shapes):
+            add_input(engine, f"cain-g{index}", subject)
+        upgrade(engine, "0008")
+        with engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    text(
+                        "select subject_key, subject_kind, subject_id from calculation_input"
+                        " order by id"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        for row in rows:
+            assert row["subject_kind"] == "legacy", (
+                f"{row['subject_key']!r} was given a fabricated identity"
+            )
+            assert row["subject_id"] is None
+        assert {row["subject_key"] for row in rows} == set(shapes), "text must survive verbatim"
+    finally:
+        engine.dispose()

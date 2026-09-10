@@ -1455,22 +1455,59 @@ class EngineeringRepository:
         )
         return list(self.session.execute(statement).scalars())
 
-    @staticmethod
-    def _subject_predicate(wanted: str) -> Any:
+    def _subject_predicate(self, wanted: str) -> Any:
         """How a caller's subject string is matched against stored inputs.
 
-        A canonical subject is matched by its resolved ``(kind, id)`` *and* its canonical
-        rendering, which is what makes two spellings of one subject the same query.  Anything
-        else is matched literally, so a legacy row stays reachable by exactly the text it holds.
+        A canonical subject is matched by its resolved ``(kind, id)`` *and* a rendering, which is
+        what makes two spellings of one subject the same query.  Anything else is matched
+        literally, so a legacy row stays reachable by exactly the text it holds.
+
+        The set of acceptable renderings is resolved against the data rather than assumed.  Rows
+        written before 0008 hold the text exactly as the caller passed it, so a migrated
+        workspace can hold ``property:MUD_WEIGHT`` where a row written today holds
+        ``property:mud_weight``; both name one subject.  Rather than re-encode the normalization
+        rule in SQL - the duplication that let the migration and the write path disagree in the
+        first place - the distinct spellings already recorded against this anchor are read back
+        and canonicalised through :meth:`SubjectKey.canonical_key`, the one implementation of the
+        rule.  That set is bounded by the number of distinct subjects on the anchor, not by the
+        number of inputs, and it is why history does not have to be rewritten to be found.
         """
         stored_key, kind, identifier = resolve_input_subject(wanted)
-        if kind and kind != LEGACY_KIND and identifier:
-            return sa_and(
+        if not (kind and kind != LEGACY_KIND and identifier):
+            return CalculationInput.subject_key == (stored_key or wanted)
+
+        target = SubjectKey.parse(wanted).canonical_key()
+        renderings = {value for value in (stored_key, wanted) if value}
+        for (candidate,) in self.session.execute(
+            select(CalculationInput.subject_key)
+            .where(
                 CalculationInput.subject_kind == kind,
                 CalculationInput.subject_id == identifier,
-                CalculationInput.subject_key == stored_key,
+                CalculationInput.subject_key.is_not(None),
             )
-        return CalculationInput.subject_key == (stored_key or wanted)
+            .distinct()
+        ).all():
+            text = str(candidate or "")
+            if (
+                text
+                and is_canonical_subject(text)
+                and SubjectKey.parse(text).canonical_key() == target
+            ):
+                renderings.add(text)
+        return or_(
+            sa_and(
+                CalculationInput.subject_kind == kind,
+                CalculationInput.subject_id == identifier,
+                CalculationInput.subject_key.in_(sorted(renderings)),
+            ),
+            # A pre-0008 row the backfill deliberately left as ``legacy`` - an escaped component
+            # it would have had to parse approximately - is still a dependency of this subject.
+            # Its text is exact, so matching it exactly invents nothing.
+            sa_and(
+                CalculationInput.subject_kind == LEGACY_KIND,
+                CalculationInput.subject_key == wanted,
+            ),
+        )
 
     def calculation_impact(
         self,

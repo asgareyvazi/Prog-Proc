@@ -36,6 +36,7 @@ from sqlalchemy import event, select
 from drilling_intelligence.core.enums import KnowledgeOrigin
 from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.core.ids import (
+    ANCHOR_KINDS,
     DIGEST_PREFIX,
     LEGACY_KIND,
     MAX_RENDERED_LENGTH,
@@ -814,3 +815,180 @@ class TestIntegrityDiagnostic:
         check_calculation_dependencies(session)
         session.flush()
         assert _fingerprint(session) == before
+
+
+# --------------------------------------------------------------------------- post-0008 repairs
+class TestSubjectGrammarRepairs:
+    """Defects found by re-auditing 0008 against the repository rather than against its report."""
+
+    def test_every_anchor_kind_round_trips_through_render_and_parse(self) -> None:
+        """``document`` and ``project`` are both an anchor kind *and* a trailing field name.
+
+        ``render`` writes an anchor first and those fields last, but ``parse`` used to key purely
+        off the token, so ``document:doc-5|property:t`` came back as ``property:t|document:doc-5``.
+        The round trip failed, ``is_canonical_subject`` therefore said False, and a perfectly good
+        document-anchored subject was written off as unrecognisable legacy text - it could never
+        be resolved to ``(document, doc-5)`` and never found by a change-impact query.
+        """
+        for kind in ANCHOR_KINDS:
+            subject = SubjectKey(
+                entity_type=kind, entity_id="x-1", property_name="p", record_state="ACTUAL"
+            )
+            rendered = subject.render()
+            assert rendered.startswith(f"{kind}:x-1|"), rendered
+            assert SubjectKey.parse(rendered).render() == rendered, kind
+            assert is_canonical_subject(rendered), kind
+            assert subject.anchor() == (kind, "x-1")
+
+    def test_a_document_or_project_anchor_is_resolvable_end_to_end(self, session, well) -> None:
+        repository = EngineeringRepository(session)
+        for kind, identifier in (("document", "doc-5"), ("project", "prj-2")):
+            key = SubjectKey(entity_type=kind, entity_id=identifier, property_name="title").render()
+            row, _ = _record(
+                repository,
+                method_id=f"anchor.{kind}",
+                well_id=well.id,
+                inputs={"v": {"value": 1.0, "subject_key": key}},
+            )
+            session.flush()
+            [item] = repository.calculation_inputs(row.id)
+            assert (item.subject_kind, item.subject_id) == (kind, identifier)
+            report = repository.calculation_impact(key)
+            assert report["resolved"] is True
+            assert [entry["calculation_id"] for entry in report["entries"]] == [row.id]
+
+    def test_a_trailing_scope_field_is_still_a_field_not_an_anchor(self) -> None:
+        """The disambiguation must be positional, not a blanket rule about the token."""
+        subject = SubjectKey(well_id="w-1", property_name="p", project_id="prj-9")
+        rendered = subject.render()
+        assert rendered == "well:w-1|property:p|project:prj-9"
+        parsed = SubjectKey.parse(rendered)
+        assert parsed.project_id == "prj-9" and parsed.entity_type == ""
+        assert subject.anchor() == ("well", "w-1"), "the well still owns the subject"
+
+
+class TestMigratedWorkspaceLookups:
+    """A workspace that came through 0008 holds text a workspace written today would not."""
+
+    @staticmethod
+    def _legacy_input(session, calculation_id: str, name: str, subject: str, kind, identifier):
+        """A row as the 0008 backfill would have left it: original text, resolved reference."""
+        session.add(
+            CalculationInput(
+                id=f"cain-{name}",
+                calculation_id=calculation_id,
+                name=name,
+                value=1.0,
+                unit="",
+                dimension="",
+                source_kind="knowledge",
+                subject_key=subject,
+                subject_kind=kind,
+                subject_id=identifier,
+            )
+        )
+
+    def test_a_historical_spelling_is_found_by_the_canonical_key(self, session, well) -> None:
+        """The migration preserves text verbatim; the query must still resolve it.
+
+        Normalising these rows in the migration would rewrite history to suit the reader, so the
+        *read* path carries the normalization instead - and it does so by canonicalising the
+        spellings actually recorded against the anchor, rather than re-encoding the rule in SQL.
+        Re-encoding is what let the migration and the write path disagree in the first place.
+        """
+        repository = EngineeringRepository(session)
+        row, _ = _record(repository, well_id=well.id, inputs={"placeholder": 1.0})
+        session.flush()
+        for index, spelling in enumerate(
+            (
+                f"well:{well.id}|property:MUD_WEIGHT|state:ACTUAL",
+                f"well:{well.id}|property:mud weight|state:ACTUAL",
+                f"well:{well.id}|property:Mud-Weight|state:actual",
+            )
+        ):
+            self._legacy_input(session, row.id, f"old{index}", spelling, "well", well.id)
+        session.flush()
+
+        canonical = subject_key(well_id=well.id, property_name="mud_weight", record_state="ACTUAL")
+        found = repository.calculations_using(canonical)
+        assert [item.id for item in found] == [row.id], (
+            "a migrated row must be findable by the canonical key, not only by its own spelling"
+        )
+        report = repository.calculation_impact(canonical)
+        assert report["resolved"] is True and report["calculations"] == 1
+        assert len(report["entries"]) == 3, "each historical spelling is its own input row"
+
+    def test_a_different_property_on_the_same_anchor_is_not_swept_in(self, session, well) -> None:
+        """Widening the match to historical spellings must not widen it to other subjects."""
+        repository = EngineeringRepository(session)
+        row, _ = _record(repository, well_id=well.id, inputs={"placeholder": 1.0})
+        session.flush()
+        self._legacy_input(
+            session,
+            row.id,
+            "other",
+            f"well:{well.id}|property:PORE_PRESSURE|state:ACTUAL",
+            "well",
+            well.id,
+        )
+        session.flush()
+        assert (
+            repository.calculations_using(
+                subject_key(well_id=well.id, property_name="mud_weight", record_state="ACTUAL")
+            )
+            == []
+        )
+        assert (
+            len(
+                repository.calculations_using(
+                    subject_key(
+                        well_id=well.id, property_name="pore_pressure", record_state="ACTUAL"
+                    )
+                )
+            )
+            == 1
+        )
+
+    def test_a_row_the_backfill_left_legacy_is_still_reachable(self, session, well) -> None:
+        """An escaped key is one the SQL backfill deliberately refused to parse.
+
+        It stays ``legacy``, so ``doctor`` reports it as unresolved - but the calculation that
+        depends on it must not become invisible, because the text is exact and matching it
+        exactly invents nothing.
+        """
+        repository = EngineeringRepository(session)
+        row, _ = _record(repository, well_id=well.id, inputs={"placeholder": 1.0})
+        session.flush()
+        escaped = SubjectKey(well_id="w|1", property_name="p").render()
+        self._legacy_input(session, row.id, "esc", escaped, LEGACY_KIND, None)
+        session.flush()
+        assert [item.id for item in repository.calculations_using(escaped)] == [row.id]
+        findings = [
+            problem.detail["finding"]
+            for problem in check_calculation_dependencies(session)
+            if problem.detail.get("input") == "esc"
+        ]
+        assert findings == ["UNRESOLVED_SUBJECT"], "it is reachable, but honestly labelled"
+
+    def test_the_query_count_does_not_grow_with_the_number_of_rows(self, session, db, well) -> None:
+        """Resolving spellings reads the anchor's distinct keys - bounded, not per-row."""
+        repository = EngineeringRepository(session)
+        row, _ = _record(repository, well_id=well.id, inputs={"placeholder": 1.0})
+        session.flush()
+        canonical = subject_key(well_id=well.id, property_name="mud_weight", record_state="ACTUAL")
+        self._legacy_input(session, row.id, "s0", canonical, "well", well.id)
+        session.flush()
+        baseline = _select_count(db.engine, lambda: repository.calculation_impact(canonical))
+        for index in range(1, 10):
+            self._legacy_input(
+                session,
+                row.id,
+                f"s{index}",
+                f"well:{well.id}|property:MUD_WEIGHT|state:ACTUAL",
+                "well",
+                well.id,
+            )
+        session.flush()
+        assert (
+            _select_count(db.engine, lambda: repository.calculation_impact(canonical)) == baseline
+        )

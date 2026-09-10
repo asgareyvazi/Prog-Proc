@@ -209,7 +209,7 @@ class SubjectKey:
         text = str(rendered or "")
         fields: dict[str, str] = {}
         entity: tuple[str, str] = ("", "")
-        for part in _split_unescaped(text, _SEPARATOR):
+        for index, part in enumerate(_split_unescaped(text, _SEPARATOR)):
             if not part:
                 continue
             pieces = _split_unescaped(part, _ASSIGN, maxsplit=1)
@@ -217,7 +217,15 @@ class SubjectKey:
                 continue
             key = _unescape(pieces[0])
             value = _unescape(pieces[1])
-            if key in ("well", "section", "property", "state", "document", "project"):
+            # ``document`` and ``project`` are the two tokens that are both an anchor kind and a
+            # trailing field name.  :meth:`render` puts an anchor first and those fields last, so
+            # position is what disambiguates them: a *leading* one is the thing the subject hangs
+            # off, anywhere else it is the scope field.  Without this the anchor form rendered a
+            # key that parsed back as the field form, the round trip failed, and a perfectly good
+            # ``document:``/``project:`` subject was written off as unrecognisable legacy text.
+            if index == 0 and key in ("document", "project"):
+                entity = (key, value)
+            elif key in ("well", "section", "property", "state", "document", "project"):
                 fields.setdefault(key, value)
             elif key in ANCHOR_KINDS and not entity[0]:
                 entity = (key, value)

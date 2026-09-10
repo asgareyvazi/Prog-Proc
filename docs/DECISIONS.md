@@ -846,10 +846,31 @@ docstring says *"which calculations used this mud weight?"*) did not call.
     `SubjectKey` and name an anchor is legacy free text (`mud_report.xlsx!Summary!B9`, or
     `well:A-3|mud_weight` with no `property:` component). It is stored *verbatim*, labelled
     `subject_kind='legacy'` with a NULL id, and stays reachable by its exact text. The backfill in 0008
-    follows the same rule: it resolves only a leading `<known anchor>:<id>` with a non-empty id and no
-    escape character anywhere, and leaves everything else alone. A fabricated dependency is worse than an
-    admitted unknown, which is the same choice 0005 made when it backfilled `origin='MANUAL'` rather than
-    inventing a source.
+    follows the same rule: it resolves only a leading `<known anchor>:<id>` where the id is non-empty and
+    free of `:`, the string contains no escape character, and whatever follows the anchor is itself a
+    recognised component (`well:`, `section:`, `property:`, `state:`, `document:`, `project:`) or nothing
+    at all. Everything else is left alone. A fabricated dependency is worse than an admitted unknown,
+    which is the same choice 0005 made when it backfilled `origin='MANUAL'` rather than inventing a
+    source.
+*   **The migration may be more conservative than the write path, never less.** The backfill expresses
+    the resolution rule in SQL while `resolve_input_subject` expresses it in Python — one rule, two
+    implementations, which is exactly the shape that drifts. The direction of any permitted difference is
+    therefore fixed: under-resolving is recoverable (the row stays `legacy`, the query still finds it by
+    its exact text, and `doctor` reports it as unresolved), whereas over-resolving silently indexes a row
+    under an identity no query will ask for, making the calculation invisible to the question the columns
+    exist to answer. Only one difference is permitted today — a key containing an escape character, which
+    needs the unescaping grammar SQL cannot express — and
+    `test_the_backfill_and_the_write_path_agree_on_every_shape` pins that list, so a new divergence fails
+    the suite.
+*   **Normalization lives on the read path, because history is not rewritten.** A workspace migrated from
+    0007 legitimately holds `property:MUD_WEIGHT` where a row written today holds `property:mud_weight`.
+    The migration preserves that text byte-for-byte, so the *query* carries the normalization: it reads
+    back the distinct spellings already recorded against the resolved anchor and canonicalises them
+    through `SubjectKey.canonical_key`, the single implementation of the rule. The candidate set is
+    bounded by the number of distinct subjects on that anchor rather than by the number of inputs, so the
+    query count does not grow with the data. Re-encoding the normalization rule in SQL was rejected for
+    the same reason the backfill divergence was a defect: a rule written twice is a rule that disagrees
+    with itself.
 *   **A long subject is digested, never truncated.** A canonical rendering wider than the column is
     stored as `k256:` + sha256 of that rendering, computed identically on the write path and the read
     path, so a long subject is still found by the key its author used. A *legacy* value that is too long
@@ -875,7 +896,21 @@ docstring says *"which calculations used this mud weight?"*) did not call.
     dependency, which is the point, while rewriting either row's identity would break a reference
     somebody may already have quoted.
 
-**Consequences.** `tests/integration/test_change_impact_forensics.py` (40 tests) pins the five cases the
+**Amendment (2026-09-10).** Re-auditing the shipped migration against the repository — rather than
+against its own report — found four defects in the first cut, all now repaired under this ADR and pinned
+by tests. (1) `parse` keyed anchors purely off the token, but `document` and `project` are *both* an
+anchor kind and a trailing scope field; the anchor form therefore failed its round trip,
+`is_canonical_subject` returned False, and a document- or project-anchored subject was permanently
+misclassified as legacy. Position now disambiguates: leading means anchor, elsewhere means field. (2) The
+SQL backfill resolved any string with a known prefix, so `well:A-3|mud_weight` — which has no `property:`
+component and which the runtime resolver calls legacy — was labelled `well`/`A-3`; the tail must now be a
+recognised component. (3) The same backfill accepted `:` inside an anchor id, resolving `well:a:b|…` to a
+well named `a:b` that `core.ids` would have escaped. (4) A row the backfill deliberately left `legacy`,
+and any row holding a pre-0008 spelling, was unreachable from the canonical key; the read path now
+resolves both. Defects 2 and 3 are the serious ones — they are the fabricated identities this ADR
+promises never to create — and they existed because the resolution rule was implemented twice.
+
+**Consequences.** `tests/integration/test_change_impact_forensics.py` (47 tests) pins the five cases the
 audit reproduced - canonical lookup, equivalent representations, delimiter collisions and distinct
 subjects, over-long subjects, and the full revision/supersession forensic (source version → input →
 re-ingest → supersede → currency check) - plus de-duplication, deterministic ordering, lifecycle and
