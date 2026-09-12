@@ -38,6 +38,15 @@ NOW = datetime(2026, 1, 1, tzinfo=UTC)
 ADDED_COLUMNS = ("subject_kind", "subject_id")
 ADDED_INDEX = "ix_calc_input_subject_ref"
 
+#: Columns a migration *after* 0008 adds.  A schema stopped at 0008 is legitimately without them, so
+#: they are named here rather than letting the parity assertion read them as drift.
+LATER_MIGRATION_COLUMNS = (
+    "well_section.origin",  # 0009
+    "well_section.provenance",  # 0009
+    "well_section.document_id",  # 0009
+    "well_section.document_version_id",  # 0009
+)
+
 #: (subject_key, expected kind, expected id).  Each row is a real shape the platform can hold.
 CASES: tuple[tuple[str, str, str | None], ...] = (
     # canonical keys the knowledge layer produces
@@ -141,7 +150,17 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
         assert identity_keys(engine) == identities_before, (
             "0008 must not touch calculation identity - a historical record stays identifiable"
         )
-        assert heads() == ["0008"], heads()
+        assert heads() == ["0009"], heads()  # a single head; 0009 is the latest link
+        assert schema_diff(engine) == {
+            "missing_tables": [],
+            "extra_tables": [],
+            "missing_columns": sorted(LATER_MIGRATION_COLUMNS),
+            "extra_columns": [],
+        }, "0008 is intentionally before the later migrations"
+        # The parity claim - a migrated file and a fresh ``create_all`` describe the same schema - is
+        # about the *head* of the chain, not about 0008: a later revision that adds a column would
+        # otherwise be reported here as drift.
+        assert upgrade(engine, heads()[0]).current == heads()[0]
         assert schema_diff(engine) == {
             "missing_tables": [],
             "extra_tables": [],

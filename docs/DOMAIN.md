@@ -26,6 +26,13 @@ problem_definition ──< problem_occurrence
 
 `problem_definition` is the reusable normalized concept (`stuck_pipe`, `lost_circulation`, and so on); `problem_occurrence` is the evidence-backed instance at a well, section, operation, event, or NPT. The definition is canonicalized by the existing vocabulary matcher, while occurrence provenance remains authoritative. A definition without source provenance is valid when it is a system/domain concept rather than an extracted claim.
 
+A `well_section`'s own depth columns (`top_depth_value`/`bottom_depth_value`) are the **as-drilled**
+interval - `plan_actual_summary` reports them as the achieved depth - so the *planned* depth of a section
+is `program_target.planned_depth_md_value` and a `PLANNED` write of a section depth is refused
+(ADR-0018). Duration and mud weight do have genuine planned/actual pairs on the section. Since 0009 a
+section also carries `origin`/`provenance`/`document_id`/`document_version_id`, so one read out of a
+document can show the document and one a person entered stays `MANUAL`.
+
 `company`, `project`, `field`, `well` and `well_section` are the hierarchy the well registry owns; nothing
 below re-parents anything above. The five tables on the first line are the operational spine, and each of
 them - plus `ddr_report`, the versioned records, the lessons, the costs, the patterns and the engineering

@@ -139,8 +139,6 @@ def add_casing_program(workspace, *, well_name: str = "A-3") -> dict[str, Any]:
         wells.update_section(
             section,
             {
-                "top_depth": (3500.0, "m"),
-                "bottom_depth": (9850.0, "m"),
                 "duration_days": 12.0,
                 "mud_weight": (11.4, "ppg"),
             },
@@ -149,6 +147,12 @@ def add_casing_program(workspace, *, well_name: str = "A-3") -> dict[str, Any]:
         wells.update_section(
             section,
             {
+                # The interval is what the hole reached, so it is written ACTUAL: a section's depth
+                # columns are the as-drilled ones, and the *planned* depth of this section is the
+                # target's ``planned_depth_md_value`` below.  Writing it here as PLANNED would make
+                # the comparison read its own plan back as the achieved depth.
+                "top_depth": (3500.0, "m"),
+                "bottom_depth": (9850.0, "m"),
                 "duration_days": 14.5,
                 "mud_weight": (11.9, "ppg"),
             },

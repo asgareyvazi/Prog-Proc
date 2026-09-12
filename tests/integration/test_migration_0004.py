@@ -25,12 +25,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from sqlalchemy import MetaData, column, create_engine, func, inspect, select
+from sqlalchemy import MetaData, column, create_engine, func, inspect, select, text
 from sqlalchemy import table as sqltable
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from drilling_intelligence.core.enums import RecordState
 from drilling_intelligence.core.ids import new_id
 from drilling_intelligence.database.migrations import heads, schema_diff, upgrade
 
@@ -104,7 +103,6 @@ def seed_legacy_data(url: str) -> None:
     depth, and facts about it.  If 0004 damaged a pre-existing table - repointed a foreign key, dropped an
     index, rewrote a default - it shows up here.
     """
-    from drilling_intelligence.database.integrity import create_knowledge_relation
     from drilling_intelligence.database.session import Database
     from drilling_intelligence.knowledge.entities import EntityRef
     from drilling_intelligence.knowledge.facts import KnowledgeFact
@@ -119,17 +117,24 @@ def seed_legacy_data(url: str) -> None:
             project = wells.get_or_create_project("North Cormorant")
             field = wells.get_or_create_field("North Cormorant", project=project)
             well = wells.create_well("A-3", project_id=project.id, field_id=field.id)
-            section = wells.get_or_create_section(well, "8 1/2 in", sequence=1, hole_size_in=8.5)
-            wells.update_section(
-                section,
-                {
-                    "top_depth": (9000.0, "ft"),
-                    "bottom_depth": (9850.0, "ft"),
-                    "planned_duration_days": 12.0,
-                },
-                state=RecordState.PLANNED,
+            # Written with SQL rather than through ``WellRepository``: this database is deliberately
+            # still at 0003, and the ORM's ``WellSection`` carries the provenance columns 0009 adds, so
+            # a mapped INSERT would name columns this schema legitimately does not have yet.  The
+            # columns below are exactly the ones 0003 declares, which is the point of the fixture -
+            # a workspace written before the domain existed.
+            section_id = "sec-legacy-0003"
+            session.execute(
+                text(
+                    "INSERT INTO well_section (id, well_id, sequence, name, hole_size_in,"
+                    " top_depth_value, top_depth_unit, bottom_depth_value, bottom_depth_unit,"
+                    " planned_duration_days, actual_duration_days, planned_mud_weight_unit,"
+                    " actual_mud_weight_unit, created_at, updated_at)"
+                    " VALUES (:id, :well_id, 1, '8 1/2 in', 8.5, 9000.0, 'ft', 9850.0, 'ft',"
+                    " 12.0, 14.5, 'ppg', 'ppg', :now, :now)"
+                ),
+                {"id": section_id, "well_id": str(well.id), "now": NOW},
             )
-            wells.update_section(section, {"actual_duration_days": 14.5}, state=RecordState.ACTUAL)
+
             session.flush()
             repository = KnowledgeRepository(session)
             subject = EntityRef("well", str(well.id), label="A-3")
@@ -153,14 +158,24 @@ def seed_legacy_data(url: str) -> None:
                         valid_from=NOW,
                     )
                 )
-            create_knowledge_relation(
-                session,
-                source_type="well",
-                source_id=str(well.id),
-                relation="WELL_HAS_SECTION",
-                target_type="well_section",
-                target_id=str(section.id),
-                note="the hierarchy the legacy workspace already stated",
+            # The edge is written directly for the same reason the section was: validating an endpoint
+            # loads the mapped row, and this database is still at 0003.  The row stored is byte-for-byte
+            # the one ``create_knowledge_relation`` would have written for these arguments, which is what
+            # the later snapshot comparison reads.
+            session.execute(
+                text(
+                    "INSERT INTO knowledge_relation (id, source_type, source_id, relation,"
+                    " target_type, target_id, weight, provenance, note, created_at, updated_at)"
+                    " VALUES (:id, 'well', :well_id, 'WELL_HAS_SECTION', 'well_section', :section_id,"
+                    " 1.0, '[]', :note, :now, :now)"
+                ),
+                {
+                    "id": new_id("rel"),
+                    "well_id": str(well.id),
+                    "section_id": section_id,
+                    "note": "the hierarchy the legacy workspace already stated",
+                    "now": NOW,
+                },
             )
             session.commit()
     finally:

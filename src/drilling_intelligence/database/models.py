@@ -153,10 +153,26 @@ class Well(Base, TimestampMixin):
 
 
 class WellSection(Base, TimestampMixin):
-    """A hole section: the unit of most drilling engineering reasoning."""
+    """A hole section: the unit of most drilling engineering reasoning.
+
+    A section is a *durable thing about a well* - the 12 1/4 in hole exists whether or not anyone has
+    drilled it yet - so it is identified by ``(well_id, name)`` and never by a document version.  That
+    separation is deliberate: the plan for this section is revised, and the section is not.
+
+    The depth columns below are the **as-drilled** ones.  The planned depth of a section lives on
+    :class:`ProgramTarget` (``planned_depth_md_value``), which is where
+    :data:`~drilling_intelligence.engineering.repository.PLAN_ACTUAL_METRICS` reads it from; a section
+    therefore holds one depth pair, the one the hole actually reached.  Writing a plan into it would
+    make "we intended 10,450 ft" indistinguishable from "we drilled to 10,450 ft", so
+    :meth:`~drilling_intelligence.wells.repository.WellRepository.update_section` refuses it rather
+    than storing it under a name that reads as fact.
+    """
 
     __tablename__ = "well_section"
-    __table_args__ = (UniqueConstraint("well_id", "name", name="uq_well_section_name"),)
+    __table_args__ = (
+        UniqueConstraint("well_id", "name", name="uq_well_section_name"),
+        Index("ix_section_version", "document_version_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
@@ -165,6 +181,7 @@ class WellSection(Base, TimestampMixin):
     #: Nominal hole size, stored in inches (industry convention for nominal sizes).
     hole_size_in: Mapped[float | None] = mapped_column(Float)
     casing_program: Mapped[str | None] = mapped_column(String(120))
+    #: As-drilled interval. There is no planned pair here on purpose - see the class docstring.
     top_depth_value: Mapped[float | None] = mapped_column(Float)
     top_depth_unit: Mapped[str] = mapped_column(String(16), default="m")
     bottom_depth_value: Mapped[float | None] = mapped_column(Float)
@@ -178,6 +195,16 @@ class WellSection(Base, TimestampMixin):
     actual_mud_weight_unit: Mapped[str] = mapped_column(String(16), default="ppg")
     formation_top: Mapped[str | None] = mapped_column(String(120))
     notes: Mapped[str | None] = mapped_column(Text)
+    #: Why this section exists: the same ``origin`` + ``provenance`` + citation convention every other
+    #: source-derived row carries, so ``check_promoted_evidence`` can hold it to the same promise.
+    #: There is no ``identity_key`` and no lifecycle here - a section is identified by the well and its
+    #: name, and it is the *plan* that is revised and superseded, never the hole.
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
     attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
 
     well: Mapped[Well] = relationship(back_populates="sections")

@@ -997,3 +997,58 @@ page's own approval status; widening the structured search projection to include
 `program_target` (ADR-0013's six record types are a separate decision, and a new writer is not a reason
 to broaden retrieval); and automatic recomputation when a plan is superseded (ADR-0016's rule - a
 superseded plan makes dependent reports stale, it does not silently rewrite them).
+
+## ADR-0018 — A section's depth is what the hole reached; the plan lives on the program target
+
+**Status.** Accepted.
+
+**Context.** `WellSection` is the context anchor for most drilling questions, and it holds paired
+planned/actual columns for duration and mud weight. Depth is not such a pair: a section has one
+interval, `top_depth_value`/`bottom_depth_value`, and `_section_actuals` reports it as the depth the
+section *achieved*, while `PLAN_ACTUAL_METRICS` reads the planned depth from
+`program_target.planned_depth_md_value`. `WellRepository.update_section` nevertheless accepted
+`top_depth`/`bottom_depth` under `state=PLANNED` and wrote them to those same columns. The result was
+measurable and wrong: writing a planned bottom depth of 10,450 ft and nothing else produced
+`planned=10450, actual=10450, variance=0.0, status=ON_PLAN` for a hole nobody had drilled. Missing
+actual data had become agreement with the plan, which is the one thing a plan-versus-actual comparison
+must never say.
+
+`well_section` was also the only table a document can describe that could not say where it came from -
+no `origin`, no `provenance`, no citation - so `check_promoted_evidence` could not hold it to the
+promise every other promoted row keeps. Both gaps had to close *before* anything populates sections,
+because once rows exist the ambiguity is baked into stored data.
+
+**Decision.** Three things, and deliberately no more.
+
+*Depth is as-drilled, and a planned depth is refused.* `update_section` rejects `top_depth` and
+`bottom_depth` under `PLANNED` with a message naming `planned_depth_md_value` as the place the plan
+belongs. No column is added: the planned depth of a section is already modelled on the target that
+governs it, and a second home for it would be two answers to one question. Duration and mud weight keep
+their real pairs and are untouched.
+
+*A section can say why it exists.* Migration 0009 adds `origin`, `provenance`, `document_id` and
+`document_version_id` - the same four the rest of the domain carries, the same `KnowledgeOrigin`
+vocabulary, the same nullable-citation shape 0005 gave `calculation` - plus `ix_section_version`.
+`get_or_create_section` refuses a non-`MANUAL` origin with no evidence, `WellSection` joins
+`_PROMOTED_MODELS`, and every pre-existing row is labelled `MANUAL`: no promoter has ever written a
+section, so that is a statement rather than a guess. Provenance is set only at creation - a section is a
+durable fact about the well, and the second document to mention it does not get to restate its source.
+
+*Identity stays `(well_id, name)`.* The database already says so, and nothing here changes it. The
+honest limit is recorded rather than papered over: two sections of one nominal hole size are distinct
+only if the source names them apart, so a sidetrack needs a distinct name, and `sequence` remains
+insertion order rather than a claim about physical order.
+
+**Rejected.** `planned_top_depth`/`planned_bottom_depth` columns (the program target already owns the
+planned interval; adding a second location for it would let the two disagree, and would be a schema
+change made to avoid stating a rule); silently dropping a `PLANNED` depth instead of refusing it (a
+caller that believes it stored a number, and did not, is worse off than one that got an error naming the
+right column); backfilling historical `bottom_depth_value` into a new "actual" column (the value is
+already the as-drilled one - moving it would be reinterpreting data this revision has no evidence
+about); giving `WellSection` a lifecycle or an `identity_key` (the *plan* is revised and superseded, the
+hole is not, and an identity key beside `(well_id, name)` would be a second identity framework);
+normalising section names into a canonical grammar (the corpus has exactly two spellings and no
+mechanism exists - inventing one now would be guessing which spellings mean the same hole, the decision
+C2 has to make with real evidence in front of it); and populating any section from any source, which is
+C2's work and is deliberately still absent - promotion creates no sections, and `ProgramTarget.section_id`
+is still NULL on the real corpus.

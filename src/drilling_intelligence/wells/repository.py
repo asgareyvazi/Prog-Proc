@@ -7,16 +7,26 @@ ties a folder on disk to the registry.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..core.enums import WELL_LIFECYCLE_TRANSITIONS, RecordState, WellLifecycleStatus
+from ..core.enums import (
+    WELL_LIFECYCLE_TRANSITIONS,
+    KnowledgeOrigin,
+    RecordState,
+    WellLifecycleStatus,
+)
 from ..core.errors import ValidationError
 from ..core.ids import new_id
 from ..database.models import Company, Document, Field, Project, Well, WellSection, Workspace
+
+#: The section attributes that describe the hole as it was drilled, and so may only be written
+#: ``ACTUAL``.  A section's *planned* interval belongs to the program target that governs it.
+DEPTH_KEYS: frozenset[str] = frozenset({"top_depth", "bottom_depth"})
 
 
 class WellRepository:
@@ -265,12 +275,39 @@ class WellRepository:
         casing_program: str | None = None,
         planned_mud_weight: tuple[float, str] | None = None,
         attributes: dict[str, Any] | None = None,
+        origin: str = KnowledgeOrigin.MANUAL.value,
+        provenance: Sequence[Mapping[str, Any]] | None = None,
+        document_id: str = "",
+        document_version_id: str = "",
     ) -> WellSection:
+        """Find this well's section by name, or create it.
+
+        Identity is ``(well_id, name)`` - the database says so too (``uq_well_section_name``) - so the
+        same hole section asked for twice is one row, and a caller that wants a *different* section
+        must give it a different name.  Two sections of the same nominal size (a sidetrack, a re-drill)
+        are therefore distinguishable only if the source names them apart, which is the honest limit of
+        this contract rather than something to paper over with a synthetic discriminator.
+
+        ``origin``/``provenance``/``document_*`` answer "why does this section exist" with the same
+        vocabulary every other source-derived row uses.  They are only ever set when the row is
+        *created*: a section that already exists is a durable fact about the well, and the second
+        document to mention it does not get to restate where it came from.
+        """
         existing = self.session.execute(
             select(WellSection).where(WellSection.well_id == well.id, WellSection.name == name)
         ).scalar_one_or_none()
         if existing is not None:
             return existing
+        stated = KnowledgeOrigin(str(origin or KnowledgeOrigin.MANUAL.value)).value
+        evidence = [dict(item) for item in (provenance or [])]
+        if stated != KnowledgeOrigin.MANUAL.value and not evidence:
+            raise ValidationError(
+                f"a {stated} section must cite the source it was read from",
+                hint="pass provenance (and the document version it came from), or record the "
+                "section as MANUAL - an origin without evidence is the one thing check_promoted_"
+                "evidence exists to catch",
+                origin=stated,
+            )
         section = WellSection(
             id=new_id("sec"),
             well_id=well.id,
@@ -278,6 +315,10 @@ class WellRepository:
             sequence=sequence or (len(self.list_sections(well.id)) + 1),
             hole_size_in=hole_size_in,
             casing_program=casing_program,
+            origin=stated,
+            provenance=evidence,
+            document_id=str(document_id or "") or None,
+            document_version_id=str(document_version_id or "") or None,
             attributes=attributes or {},
         )
         if planned_mud_weight is not None:
@@ -299,14 +340,21 @@ class WellRepository:
 
         Planned and actual mud weight/duration are separate columns on purpose:
         an actual value can never overwrite the plan (section 11).
+
+        Depth is the exception, and it is refused rather than paired.  A section has one depth
+        interval - ``top_depth_value``/``bottom_depth_value`` - and it is the *as-drilled* one, which is
+        what :meth:`~drilling_intelligence.engineering.repository.EngineeringRepository._section_actuals`
+        reports as the actual depth.  Both states used to write it, so a planned depth of 10,450 ft
+        came back out of ``plan_actual_summary`` as an actual depth of 10,450 ft and the comparison
+        said ``ON_PLAN`` about a hole nobody had drilled.  The planned depth of a section is already
+        modelled, on the program target that governs it, so a ``PLANNED`` depth here has somewhere
+        truthful to go and is rejected with that instruction rather than silently dropped.
         """
         record_state = RecordState(str(getattr(state, "value", state)))
         pairs = {
             RecordState.PLANNED: {
                 "mud_weight": ("planned_mud_weight_value", "planned_mud_weight_unit"),
                 "duration_days": ("planned_duration_days", None),
-                "top_depth": ("top_depth_value", "top_depth_unit"),
-                "bottom_depth": ("bottom_depth_value", "bottom_depth_unit"),
             },
             RecordState.ACTUAL: {
                 "mud_weight": ("actual_mud_weight_value", "actual_mud_weight_unit"),
@@ -321,6 +369,17 @@ class WellRepository:
                 f"section attribute {record_state.value} is not a planned/actual pair target; use knowledge items for FORECAST values",
                 state=record_state.value,
             )
+        if record_state is RecordState.PLANNED:
+            planned_depths = sorted(DEPTH_KEYS & set(values))
+            if planned_depths:
+                raise ValidationError(
+                    f"a section's {' and '.join(planned_depths)} is the depth it was drilled to, "
+                    f"so it cannot be written as {record_state.value}",
+                    hint="record the planned interval on the program target that governs this "
+                    "section (planned_depth_md_value), which is where plan-versus-actual reads the "
+                    "plan from; the section's own depth stays the as-drilled one",
+                    state=record_state.value,
+                )
         applied: list[str] = []
         for key, value in values.items():
             if key in table:

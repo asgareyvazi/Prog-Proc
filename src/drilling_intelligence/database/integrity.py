@@ -611,6 +611,10 @@ _REVISION_CHAINS: tuple[tuple[type, bool], ...] = (
 
 #: Rows a document could have produced, and so rows that must be able to show the document.
 _PROMOTED_MODELS: tuple[type, ...] = (
+    # A section read out of a document is held to the same promise as any other derived row: it can
+    # show the source that says the hole section exists.  A section a person entered stays MANUAL and
+    # is not asked for evidence, which is exactly the distinction the origin column was added for.
+    WellSection,
     DdrReport,
     WellOperation,
     WellEvent,

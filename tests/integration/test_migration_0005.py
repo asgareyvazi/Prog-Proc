@@ -56,6 +56,10 @@ LATER_MIGRATION_COLUMNS = (
     "problem_occurrence.problem_definition_id",  # 0007
     "calculation_input.subject_kind",  # 0008
     "calculation_input.subject_id",  # 0008
+    "well_section.origin",  # 0009
+    "well_section.provenance",  # 0009
+    "well_section.document_id",  # 0009
+    "well_section.document_version_id",  # 0009
 )
 LATER_MIGRATION_TABLES = ("problem_definition",)  # 0007
 
@@ -416,7 +420,7 @@ def test_head_still_matches_the_models_and_the_knowledge_layer_is_intact(tmp_pat
             )
         status = upgrade(engine, "head")
         assert status.up_to_date and status.current == heads()[0], status.to_dict()
-        assert heads() == ["0008"], heads()
+        assert heads() == ["0009"], heads()  # a single head; 0009 is the latest link
         assert schema_diff(engine) == {
             "missing_tables": [],
             "extra_tables": [],
