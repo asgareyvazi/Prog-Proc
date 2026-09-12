@@ -716,16 +716,30 @@ class EngineeringRepository:
         origin: str = KnowledgeOrigin.MANUAL.value,
         provenance: Sequence[Mapping[str, Any]] | None = None,
         attributes: Mapping[str, Any] | None = None,
+        revision: int = 1,
+        supersedes_id: str = "",
         **scope: str,
     ) -> DrillingProgram:
+        """Create a program.
+
+        ``revision`` and ``supersedes_id`` exist for the caller that already knows this plan replaces
+        an earlier one - promotion, when a new version of the same document arrives.  They are set on
+        the row being inserted rather than patched afterwards because ``(code, revision)`` is unique
+        and ``uq_program_one_current`` is a partial unique index: a second current revision of the
+        same code is refused by the database, correctly, even momentarily.  A caller revising a plan
+        it already holds should use :meth:`revise_program`, which also copies the targets forward.
+        """
         if not str(title or "").strip():
             raise ValidationError("a program needs a title")
         self._check_scope(**{key: value for key, value in scope.items() if key != "section_id"})
+        if supersedes_id and self.session.get(DrillingProgram, str(supersedes_id)) is None:
+            raise ValidationError(f"no program {supersedes_id!r} to supersede")
         row = DrillingProgram(
             id=new_id("prog"),
             code=str(code or "").strip() or None,
             title=str(title).strip()[:400],
-            revision=1,
+            revision=max(1, int(revision or 1)),
+            supersedes_id=str(supersedes_id or "") or None,
             is_current=True,
             status=str(
                 PROGRAM_LIFECYCLE.parse(status) if status is not None else PROGRAM_LIFECYCLE.initial

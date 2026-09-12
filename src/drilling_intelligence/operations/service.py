@@ -37,6 +37,7 @@ from ..database.models import (
     WellOperation,
 )
 from .assets import AssetRepository
+from .program import PROGRAM_CLASSIFICATIONS
 from .promote import PromotionResult, VersionPromoter, find_npt_tables
 from .repository import REPORT_CLASSIFICATIONS, OperationsRepository
 
@@ -109,8 +110,9 @@ class OperationalService:
         """Promote every report-like document version in scope, and report what changed.
 
         Only versions with a stored artefact are visited, and only documents whose classification can
-        become a report or whose artefact holds a recognisable NPT table: a mud log is not a schedule
-        of lost time, and running the promoter over every file would spend the pass deciding that.
+        become a report or a program, or whose artefact holds a recognisable NPT table: a mud log is
+        not a schedule of lost time, and running the promoter over every file would spend the pass
+        deciding that.
         """
         results: list[PromotionResult] = []
         with self._session(session) as active:
@@ -165,7 +167,7 @@ class OperationalService:
             statement = statement.limit(max(0, int(limit)))
         pairs: list[tuple[str, str]] = []
         for document_id, version_id, classification in session.execute(statement).all():
-            if str(classification or "") in REPORT_CLASSIFICATIONS:
+            if str(classification or "") in REPORT_CLASSIFICATIONS | PROGRAM_CLASSIFICATIONS:
                 pairs.append((str(document_id), str(version_id)))
                 continue
             # An NPT export nobody classified as one is still an NPT export; the header test is the
@@ -363,7 +365,7 @@ def combine_promotion_results(
     Kept a free function because the CLI, a future UI and the tests all need the same arithmetic, and
     "what did promoting this folder do" must not have three answers of different shapes.
     """
-    kinds = ("report", "operation", "event", "npt", "problem", "removed")
+    kinds = ("report", "operation", "event", "npt", "problem", "program", "target", "removed")
     counts = {kind: {"created": 0, "unchanged": 0, "conflict": 0} for kind in kinds}
     skipped: dict[str, int] = {}
     details: list[dict[str, str]] = []

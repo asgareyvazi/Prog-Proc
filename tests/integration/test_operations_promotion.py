@@ -64,7 +64,11 @@ def test_promotion_writes_the_rows_the_sheet_states(workspace) -> None:
     assert summary["skipped"].get("ZERO_NPT") == 1, summary["skipped"]
     # So is the daily report's 18.5 h total: its own NPT lines add up to exactly that.
     assert summary["skipped"].get("TOTAL_ALREADY_COUNTED") == 1, summary["skipped"]
-    assert summary["versions"] == 2, summary
+    # The drilling program is the third version worth opening: it states a plan rather than a day, so
+    # it adds a programme and its one target and contributes nothing to the operational counts above.
+    assert counts["program"]["created"] == 1, summary
+    assert counts["target"]["created"] == 1, summary
+    assert summary["versions"] == 3, summary
 
 
 def test_each_row_says_which_well_and_which_file_it_came_from(workspace) -> None:
@@ -251,8 +255,11 @@ def test_promoting_a_document_that_is_not_a_report_changes_nothing(workspace) ->
         document_id=document_id, version_id=version_id
     )
     assert outcome.report_id == "", "a drilling program is not a report of a day's work"
-    assert any(entry["reason"] == "NOT_A_REPORT" for entry in outcome.skipped), outcome.skipped
-    assert outcome.counts.get("npt", {}).get("created", 0) == 0, outcome.to_dict()
+    # It states a *plan*, so it does produce engineering rows - but none of the operational ones: no
+    # day happened, nothing was drilled, and no hour was lost by a document describing an intention.
+    for kind in ("report", "operation", "event", "npt", "problem"):
+        assert outcome.counts.get(kind, {}).get("created", 0) == 0, outcome.to_dict()
+    assert outcome.counts.get("program", {}).get("created", 0) == 1, outcome.to_dict()
 
 
 def test_report_rows_keep_the_day_the_file_gave_them(workspace) -> None:
@@ -352,8 +359,9 @@ def test_a_field_scope_promotes_the_field_it_names(workspace) -> None:
     with workspace.database.session() as session:
         outcome = service.promote_workspace(session=session, field_id=field_id(workspace))
         session.commit()
-    assert outcome["versions"] == 2, outcome
-    assert outcome["totals"]["created"] == 22, outcome["counts"]
+    # Three versions in the field's scope: the NPT export, the daily report and the drilling program.
+    assert outcome["versions"] == 3, outcome
+    assert outcome["totals"]["created"] == 24, outcome["counts"]
     assert outcome["totals"]["conflict"] == 0, outcome["counts"]
     assert len(fetch(workspace, NptRecord)) == len(STATED) + len(DDR_NPT_LINES)
 

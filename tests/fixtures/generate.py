@@ -201,11 +201,17 @@ def build_ddr_docx(path: Path) -> Path:
     return path
 
 
-def build_program_pdf(path: Path) -> Path:
+def build_program_pdf(path: Path, *, section_td: str = "10,450") -> Path:
     """A drilling program revision as a text-layer PDF with a ruled hydraulics table.
 
     Written with PyMuPDF so that the page genuinely contains selectable text and
     vector table borders - the conditions the PDF extractor is designed for.
+
+    ``section_td`` is the depth the section is drilled to, in the prose and in the last table row.
+    It is a parameter so a test can publish a *second revision* of this same program: editing the
+    produced PDF instead would mean redacting a number out of a justified line, which breaks the
+    sentence across text blocks and changes what the extractor sees for reasons unrelated to the
+    revision.  The default is the corpus's own value, so every existing caller is unaffected.
     """
     try:
         import pymupdf as fitz
@@ -230,7 +236,7 @@ def build_program_pdf(path: Path) -> Path:
     y = 95.0
     for text in (
         "1. Objectives and constraints",
-        "Drill the 12 1/4 in section from 8,500 ft MD (9 5/8 in casing shoe) to 10,450 ft MD.",
+        f"Drill the 12 1/4 in section from 8,500 ft MD (9 5/8 in casing shoe) to {section_td} ft MD.",
         "The casing shoe test on the previous well gave a fracture gradient of 15.8 ppg.",
         "Design mud weight is 10.2 ppg with an ECD target of 10.6 ppg.",
         "Pore pressure gradient is 0.465 psi/ft to total depth; TVD at section TD is 10,180 ft.",
@@ -259,7 +265,7 @@ def build_program_pdf(path: Path) -> Path:
     data = [
         ("8,500", "10.2", "4,508", "15.8", "1,850"),
         ("9,500", "10.2", "5,038", "15.6", "1,420"),
-        ("10,450", "10.4", "5,640", "15.6", "1,050"),
+        (section_td, "10.4", "5,640", "15.6", "1,050"),
     ]
     column_widths = (110.0, 85.0, 90.0, 80.0, 90.0)
     row_height = 20.0

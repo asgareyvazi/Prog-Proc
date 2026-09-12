@@ -155,13 +155,19 @@ def add_casing_program(workspace, *, well_name: str = "A-3") -> dict[str, Any]:
             state=RecordState.ACTUAL,
         )
         repository = EngineeringRepository(session)
-        existing = repository.list_programs(well_id=str(well.id))
+        # Matched on this fixture's own code, not on "any program for this well": promotion now
+        # writes the corpus's drilling program for A-3, and a fixture that adopted whichever program
+        # it found first would silently stop creating the 8 1/2 in plan it exists to provide.
+        code = f"NCF-{well_name}-PROG"
+        existing = [
+            row for row in repository.list_programs(well_id=str(well.id)) if str(row.code) == code
+        ]
         program = (
             existing[0]
             if existing
             else repository.create_program(
                 title=f"{well_name} 8 1/2 in programme",
-                code=f"NCF-{well_name}-PROG",
+                code=code,
                 well_id=str(well.id),
                 field_id=str(well.field_id),
                 provenance=provenance,

@@ -57,12 +57,15 @@ from drilling_intelligence.intelligence.timeline import build_timeline
 from drilling_intelligence.lessons.repository import LessonRepository
 from drilling_intelligence.operations.repository import OperationsRepository
 
-#: A-3's own history, as the promoted rows give it: five records on 13 June, four on the 14th, the
-#: programme written just now, and eleven records the files never dated.
-A3_ENTRIES = 21
-A3_DATED = 10
-#: ...and inside a two-day window, the eleven undated ones are not part of the answer at all.
-A3_WINDOW = A3_DATED - 1
+#: A-3's own history, as the promoted rows give it: five records on 13 June, four on the 14th, *two*
+#: programmes written just now - the corpus's own drilling program, which promotion reads from
+#: ``well_a3_program_rev12.pdf``, and the 8 1/2 in one this suite's fixture writes - and eleven
+#: records the files never dated.
+A3_ENTRIES = 22
+A3_DATED = 11
+#: ...and inside a two-day window, the eleven undated ones are not part of the answer at all, and
+#: neither are the two programmes, which were written today rather than during the two days.
+A3_WINDOW = A3_DATED - 2
 
 
 @pytest.fixture
@@ -155,7 +158,7 @@ def test_a_window_answers_with_the_records_that_can_be_placed_in_it(field_worksp
         dated_only = build_timeline(session, well_id=well, include_undated=False)
     assert len(window) == A3_WINDOW, describe(window)
     assert all(entry.at is not None for entry in window)
-    assert len(forced) == len(everything) - 1, "the 2026 programme is still outside the window"
+    assert len(forced) == len(everything) - 2, "both 2026 programmes are still outside the window"
     assert sum(1 for entry in forced if entry.at is None) == A3_ENTRIES - A3_DATED
     assert all(entry.at is not None for entry in dated_only)
     assert len(dated_only) == A3_DATED
@@ -177,12 +180,12 @@ def test_the_timeline_is_repeatable_and_a_field_scope_leaves_out_per_well_gaps(
             "no clock, no insertion order"
         )
         field_entries = build_timeline(session, field_id=field_id(field_workspace))
-    assert len(field_entries) == 23 and len(build_timeline(session, well_id=other)) == 6
+    assert len(field_entries) == 24 and len(build_timeline(session, well_id=other)) == 6
     assert {entry.well_id for entry in field_entries} == {well, other}
     # A field-wide list of every well whose spud date nobody wrote down is noise, so the milestone rows
     # belong to a well scope only - and the field answer is the sum of the wells' dated records.
     assert not any(entry.kind == "well" for entry in field_entries)
-    assert len(field_entries) == A3_DATED + 4 + 9, "14 dated, 9 undated"
+    assert len(field_entries) == A3_DATED + 4 + 9, "15 dated, 9 undated"
     with pytest.raises(ValidationError, match="no well"):
         build_timeline(session, well_id="well-does-not-exist")
     # A valid kind with nothing recorded yet is an empty answer, not an error.

@@ -937,3 +937,63 @@ long key as before (a write the reader cannot reproduce is the defect, not the m
 admitting `calculation` into the structured search projection to make it retrievable (a real question,
 but a different one - the chain's six record types are ADR-0013's scope, and widening it to fix a
 dependency bug would broaden search for the wrong reason).
+
+## ADR-0017 — A drilling program is promoted like a report, into the planned half of the domain
+
+**Status.** Accepted.
+
+**Context.** Promotion admitted three of twenty-six classifications (`DDR`, `NPT`, `TIME_BREAKDOWN`),
+so `drilling_program`, `program_target` and `procedure_record` had no production writer at all. A
+correctly classified `DRILLING_PROGRAM` document could be ingested, extracted, indexed and searched and
+still leave every plan-versus-actual comparison answering `NO_TARGET`: `plan_actual_summary` is
+arithmetic over two sides, and only the actual one was ever written. The planned side was reachable
+only from tests, which is not a production path.
+
+**Decision.** A program is promoted through the same explicit act as a report - `records promote`, the
+same `OperationalService`, the same `VersionPromoter`, the same session - and writes the engineering
+tables that already model a plan. It leaves the report path entirely: `_promote_program` returns
+before `_promote_report`, because a program states an intention and filing it as a day's work would put
+next month's plan into this well's history.
+
+The reader (`operations/program.py`) does no parsing. The PDF was read once at ingestion by the
+existing extractor, and the typed `extracted_fields` - value, unit, `VALID` verdict, page/bbox locator -
+are its only input. A second parser over the same bytes is a second opinion, and the two disagree the
+first time either changes.
+
+The contract is deliberately narrow, because a wrong planned number is worse than a missing one: it
+becomes a variance somebody schedules work against. A field is used only when the extractor marked it
+`VALID`; a section is planned only when the artefact names exactly one hole size (two sizes means
+deciding which paragraph's depth belongs to which section, which is reading a layout, not a number, and
+is refused as `AMBIGUOUS_SECTIONS`); a depth or mud weight with no unit is refused rather than allowed
+to take the column's default; and the section's TD is the *deepest* stated measured depth, an
+order-independent rule so two extractions that found the same numbers in a different order still
+produce the same plan. Everything the program did not state stays `NULL` - a plan with no NPT allowance
+is not an allowance of zero.
+
+Identity is the document version, as it is for a report. Re-promoting re-finds the program instead of
+adding a second, so the pass is idempotent. A new version of the same file is a new revision: the older
+program is stood down (`is_current=False`, `SUPERSEDED`) *before* the new row is inserted, because
+`uq_program_one_current` is a partial unique index and `(code, revision)` is unique - two current
+revisions of one code are refused by the database even momentarily, which is why `create_program` now
+accepts `revision` and `supersedes_id` on the insert rather than patching them afterwards. The old plan
+keeps its row, its target and its provenance: "what did we plan at the time" stays answerable, and
+nothing is recomputed.
+
+A promoted plan arrives as `DRAFT` with `origin=DERIVED`, even though the page says "Status: APPROVED".
+A machine reading a file has not approved anything; that is a person's act, recorded by the method that
+validates the transition - the same standing every other derived row gets.
+
+**Rejected.** A second PDF parser or a fixture-specific adapter (the extractor already produces typed,
+located, unit-carrying fields; a program-shaped parser beside it is the duplication ADR-0006 exists to
+prevent); creating `WellSection` rows from a program (a plan is written before the hole exists -
+`ProgramTarget.section_id` is nullable for exactly this reason, and `_match_target` already falls back
+to the section *name*, so inventing a drilled interval from an intention would fabricate the thing the
+comparison is supposed to check); promoting procedures at the same time (the corpus program states no
+procedure content the `procedure_record` model represents, and "promote everything in the PDF" is not a
+contract); renumbering `DrillingProgram.revision` from the document's own "Rev 12" (the column counts
+supersessions in this database and starts at 1; conflating the two would claim eleven revisions nobody
+has, so the document's wording is kept verbatim in `attributes["document_revision"]`); trusting the
+page's own approval status; widening the structured search projection to include `drilling_program` or
+`program_target` (ADR-0013's six record types are a separate decision, and a new writer is not a reason
+to broaden retrieval); and automatic recomputation when a plan is superseded (ADR-0016's rule - a
+superseded plan makes dependent reports stale, it does not silently rewrite them).

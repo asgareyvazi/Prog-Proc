@@ -50,6 +50,7 @@ from ..core.enums import (
     ConfirmationStatus,
     KnowledgeOrigin,
     KnowledgeRelationType,
+    ProgramLifecycle,
     RecordState,
 )
 from ..core.errors import UnitError
@@ -60,6 +61,7 @@ from ..database.models import (
     DdrReport,
     Document,
     DocumentVersion,
+    DrillingProgram,
     Extraction,
     NptRecord,
     ProblemOccurrence,
@@ -68,7 +70,9 @@ from ..database.models import (
     WellOperation,
 )
 from ..database.serialize import record_to_dict
+from ..engineering.repository import EngineeringRepository
 from ..wells.repository import WellRepository
+from .program import PROGRAM_CLASSIFICATIONS, find_program_plan
 from .repository import REPORT_CLASSIFICATIONS, OperationsRepository, _stamp
 
 __all__ = [
@@ -434,6 +438,7 @@ class VersionPromoter:
         self.session = session
         self.wells = WellRepository(session)
         self.records = OperationsRepository(session)
+        self.engineering = EngineeringRepository(session)
         self._wells_by_name: dict[str, Well | None] = {}
 
     # -- the pass -------------------------------------------------------------
@@ -486,6 +491,13 @@ class VersionPromoter:
             )
             return result
         fields = [dict(item) for item in (payload.get("extracted_fields") or [])]
+        if str(document.classification or "") in PROGRAM_CLASSIFICATIONS:
+            # A program states a plan, not a day's work.  It leaves the report path entirely: running
+            # it through ``_promote_report`` would file next month's intention as this well's history.
+            self._promote_program(
+                payload=payload, document=document, version=version, result=result
+            )
+            return result
         report = self._promote_report(
             document=document, version=version, fields=fields, result=result
         )
@@ -564,6 +576,134 @@ class VersionPromoter:
             removed += len(rows)
         self.session.flush()
         return removed
+
+    # -- program --------------------------------------------------------------
+    def _promote_program(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+    ) -> DrillingProgram | None:
+        """Write the plan one program version states: one program row, one target per section.
+
+        The program row is keyed to the *document version*, not to the document, because that is what
+        "revision 12" means here: a new revision arrives as a new version of the same file, and the
+        two plans have to stay separately answerable - revision 11 said 9,900 ft and somebody drilled
+        against it.  Re-promoting the same version therefore re-finds its program instead of adding a
+        second one, exactly as :meth:`OperationsRepository.register_report` does for a report.
+
+        A program superseded by a newer version keeps its rows and its provenance and loses only
+        ``is_current``: nothing recomputes, and no historical plan is rewritten.
+        """
+        if not document.well_id:
+            result.error = "NO_WELL"
+            result.skipped.append(
+                {
+                    "reason": "NO_WELL",
+                    "detail": f"{document.filename} is not linked to a well",
+                }
+            )
+            return None
+        plan = find_program_plan(payload)
+        for entry in plan.skipped:
+            result.skipped.append(dict(entry))
+        if not plan:
+            return None
+
+        existing = self.session.execute(
+            select(DrillingProgram).where(DrillingProgram.document_version_id == version.id)
+        ).scalar_one_or_none()
+        well = self.session.get(Well, str(document.well_id))
+        if existing is not None:
+            result.bump("program", "unchanged")
+            for _section in plan.sections:
+                result.bump("target", "unchanged")
+            return existing
+
+        # Stand the previous revision down *before* inserting this one: ``uq_program_one_current``
+        # is a partial unique index on the code of the current revision, so two current programs of
+        # the same document cannot coexist even for the length of a flush.  Superseding first is what
+        # makes "revision 13 arrived" a legal state rather than an integrity error.
+        superseded = self._supersede_older_programs(document=document)
+        program = self.engineering.create_program(
+            title=str(document.title or document.filename or "drilling program")[:400],
+            code=str(document.identity_path or "") or None,
+            summary="",
+            # A promoted plan is a candidate like every other derived row: nobody has reviewed it, so
+            # it must not arrive wearing the approval the document's own cover page claims.
+            status=ProgramLifecycle.DRAFT,
+            created_by="promoter",
+            origin=KnowledgeOrigin.DERIVED.value,
+            provenance=[dict(item) for item in plan.sections[0].provenance],
+            attributes={
+                "identity_path": document.identity_path,
+                "filename": document.filename,
+                # The document's own words for its revision, kept verbatim.  The promoter does not
+                # renumber: ``DrillingProgram.revision`` counts supersessions inside this database,
+                # and "Rev 12" is what the file calls itself - two different questions.
+                "document_revision": str(document.revision or ""),
+                "document_status": str(version.status or document.status or ""),
+            },
+            well_id=str(well.id) if well is not None else "",
+            field_id=str(well.field_id or "") if well is not None else "",
+            project_id=str(well.project_id or "") if well is not None else "",
+            revision=int(superseded.revision or 1) + 1 if superseded is not None else 1,
+            supersedes_id=superseded.id if superseded is not None else "",
+        )
+        program.document_id = document.id
+        program.document_version_id = version.id
+        self.session.flush()
+        result.bump("program", "created")
+
+        for sequence, section in enumerate(plan.sections, start=1):
+            self.engineering.add_target(
+                program.id,
+                name=section.name,
+                sequence=sequence,
+                origin=KnowledgeOrigin.DERIVED.value,
+                provenance=[dict(item) for item in section.provenance],
+                attributes={
+                    # Which artefact field produced which column: the row can say how it was derived
+                    # without a reader re-deriving it from the provenance excerpts.
+                    "field_sources": dict(section.sources),
+                    "identity_key": promotion_identity(
+                        version_id=version.id,
+                        kind="program_target",
+                        well_id=str(well.id) if well is not None else "",
+                        extra=section.name,
+                    ),
+                },
+                **section.values(),
+            )
+            result.bump("target", "created")
+        return program
+
+    def _supersede_older_programs(self, *, document: Document) -> DrillingProgram | None:
+        """Stand down this document's promoted programs, and return the newest of them.
+
+        Older revisions are *not* deleted and *not* recomputed - a plan somebody drilled against stays
+        readable, with its targets and its provenance intact - they simply stop being the plan to
+        follow.  Only rows this promoter derived are touched: a program a person entered by hand is
+        not superseded by a file arriving.
+        """
+        previous = list(
+            self.session.execute(
+                select(DrillingProgram)
+                .where(DrillingProgram.document_id == document.id)
+                .where(DrillingProgram.origin == KnowledgeOrigin.DERIVED.value)
+                .order_by(DrillingProgram.revision.desc(), DrillingProgram.id)
+            ).scalars()
+        )
+        if not previous:
+            return None
+        for row in previous:
+            if row.is_current:
+                row.is_current = False
+                row.status = str(ProgramLifecycle.SUPERSEDED)
+        self.session.flush()
+        return previous[0]
 
     # -- report ---------------------------------------------------------------
     def _promote_report(

@@ -91,7 +91,9 @@ def test_fields_list_and_offsets_name_the_wells(ready) -> None:
 
 def test_timeline_lists_the_records_in_order_and_respects_the_window(ready) -> None:
     payload = call(ready, "timeline", "--well", "A-3")
-    assert payload["count"] == 21, payload["count"]
+    # 22: the operational records, plus both programmes - the corpus's own drilling program, which
+    # promotion now reads, and the 8 1/2 in one the fixture writes.
+    assert payload["count"] == 22, payload["count"]
     entries = payload["entries"]
     assert entries[0]["table"] == "ddr_report" and entries[0]["at"].startswith("2025-06-13")
     assert entries[-1]["at"] is None, "the undated records are last"
@@ -147,7 +149,7 @@ def test_records_list_reads_one_table_and_records_summary_counts_them_all(ready)
 def test_records_promote_is_idempotent_from_the_terminal(ready) -> None:
     again = call(ready, "records", "promote", "--field", "North Cormorant")
     assert again["totals"]["created"] == 0, again
-    assert again["totals"]["unchanged"] == 22, again["totals"]
+    assert again["totals"]["unchanged"] == 24, again["totals"]
     assert again["totals"]["conflict"] == 0
     assert set(again["skipped"]) == {"ZERO_NPT", "TOTAL_ALREADY_COUNTED"}, again["skipped"]
 

@@ -13,17 +13,27 @@ delete-and-repromote, not a reconciliation job.
 """
 
 from .assets import AssetRepository
+from .program import (
+    PROGRAM_CLASSIFICATIONS,
+    ProgramPlan,
+    SectionPlan,
+    find_program_plan,
+)
 from .promote import PromotionResult, VersionPromoter, promotion_identity
 from .repository import REPORT_CLASSIFICATIONS, OperationsRepository, set_record_status
 from .service import OperationalService
 
 __all__ = [
+    "PROGRAM_CLASSIFICATIONS",
     "REPORT_CLASSIFICATIONS",
     "AssetRepository",
     "OperationalService",
     "OperationsRepository",
+    "ProgramPlan",
     "PromotionResult",
+    "SectionPlan",
     "VersionPromoter",
+    "find_program_plan",
     "promotion_identity",
     "set_record_status",
 ]
