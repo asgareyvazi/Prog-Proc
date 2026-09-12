@@ -351,3 +351,113 @@ def test_the_backfill_never_promotes_free_text_to_an_identity(tmp_path) -> None:
         assert {row["subject_key"] for row in rows} == set(shapes), "text must survive verbatim"
     finally:
         engine.dispose()
+
+
+def test_the_backfill_covers_the_canonical_vocabulary(tmp_path) -> None:
+    """The safety net for the one risk a fixed case list cannot cover.
+
+    ``CASES`` above is a literal, and a literal only tests the shapes somebody thought to write
+    down.  Adding a sixth kind to ``core.ids.ANCHOR_KINDS`` - an entirely reasonable future edit -
+    would leave every existing case passing while the migration silently stopped agreeing with the
+    write path for the new kind: rows the runtime resolves would be labelled ``legacy`` by the
+    backfill, and the change-impact query would miss them.
+
+    So the corpus here is *derived* from the live vocabulary rather than restated.  A subject is
+    generated for every anchor kind the platform currently knows about, and the migration's
+    classification is compared with ``resolve_input_subject``.  Adding a kind without teaching 0008
+    about it fails this test, which is exactly the signal a silent divergence needs.
+
+    The migration keeps its own literal ``_ANCHOR_KINDS`` on purpose - a historical artefact must
+    not change meaning when a later revision extends the vocabulary - so this test is the seam that
+    holds the two in step, and a future revision (0009+) is where a new kind would be backfilled.
+    """
+    from drilling_intelligence.core.ids import ANCHOR_KINDS, SubjectKey
+    from drilling_intelligence.engineering.repository import resolve_input_subject
+
+    generated = [
+        SubjectKey(
+            entity_type=kind, entity_id=f"{kind}-1", property_name="p", record_state="ACTUAL"
+        ).render()
+        for kind in ANCHOR_KINDS
+    ]
+    assert len(generated) == len(ANCHOR_KINDS) >= 5
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'vocab.db'}")
+    try:
+        build_legacy_database(engine)
+        for index, subject in enumerate(generated):
+            add_input(engine, f"cain-v{index}", subject)
+        upgrade(engine, "0008")
+        with engine.connect() as connection:
+            rows = {
+                row["id"]: row
+                for row in connection.execute(
+                    text("select id, subject_key, subject_kind, subject_id from calculation_input")
+                )
+                .mappings()
+                .all()
+            }
+        uncovered = []
+        for index, (kind, subject) in enumerate(zip(ANCHOR_KINDS, generated, strict=True)):
+            row = rows[f"cain-v{index}"]
+            _stored, runtime_kind, runtime_id = resolve_input_subject(subject)
+            # The runtime must resolve every kind in its own vocabulary...
+            assert (runtime_kind, runtime_id) == (kind, f"{kind}-1"), subject
+            # ...and the migration must agree, or the vocabulary has outgrown revision 0008.
+            if (row["subject_kind"], row["subject_id"]) != (runtime_kind, runtime_id):
+                uncovered.append(
+                    f"{kind}: migration={row['subject_kind']}/{row['subject_id']}"
+                    f" runtime={runtime_kind}/{runtime_id}"
+                )
+        assert uncovered == [], (
+            "core.ids.ANCHOR_KINDS has grown past what migration 0008 backfills; a new anchor kind"
+            " needs its own revision, or historical rows for it stay unresolved: "
+            + "; ".join(uncovered)
+        )
+    finally:
+        engine.dispose()
+
+
+def test_the_escape_guard_does_not_depend_on_like_semantics(tmp_path) -> None:
+    """A backslash is LIKE's escape character on PostgreSQL and an ordinary byte on SQLite.
+
+    ``NOT LIKE '%\\%'`` therefore means two different things on the two backends ADR-0004 supports:
+    "contains a backslash" on SQLite, "ends with a literal percent" on PostgreSQL.  On PostgreSQL
+    that let an escaped key through the guard, where the escape-blind string surgery below would
+    have split it at the wrong ``|`` and stored an anchor id that is not what ``core.ids`` says it
+    is - a fabricated identity, which is the one thing this migration promises never to produce.
+
+    The rendered SQL must therefore contain no ``LIKE``-based backslash test at all.
+    """
+    environment = dict(os.environ)
+    environment["DRILLINTEL_DATABASE__URL"] = f"sqlite:///{tmp_path / 'escape.db'}"
+    environment["PYTHONPATH"] = str(ROOT / "src")
+    completed = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "0007:0008", "--sql"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    sql = completed.stdout
+    assert "NOT LIKE '%\\%'" not in sql, "the dialect-ambiguous escape guard is back"
+    # The replacement is a position function, which has one meaning on every backend.
+    assert "instr(calculation_input.subject_key, '\\')" in sql, sql
+
+    # And it still does its job: an escaped key stays legacy rather than being resolved wrongly.
+    engine = create_engine(f"sqlite:///{tmp_path / 'guard.db'}")
+    try:
+        build_legacy_database(engine)
+        add_input(engine, "cain-esc", "well:w\\|1|property:x")
+        upgrade(engine, "0008")
+        with engine.connect() as connection:
+            row = (
+                connection.execute(text("select subject_kind, subject_id from calculation_input"))
+                .mappings()
+                .one()
+            )
+        assert (row["subject_kind"], row["subject_id"]) == ("legacy", None)
+    finally:
+        engine.dispose()

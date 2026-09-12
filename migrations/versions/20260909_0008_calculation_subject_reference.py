@@ -58,8 +58,21 @@ branch_labels = None
 depends_on = None
 
 #: The anchor kinds the backfill recognises, longest first so ``document_version`` is matched
-#: before ``document`` would swallow its prefix.  Kept in step with ``core.ids.ANCHOR_KINDS``.
+#: before ``document`` would swallow its prefix.
+#:
+#: A migration is a historical artefact and must keep meaning what it meant the day it ran, so this
+#: is deliberately a literal rather than an import of ``core.ids.ANCHOR_KINDS``: a later revision
+#: that adds an anchor kind must not retroactively change what 0008 did to a workspace that has
+#: already run it.  The safety net is a test - ``test_the_backfill_covers_the_canonical_vocabulary``
+#: derives its corpus from the live ``ANCHOR_KINDS`` and fails when the two drift, which is what
+#: turns a silent divergence into a red build (ADR-0016).
 _ANCHOR_KINDS = ("document_version", "document", "section", "project", "well")
+
+#: The escape character ``core.ids`` uses.  Named here so the guard below reads as the rule it is.
+_ESCAPE = "\\"
+
+#: The component names ``core.ids.SubjectKey.render`` can emit after the anchor.
+_COMPONENTS = ("well", "section", "property", "state", "document", "project")
 
 _INDEX = "ix_calc_input_subject_ref"
 
@@ -122,7 +135,14 @@ def upgrade() -> None:
                 # A backslash anywhere means a component was escaped, and naive string surgery
                 # would no longer agree with core.ids.SubjectKey.parse.  Such a row is left for
                 # the legacy pass rather than resolved approximately.
-                sa.not_(_INPUT.c.subject_key.like("%\\%")),
+                #
+                # This deliberately does *not* use LIKE.  A backslash is LIKE's default escape
+                # character on PostgreSQL but has no special meaning on SQLite, so the obvious
+                # ``NOT LIKE '%\%'`` means "contains a backslash" on one backend and "ends with a
+                # literal percent" on the other - the same predicate silently changing its mind
+                # between the two databases ADR-0004 supports.  The position function has one
+                # meaning everywhere, so the guard is the same rule on both.
+                position(_INPUT.c.subject_key, _ESCAPE) == 0,
                 # The anchor id must be a single opaque token.  A ":" inside it means the string
                 # is not the shape it looks like ("well:a:b|property:x" is not a well called
                 # "a:b" - core.ids would have escaped that colon), so resolving it would invent
@@ -136,10 +156,7 @@ def upgrade() -> None:
                 # guessing this migration promises not to do, so such a row stays legacy.
                 sa.or_(
                     tail == "",
-                    *(
-                        tail.like(f"{field}:%")
-                        for field in ("well", "section", "property", "state", "document", "project")
-                    ),
+                    *(tail.like(f"{field}:%") for field in _COMPONENTS),
                 ),
             )
             .values(subject_kind=kind, subject_id=anchor_id)

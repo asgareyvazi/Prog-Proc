@@ -898,8 +898,12 @@ def command_records(args: argparse.Namespace) -> int:
     promote`` turns a version's tables into operations, events, NPT and problems, and a row that is
     already there is reported as unchanged rather than overwritten.
 
-    Nothing here sums anything: the field-level totals belong to ``drillintel fields summary``, so the same
-    hours are never added up twice by two pieces of code that can drift apart.
+    The one exception to "nothing here computes" is ``rollup``, and it is deliberate: it stores a well's
+    lost-time total *as an engineering record* with every row it summed cited as an input, which is a
+    different act from ``fields summary`` printing the same hours.  One is a report that is recomputed
+    every time it is asked for; the other is a number somebody can be shown six months later together
+    with the evidence it rests on.  The arithmetic itself lives in one place either way
+    (:class:`~drilling_intelligence.engineering.service.EngineeringService`), so the two cannot drift.
     """
     workspace = _open_workspace(args)
     try:
@@ -972,6 +976,71 @@ def command_records(args: argparse.Namespace) -> int:
                 ],
             )
             return 1 if totals.get("conflict") else 0
+
+        if args.action == "rollup":
+            # The production path for engineering calculations: promoted rows in, one cited record out.
+            # It computes nothing the database does not already state - the total is addition over
+            # `npt_record.duration_hours` - and it never decides that an existing record is obsolete,
+            # which is why --supersedes is a flag a person passes rather than something inferred here.
+            from ..engineering.service import EngineeringService
+
+            scope = _scope(args, workspace, required=True)
+            well_id = str(scope.get("well_id") or "")
+            if not well_id:
+                # A field or a project is a scope, but it is not a subject: a lost-time total belongs
+                # to one well, and rolling several into one number would file it under a subject key
+                # that does not describe it.
+                raise DrillingIntelligenceError(
+                    "a lost-time roll-up is about one well",
+                    hint="pass --well (a name works as well as an id)",
+                )
+            service = EngineeringService.for_workspace(workspace)
+            calculation, created = service.record_npt_rollup(
+                well_id=well_id, supersedes_id=str(getattr(args, "supersedes", "") or "")
+            )
+            total = (calculation.outputs or {}).get("npt_hours") or {}
+            validation = calculation.validation or {}
+            payload = {
+                "calculation_id": calculation.id,
+                "created": created,
+                "method_id": calculation.method_id,
+                "method_version": calculation.method_version,
+                "well_id": calculation.well_id,
+                "subject": service.npt_rollup_subject(calculation.well_id),
+                "value": total.get("value"),
+                "unit": total.get("unit"),
+                "records_summed": validation.get("records_summed"),
+                "records_without_duration": validation.get("records_without_duration"),
+                "revision": int(calculation.revision or 1),
+                "supersedes_id": calculation.supersedes_id or "",
+                "document_versions": [
+                    entry.get("document_version_id") for entry in (calculation.provenance or [])
+                ],
+            }
+            unquantified = int(validation.get("records_without_duration") or 0)
+            _emit(
+                payload,
+                as_json=args.json,
+                lines=[
+                    f"{total.get('value')} {total.get('unit')} lost, "
+                    f"from {validation.get('records_summed')} NPT record(s)",
+                    (
+                        f"stored as {calculation.id} (revision {calculation.revision})"
+                        if created
+                        else f"already recorded as {calculation.id}; nothing was written"
+                    ),
+                    f"cited document versions: {len(calculation.provenance or [])}",
+                    # Said out loud, because a total is only as complete as what it could count.
+                    (
+                        f"{unquantified} row(s) state no duration and were counted, not summed"
+                        if unquantified
+                        else "every row in scope stated a duration"
+                    ),
+                    f"subject: {payload['subject']}",
+                    "re-running is safe: the same rows and method return this record, not a copy",
+                ],
+            )
+            return 0
 
         if args.action == "impact":
             # Read-only, and deliberately narrow: it answers "what consumed this subject, and is
@@ -1889,9 +1958,13 @@ def build_parser() -> argparse.ArgumentParser:
             "impact",
             "which engineering records consumed a subject, and whether their source is current",
         ),
+        (
+            "rollup",
+            "sum a well's promoted NPT hours into a stored, cited engineering record",
+        ),
     ):
         action = records_sub.add_parser(name, help=help_text, parents=[common])
-        if name not in ("promote", "impact"):
+        if name not in ("promote", "impact", "rollup"):
             action.add_argument(
                 "--table",
                 choices=sorted(_LIST_COLUMNS),
@@ -1912,6 +1985,17 @@ def build_parser() -> argparse.ArgumentParser:
                 "--current-only",
                 action="store_true",
                 help="only records nobody has superseded",
+            )
+            action.set_defaults(handler=command_records)
+            continue
+        if name == "rollup":
+            # A write, and the only one in this group that produces an engineering number.  It takes
+            # no inputs of its own: the total is the promoted rows', and --supersedes is how a person
+            # says a stored result is being replaced, because nothing here decides that on its own.
+            action.add_argument(
+                "--supersedes",
+                default="",
+                help="the calculation id this run replaces (marks it SUPERSEDED, keeps it readable)",
             )
             action.set_defaults(handler=command_records)
             continue

@@ -12,7 +12,10 @@ makes an engineering record safe to rely on:
 *   and **cost items**, planned against actual, grouped by their WBS/CBS codes because the codes are what
     make a cost structure a structure.
 
-Nothing in this package generates content.  A procedure's text, a program's targets and a risk's severity
+The one number this package *computes* is the lost-time roll-up in :mod:`.service`, and it is addition
+over promoted NPT rows: the production path that gives ``calculation`` a writer outside the tests, with
+every row it summed cited as its own input.  Nothing else here generates content: a procedure's text, a
+program's targets and a risk's severity
 come from a person or from a promoted document; what this layer adds is the versioning, the lifecycle, the
 scope validation and the evidence links that make those inputs answerable later.
 """
@@ -20,5 +23,6 @@ scope validation and the evidence links that make those inputs answerable later.
 from .costs import CostRepository
 from .repository import EngineeringRepository
 from .risk import RiskRepository
+from .service import EngineeringService
 
-__all__ = ["CostRepository", "EngineeringRepository", "RiskRepository"]
+__all__ = ["CostRepository", "EngineeringRepository", "EngineeringService", "RiskRepository"]
