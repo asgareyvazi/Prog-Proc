@@ -1052,3 +1052,48 @@ mechanism exists - inventing one now would be guessing which spellings mean the 
 C2 has to make with real evidence in front of it); and populating any section from any source, which is
 C2's work and is deliberately still absent - promotion creates no sections, and `ProgramTarget.section_id`
 is still NULL on the real corpus.
+
+## ADR-0019 — The drilling program creates the hole section it plans, and only the planned half of it
+
+**Status.** Accepted.
+
+**Context.** After C1 the platform held a promoted `drilling_program` and its `program_target`, and
+`well_section` was still empty on the real corpus. `ProgramTarget.section_id` was NULL, so
+`plan_actual_summary` - which iterates sections and reads the plan off the target - had nothing to
+iterate. The planned side existed and was unreachable.
+
+**Decision.** Promotion creates the section the program is a plan for, through the existing
+`WellRepository.get_or_create_section`, inside the existing promoter and the existing transaction, and
+passes its id to the existing `add_target(section_id=...)`. No new table, no new repository, no new
+identity scheme, and no migration: every field this needs was added by 0009.
+
+A program states that a 12 1/4 in hole *will be* drilled. That is a durable fact about the well - it is
+what makes the section addressable before anyone spuds it - so the section is created with its name,
+its nominal hole size, `origin=DERIVED` and the document provenance C1 already carries. It is emphatically
+not a statement about what happened, so `top_depth`/`bottom_depth`, both durations and the actual mud
+weight stay NULL; the planned depth stays on the target, where `PLAN_ACTUAL_METRICS` reads it from.
+Copying it onto the section would be the exact substitution ADR-0018 refuses.
+
+Identity is `(well_id, name)`, so revision 13 of the same program finds the section revision 12 created
+instead of adding a second one: one hole, two plans, the superseded one keeping its own number.
+Provenance is written only at creation, so the later revision does not restate where the hole came
+from, and a section that already existed - drilled before its program was filed - is adopted with its
+actuals and its `MANUAL` origin intact.
+
+**Nothing else is attached.** The corpus's daily report names its section only in prose
+(`Section: 12 1/4 in intermediate`); the one structured section-shaped field the extractor produces
+from it is a `hole_size_in` of 12.25 whose excerpt is `12 1/4 in bit` - a bit size. Matching NPT hours
+to the well's only section on that basis would look complete and be a guess, and the guess would become
+silently wrong the day a second section exists. So `npt_record`, `well_operation`, `well_event`,
+`problem_occurrence`, `knowledge_item` and the lesson/risk/recommendation family keep `section_id` NULL,
+and a test asserts the evidence for that refusal rather than the refusal alone.
+
+**Rejected.** Normalising `12 1/4 in intermediate` onto `12 1/4 in` (no canonical section grammar
+exists, and inventing one here would be guessing which spellings mean one hole - the decision needs a
+corpus with real variants in front of it); attaching actual records by hole size, by "the well's only
+section", or by first-section fallback (§26's latent corruption, invisible until the second section
+arrives); writing the program's planned depth into the section so the comparison "has an actual"
+(fabrication); creating a section per program *revision* (the plan is revised, the hole is not);
+giving the promoter its own section-name parser (C1's `SectionPlan.name` is already the document's own
+wording, deterministically derived, and a second reader would be a second answer); and adding
+`well_section` to structured search or retrieval, which stays the six record types ADR-0013 defines.

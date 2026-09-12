@@ -340,9 +340,13 @@ def test_a_programme_target_and_a_drilled_section_are_committed_and_measured(
         rows = EngineeringRepository(session).plan_actual_summary(
             well_id=well_id_for(field_workspace, "A-3")
         )
-    assert len(rows) == 4, rows  # one row per metric the comparison knows about
-    by_metric = {row["metric"]: row for row in rows}
-    assert {row["section"] for row in rows} == {"8 1/2 in"}
+    # Two sections now: the 12 1/4 in one promotion created from the drilling program, and the
+    # fixture's drilled 8 1/2 in one.  Four metrics each, and this test is about the drilled section.
+    assert {row["section"] for row in rows} == {"8 1/2 in", "12 1/4 in"}
+    assert len(rows) == 8, rows  # one row per metric per section
+    drilled = [row for row in rows if row["section"] == "8 1/2 in"]
+    assert len(drilled) == 4
+    by_metric = {row["metric"]: row for row in drilled}
     duration = by_metric["duration_days"]
     assert duration["planned"] == 12.0 and duration["actual"] == 14.5 and duration["unit"] == "d"
     assert duration["variance"] == pytest.approx(2.5) and duration["status"] == "VARIANCE"
@@ -358,7 +362,13 @@ def test_a_programme_target_and_a_drilled_section_are_committed_and_measured(
     npt = by_metric["npt_hours"]
     assert npt["planned"] is None and npt["actual"] is None and npt["status"] == "NO_PLAN"
     assert npt["variance"] is None
-    assert len({row["program_id"] for row in rows}) == 1
+    assert len({row["program_id"] for row in drilled}) == 1
+    # The promoted section is the planned half and nothing more: its plan is the programme's, and it
+    # has no actual of its own until a daily report supplies one.
+    promoted = {row["metric"]: row for row in rows if row["section"] == "12 1/4 in"}
+    assert promoted["depth_md"]["planned"] == 10450.0
+    assert promoted["depth_md"]["actual"] is None
+    assert promoted["depth_md"]["status"] == "NO_ACTUAL"
 
 
 def test_the_service_answers_the_same_questions_as_the_package(field_workspace) -> None:

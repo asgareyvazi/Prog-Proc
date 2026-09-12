@@ -68,11 +68,12 @@ from ..database.models import (
     Well,
     WellEvent,
     WellOperation,
+    WellSection,
 )
 from ..database.serialize import record_to_dict
 from ..engineering.repository import EngineeringRepository
 from ..wells.repository import WellRepository
-from .program import PROGRAM_CLASSIFICATIONS, find_program_plan
+from .program import PROGRAM_CLASSIFICATIONS, SectionPlan, find_program_plan
 from .repository import REPORT_CLASSIFICATIONS, OperationsRepository, _stamp
 
 __all__ = [
@@ -658,9 +659,11 @@ class VersionPromoter:
         result.bump("program", "created")
 
         for sequence, section in enumerate(plan.sections, start=1):
+            row = self._section_for_plan(section, well=well)
             self.engineering.add_target(
                 program.id,
                 name=section.name,
+                section_id=str(row.id) if row is not None else "",
                 sequence=sequence,
                 origin=KnowledgeOrigin.DERIVED.value,
                 provenance=[dict(item) for item in section.provenance],
@@ -679,6 +682,50 @@ class VersionPromoter:
             )
             result.bump("target", "created")
         return program
+
+    def _section_for_plan(self, section: SectionPlan, *, well: Well | None) -> WellSection | None:
+        """The hole section this planned target is about, created if the well has not got one yet.
+
+        This is the *planned* half of a section and nothing else.  A program states that a 12 1/4 in
+        hole is going to be drilled, which is a real fact about the well and is what makes the section
+        addressable before anyone spuds it - but it says nothing about what happened, so only the
+        section's identity and its nominal size are written here.  ``top_depth``/``bottom_depth``,
+        the durations and the actual mud weight stay NULL until an actual source supplies them: the
+        plan's own depth is already on the target, and copying it into the section's as-drilled
+        column is precisely the substitution ADR-0018 exists to prevent.
+
+        Identity is ``(well_id, name)``, so a later revision of the same program finds the section it
+        already created instead of adding a second one, and the section outlives the revision that
+        first named it.  ``get_or_create_section`` only records provenance when it *creates* the row,
+        which is what keeps revision 13 from restating where revision 12's section came from.
+        """
+        if well is None or not section.name:
+            return None
+        return self.wells.get_or_create_section(
+            well,
+            section.name,
+            hole_size_in=section.hole_size_in,
+            origin=KnowledgeOrigin.DERIVED.value,
+            provenance=[dict(item) for item in section.provenance],
+            document_id=str(self._document_id_from(section.provenance)),
+            document_version_id=str(self._version_id_from(section.provenance)),
+        )
+
+    @staticmethod
+    def _document_id_from(provenance: Sequence[Mapping[str, Any]]) -> str:
+        for item in provenance:
+            value = str(item.get("document_id") or "")
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _version_id_from(provenance: Sequence[Mapping[str, Any]]) -> str:
+        for item in provenance:
+            value = str(item.get("document_version_id") or "")
+            if value:
+                return value
+        return ""
 
     def _supersede_older_programs(self, *, document: Document) -> DrillingProgram | None:
         """Stand down this document's promoted programs, and return the newest of them.

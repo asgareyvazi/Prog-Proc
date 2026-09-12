@@ -132,7 +132,10 @@ def add_casing_program(workspace, *, well_name: str = "A-3") -> dict[str, Any]:
         section = wells.get_or_create_section(
             well,
             "8 1/2 in",
-            sequence=1,
+            # No explicit sequence: promotion may already have created this well's 12 1/4 in section
+            # from the drilling program, and two sections of one well sharing a sequence is a finding
+            # ``check_well_hierarchy`` reports.  The 8 1/2 in hole is drilled *after* the 12 1/4 in
+            # one anyway, so the repository's "next free number" is also the right order here.
             hole_size_in=8.5,
             casing_program="9 5/8 in liner + 7 in liner",
         )

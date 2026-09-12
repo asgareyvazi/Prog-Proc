@@ -522,15 +522,30 @@ class TestBoundaries:
                 (row.id, row.label) for row in session.scalars(select(WellOperation))
             ] == operations
 
-    def test_no_section_row_is_invented_by_promoting_a_plan(self, promoted) -> None:
-        """A program is written before the hole exists; it must not create the hole.
+    def test_the_section_a_plan_creates_has_no_drilled_interval(self, promoted) -> None:
+        """A program names a hole section; it must not claim the hole was drilled.
 
-        ``section_id`` stays empty and the plan is still real - the model documents exactly this, and
-        inventing a section here would be fabricating a drilled interval from an intention.
+        Since C2 a promoted plan does create the section it is about - that is what makes the plan
+        addressable, and the section is a real fact about the well either way.  What it must never do
+        is fill the as-drilled columns: the planned depth stays on the target, and the section's own
+        interval stays NULL until a daily report supplies one (ADR-0018).
         """
         with promoted.database.read_only() as session:
-            assert list(session.scalars(select(WellSection))) == []
-        assert _targets(promoted, _program(promoted).id)[0].section_id is None
+            sections = list(session.scalars(select(WellSection)))
+            assert [row.name for row in sections] == [SECTION_NAME]
+            section = sections[0]
+            assert section.hole_size_in == HOLE_SIZE_IN
+            assert section.top_depth_value is None and section.bottom_depth_value is None, (
+                "a plan states an intention, not an interval anybody drilled"
+            )
+            assert section.actual_duration_days is None
+            assert section.actual_mud_weight_value is None
+            assert section.planned_duration_days is None, (
+                "the plan's own numbers belong to the target, not copied onto the section"
+            )
+        target = _targets(promoted, _program(promoted).id)[0]
+        assert target.section_id == section.id
+        assert target.planned_depth_md_value == PLANNED_DEPTH_FT
 
     def test_no_procedure_is_written_from_a_program(self, promoted) -> None:
         """The program states a plan; it is not a procedure library, and none is inferred from it."""

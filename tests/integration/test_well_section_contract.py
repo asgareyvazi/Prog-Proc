@@ -51,9 +51,29 @@ def _well(session, workspace) -> Well:
     return session.get(Well, well_id_for(workspace, "A-3"))
 
 
-def _section(session, workspace, name: str = SECTION_NAME, **kwargs) -> WellSection:
+#: A section name the promoted program does not use, for the tests that need to build one by hand.
+#: Since C2 the corpus's own 12 1/4 in section is created by promotion, so a helper that asked for
+#: that name would be handed the promoted row and would be testing promotion rather than the contract.
+MANUAL_SECTION_NAME = "9 7/8 in"
+
+
+def _section(session, workspace, name: str = MANUAL_SECTION_NAME, **kwargs) -> WellSection:
     return WellRepository(session).get_or_create_section(
-        _well(session, workspace), name, sequence=1, hole_size_in=12.25, **kwargs
+        _well(session, workspace), name, hole_size_in=9.875, **kwargs
+    )
+
+
+def _promoted_section(session, workspace) -> WellSection:
+    """The 12 1/4 in section promotion created from the drilling program.
+
+    The plan-versus-actual tests need the section the *programme* is about, because the planned side
+    of the comparison comes from its target.  It already exists by the time these tests run.
+    """
+    return session.scalar(
+        select(WellSection).where(
+            WellSection.well_id == well_id_for(workspace, "A-3"),
+            WellSection.name == SECTION_NAME,
+        )
     )
 
 
@@ -67,7 +87,7 @@ class TestDepthContract:
     def test_a_planned_depth_is_refused_rather_than_stored_as_a_fact(self, promoted) -> None:
         """The measured defect, now a rejection: the plan has somewhere truthful to go."""
         with promoted.database.session() as session:
-            section = _section(session, promoted)
+            section = _promoted_section(session, promoted)
             with pytest.raises(ValidationError) as caught:
                 WellRepository(session).update_section(
                     section, {"bottom_depth": (PLANNED_DEPTH_FT, "ft")}, state=RecordState.PLANNED
@@ -82,7 +102,7 @@ class TestDepthContract:
 
     def test_a_planned_top_depth_is_refused_too(self, promoted) -> None:
         with promoted.database.session() as session:
-            section = _section(session, promoted)
+            section = _promoted_section(session, promoted)
             with pytest.raises(ValidationError, match="top_depth"):
                 WellRepository(session).update_section(
                     section, {"top_depth": (8500.0, "ft")}, state=RecordState.PLANNED
@@ -90,7 +110,7 @@ class TestDepthContract:
 
     def test_an_actual_depth_is_stored_and_read_back_as_the_actual(self, promoted) -> None:
         with promoted.database.session() as session:
-            section = _section(session, promoted)
+            section = _promoted_section(session, promoted)
             applied = WellRepository(session).update_section(
                 section,
                 {"top_depth": (8500.0, "ft"), "bottom_depth": (10390.0, "ft")},
@@ -105,7 +125,6 @@ class TestDepthContract:
     def test_a_section_with_no_actual_depth_reports_no_actual_not_on_plan(self, promoted) -> None:
         """I2/I3: the whole point.  Missing is missing; it is not agreement with the plan."""
         with promoted.database.session() as session:
-            _section(session, promoted)
             session.commit()
             row = _depth_row(session, promoted)
         assert row["planned"] == PLANNED_DEPTH_FT, "the plan comes from the promoted target"
@@ -118,7 +137,7 @@ class TestDepthContract:
     def test_a_revised_plan_does_not_touch_the_depth_that_was_drilled(self, promoted) -> None:
         """I5: the plan moves, the hole does not."""
         with promoted.database.session() as session:
-            section = _section(session, promoted)
+            section = _promoted_section(session, promoted)
             WellRepository(session).update_section(
                 section, {"bottom_depth": (10390.0, "ft")}, state=RecordState.ACTUAL
             )
@@ -250,7 +269,10 @@ class TestIdentity:
             second = _section(session, promoted)
             session.commit()
             assert first.id == second.id
-            assert session.scalar(select(func.count()).select_from(WellSection)) == 1
+            same_name = session.scalars(
+                select(WellSection).where(WellSection.name == MANUAL_SECTION_NAME)
+            ).all()
+            assert len(same_name) == 1, "asking twice must not add a second row"
 
     def test_an_existing_section_does_not_have_its_origin_restated(self, promoted) -> None:
         """A durable fact about the well is not re-sourced by the next document to mention it."""
@@ -259,7 +281,7 @@ class TestIdentity:
             session.commit()
             again = WellRepository(session).get_or_create_section(
                 _well(session, promoted),
-                SECTION_NAME,
+                MANUAL_SECTION_NAME,
                 origin=KnowledgeOrigin.DERIVED.value,
                 provenance=[{"document_id": "doc-other"}],
             )
@@ -271,9 +293,9 @@ class TestIdentity:
     def test_two_sections_of_the_same_hole_size_stay_distinct(self, promoted) -> None:
         """I10: the size is not the identity, so a sidetrack is its own row when it is named."""
         with promoted.database.session() as session:
-            original = _section(session, promoted)
+            original = _promoted_section(session, promoted)
             sidetrack = WellRepository(session).get_or_create_section(
-                _well(session, promoted), "12 1/4 in ST1", sequence=3, hole_size_in=12.25
+                _well(session, promoted), "12 1/4 in ST1", hole_size_in=12.25
             )
             session.commit()
             assert original.id != sidetrack.id
@@ -281,7 +303,7 @@ class TestIdentity:
 
     def test_a_section_name_is_scoped_to_its_well(self, promoted) -> None:
         with promoted.database.session() as session:
-            a3 = _section(session, promoted)
+            a3 = _promoted_section(session, promoted)
             b11 = WellRepository(session).get_or_create_section(
                 session.get(Well, well_id_for(promoted, "B-11")), SECTION_NAME, hole_size_in=12.25
             )
@@ -312,7 +334,7 @@ class TestTransaction:
         """I12: the section and its numbers land together or not at all."""
         with promoted.database.session() as session:
             before = session.scalar(select(func.count()).select_from(WellSection))
-        assert before == 0
+        assert before == 1, "the programme's own section, and nothing else yet"
 
         class Boom(RuntimeError):
             pass
@@ -325,7 +347,9 @@ class TestTransaction:
             raise Boom("the caller failed after the section was written")
 
         with promoted.database.session() as session:
-            assert session.scalar(select(func.count()).select_from(WellSection)) == 0
+            assert session.scalar(select(func.count()).select_from(WellSection)) == before, (
+                "the section the failed write created must be gone"
+            )
 
     def test_a_refused_planned_depth_does_not_poison_the_rest_of_the_write(self, promoted) -> None:
         """The refusal is a rejected write, not a half-applied one."""
@@ -348,7 +372,7 @@ class TestTransaction:
 class TestPlanActual:
     def _summary(self, workspace, *, actual: float | None):
         with workspace.database.session() as session:
-            section = _section(session, workspace)
+            section = _promoted_section(session, workspace)
             if actual is not None:
                 WellRepository(session).update_section(
                     section, {"bottom_depth": (actual, "ft")}, state=RecordState.ACTUAL
@@ -380,8 +404,6 @@ class TestPlanActual:
         self, promoted
     ) -> None:
         with promoted.database.session() as session:
-            _section(session, promoted)
-            session.commit()
             rows = {
                 row["metric"]: row
                 for row in EngineeringRepository(session).plan_actual_summary(
@@ -393,22 +415,48 @@ class TestPlanActual:
         assert mud["actual"] is None and mud["status"] == "NO_ACTUAL"
 
 
-# -- the boundary this task must not cross ------------------------------------
-class TestNoPopulationYet:
-    def test_promotion_still_creates_no_sections(self, promoted) -> None:
-        """C2 is the next task: nothing in the production path may write a section yet."""
-        with promoted.database.read_only() as session:
-            assert session.scalar(select(func.count()).select_from(WellSection)) == 0
+# -- the boundary C2 does not cross -------------------------------------------
+class TestPopulationBoundary:
+    """C2 populates the *planned* section and nothing else.
 
-    def test_promoting_again_still_creates_no_sections(self, promoted) -> None:
+    The prerequisite task asserted that promotion created no sections at all; C2 is exactly the change
+    that makes it create one, so what is pinned here is the new boundary - one section, from the
+    programme, with no actual data and no speculative attachment of records that state no section.
+    """
+
+    def test_promotion_creates_only_the_section_the_programme_names(self, promoted) -> None:
+        with promoted.database.read_only() as session:
+            names = sorted(session.scalars(select(WellSection.name)))
+        assert names == [SECTION_NAME]
+
+    def test_promoting_again_creates_no_further_section(self, promoted) -> None:
+        promote(promoted)
         promote(promoted)
         with promoted.database.read_only() as session:
-            assert session.scalar(select(func.count()).select_from(WellSection)) == 0
+            assert session.scalar(select(func.count()).select_from(WellSection)) == 1
 
-    def test_the_promoted_target_still_has_no_section(self, promoted) -> None:
-        """``ProgramTarget.section_id`` stays empty until a section may legitimately be created."""
-        from drilling_intelligence.database.models import ProgramTarget
+    def test_no_actual_record_is_attached_without_its_own_section_evidence(self, promoted) -> None:
+        """NPT, operations, events and problems state no section, so none of them gets one.
+
+        Attaching them to the only section on the well would look complete and be a guess - and the
+        guess would be silently wrong the moment a second section exists.
+        """
+        from drilling_intelligence.database.models import (
+            NptRecord,
+            ProblemOccurrence,
+            WellEvent,
+            WellOperation,
+        )
 
         with promoted.database.read_only() as session:
-            target = session.scalar(select(ProgramTarget))
-            assert target is not None and target.section_id is None
+            for model in (NptRecord, WellOperation, WellEvent, ProblemOccurrence):
+                attached = [row.section_id for row in session.scalars(select(model))]
+                assert attached and set(attached) == {None}, model.__tablename__
+
+    def test_no_knowledge_item_is_attached_to_the_new_section(self, promoted) -> None:
+        from drilling_intelligence.database.models import KnowledgeItem
+
+        with promoted.database.read_only() as session:
+            assert [
+                row.id for row in session.scalars(select(KnowledgeItem)) if row.section_id
+            ] == []
