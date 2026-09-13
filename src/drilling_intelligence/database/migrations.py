@@ -28,6 +28,21 @@ log = get_logger("database.migrations")
 
 ENV_MIGRATIONS_DIR = "DRILLINTEL_MIGRATIONS_DIR"
 
+#: The Alembic revision that ``Base.metadata`` currently equals.
+#:
+#: A wheel ships the package but not ``migrations/`` (they are repository-owned, see
+#: ``pyproject.toml``), so a workspace created from an installed wheel builds its schema with
+#: ``create_all`` and stamps it rather than replaying the chain.  The stamp has to name a revision
+#: that *exists*: stamping a literal no migration file declares (``0001_initial`` was never a
+#: revision id - the files are ``0001`` … ``0009``) produced a database Alembic could not read at
+#: all, so the moment such a workspace met the scripts again it failed with
+#: ``Can't locate revision identified by '0001_initial'``.
+#:
+#: Bump this with the migration that changes the models.  ``tests/integration`` asserts it against
+#: ``heads()``, so a new revision that forgets this constant fails there rather than silently
+#: stamping the wrong number into operators' databases.
+METADATA_REVISION = "0009"
+
 
 def find_migrations_dir(start: Path | None = None) -> Path | None:
     """Locate the Alembic script directory (works from a source checkout)."""
@@ -191,7 +206,7 @@ def _create_and_stamp(engine: Engine, reason: str, *, stamp_only: bool = False) 
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
-    head = ",".join(heads()) or "0001_initial"
+    head = ",".join(heads()) or METADATA_REVISION
     if not stamp_only:
         Base.metadata.create_all(engine)
     directory = find_migrations_dir()

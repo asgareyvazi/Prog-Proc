@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import inspect
 
 from drilling_intelligence.database.migrations import (
+    METADATA_REVISION,
     current_revision,
     ensure_schema,
     find_migrations_dir,
@@ -41,6 +42,51 @@ def test_the_migrations_tree_is_found_from_the_installed_package() -> None:
     assert directory is not None and directory.name == "migrations"
     assert (directory / "env.py").exists() and (directory / "versions").is_dir()
     assert heads(), "there must be at least one migration in the chain"
+
+
+def test_the_metadata_revision_constant_is_the_real_head() -> None:
+    """The stamp a wheel writes must name a revision that exists.
+
+    A wheel ships the package but not ``migrations/``, so a workspace created from one builds its
+    schema with ``create_all`` and *stamps* it.  The stamp used to fall back to the literal
+    ``"0001_initial"``, which was never a revision id (the files are ``0001`` ... ``0009``), so the
+    database it produced could not be read by Alembic at all: the moment such a workspace met the
+    scripts again it died with ``Can't locate revision identified by '0001_initial'``.  Pinning the
+    constant to the real head here means a new migration that forgets to bump it fails in this test
+    rather than silently stamping the wrong number into an operator's database.
+    """
+    assert heads() == [METADATA_REVISION], (
+        "METADATA_REVISION must equal the migration chain's head; bump it with the migration"
+    )
+
+
+def test_a_wheel_without_migrations_stamps_a_revision_alembic_can_read(
+    tmp_path, monkeypatch
+) -> None:
+    """The installed-wheel path: no scripts on disk, schema from metadata, readable stamp."""
+    with monkeypatch.context() as no_scripts:
+        no_scripts.setattr(
+            "drilling_intelligence.database.migrations.find_migrations_dir", lambda *a, **k: None
+        )
+        database = Database.from_url(f"sqlite:///{tmp_path / 'wheel.db'}")
+        try:
+            status = ensure_schema(database.engine)
+            assert status.current == METADATA_REVISION, status.to_dict()
+            # The schema is complete: the stamp describes what create_all actually built.
+            tables = set(inspect(database.engine).get_table_names())
+            assert tables >= REQUIRED_TABLES
+            assert "well_section" in tables
+        finally:
+            database.dispose()
+
+    # Now the same database meets the real scripts - the case that used to raise CommandError.
+    reopened = Database.from_url(f"sqlite:///{tmp_path / 'wheel.db'}")
+    try:
+        status = ensure_schema(reopened.engine)
+        assert status.up_to_date, status.to_dict()
+        assert current_revision(reopened.engine) == METADATA_REVISION
+    finally:
+        reopened.dispose()
 
 
 def test_a_fresh_database_is_created_by_upgrade(tmp_path) -> None:
