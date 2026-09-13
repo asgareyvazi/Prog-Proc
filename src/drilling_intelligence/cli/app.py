@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from .. import __version__
 from ..config.settings import Settings
+from ..core.enums import WellLifecycleStatus
 from ..core.errors import DrillingIntelligenceError
 from ..database.integrity import (
     check_current_version_invariants,
@@ -127,9 +128,12 @@ def _resolve_well_id(workspace: Workspace, ref: str | None) -> str | None:
         known = [item.name for item in repository.list_wells(limit=50)]
     raise DrillingIntelligenceError(
         f"no well matches {ref!r} in this workspace",
+        # Two different situations, two different next actions.  The old empty-workspace hint
+        # pointed at ``ingest --well``, which is the command the reader had just run: it resolves
+        # a well, it does not register one, so the advice was a loop with no way out.
         hint=("known wells: " + ", ".join(known))
         if known
-        else "no wells registered yet; `drillintel ingest` associates documents with a well via --well",
+        else f"no wells are registered yet: `drillintel wells create --name {ref}`",
     )
 
 
@@ -246,6 +250,107 @@ def command_version(args: argparse.Namespace) -> int:
         lines=[f"drillintel {__version__} (python {sys.version.split()[0]}, {sys.platform})"],
     )
     return 0
+
+
+def command_wells(args: argparse.Namespace) -> int:
+    """``drillintel wells``: register the well a document is about, and list what is registered.
+
+    Every scoped read in this platform - ``records summary``, ``timeline``, ``records rollup`` -
+    starts from a well, and ``ingest --well`` *resolves* one rather than inventing it: a well is a
+    durable domain identity, and creating it from a filename or a line of document prose is exactly
+    the kind of guess this repository refuses to make (the same reasoning that keeps a section out
+    of a DDR).  That left the identity with no production writer at all - it could only be created
+    from Python - so an operator working from the terminal could ingest documents and then find the
+    whole scoped half of the CLI unreachable.  This is that writer, and nothing more: it delegates
+    to :meth:`~drilling_intelligence.wells.repository.WellRepository.create_well`, which owns the
+    validation, the lifecycle enum and the identity.
+    """
+    workspace = _open_workspace(args)
+    try:
+        with workspace.database.session() as session:
+            repository = WellRepository(session)
+            if args.action == "list":
+                project = repository.get_or_create_project(args.project) if args.project else None
+                rows = repository.list_wells(
+                    project_id=str(project.id) if project is not None else "",
+                    status=args.status or "",
+                )
+                payload = [
+                    {
+                        "id": row.id,
+                        "name": row.name,
+                        "project_id": row.project_id,
+                        "field_id": row.field_id,
+                        "lifecycle_status": row.lifecycle_status,
+                        "well_identifier": row.well_identifier,
+                    }
+                    for row in rows
+                ]
+                _emit(
+                    {"count": len(payload), "wells": payload},
+                    as_json=args.json,
+                    lines=[
+                        f"{len(payload)} well(s)",
+                        *(
+                            _table(payload, [("name", 20), ("lifecycle_status", 16), ("id", 40)])
+                            or ["no wells registered yet: `drillintel wells create --name <well>`"]
+                        ),
+                    ],
+                )
+                return 0
+
+            # -- create ------------------------------------------------------
+            # A project is the scope the uniqueness constraint uses
+            # (``uq_well_project_name``), so it is resolved first and reused rather than
+            # invented per call.  Both stay optional because the column is nullable: a
+            # single-well workspace should not have to describe a portfolio.
+            project = repository.get_or_create_project(args.project) if args.project else None
+            field = (
+                repository.get_or_create_field(args.field, project=project) if args.field else None
+            )
+            existing = repository.find_well(
+                args.name, project_id=str(project.id) if project is not None else None
+            )
+            if existing is not None:
+                # Reported, never silently re-created: two wells of one name in one project are
+                # refused by the database, and quietly returning the old row would hide the fact
+                # that the operator's new details (a field, an identifier) were not applied.
+                raise DrillingIntelligenceError(
+                    f"a well named {args.name!r} is already registered",
+                    hint=f"use it directly: --well {existing.name!r} (id {existing.id})",
+                )
+            well = repository.create_well(
+                args.name,
+                project_id=str(project.id) if project is not None else None,
+                field_id=str(field.id) if field is not None else None,
+                well_identifier=args.identifier or None,
+                lifecycle_status=args.status or WellLifecycleStatus.PLANNED,
+            )
+            session.commit()
+            payload = {
+                "created": True,
+                "id": well.id,
+                "name": well.name,
+                "project_id": well.project_id,
+                "field_id": well.field_id,
+                "lifecycle_status": well.lifecycle_status,
+                "well_identifier": well.well_identifier,
+            }
+        _emit(
+            payload,
+            as_json=args.json,
+            lines=[
+                f"well {payload['name']} registered",
+                f"  id:        {payload['id']}",
+                f"  status:    {payload['lifecycle_status']}",
+                f"  project:   {payload['project_id'] or '(none)'}",
+                f"  field:     {payload['field_id'] or '(none)'}",
+                f"next: `drillintel ingest <folder> --well {payload['name']}`",
+            ],
+        )
+        return 0
+    finally:
+        workspace.close()
 
 
 def command_workspace_create(args: argparse.Namespace) -> int:
@@ -1905,6 +2010,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--corpus-dir", action="append", help="relative folder to scan by default (repeatable)"
     )
     create.set_defaults(handler=command_workspace_create)
+
+    wells = sub.add_parser(
+        "wells",
+        help="the wells this workspace knows: register one, or list what is registered",
+        parents=[common],
+    )
+    wells_sub = wells.add_subparsers(dest="action", required=True)
+    wells_create = wells_sub.add_parser(
+        "create",
+        help="register a well so documents and records can be scoped to it",
+        parents=[common],
+    )
+    wells_create.add_argument("--name", required=True, help="the well's name, e.g. A-3")
+    wells_create.add_argument(
+        "--project", default="", help="the project it belongs to (created if new)"
+    )
+    wells_create.add_argument("--field", default="", help="the field it sits in (created if new)")
+    wells_create.add_argument("--identifier", default="", help="the operator's own well identifier")
+    wells_create.add_argument(
+        "--status",
+        default="",
+        choices=sorted(item.value for item in WellLifecycleStatus),
+        help=f"lifecycle state (default: {WellLifecycleStatus.PLANNED.value})",
+    )
+    wells_create.set_defaults(handler=command_wells)
+    wells_list = wells_sub.add_parser(
+        "list", help="the wells registered in this workspace", parents=[common]
+    )
+    wells_list.add_argument("--project", default="", help="restrict to this project")
+    wells_list.add_argument("--status", default="", help="restrict to this lifecycle state")
+    wells_list.set_defaults(handler=command_wells)
 
     ingest = sub.add_parser(
         "ingest",

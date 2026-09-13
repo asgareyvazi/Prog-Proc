@@ -42,13 +42,29 @@ and Ollama (for optional AI) are both opt-in and absent by default.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-PYTHONPATH=src .venv/bin/python -m pytest            # 836 tests: unit, engineering, integration
+PYTHONPATH=src .venv/bin/python -m pytest            # 1057 tests: unit, engineering, integration
 .venv/bin/ruff check src tests migrations --output-format=concise
 .venv/bin/ruff format --check src tests migrations
 ```
 
 Ingest a folder of documents into a workspace (this is the whole point of phase 0, so it
-is worth running once on your own files):
+is worth running once on your own files).  From a terminal, nothing else is required:
+
+```bash
+drillintel workspace create /tmp/well-a3 --name "North Cormorant"
+# A well is a durable identity, so it is registered explicitly rather than guessed from a
+# filename: `ingest --well` resolves a well, it never invents one.
+drillintel wells create --name A-3 --project "North Cormorant" --field "North Cormorant" \
+    --workspace /tmp/well-a3
+drillintel ingest /data/projects --well A-3 --workspace /tmp/well-a3
+drillintel records promote --workspace /tmp/well-a3       # idempotent; re-runs report `unchanged`
+drillintel index rebuild  --workspace /tmp/well-a3        # the sidecar is disposable
+drillintel records summary --well A-3 --workspace /tmp/well-a3
+drillintel doctor --workspace /tmp/well-a3                # what is healthy, and what to run next
+```
+
+`drillintel wells list` shows what is registered.  The same bootstrap through the Python API,
+for callers embedding the library rather than driving the CLI:
 
 ```python
 from pathlib import Path

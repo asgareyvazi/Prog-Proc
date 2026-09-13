@@ -716,3 +716,102 @@ def test_doctor_names_a_promoted_row_the_index_has_not_seen(ready) -> None:
     assert code == 1, out
     assert "structured drift: 1 not yet indexed" in out, out
     assert "rebuild recommended: yes" in out, out
+
+
+class TestWellBootstrapFromTheTerminal:
+    """A well is a durable identity, so something has to be allowed to register one.
+
+    ``ingest --well`` *resolves* a well; it does not create one, and creating a well from a
+    filename or a line of document prose is the kind of guess this platform refuses to make.
+    That left ``create_well`` with no production caller at all - it could only be reached from
+    Python - so an operator working from a terminal could ingest documents and then find every
+    scoped read (`records summary`, `timeline`, `records rollup`) permanently unreachable, with
+    an error that pointed back at the command they had just run.
+    """
+
+    def test_a_fresh_workspace_can_register_a_well_and_then_scope_to_it(self, workspace) -> None:
+        """The whole point: bootstrap, ingest, promote and read back, without Python."""
+        created = call(
+            workspace, "wells", "create", "--name", "A-3", "--project", "North Cormorant"
+        )
+        assert created["created"] is True
+        assert created["name"] == "A-3"
+        assert created["lifecycle_status"] == "PLANNED"
+        assert created["id"].startswith("well-")
+
+        with workspace.database.read_only() as session:
+            row = WellRepository(session).find_well("A-3")
+            assert row is not None and row.id == created["id"], "the CLI wrote the real row"
+
+        listed = call(workspace, "wells", "list")
+        assert [item["name"] for item in listed["wells"]] == ["A-3"]
+        assert listed["count"] == 1
+
+    def test_the_empty_workspace_hint_names_the_command_that_fixes_it(self, workspace) -> None:
+        """The old hint pointed at ``ingest --well``, which is what the reader had just tried."""
+        code, out, _err = _capture(workspace, "records", "summary", "--well", "A-3")
+        assert code == 1
+        hint = json.loads(out)["context"]["hint"]
+        assert "wells create" in hint, hint
+        assert "ingest" not in hint, "the circular hint must be gone"
+
+    def test_a_known_well_is_listed_when_the_reference_is_simply_wrong(self, workspace) -> None:
+        """Two different situations must not produce the same advice."""
+        call(workspace, "wells", "create", "--name", "A-3")
+        code, out, _err = _capture(workspace, "records", "summary", "--well", "A-99")
+        assert code == 1
+        hint = json.loads(out)["context"]["hint"]
+        assert "known wells: A-3" in hint, hint
+        assert "wells create" not in hint, "this workspace has wells; the advice differs"
+
+    def test_registering_the_same_well_twice_is_refused_not_duplicated(self, workspace) -> None:
+        call(workspace, "wells", "create", "--name", "A-3", "--project", "North Cormorant")
+        code, out, _err = _capture(
+            workspace, "wells", "create", "--name", "A-3", "--project", "North Cormorant"
+        )
+        assert code == 1
+        assert "already registered" in json.loads(out)["message"]
+        with workspace.database.read_only() as session:
+            assert len(WellRepository(session).list_wells()) == 1, "no second row was written"
+
+    def test_a_well_needs_a_name(self, workspace) -> None:
+        for blank in ("", "   "):
+            code, out, _err = _capture(workspace, "wells", "create", "--name", blank)
+            assert code == 1, blank
+            assert "name" in json.loads(out)["message"].lower()
+        with workspace.database.read_only() as session:
+            assert WellRepository(session).list_wells() == []
+
+    def test_the_lifecycle_state_is_the_domain_enum(self, workspace) -> None:
+        created = call(workspace, "wells", "create", "--name", "A-3", "--status", "DRILLING")
+        assert created["lifecycle_status"] == "DRILLING"
+        with pytest.raises(SystemExit):
+            # argparse rejects an unknown state before any row is written.
+            main(
+                [
+                    "wells",
+                    "create",
+                    "--name",
+                    "B-1",
+                    "--status",
+                    "NOPE",
+                    "--workspace",
+                    str(workspace.root),
+                ]
+            )
+        with workspace.database.read_only() as session:
+            assert [w.name for w in WellRepository(session).list_wells()] == ["A-3"]
+
+    def test_the_full_operator_path_runs_from_a_registered_well(self, workspace) -> None:
+        """CLI-only: register, ingest, promote, then read a scoped summary back."""
+        from tests.fixtures.generate import build_corpus
+
+        call(workspace, "wells", "create", "--name", "A-3", "--project", "North Cormorant")
+        corpus = workspace.root / "corpus"
+        build_corpus(corpus)
+        call(workspace, "ingest", str(corpus), "--well", "A-3")
+        call(workspace, "records", "promote")
+        summary = call(workspace, "records", "summary", "--well", "A-3")
+        assert summary["reports"] >= 1
+        assert summary["npt"]["rows"] >= 1
+        assert summary["planned"]["programs"] >= 1

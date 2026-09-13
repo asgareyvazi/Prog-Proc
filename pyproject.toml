@@ -67,8 +67,9 @@ dev = [
 ]
 
 [project.scripts]
-# One command, and it exists: `drillintel` is drilling_intelligence.cli (version, workspace
-# create, ingest, search, index, doctor).  There is deliberately no `drillintel-ui` /
+# One command, and it exists: `drillintel` is drilling_intelligence.cli (version, workspace,
+# wells, ingest, search, evidence, index, knowledge, doctor, timeline, records, fields,
+# patterns, lessons).  There is deliberately no `drillintel-ui` /
 # `[project.gui-scripts]` entry while the desktop front end is unimplemented - an entry point
 # naming a module that does not exist installs a command whose first run is a traceback.
 drillintel = "drilling_intelligence.cli:main"
