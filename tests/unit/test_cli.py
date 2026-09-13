@@ -820,6 +820,67 @@ class TestKnowledgeCommands:
                 f"rebuild did not reproduce what ingestion derived ({key})"
             )
 
+    def test_rebuild_says_out_loud_how_many_keys_one_source_contradicts_itself_on(
+        self, live_workspace
+    ) -> None:
+        """A number that is counted and never printed is a number nobody acts on.
+
+        ``detect_conflicts`` deliberately does *not* call two values inside one revision of one file
+        a conflict - it cannot adjudicate what a table meant - and counts them as
+        ``ambiguous_within_source`` instead.  The JSON carried that count and the full list of
+        offending keys all along; the human rendering printed only ``conflicts``, so a reader at a
+        terminal saw "conflicts open afterwards: 2" and had no way to learn that six further keys
+        are internally ambiguous.  The fix for those belongs to the extraction rules, which is
+        exactly why the count has to be visible to the person who can fix them.
+        """
+        workspace_root, config, _settings = live_workspace
+        self._ingest(workspace_root, config)
+
+        code, out, err = self._run(workspace_root, config, "knowledge", "rebuild", "--json")
+        assert code == 0, err
+        document = payload(out)
+        ambiguous = document["conflicts"]["ambiguous_within_source"]
+        assert ambiguous > 0, (
+            "this corpus states several values for one property inside one file; "
+            "if that stops being true, pick another fixture rather than deleting the assertion"
+        )
+        # The detail list is what makes the count actionable: it names the keys.
+        assert document["conflicts"]["details"], document["conflicts"]
+
+        code, text, err = self._run(workspace_root, config, "knowledge", "rebuild")
+        assert code == 0, err
+        assert f"ambiguous within one source: {ambiguous}" in text, text
+        assert "--json" in text, "the reader must be told where the offending keys are listed"
+
+    def test_rebuild_stays_silent_about_ambiguity_when_there_is_none(self, live_workspace) -> None:
+        """The line is a finding, not furniture: no ambiguity means no line."""
+        workspace_root, config, settings = live_workspace
+        self._ingest(workspace_root, config)
+        from sqlalchemy import text as sql
+
+        from drilling_intelligence.wells.workspace import Workspace
+
+        workspace = Workspace.open(workspace_root, settings)
+        try:
+            with workspace.database.session() as session:
+                # Leave one fact per key: a single voice cannot contradict itself.  The rebuild
+                # re-derives from the stored artefacts, so the artefacts have to go too - otherwise
+                # the ambiguity is simply recreated and the assertion would prove nothing.
+                session.execute(sql("DELETE FROM extraction"))
+                session.execute(sql("DELETE FROM knowledge_relation"))
+                session.execute(sql("DELETE FROM knowledge_item"))
+                session.commit()
+        finally:
+            workspace.close()
+
+        code, out, err = self._run(workspace_root, config, "knowledge", "rebuild", "--json")
+        assert code == 0, err
+        assert payload(out)["conflicts"]["ambiguous_within_source"] == 0
+
+        code, text, err = self._run(workspace_root, config, "knowledge", "rebuild")
+        assert code == 0, err
+        assert "ambiguous within one source" not in text, text
+
     def test_two_sources_disagreeing_are_printed_as_an_argument_with_a_way_to_settle_it(
         self, live_workspace
     ) -> None:

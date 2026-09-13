@@ -709,6 +709,17 @@ def command_knowledge(args: argparse.Namespace) -> int:
                 f"  derived rows removed first: {payload['removed']} (manual notes are kept)",
                 f"  conflicts open afterwards: {payload['conflicts']['conflicts']}",
             ]
+            # A key where one source states several values is not a conflict - ``detect_conflicts``
+            # counts it separately on purpose, because the knowledge layer cannot adjudicate what a
+            # table meant.  It was counted and then never printed, so the reader of a terminal saw
+            # "conflicts: 2" and had no way to learn that six more keys are internally ambiguous.
+            # The fix belongs to the extraction, which is exactly why the number has to be visible.
+            ambiguous = int(payload["conflicts"].get("ambiguous_within_source") or 0)
+            if ambiguous:
+                lines.append(
+                    f"  ambiguous within one source: {ambiguous} "
+                    "(one file stating several values for one property; --json lists them)"
+                )
             for warning in payload["warnings"][:10]:
                 lines.append(f"  warning: {warning}")
             return_code = 0
