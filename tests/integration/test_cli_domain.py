@@ -76,6 +76,18 @@ def _capture(workspace, *argv: str) -> tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
+def _capture_text(workspace, *argv: str) -> tuple[int, str, str]:
+    """Human-mode output together with its exit code, for commands that legitimately exit 1."""
+    out, err = StringIO(), StringIO()
+    saved = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+    try:
+        code = main([*argv, "--workspace", str(workspace.root)])
+    finally:
+        sys.stdout, sys.stderr = saved
+    return code, out.getvalue(), err.getvalue()
+
+
 def _text(workspace, *argv: str) -> tuple[str, str]:
     """The same command without ``--json``: what a person at a terminal actually reads."""
     out, err = StringIO(), StringIO()
@@ -666,3 +678,41 @@ class TestPlanActualCombinedScopes:
             two_wells["sec_a"],
         )
         assert payload["count"] == 0 and payload["rows"] == []
+
+
+def test_doctor_names_a_promoted_row_the_index_has_not_seen(ready) -> None:
+    """An unsearchable promoted row is a finding, not a silence.
+
+    ``doctor`` weighed only the document drift counters, so a lesson written after the last index
+    build left the workspace with a row that ``search`` could not find while the index reported a
+    clean bill of health.  The structured counters were already on the ``--json`` document; they
+    simply never reached a finding or the terminal.
+    """
+    call(ready, "index", "rebuild")
+    clean = json.loads(_capture(ready, "doctor")[1])
+    assert not [line for line in clean["findings"] if "structured row(s)" in line], clean[
+        "findings"
+    ]
+
+    with ready.database.session() as session:
+        from drilling_intelligence.lessons.repository import LessonRepository
+
+        LessonRepository(session).capture(
+            lesson="Ream the cuttings bed before pulling out of hole.",
+            title="Hole cleaning",
+            well_id=well_id_for(ready, "A-3"),
+            created_by="auditor",
+        )
+        session.commit()
+
+    payload = json.loads(_capture(ready, "doctor")[1])
+    assert payload["index"]["structured_missing"] == 1
+    finding = [line for line in payload["findings"] if "structured row(s)" in line]
+    assert finding, payload["findings"]
+    assert "index rebuild" in finding[0]
+
+    # Exit 1: a script must not read "unsearchable row" as a clean index.
+    code, out, _err = _capture_text(ready, "index", "status")
+    assert code == 1, out
+    assert "structured drift: 1 not yet indexed" in out, out
+    assert "rebuild recommended: yes" in out, out

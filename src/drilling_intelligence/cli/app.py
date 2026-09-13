@@ -569,6 +569,14 @@ def command_index(args: argparse.Namespace) -> int:
                 f"  registry revision at build: {stats['registry_revision'] or 'unknown'}",
                 f"  fts5: {'available (candidate acceleration only)' if stats['fts_available'] else 'unavailable (scan path; same results)'}",
                 f"  drift: {stats['stale_versions']} stale, {stats['orphaned']} orphaned, {stats['missing_versions']} not yet indexed",
+                # The structured half of the same question.  A promoted lesson or problem is
+                # searchable the moment it is written, so a row the index has not seen yet is
+                # invisible to `search` - the document counters above cannot express that, and
+                # printing only them reported a clean index over an unsearchable row.
+                f"  structured drift: {stats['structured_missing']} not yet indexed, "
+                f"{stats['structured_stale']} no longer searchable, "
+                f"{stats['structured_orphaned']} orphaned "
+                f"(of {stats['structured_records']} indexed)",
                 f"  rebuild recommended: {'yes' if service.needs_rebuild() else 'no'}",
             ]
             return_code = 1 if service.needs_rebuild() else 0
@@ -633,6 +641,19 @@ def command_doctor(args: argparse.Namespace) -> int:
         if stats.get("stale_versions") or stats.get("orphaned") or stats.get("missing_versions"):
             findings.append(
                 "the search index disagrees with the registry: `drillintel index rebuild`"
+            )
+        if (
+            stats.get("structured_missing")
+            or stats.get("structured_stale")
+            or stats.get("structured_orphaned")
+        ):
+            # Named separately from the document drift above because the diagnosis differs: these
+            # are promoted rows (a lesson, a problem, an NPT record) that the index has not seen,
+            # and until it does they are missing from `search` while every document looks healthy.
+            findings.append(
+                f"{stats['structured_missing']} structured row(s) not yet indexed, "
+                f"{stats['structured_stale']} no longer searchable, "
+                f"{stats['structured_orphaned']} orphaned: `drillintel index rebuild`"
             )
         if not stats.get("fts_available"):
             findings.append(

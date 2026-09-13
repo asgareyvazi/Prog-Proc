@@ -193,6 +193,54 @@ def test_stats_reports_structured_health_separately(rebuilt, promoted) -> None:
     assert stats["structured_missing"] == 0
 
 
+def test_structured_drift_alone_asks_for_a_rebuild(rebuilt, promoted) -> None:
+    """A promoted row the index has not seen is a reason to rebuild, on its own.
+
+    ``needs_rebuild`` weighed only the *document* counters, so a lesson or a problem written after
+    the last build left ``structured_missing`` non-zero while every document counter stayed at
+    zero: the row was invisible to ``search`` and the index reported a clean bill of health.  The
+    structured counters were computed by ``stats`` all along and simply never consulted here.
+    """
+    assert rebuilt.needs_rebuild() is False
+    stats = rebuilt.stats()
+    assert not any(stats[key] for key in ("missing_versions", "stale_versions", "orphaned")), (
+        "the document side must be clean, or this proves nothing about the structured side"
+    )
+
+    with promoted.database.session() as session:
+        LessonRepository(session).capture(
+            lesson="Ream the cuttings bed before pulling out of hole.",
+            title="Hole cleaning",
+            well_id=well_id_for(promoted, "A-3"),
+            created_by="auditor",
+        )
+        session.commit()
+
+    stats = rebuilt.stats()
+    assert stats["structured_missing"] == 1
+    assert not any(stats[key] for key in ("missing_versions", "stale_versions", "orphaned")), (
+        "no document drift: the structured counter is the only signal there is"
+    )
+    assert rebuilt.needs_rebuild() is True, "an unsearchable promoted row is a rebuild condition"
+
+    rebuilt.rebuild()
+    assert rebuilt.stats()["structured_missing"] == 0
+    assert rebuilt.needs_rebuild() is False
+
+
+def test_a_stale_structured_row_alone_asks_for_a_rebuild(rebuilt, promoted) -> None:
+    """The same rule for the other direction: indexed, but no longer searchable."""
+    assert rebuilt.needs_rebuild() is False
+    with promoted.database.session() as session:
+        row = session.scalar(select(NptRecord).order_by(NptRecord.id))
+        row.status = ConfirmationStatus.REJECTED.value
+        session.commit()
+    stats = rebuilt.stats()
+    assert stats["structured_stale"] == 1
+    assert not any(stats[key] for key in ("missing_versions", "stale_versions", "orphaned"))
+    assert rebuilt.needs_rebuild() is True
+
+
 # --------------------------------------------------------------------------- lessons & recommendations
 def test_lessons_and_recommendations_are_searchable(promoted) -> None:
     """The two record types promotion never writes are still part of the projection."""

@@ -259,12 +259,17 @@ class SearchService:
     def needs_rebuild(self) -> bool:
         """True when the searchable state disagrees with the registry.
 
-        Four ways, all of them real and all of them observable from the two structures:
+        Seven ways, all of them real and all of them observable from the two structures:
 
         *   the registry has current versions with nothing indexed (an index that was never
             built, or one whose file was deleted);
         *   the index holds versions the registry no longer considers current (a prune fixes it);
         *   the index holds versions the registry has lost entirely;
+        *   the same three conditions on the *structured* side - a searchable row with nothing
+            indexed, an indexed row whose source is no longer searchable, or an indexed row whose
+            authoritative row is gone.  These were counted by :meth:`stats` and then ignored here,
+            so a lesson or a problem written after the last build was silently unsearchable while
+            the index reported a clean bill of health;
         *   the sidecar was written against a different Alembic revision of the registry.
 
         An index maintained incrementally by ingestion is *not* "in need of a rebuild" just
@@ -272,6 +277,12 @@ class SearchService:
         """
         stats = self.stats()
         if stats.get("missing_versions") or stats.get("stale_versions") or stats.get("orphaned"):
+            return True
+        if (
+            stats.get("structured_missing")
+            or stats.get("structured_stale")
+            or stats.get("structured_orphaned")
+        ):
             return True
         from ..database.migrations import current_revision
 
