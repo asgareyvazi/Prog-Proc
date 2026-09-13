@@ -1097,3 +1097,124 @@ arrives); writing the program's planned depth into the section so the comparison
 giving the promoter its own section-name parser (C1's `SectionPlan.name` is already the document's own
 wording, deterministically derived, and a second reader would be a second answer); and adding
 `well_section` to structured search or retrieval, which stays the six record types ADR-0013 defines.
+
+## ADR-0020 — A programme-scoped comparison is confined to the programme's own well
+
+`EngineeringRepository.plan_actual_summary` narrowed its *target* side to the named programme but
+left its *section* side selecting every section in the workspace. `_match_target` falls back to
+matching a target to a section by **name** when no `section_id` links them, and hole sections are
+named after the hole, so `12 1/4 in` exists on most wells in a field. The two together reported one
+well's drilled depth as another well's actual, under the other programme's `target_id`:
+
+```
+plan_actual_summary(program_id=<A-3's programme>)
+  well=A-3   '12 1/4 in'  planned=10450.0  actual=None    NO_ACTUAL   (correct)
+  well=B-11  '12 1/4 in'  planned=10450.0  actual=7777.0  VARIANCE    (false)
+  well=B-11  '17 1/2 in'  planned=None     actual=None    NO_TARGET   (leaked)
+```
+
+The `well_id` and `section_id` scopes were always confined; only `program_id` was not. The write path
+was never at fault - `add_target` already refuses a section belonging to another well, and
+`_check_scope` refuses a contradictory scope - so nothing in the database was wrong. The defect was a
+missing `WHERE` on a read, which is why the fix adds no column, no migration and no row.
+
+The flaw predates C1 and C2 and was latent for a structural reason: nothing created sections
+automatically, so two wells rarely carried the same section name. ADR-0019's promoter now names a
+section after its hole on every well that has a programme, which makes the collision the normal case
+rather than a freak one. A latent defect that becomes reachable is a defect.
+
+A programme that names no well - a field template - has no well to be confined to, so it compares
+only the sections its own targets point at explicitly. An unknown `program_id` returns `[]`, the same
+answer an unknown `well_id` already gave. Both fail closed: the fallback that produced the wrong
+answer is removed rather than replaced with a cleverer guess.
+
+**Rejected.** Deleting `_match_target`'s name fallback (a programme written before the well was
+spudded legitimately has no `section_id`, and removing it would silently stop comparing real plans);
+normalising or namespacing section names to make cross-well collisions impossible (identity stays
+`(well_id, name)` - the names are not the problem, the missing scope was); and reporting the foreign
+section with a warning instead of excluding it (a comparison row is a claim, and this one is false).
+
+## ADR-0021 — The planned half of the record is readable from a terminal
+
+Since ADR-0017 the drilling programme is promoted, since ADR-0019 it creates the hole section it
+plans, and `EngineeringRepository.plan_actual_summary` has compared the two all along.  None of it
+was reachable from the CLI: `records summary` counted five operational tables and stopped, `doctor`
+printed the same five, and the comparison had no reader at all.  A Digital Well Record that answers
+only "what was drilled" - and only from Python - is half a record.
+
+Three changes, one theme, no new domain logic:
+
+*   **`records summary` gained a `planned` block** - sections, sections with a drilled depth,
+    programmes, current programmes and targets - counted through the same `_scope_statement` the
+    operational counts use.  Targets are scoped through their programme rather than through a well
+    column they do not have, which is the same rule the comparison itself applies.
+*   **`doctor` counts the same four objects**, so "what does this workspace hold" stops omitting the
+    plan.
+*   **`records plan-actual`** prints `plan_actual_summary` with `--well`, `--program`, `--section`
+    and `--metric`.  It computes nothing: the repository remains the single implementation, because
+    a second one in the CLI is how a screen and a report come to disagree.
+
+`sections_with_actual_depth` is counted rather than assumed.  The promoter writes the planned half
+only, so a workspace where that number is 0 while `sections` is 1 is the normal, correct state - and
+printing it is what makes the evidence boundary visible instead of merely documented.
+
+A pre-existing crash was found by the empty-state test and fixed: `total_hours` is `None` when a scope
+holds no NPT row ("nothing recorded" is not "0 h lost"), and formatting it with `:g` raised
+`TypeError`, so `records summary` died on exactly the case this work makes interesting - a well that
+is programmed but not yet drilled.
+
+**Rejected.** Adding a `well_section` / `drilling_program` table to `records list` (the list verb
+prints operational rows a promotion wrote, and a planned row is not one - `plan-actual` is the right
+shape for the planned side); making `plan-actual` accept no scope and compare the whole workspace
+(that is the defect ADR-0020 removed, reintroduced through a different door); computing variance
+percentages or a pass/fail verdict in the CLI (a judgement, not a number the database states); and
+attaching actual depths to sections so the new command would have something to compare - the corpus
+still states no machine-readable section identity, and inventing one to make a screen look populated
+is the failure mode this platform exists to avoid.
+
+## ADR-0022 — Every plan-versus-actual scope is a constraint, never a precedence
+
+ADR-0020 said the cross-well fallback "is removed rather than replaced with a cleverer guess". That
+was **stronger than the code proved**. The confinement it added was written as
+
+```python
+if program_id and not (well_id or section_id):
+```
+
+so it applied only to a *bare* programme scope. Naming a programme **together with** a well or a
+section skipped it, and `_match_target`'s name fallback reported one well's drilled depth against
+another well's plan again — the same defect, reached through a different door:
+
+```
+plan_actual_summary(section_id=<B-11's section>, program_id=<A-3's programme>)
+  well=B-11  '12 1/4 in'  planned=10450.0  actual=7777.0  VARIANCE    (false)
+
+plan_actual_summary(well_id=<A-3>, program_id=<B-11's programme>)
+  well=A-3   '12 1/4 in'  planned=8000.0   actual=None    NO_ACTUAL   (false)
+```
+
+The flaw was latent while `plan_actual_summary` had no production caller. ADR-0021 gave it one and
+exposed `--well`, `--program` and `--section` as freely combinable flags, which made every
+combination reachable from a terminal. A latent defect that becomes reachable is a defect — the same
+reasoning ADR-0020 itself used.
+
+**The rule, stated once:** a programme belongs to a well and a section belongs to a well, so every
+supplied scope is a *constraint on the same intersection*, and supplying one never disables another.
+The programme's well now confines the section side unconditionally. Scopes that contradict each other
+therefore intersect to nothing and return `[]`.
+
+That empty answer is the point. A caller naming A-3's well and B-11's programme has described no
+well, and answering with *either* of them would be choosing which of the caller's two statements to
+ignore. An id nobody wrote returns `[]` for the same reason and never falls back to a wider query —
+previously an unknown `program_id` beside a valid `section_id` left the section side scoped only by
+the section, so an unknown id quietly meant "skip this constraint".
+
+No schema change, no migration, no new identity rule: the fix is one `WHERE` that now always applies.
+Identity stays exact `(well_id, name)` relational matching — no normalisation, no aliasing, no fuzzy
+or nearest-match inference was added or needed.
+
+**Rejected.** Forbidding combined scopes at the CLI so the bug becomes unreachable (that hides a
+repository defect behind an argument parser, and the combinations are legitimate — "this programme,
+this section" is exactly what a reviewer asks); letting the most specific scope win (precedence is
+what produced the contamination); and raising an error on a contradictory scope instead of returning
+`[]` (an empty intersection is a correct answer to a well-formed question, not a usage mistake).

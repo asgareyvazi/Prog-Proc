@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import func, select
 from tests.fixtures.fieldops import ingest, promote, well_id_for
 
+from drilling_intelligence.cli.app import main as main_entry
 from drilling_intelligence.core.enums import KnowledgeOrigin
 from drilling_intelligence.database.integrity import (
     check_promoted_evidence,
@@ -495,3 +496,52 @@ class TestProductionPath:
         assert section is not None and section.origin == KnowledgeOrigin.DERIVED.value
         assert _target(workspace).section_id == section.id
         assert section.bottom_depth_value is None
+
+    def test_the_terminals_own_corpus_does_not_compare_across_wells(self, workspace) -> None:
+        """The cross-well leak, reached the way a user reaches it - and refused.
+
+        C2's promoter names a section after its hole (``12 1/4 in``), so two wells promoted in one
+        workspace end up with the same section name.  ``plan_actual_summary(program_id=...)`` scoped
+        its targets to the programme but its *sections* to the whole workspace, and the name fallback
+        in ``_match_target`` then compared B-11's drilled depth against A-3's plan.  Nothing here
+        constructs that situation by hand: ingest and the CLI produce it.
+        """
+        import sys
+        from io import StringIO
+
+        from drilling_intelligence.core.enums import RecordState
+        from drilling_intelligence.database.models import Well
+
+        ingest(workspace)
+        out, err = StringIO(), StringIO()
+        saved = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+        try:
+            code = main_entry(["records", "promote", "--workspace", str(workspace.root), "--json"])
+        finally:
+            sys.stdout, sys.stderr = saved
+        assert code == 0, (code, err.getvalue()[:400])
+
+        # The other well reaches the same hole and records what it drilled.
+        with workspace.database.session() as session:
+            other = WellRepository(session).get_or_create_section(
+                session.get(Well, well_id_for(workspace, "B-11")),
+                SECTION_NAME,
+                hole_size_in=12.25,
+            )
+            WellRepository(session).update_section(
+                other, {"bottom_depth": (7777.0, "ft")}, state=RecordState.ACTUAL
+            )
+            session.commit()
+
+        with workspace.database.read_only() as session:
+            program = session.scalar(select(DrillingProgram))
+            rows = EngineeringRepository(session).plan_actual_summary(program_id=program.id)
+            assert {row["well_id"] for row in rows} == {well_id_for(workspace, "A-3")}, (
+                "B-11's section must not be compared against A-3's programme"
+            )
+            depth = next(row for row in rows if row["metric"] == "depth_md")
+            assert depth["planned"] == PLANNED_DEPTH_FT
+            assert depth["actual"] is None and depth["status"] == "NO_ACTUAL", (
+                "7777.0 ft was drilled on another well and is not this plan's actual"
+            )

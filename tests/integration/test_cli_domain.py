@@ -14,6 +14,7 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
+from sqlalchemy import func, select
 from tests.fixtures.fieldops import (
     TOTAL_NPT_HOURS,
     add_casing_program,
@@ -24,6 +25,14 @@ from tests.fixtures.fieldops import (
 )
 
 from drilling_intelligence.cli.app import main
+from drilling_intelligence.database.models import (
+    DrillingProgram,
+    NptRecord,
+    ProgramTarget,
+    WellSection,
+)
+from drilling_intelligence.engineering.repository import EngineeringRepository
+from drilling_intelligence.wells.repository import WellRepository
 
 
 @pytest.fixture
@@ -65,6 +74,19 @@ def _capture(workspace, *argv: str) -> tuple[int, str, str]:
     finally:
         sys.stdout, sys.stderr = saved
     return code, out.getvalue(), err.getvalue()
+
+
+def _text(workspace, *argv: str) -> tuple[str, str]:
+    """The same command without ``--json``: what a person at a terminal actually reads."""
+    out, err = StringIO(), StringIO()
+    saved = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = out, err
+    try:
+        code = main([*argv, "--workspace", str(workspace.root)])
+    finally:
+        sys.stdout, sys.stderr = saved
+    assert code == 0, (code, out.getvalue()[:800], err.getvalue()[:800])
+    return out.getvalue(), err.getvalue()
 
 
 def test_fields_summary_counts_what_the_corpus_states(ready) -> None:
@@ -393,3 +415,254 @@ def test_records_impact_does_not_write_anything(ready) -> None:
     call(ready, "records", "impact", key)
     call(ready, "records", "impact", "mud_report.xlsx!Summary!B9", expect=1)
     assert fingerprint() == before
+
+
+# --------------------------------------------------------------- the planned domain, from a terminal
+class TestPlannedDomainIsVisible:
+    """A Digital Well Record that a person cannot read is not a record.
+
+    The programme, its targets and the hole section it plans have been written from real documents
+    since ADR-0017/0019, and ``plan_actual_summary`` has compared them since before that - but every
+    one of those numbers was reachable only from Python.  ``records summary`` counted five operational
+    tables and stopped, ``doctor`` printed the same five, and the comparison had no reader at all.
+    These tests pin the terminal's view of the planned half.
+    """
+
+    def test_records_summary_counts_the_planned_half_too(self, ready) -> None:
+        summary = call(ready, "records", "summary", "--field", "North Cormorant")
+        planned = summary["planned"]
+        # Two programmes, and both current: the promoted drilling programme and the fixture's
+        # 8 1/2 in one are different codes, so neither supersedes the other.
+        assert planned["programs"] == 2 and planned["programs_current"] == 2
+        assert planned["targets"] == 2
+        # Two sections in this fixture: the promoted 12 1/4 in one and the casing programme's 8 1/2 in.
+        assert planned["sections"] == 2, planned
+        assert planned["sections_with_actual_depth"] == 1, (
+            "only the drilled section has a bottom depth; a promoted plan must not fabricate one"
+        )
+        # The operational half is untouched by the addition.
+        assert summary["npt"]["rows"] == 5 and summary["reports"] == 2
+
+    def test_records_summary_survives_a_scope_with_nothing_in_it(self, workspace) -> None:
+        """A well that is programmed but not yet drilled still has to print.
+
+        ``total_hours`` is None when no NPT row exists - "nothing recorded" is not "0 h lost" - and
+        formatting that with :g raised TypeError, so the whole summary died on an empty scope.
+        """
+        ingest(workspace)
+        summary = call(workspace, "records", "summary", "--well", "A-3")
+        assert summary["npt"]["rows"] == 0 and summary["npt"]["total_hours"] is None
+        assert summary["planned"] == {
+            "sections": 0,
+            "sections_with_actual_depth": 0,
+            "programs": 0,
+            "programs_current": 0,
+            "targets": 0,
+        }
+        out, _err = _text(workspace, "records", "summary", "--well", "A-3")
+        assert "no hours recorded" in out, out
+        assert "planned  0 section(s)" in out, out
+
+    def test_doctor_counts_the_programme_and_the_section(self, ready) -> None:
+        code, out, _err = _capture(ready, "doctor")
+        payload = json.loads(out)
+        assert payload["operational"]["programs"] == 2
+        assert payload["operational"]["programs_current"] == 2
+        assert payload["operational"]["targets"] == 2
+        assert payload["operational"]["sections"] == 2
+        assert payload["integrity_problems"] == [], payload["integrity_problems"]
+        assert code == 1, "the fixture's unbuilt index and knowledge conflicts still stand"
+
+    def test_plan_actual_prints_the_comparison_the_repository_computes(self, ready) -> None:
+        payload = call(ready, "records", "plan-actual", "--well", "A-3")
+        assert payload["count"] == len(payload["rows"]) > 0
+        with ready.database.read_only() as session:
+            expected = EngineeringRepository(session).plan_actual_summary(
+                well_id=well_id_for(ready, "A-3")
+            )
+        assert payload["rows"] == expected, "the CLI must not compute a second answer"
+        depth = next(
+            row
+            for row in payload["rows"]
+            if row["metric"] == "depth_md" and row["section"] == "12 1/4 in"
+        )
+        assert depth["planned"] == 10450.0
+        assert depth["actual"] is None and depth["status"] == "NO_ACTUAL"
+
+    def test_plan_actual_needs_a_scope_and_says_which_ones(self, ready) -> None:
+        code, out, _err = _capture(ready, "records", "plan-actual")
+        assert code == 1
+        payload = json.loads(out)
+        assert "one well, programme or section" in payload["message"]
+        assert "--well" in payload["context"]["hint"]
+
+    def test_plan_actual_refuses_a_metric_it_does_not_have(self, ready) -> None:
+        code, out, _err = _capture(
+            ready, "records", "plan-actual", "--well", "A-3", "--metric", "cost"
+        )
+        assert code == 1
+        payload = json.loads(out)
+        assert "no plan-versus-actual metric" in payload["message"]
+        assert "depth_md" in payload["context"]["hint"]
+
+    def test_plan_actual_filters_to_one_metric(self, ready) -> None:
+        payload = call(ready, "records", "plan-actual", "--well", "A-3", "--metric", "depth_md")
+        assert {row["metric"] for row in payload["rows"]} == {"depth_md"}
+        assert payload["scope"]["metric"] == "depth_md"
+
+    def test_plan_actual_scoped_to_a_programme_stays_in_its_own_well(self, ready) -> None:
+        """C3's isolation, asserted at the surface a user actually touches."""
+        from drilling_intelligence.core.enums import RecordState
+        from drilling_intelligence.database.models import Well
+
+        with ready.database.session() as session:
+            other = WellRepository(session).get_or_create_section(
+                session.get(Well, well_id_for(ready, "B-11")), "12 1/4 in", hole_size_in=12.25
+            )
+            WellRepository(session).update_section(
+                other, {"bottom_depth": (7777.0, "ft")}, state=RecordState.ACTUAL
+            )
+            session.commit()
+        with ready.database.read_only() as session:
+            program = session.scalar(select(DrillingProgram))
+        payload = call(ready, "records", "plan-actual", "--program", program.id)
+        assert {row["well_id"] for row in payload["rows"]} == {well_id_for(ready, "A-3")}
+        assert 7777.0 not in [row["actual"] for row in payload["rows"]]
+
+    def test_plan_actual_on_an_unknown_programme_is_empty_not_everything(self, ready) -> None:
+        payload = call(ready, "records", "plan-actual", "--program", "prog-nobody-wrote")
+        assert payload["count"] == 0 and payload["rows"] == []
+        assert payload["by_status"] == {}
+
+    def test_plan_actual_says_so_when_there_is_nothing_to_compare(self, workspace) -> None:
+        ingest(workspace)
+        out, _err = _text(workspace, "records", "plan-actual", "--well", "A-3")
+        assert "0 comparison row(s)" in out
+        assert "no section in this scope has a plan or an actual" in out
+
+    def test_plan_actual_writes_nothing(self, ready) -> None:
+        """A read is a read: the comparison must not create the section it is about."""
+        with ready.database.read_only() as session:
+            before = [
+                session.scalar(select(func.count()).select_from(model))
+                for model in (WellSection, DrillingProgram, ProgramTarget, NptRecord)
+            ]
+        call(ready, "records", "plan-actual", "--well", "A-3")
+        with ready.database.read_only() as session:
+            after = [
+                session.scalar(select(func.count()).select_from(model))
+                for model in (WellSection, DrillingProgram, ProgramTarget, NptRecord)
+            ]
+        assert before == after
+
+
+class TestPlanActualCombinedScopes:
+    """The scope flags compose as an intersection at the surface a user actually types.
+
+    ``--well``, ``--program`` and ``--section`` were freely combinable from the day the command
+    existed, and the repository's programme-well confinement only applied when a programme was the
+    *only* scope.  These cases run the real ``main()`` and assert returned rows, not exit codes.
+    """
+
+    @pytest.fixture
+    def two_wells(self, ready):
+        """B-11 gets a section named like A-3's, a drilled depth, and its own programme."""
+        from drilling_intelligence.core.enums import RecordState
+        from drilling_intelligence.database.models import Well
+
+        with ready.database.session() as session:
+            foreign = WellRepository(session).get_or_create_section(
+                session.get(Well, well_id_for(ready, "B-11")), "12 1/4 in", hole_size_in=12.25
+            )
+            WellRepository(session).update_section(
+                foreign, {"bottom_depth": (7777.0, "ft")}, state=RecordState.ACTUAL
+            )
+            engineering = EngineeringRepository(session)
+            other = engineering.create_program(
+                title="B-11 programme", code="B11-CMB", well_id=well_id_for(ready, "B-11")
+            )
+            engineering.add_target(
+                other.id,
+                name="12 1/4 in",
+                section_id=foreign.id,
+                planned_depth_md_value=8000.0,
+                planned_depth_md_unit="ft",
+            )
+            session.commit()
+            foreign_id, other_id = foreign.id, other.id
+        with ready.database.read_only() as session:
+            mine = session.scalar(
+                select(DrillingProgram).where(
+                    DrillingProgram.well_id == well_id_for(ready, "A-3"),
+                    DrillingProgram.code.is_not(None),
+                    DrillingProgram.title.notlike("%B-11%"),
+                )
+            )
+            own_section = session.scalar(
+                select(WellSection).where(
+                    WellSection.well_id == well_id_for(ready, "A-3"),
+                    WellSection.name == "12 1/4 in",
+                )
+            )
+        return {
+            "workspace": ready,
+            "prog_a": mine.id,
+            "prog_b": other_id,
+            "sec_a": own_section.id,
+            "sec_b": foreign_id,
+        }
+
+    def test_a_well_with_another_wells_programme_prints_nothing(self, two_wells) -> None:
+        payload = call(
+            two_wells["workspace"],
+            "records",
+            "plan-actual",
+            "--well",
+            "A-3",
+            "--program",
+            two_wells["prog_b"],
+        )
+        assert payload["count"] == 0 and payload["rows"] == []
+
+    def test_a_foreign_actual_never_meets_this_programmes_plan(self, two_wells) -> None:
+        payload = call(
+            two_wells["workspace"],
+            "records",
+            "plan-actual",
+            "--section",
+            two_wells["sec_b"],
+            "--program",
+            two_wells["prog_a"],
+        )
+        assert payload["count"] == 0, payload["rows"]
+        assert 7777.0 not in [row["actual"] for row in payload["rows"]]
+
+    def test_consistent_scopes_still_answer(self, two_wells) -> None:
+        payload = call(
+            two_wells["workspace"],
+            "records",
+            "plan-actual",
+            "--well",
+            "A-3",
+            "--program",
+            two_wells["prog_a"],
+            "--section",
+            two_wells["sec_a"],
+            "--metric",
+            "depth_md",
+        )
+        assert [(row["section_id"], row["planned"]) for row in payload["rows"]] == [
+            (two_wells["sec_a"], 10450.0)
+        ]
+
+    def test_an_unknown_programme_does_not_widen_a_section_scope(self, two_wells) -> None:
+        payload = call(
+            two_wells["workspace"],
+            "records",
+            "plan-actual",
+            "--program",
+            "prog-nobody-wrote",
+            "--section",
+            two_wells["sec_a"],
+        )
+        assert payload["count"] == 0 and payload["rows"] == []

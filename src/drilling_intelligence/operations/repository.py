@@ -57,9 +57,11 @@ from ..database.models import (
     DdrReport,
     Document,
     DocumentVersion,
+    DrillingProgram,
     NptRecord,
     ProblemDefinition,
     ProblemOccurrence,
+    ProgramTarget,
     Well,
     WellEvent,
     WellOperation,
@@ -1134,7 +1136,67 @@ class OperationsRepository:
             field_id=field_id,
             project_id=project_id,
         )
+        payload["planned"] = self._planned_summary(
+            well_id=well_id, field_id=field_id, project_id=project_id
+        )
         return payload
+
+    def _planned_summary(
+        self, *, well_id: str = "", field_id: str = "", project_id: str = ""
+    ) -> dict[str, int]:
+        """The planned half of the record: hole sections, programmes, and the targets they state.
+
+        A summary that counted only what was *done* answered half the question.  Since the drilling
+        programme is promoted (ADR-0017) and names the section it plans (ADR-0019), a scope can hold a
+        plan and no history at all - a well that is programmed but not yet spudded - and the honest
+        report of that is "1 programme, 1 target, 1 section, 0 reports", not an empty field.
+
+        ``programs_current`` is counted separately because "which revision are we drilling" is the
+        question a reader actually has: three programmes of which one is current is a revision chain,
+        not three plans.  ``sections_with_actual_depth`` is the one number that says how much of the
+        plan has been answered by a drilled interval, and it is counted rather than assumed - the
+        promoter writes the planned half only, so a workspace where it is 0 is normal.
+        """
+        counts: dict[str, int] = {}
+        for label, model, condition in (
+            ("sections", WellSection, None),
+            (
+                "sections_with_actual_depth",
+                WellSection,
+                WellSection.bottom_depth_value.is_not(None),
+            ),
+            ("programs", DrillingProgram, None),
+            ("programs_current", DrillingProgram, DrillingProgram.is_current.is_(True)),
+        ):
+            statement = self._scope_statement(
+                select(func.count()).select_from(model),
+                model,
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+            )
+            if condition is not None:
+                statement = statement.where(condition)
+            counts[label] = int(self.session.execute(statement).scalar_one() or 0)
+        # A target hangs off a programme, not off a well, so it is scoped through its programme -
+        # the same join the plan-versus-actual comparison uses, rather than a second rule about
+        # what "in scope" means for a planned number.
+        program_scope = self._scope_statement(
+            select(DrillingProgram.id),
+            DrillingProgram,
+            well_id=well_id,
+            field_id=field_id,
+            project_id=project_id,
+        )
+        counts["targets"] = int(
+            self.session.execute(
+                select(func.count())
+                .select_from(ProgramTarget)
+                .where(ProgramTarget.program_id.in_(program_scope))
+            ).scalar_one()
+            or 0
+        )
+        return counts
 
     # -- links ----------------------------------------------------------------
     def link(

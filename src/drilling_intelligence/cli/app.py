@@ -41,6 +41,7 @@ from ..database.integrity import (
     check_operational_integrity,
 )
 from ..documents.repository import DocumentRepository
+from ..engineering.repository import PLAN_ACTUAL_METRICS
 from ..ingestion.pipeline import IngestionPipeline
 from ..search.service import SearchService, build_index
 from ..wells.repository import WellRepository
@@ -143,11 +144,14 @@ def _record_counts(session: Session) -> dict[str, int]:
 
     from ..database.models import (
         DdrReport,
+        DrillingProgram,
         LessonLearned,
         NptRecord,
         ProblemOccurrence,
+        ProgramTarget,
         WellEvent,
         WellOperation,
+        WellSection,
     )
 
     def count(model: Any, *conditions: Any) -> int:
@@ -164,6 +168,13 @@ def _record_counts(session: Session) -> dict[str, int]:
         "problems": count(ProblemOccurrence),
         "lessons": count(LessonLearned),
         "lessons_approved": count(LessonLearned, LessonLearned.status == "APPROVED"),
+        # The planned half of the record.  ``doctor`` is where a person asks "what does this
+        # workspace hold", and a programme and the hole section it plans are rows the platform now
+        # writes from real documents - counting only what was drilled reported half the answer.
+        "sections": count(WellSection),
+        "programs": count(DrillingProgram),
+        "programs_current": count(DrillingProgram, DrillingProgram.is_current.is_(True)),
+        "targets": count(ProgramTarget),
     }
 
 
@@ -1042,6 +1053,99 @@ def command_records(args: argparse.Namespace) -> int:
             )
             return 0
 
+        if args.action == "plan-actual":
+            # The read half of the planned domain.  Every number printed here is already stored -
+            # the programme's targets and the section's own columns - so this command computes
+            # nothing and stores nothing; it is the terminal's view of
+            # ``EngineeringRepository.plan_actual_summary``, which is the single implementation of
+            # the comparison (a second one here is how a screen and a report come to disagree).
+            from ..engineering.repository import EngineeringRepository
+
+            scope = _scope(args, workspace, allow_well=True, required=False)
+            well_id = str(scope.get("well_id") or "")
+            program_id = str(getattr(args, "program", "") or "")
+            section_id = str(getattr(args, "section", "") or "")
+            if not (well_id or program_id or section_id):
+                # The repository refuses an unscoped comparison because it would compare every
+                # section in the workspace; the message says so here rather than surfacing a
+                # validation error whose hint names arguments this command does not have.
+                raise DrillingIntelligenceError(
+                    "plan-versus-actual is about one well, programme or section",
+                    hint="pass --well (a name works as well as an id), --program or --section",
+                )
+            wanted = str(getattr(args, "metric", "") or "").strip()
+            known = {metric.label for metric in PLAN_ACTUAL_METRICS}
+            if wanted and wanted not in known:
+                raise DrillingIntelligenceError(
+                    f"no plan-versus-actual metric named {wanted!r}",
+                    hint=f"one of: {', '.join(sorted(known))}",
+                )
+            with workspace.database.read_only() as session:
+                rows = EngineeringRepository(session).plan_actual_summary(
+                    well_id=well_id, section_id=section_id, program_id=program_id
+                )
+            if wanted:
+                rows = [row for row in rows if row["metric"] == wanted]
+            payload = {
+                "scope": {
+                    "well_id": well_id or None,
+                    "program_id": program_id or None,
+                    "section_id": section_id or None,
+                    "metric": wanted or None,
+                },
+                "count": len(rows),
+                "rows": rows,
+            }
+            statuses: dict[str, int] = {}
+            for row in rows:
+                statuses[str(row["status"])] = statuses.get(str(row["status"]), 0) + 1
+            payload["by_status"] = dict(sorted(statuses.items()))
+            _emit(
+                payload,
+                as_json=args.json,
+                lines=[
+                    "scope: "
+                    + (
+                        ", ".join(
+                            f"{key}={value}"
+                            for key, value in sorted(payload["scope"].items())
+                            if value
+                        )
+                        or "none"
+                    ),
+                    f"{len(rows)} comparison row(s)",
+                    *(
+                        _table(
+                            [
+                                {
+                                    "section": row["section"],
+                                    "metric": row["metric"],
+                                    "planned": row["planned"],
+                                    "actual": row["actual"],
+                                    "unit": row["unit"],
+                                    "variance": row["variance"],
+                                    "status": row["status"],
+                                }
+                                for row in rows
+                            ],
+                            _PLAN_ACTUAL_COLUMNS,
+                        )
+                        or [
+                            # An empty answer has two readings and they are not the same job:
+                            # nothing is planned here, or the scope names nothing at all.
+                            "no section in this scope has a plan or an actual to compare"
+                        ]
+                    ),
+                    "status: "
+                    + (
+                        ", ".join(f"{key} {value}" for key, value in payload["by_status"].items())
+                        or "nothing to compare"
+                    ),
+                    "NO_ACTUAL is a plan nobody has drilled against yet, not a variance of zero",
+                ],
+            )
+            return 0
+
         if args.action == "impact":
             # Read-only, and deliberately narrow: it answers "what consumed this subject, and is
             # any of it computed from a superseded source" and does nothing about the answer.
@@ -1115,6 +1219,7 @@ def command_records(args: argparse.Namespace) -> int:
             with workspace.database.session() as session:
                 payload = OperationsRepository(session).record_summary(**scope)
             npt = payload.get("npt") or {}
+            planned = payload.get("planned") or {}
             _emit(
                 payload,
                 as_json=args.json,
@@ -1134,9 +1239,27 @@ def command_records(args: argparse.Namespace) -> int:
                         f"{npt.get('rows', 0)} row(s), {npt.get('promoted', 0)} promoted, "
                         f"{npt.get('with_duration', 0)} with a duration "
                         f"({npt.get('unknown_duration', 0)} without), {npt.get('undated', 0)} undated, "
-                        f"{npt.get('total_hours', 0):g} h total"
+                        # ``total_hours`` is None when the scope holds no NPT row at all, and that is
+                        # the honest value: "nothing was recorded" is not "0 h were lost".  Formatting
+                        # it with :g raised TypeError and took the whole summary down, so a scope with
+                        # a programme and no history could not be printed.
+                        + (
+                            f"{npt['total_hours']:g} h total"
+                            if npt.get("total_hours") is not None
+                            else "no hours recorded"
+                        )
                         if npt
                         else "nothing recorded"
+                    ),
+                    "planned  "
+                    + (
+                        f"{planned.get('sections', 0)} section(s) "
+                        f"({planned.get('sections_with_actual_depth', 0)} with a drilled depth), "
+                        f"{planned.get('programs', 0)} programme(s) "
+                        f"({planned.get('programs_current', 0)} current), "
+                        f"{planned.get('targets', 0)} target(s)"
+                        if planned
+                        else "no plan promoted"
                     ),
                     "status   "
                     + (
@@ -1180,6 +1303,20 @@ def command_records(args: argparse.Namespace) -> int:
     finally:
         workspace.close()
 
+
+#: The columns ``records plan-actual`` prints.  Section and metric name the comparison, the two numbers
+#: sit next to each other with the unit that makes them comparable, and ``status`` is last because it is
+#: the reading of the row: a blank actual with ``NO_ACTUAL`` is a plan nobody has drilled against, which
+#: a bare "-" would otherwise leave the reader to guess at.
+_PLAN_ACTUAL_COLUMNS: list[tuple[str, int]] = [
+    ("section", 22),
+    ("metric", 14),
+    ("planned", 12),
+    ("actual", 12),
+    ("unit", 6),
+    ("variance", 12),
+    ("status", 11),
+]
 
 #: Which columns each operational table is listed with.  A screen cannot show forty, and the ones chosen
 #: here are the ones that decide whether a row is trustworthy: what it is, when, how much, and whether a
@@ -1962,9 +2099,13 @@ def build_parser() -> argparse.ArgumentParser:
             "rollup",
             "sum a well's promoted NPT hours into a stored, cited engineering record",
         ),
+        (
+            "plan-actual",
+            "each section's planned numbers beside the ones it achieved, and which side is missing",
+        ),
     ):
         action = records_sub.add_parser(name, help=help_text, parents=[common])
-        if name not in ("promote", "impact", "rollup"):
+        if name not in ("promote", "impact", "rollup", "plan-actual"):
             action.add_argument(
                 "--table",
                 choices=sorted(_LIST_COLUMNS),
@@ -1996,6 +2137,21 @@ def build_parser() -> argparse.ArgumentParser:
                 "--supersedes",
                 default="",
                 help="the calculation id this run replaces (marks it SUPERSEDED, keeps it readable)",
+            )
+            action.set_defaults(handler=command_records)
+            continue
+        if name == "plan-actual":
+            # A read, and a scoped one: the comparison is always about a well's sections, so the
+            # scope flags above are the whole input.  ``--program`` and ``--section`` narrow it
+            # further for a reviewer reopening one revision or one hole.
+            action.add_argument(
+                "--program", default="", help="compare against this programme id, current or not"
+            )
+            action.add_argument("--section", default="", help="only this section id")
+            action.add_argument(
+                "--metric",
+                default="",
+                help=f"only this metric ({', '.join(m.label for m in PLAN_ACTUAL_METRICS)})",
             )
             action.set_defaults(handler=command_records)
             continue

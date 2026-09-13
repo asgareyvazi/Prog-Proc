@@ -1052,6 +1052,19 @@ class EngineeringRepository:
         the section's planned/actual pairs - and it never imputes: a missing plan or a missing actual is
         a row whose ``status`` says which, so a screen can show "no actual recorded" instead of a zero
         that reads as "on plan".
+
+        Every scope is a *constraint*, and supplying one never disables another: the answer is the
+        intersection of everything the caller asked for.  A programme belongs to a well and a section
+        belongs to a well, so naming a programme confines the section side to that programme's well
+        whether or not a well or a section was named too.  This matters because the fallback in
+        :meth:`_match_target` matches on the section *name*, and hole sections are named after the
+        hole - "12 1/4 in" exists on most wells in a field - so an unconfined section side reports one
+        well's drilled depth against another well's plan.
+
+        Scopes that contradict each other intersect to nothing and return ``[]``.  That is deliberate:
+        a caller who names A-3's well and B-11's programme has described no well, and answering with
+        *either* of them would be picking one of the caller's two statements to ignore.  An id nobody
+        wrote returns ``[]`` for the same reason, never a workspace-wide query.
         """
         if not (well_id or section_id or program_id):
             raise ValidationError(
@@ -1063,6 +1076,32 @@ class EngineeringRepository:
             section_statement = section_statement.where(WellSection.well_id == well_id)
         if section_id:
             section_statement = section_statement.where(WellSection.id == section_id)
+        if program_id:
+            program = self.session.get(DrillingProgram, str(program_id))
+            if program is None:
+                # The same answer an unknown well_id already gives: nothing matched, so nothing is
+                # compared.  Falling through would leave the section side scoped by whatever *else*
+                # the caller passed, which is how an unknown id came to mean "everything".
+                return []
+            if program.well_id:
+                # Unconditional: the programme's well constrains the section side even when the
+                # caller also named a well or a section.  If those name a different well the two
+                # predicates cannot both hold and the result is empty - the correct answer to a
+                # self-contradicting scope, and the one thing that must never happen is answering
+                # with one well's actuals beside another well's plan.
+                section_statement = section_statement.where(WellSection.well_id == program.well_id)
+            else:
+                # A programme filed against a field or a template names no well, so "its" sections
+                # are only the ones its targets point at explicitly.  Falling back to every section
+                # in the workspace is what produced the cross-well match in the first place.
+                section_statement = section_statement.where(
+                    WellSection.id.in_(
+                        select(ProgramTarget.section_id).where(
+                            ProgramTarget.program_id == str(program_id),
+                            ProgramTarget.section_id.is_not(None),
+                        )
+                    )
+                )
         sections = list(
             self.session.execute(
                 section_statement.order_by(WellSection.sequence, WellSection.id)
