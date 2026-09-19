@@ -462,11 +462,11 @@ class DomainReviewService:
 
         operational = OperationsRepository(session)
         rows: list[Any] = []
-        bounded_groups: list[Sequence[Any]] = []
+        bounded_sizes: list[int] = []
 
-        def add_bounded(group: Sequence[Any]) -> None:
+        def add_bounded(group: Sequence[Any], *, fetched_count: int | None = None) -> None:
             rows.extend(group)
-            bounded_groups.append(group)
+            bounded_sizes.append(len(group) if fetched_count is None else int(fetched_count))
 
         add_bounded(operational.list_reports(well_id=well.id, limit=limit))
         add_bounded(operational.list_operations(well_id=well.id, limit=limit))
@@ -521,7 +521,7 @@ class DomainReviewService:
                 ).scalars()
             )
             rows.extend(version_rows)
-            bounded_groups.append(version_rows)
+            bounded_sizes.append(len(version_rows))
 
         engineering = EngineeringRepository(session)
         programs = _for_well(
@@ -571,7 +571,7 @@ class DomainReviewService:
                 ).scalars()
             )
             rows.extend(target_rows)
-            bounded_groups.append(target_rows)
+            bounded_sizes.append(len(target_rows))
 
         risk_repo = RiskRepository(session)
         risks = risk_repo.list_risks(well_id=well.id, include_closed=True, limit=limit)
@@ -709,7 +709,7 @@ class DomainReviewService:
                 .limit(limit)
             ).scalars()
             input_rows = list(input_rows)
-            bounded_groups.append(input_rows)
+            bounded_sizes.append(len(input_rows))
             for input_row in input_rows:
                 calculation_inputs[str(input_row.calculation_id)].append(
                     _plain(record_to_dict(input_row))
@@ -720,10 +720,11 @@ class DomainReviewService:
         service_company_rows = assets.service_companies_for_well(well.id, limit=limit)
         rows.extend(rig_rows)
         rows.extend(service_company_rows)
-        bounded_groups.extend((rig_rows, service_company_rows))
+        bounded_sizes.extend((len(rig_rows), len(service_company_rows)))
 
         knowledge = KnowledgeRepository(session)
         facts = knowledge.facts_for_well(well.id, include_superseded=True, limit=limit)
+        fetched_fact_count = len(facts)
         subject_section_ids = {str(row.id) for row in sections_rows}
         # The knowledge repository indexes the explicit ``well_id`` column.  A malformed or
         # hand-authored row can still carry a different section/project alongside that well, so
@@ -736,7 +737,7 @@ class DomainReviewService:
             and (not fact.resolved_well_id or str(fact.resolved_well_id) == str(well.id))
         ]
         conflicts = knowledge.conflicts(well_id=well.id, status=None, limit=limit)
-        bounded_groups.extend((facts, conflicts))
+        bounded_sizes.extend((fetched_fact_count, len(conflicts)))
         conflict_by_item: dict[str, list[str]] = defaultdict(list)
         review_conflicts: list[ReviewConflict] = []
         for conflict in conflicts:
@@ -785,7 +786,7 @@ class DomainReviewService:
                     .limit(limit)
                 ).scalars()
             )
-            bounded_groups.append(edge_rows)
+            bounded_sizes.append(len(edge_rows))
             for edge in edge_rows:
                 lesson_evidence[str(edge.source_id)].append(
                     {
@@ -898,8 +899,8 @@ class DomainReviewService:
                 ),
             )
         )
-        bounded_groups.append(relation_rows)
-        truncated = sections_truncated or any(len(group) >= limit for group in bounded_groups)
+        bounded_sizes.append(len(relation_rows))
+        truncated = sections_truncated or any(size >= limit for size in bounded_sizes)
         if len(row_records) > result_limit:
             row_records = row_records[:result_limit]
             truncated = True
