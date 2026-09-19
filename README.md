@@ -32,7 +32,8 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | The generic engineering record: a computed number stored with its method, version, inputs and units, assumptions, validation, confidence and evidence | **implemented, tested** (`record_calculation`; re-running is a no-op, superseding keeps the old row) |
 | Field intelligence: derived timelines, NPT/problem rollups, offset candidates, recurring patterns with staleness checks | **implemented, tested on a two-well golden field** (`docs/DOMAIN.md`) |
 | Domain CLI: `records`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
-| Skills, AI providers, desktop UI, and engineering-calculation *engines* | planned — the record that stores a result exists and cites its evidence; nothing in this repository computes one, and `docs/DECISIONS.md` ADR-0012 keeps that split |
+| Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented, read-only** — PySide6-Essentials is optional; it consumes `DomainReviewService`, supports current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model |
+| Skills, AI providers, and engineering-calculation *engines* | planned — the record that stores a result exists and cites its evidence; nothing in this repository computes one, and `docs/DECISIONS.md` ADR-0012 keeps that split |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
 Nothing here needs a GPU, a model download, or a server. `mineru` (for scanned pages)
@@ -62,6 +63,29 @@ drillintel index rebuild  --workspace /tmp/well-a3        # the sidecar is dispo
 drillintel records summary --well A-3 --workspace /tmp/well-a3
 drillintel doctor --workspace /tmp/well-a3                # what is healthy, and what to run next
 ```
+
+### Desktop Review Workbench (optional)
+
+The first desktop consumer is deliberately a read-only review surface. Install it only where a Qt
+workbench is wanted:
+
+```bash
+.venv/bin/pip install -e ".[ui]"
+# Open an existing workspace; --well accepts the registered well id or name.
+drillintel-ui --workspace /tmp/well-a3 --well A-3
+```
+
+The workbench opens the existing `workspace.toml`, loads the registered well hierarchy through the
+existing repositories, and requests `DomainReviewRequest` values from `DomainReviewService`. The
+Current/History selector changes the service lifecycle request; it does not hide rows in the client.
+`Verify citations` is an explicit opt-in call to the existing citation auditor. Tables use Qt
+model/view adapters and presentation-only filters, while the review result remains authoritative for
+scope, provenance, missing values, conflicts, calculation status and plan/actual semantics.
+
+No UI state is persisted and no review action mutates the workspace. The default installation does
+not import Qt. On a host where Qt's native runtime libraries cannot load, `drillintel-ui` reports the
+missing runtime dependency and `pytest -m ui` skips with the preserved loader reason; the UI tests run
+offscreen on hosts with a working Qt installation.
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,
 for callers embedding the library rather than driving the CLI:

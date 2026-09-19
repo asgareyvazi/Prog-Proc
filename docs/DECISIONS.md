@@ -1218,3 +1218,34 @@ repository defect behind an argument parser, and the combinations are legitimate
 this section" is exactly what a reviewer asks); letting the most specific scope win (precedence is
 what produced the contamination); and raising an error on a contradictory scope instead of returning
 `[]` (an empty intersection is a correct answer to a well-formed question, not a usage mistake).
+
+## ADR-0023 — Desktop Review Workbench is an optional read-only consumer
+
+The first desktop consumer is a Qt Review Workbench, but the headless package remains the default.
+`PySide6-Essentials` is therefore an optional `ui` extra and the `drillintel-ui` entry point imports Qt
+lazily. A host without Qt's native runtime libraries receives an actionable launcher error; importing
+`drilling_intelligence.ui` itself remains safe for the CLI and library.
+
+The UI has one application boundary: `ReviewController` opens an existing `Workspace`, resolves wells
+through `WellRepository`, builds the existing `DomainReviewRequest`, and delegates to
+`DomainReviewService`. A single `QThread` worker performs the potentially slow review read and opt-in
+citation audit. `MainWindow` and its Qt models only format the returned `DomainReview`, `ReviewRecord`,
+`ReviewConflict` and `ReviewVerification` values. They do not use SQL, ORM sessions, search-sidecar
+discovery, source-file hashing, a second query language, or a UI persistence store.
+
+Current/history is a lifecycle request to the service, not a client-side row toggle. Citation verification
+is an explicit button and remains the existing `CitationAuditor` path. Plan/actual rows, missing-side
+states (`NO_PLAN`, `NO_ACTUAL`), calculation reproducibility (`NOT_EXECUTABLE_IN_REPOSITORY`), evidence
+states, provenance, scope, conflicts and truncation are displayed as returned. Filters are ordinary
+Qt proxy-model presentation filters over the already loaded record set.
+
+The workbench has explicit empty, truncation, audit-not-run, audit-result and worker error states. It has
+no approval, edit, resolve, retire, supersede, delete, recalculate or persistence action. Closing the
+window waits for the read-only worker and closes the existing workspace. Offscreen UI tests use the real
+fixture and real `DomainReviewService`; they skip only when the host cannot load `QtWidgets`, preserving
+the loader reason rather than treating a missing system library as a missing Python dependency.
+
+**Rejected.** A UI-specific domain read model (it would duplicate lifecycle and evidence semantics),
+search-sidecar discovery (it is not authoritative), a GUI-owned citation verifier or calculation engine,
+local UI state tables, hidden truncation, automatic citation verification, and a dashboard with invented
+scores or readiness/quality judgments.
