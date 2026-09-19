@@ -13,7 +13,17 @@ from typing import Any
 
 from ..config.settings import Settings
 from ..core.errors import ValidationError, WorkspaceError
-from ..review import DomainReview, DomainReviewRequest, DomainReviewService
+from ..review import (
+    DomainReview,
+    DomainReviewRequest,
+    DomainReviewService,
+    ReviewAction,
+    ReviewActionRequest,
+    ReviewActionResult,
+    ReviewActionService,
+    ReviewConflict,
+    ReviewRecord,
+)
 from ..wells.repository import WellRepository
 from ..wells.workspace import Workspace
 
@@ -146,6 +156,20 @@ class ReviewController:
             limit=limit,
         )
         return DomainReviewService.for_workspace(workspace).review(request)
+
+    def available_actions(
+        self, record: ReviewRecord | ReviewConflict
+    ) -> tuple[ReviewAction, ...]:
+        """Return domain-derived capabilities without opening a write transaction."""
+        workspace = self._require_workspace()
+        return ReviewActionService.for_workspace(workspace).available_actions(record)
+
+    def execute_action(
+        self, request: ReviewActionRequest | dict[str, Any]
+    ) -> ReviewActionResult:
+        """Execute one already-confirmed action through the headless action boundary."""
+        workspace = self._require_workspace()
+        return ReviewActionService.for_workspace(workspace).execute(request)
 
     def close(self) -> None:
         workspace, self._workspace = self._workspace, None

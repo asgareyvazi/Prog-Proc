@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QStackedWidget,
@@ -45,7 +46,14 @@ from ..core.errors import (
     WorkspaceError,
 )
 from ..database.integrity import KnowledgeIntegrityError
-from ..review import DomainReview, ReviewConflict, ReviewRecord
+from ..review import (
+    DomainReview,
+    ReviewAction,
+    ReviewActionRequest,
+    ReviewActionResult,
+    ReviewConflict,
+    ReviewRecord,
+)
 from .controller import ReviewController, WellChoice
 from .models import (
     MappingTableModel,
@@ -53,7 +61,7 @@ from .models import (
     ReviewRecordsModel,
     TableColumn,
 )
-from .worker import ReviewWorker, WorkerError
+from .worker import ReviewActionWorker, ReviewWorker, WorkerError
 
 _NAVIGATION = (
     "Overview",
@@ -133,6 +141,12 @@ class MainWindow(QMainWindow):
         self._well_choices: tuple[WellChoice, ...] = ()
         self._review_thread: QThread | None = None
         self._review_worker: ReviewWorker | None = None
+        self._action_thread: QThread | None = None
+        self._action_worker: ReviewActionWorker | None = None
+        self._selected_record: ReviewRecord | None = None
+        self._record_actions: tuple[ReviewAction, ...] = ()
+        self._selected_conflict: ReviewConflict | None = None
+        self._conflict_actions: tuple[ReviewAction, ...] = ()
         self._config_path = config_path
 
         self.setWindowTitle("Prog-Proc — Review Workbench")
@@ -341,6 +355,35 @@ class MainWindow(QMainWindow):
         filters.addWidget(self.record_text_filter, 1)
         layout.addLayout(filters)
 
+        action_box = QGroupBox("Confirmed domain action")
+        action_layout = QVBoxLayout(action_box)
+        action_controls = QHBoxLayout()
+        action_controls.addWidget(QLabel("Action"))
+        self.record_action_combo = QComboBox()
+        self.record_action_combo.setMinimumWidth(190)
+        self.record_action_combo.currentIndexChanged.connect(self._record_action_changed)
+        action_controls.addWidget(self.record_action_combo)
+        action_controls.addWidget(QLabel("Actor"))
+        self.record_actor_input = QLineEdit()
+        self.record_actor_input.setPlaceholderText("required: user or reviewer id")
+        self.record_actor_input.setClearButtonEnabled(True)
+        action_controls.addWidget(self.record_actor_input, 1)
+        action_controls.addWidget(QLabel("Reason / note"))
+        self.record_reason_input = QLineEdit()
+        self.record_reason_input.setPlaceholderText("required where the domain rule says so")
+        self.record_reason_input.setClearButtonEnabled(True)
+        action_controls.addWidget(self.record_reason_input, 2)
+        self.record_action_button = QPushButton("Confirm action…")
+        self.record_action_button.clicked.connect(self.confirm_record_action)
+        action_controls.addWidget(self.record_action_button)
+        action_layout.addLayout(action_controls)
+        self.record_action_hint = QLabel(
+            "Select a current record to see actions derived from its domain lifecycle."
+        )
+        self.record_action_hint.setWordWrap(True)
+        action_layout.addWidget(self.record_action_hint)
+        layout.addWidget(action_box)
+
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.records_table = QTableView()
         self.records_model = ReviewRecordsModel(parent=self.records_table)
@@ -398,6 +441,33 @@ class MainWindow(QMainWindow):
     def _build_conflicts_page(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
+        conflict_action_box = QGroupBox("Resolve selected conflict")
+        conflict_action_layout = QVBoxLayout(conflict_action_box)
+        conflict_controls = QHBoxLayout()
+        conflict_controls.addWidget(QLabel("Candidate"))
+        self.conflict_candidate_combo = QComboBox()
+        self.conflict_candidate_combo.setMinimumWidth(260)
+        conflict_controls.addWidget(self.conflict_candidate_combo)
+        conflict_controls.addWidget(QLabel("Actor"))
+        self.conflict_actor_input = QLineEdit()
+        self.conflict_actor_input.setPlaceholderText("required: user or reviewer id")
+        self.conflict_actor_input.setClearButtonEnabled(True)
+        conflict_controls.addWidget(self.conflict_actor_input, 1)
+        conflict_controls.addWidget(QLabel("Reason / note"))
+        self.conflict_reason_input = QLineEdit()
+        self.conflict_reason_input.setPlaceholderText("why this candidate governs")
+        self.conflict_reason_input.setClearButtonEnabled(True)
+        conflict_controls.addWidget(self.conflict_reason_input, 2)
+        self.conflict_action_button = QPushButton("Confirm resolution…")
+        self.conflict_action_button.clicked.connect(self.confirm_conflict_action)
+        conflict_controls.addWidget(self.conflict_action_button)
+        conflict_action_layout.addLayout(conflict_controls)
+        self.conflict_action_hint = QLabel(
+            "Select an open conflict to choose one of its recorded candidates."
+        )
+        self.conflict_action_hint.setWordWrap(True)
+        conflict_action_layout.addWidget(self.conflict_action_hint)
+        layout.addWidget(conflict_action_box)
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.conflicts_table, self.conflicts_model = self._new_table(
             tuple(
@@ -769,16 +839,179 @@ class MainWindow(QMainWindow):
     @Slot(QModelIndex, QModelIndex)
     def _record_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
         if not current.isValid():
+            self._selected_record = None
             _fill_tree(self.record_detail, None)
+            self._set_record_actions(())
             return
         source_index = self.records_proxy.mapToSource(current)
         record = self.records_model.record_at(source_index.row())
+        self._selected_record = record
         _fill_tree(self.record_detail, record.to_dict() if record else None)
+        if record is None or self.controller.workspace is None:
+            self._set_record_actions(())
+            return
+        try:
+            self._set_record_actions(self.controller.available_actions(record))
+        except Exception as exc:  # noqa: BLE001 - keep selection/read rendering usable
+            self._set_record_actions(())
+            self._set_status(f"Could not determine actions: {exc}", error=True)
+
+    def _set_record_actions(self, actions: Sequence[ReviewAction]) -> None:
+        self._record_actions = tuple(actions)
+        self.record_action_combo.blockSignals(True)
+        self.record_action_combo.clear()
+        for action in self._record_actions:
+            self.record_action_combo.addItem(action.label, action.action_id)
+        self.record_action_combo.blockSignals(False)
+        self._record_action_changed(self.record_action_combo.currentIndex())
+        enabled = bool(self._record_actions) and self._review is not None
+        self.record_action_combo.setEnabled(enabled)
+        self.record_actor_input.setEnabled(enabled)
+        self.record_reason_input.setEnabled(enabled)
+        self.record_action_button.setEnabled(enabled)
+
+    @Slot(int)
+    def _record_action_changed(self, _index: int) -> None:
+        action = self._current_record_action()
+        if action is None:
+            self.record_action_hint.setText(
+                "No governed action is available for this record, or the selected row is historical."
+            )
+            return
+        requirements = ["actor"]
+        if action.requires_reason:
+            requirements.append("reason")
+        if action.requires_evidence:
+            requirements.append("recorded evidence")
+        self.record_action_hint.setText(
+            f"{action.label} moves the authoritative status to {action.target_status}. "
+            f"Explicit {', '.join(requirements)} required; the record will be re-read after success."
+        )
+
+    def _current_record_action(self) -> ReviewAction | None:
+        action_id = str(self.record_action_combo.currentData() or "")
+        return next(
+            (action for action in self._record_actions if action.action_id == action_id),
+            None,
+        )
+
+    @Slot()
+    def confirm_record_action(self) -> None:
+        """Collect explicit human inputs, confirm semantically, then hand off to a worker."""
+        if self._action_thread is not None or self._review_thread is not None:
+            return
+        record = self._selected_record
+        action = self._current_record_action()
+        if record is None or action is None or self._review is None:
+            self._set_status("Select a current actionable record first.", error=True)
+            return
+        actor = self.record_actor_input.text().strip()
+        reason = self.record_reason_input.text()
+        if not actor:
+            self._set_status("An explicit actor is required before confirming an action.", error=True)
+            self.record_actor_input.setFocus()
+            return
+        if action.requires_reason and not reason.strip():
+            self._set_status(f"{action.label} needs a reason.", error=True)
+            self.record_reason_input.setFocus()
+            return
+        data = record.data
+        expected_revision = data.get("revision")
+        if expected_revision is not None:
+            try:
+                expected_revision = int(expected_revision)
+            except (TypeError, ValueError):
+                expected_revision = None
+        request = ReviewActionRequest(
+            record_type=record.record_type,
+            record_id=record.record_id,
+            action=action.action_id,
+            actor=actor,
+            reason=reason,
+            note=reason,
+            well_id=str(self._review.request.get("well_id") or ""),
+            expected_status=record.status,
+            expected_revision=expected_revision,
+            expected_current=record.current,
+            expected_scope=dict(record.scope),
+            expected_updated_at=str(data.get("updated_at") or ""),
+        )
+        answer = QMessageBox.question(
+            self,
+            f"Confirm {action.label.lower()}",
+            (
+                f"{action.confirmation}?\n\n"
+                f"Record: {record.record_type} / {record.record_id}\n"
+                f"Current status: {record.status}\n"
+                f"New status: {action.target_status}\n"
+                f"Actor: {actor}\n"
+                f"Reason / note: {reason.strip() or '—'}\n\n"
+                "Only this confirmed action can write the authoritative record."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._start_action_worker(request)
+
+    def _start_action_worker(self, request: ReviewActionRequest) -> None:
+        thread = QThread(self)
+        worker = ReviewActionWorker(self.controller, request, parent=None)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._action_succeeded)
+        worker.failed.connect(self._action_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.succeeded.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._action_thread_finished)
+        self._action_thread = thread
+        self._action_worker = worker
+        self._set_busy(True)
+        self._set_status(
+            f"Executing {request.action.replace('_', ' ')} for {request.record_id}…"
+        )
+        thread.start()
+
+    @Slot(object)
+    def _action_succeeded(self, result: ReviewActionResult) -> None:
+        # Do not patch the displayed ReviewRecord with a client-side result.  A fresh read is the
+        # only success rendering, so approval metadata, history, revision and evidence remain the
+        # values the domain committed.
+        self.banner.clear()
+        self.banner.setVisible(False)
+        self._set_status(
+            f"{result.action.replace('_', ' ').capitalize()} committed by {result.actor}; reloading authoritative review…"
+        )
+        self.request_review(verify_citations=False)
+
+    @Slot(object)
+    def _action_failed(self, error: WorkerError) -> None:
+        # The existing DomainReview is deliberately left in place on failure, including its
+        # selection and detail tree.  The error explains stale/ineligible actions without inventing
+        # a local status.
+        self._set_status(f"{error.category.title()} error: {error.message}", error=True)
+        self.banner.setText(error.message + (f"\n\nHint: {error.hint}" if error.hint else ""))
+        self.banner.setObjectName("warningBanner")
+        self.banner.setVisible(True)
+
+    @Slot()
+    def _action_thread_finished(self) -> None:
+        thread = self._action_thread
+        self._action_thread = None
+        self._action_worker = None
+        self._set_busy(False)
+        if thread is not None:
+            thread.deleteLater()
 
     @Slot(QModelIndex, QModelIndex)
     def _conflict_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
         if not current.isValid() or self._review is None:
+            self._selected_conflict = None
             _fill_tree(self.conflict_detail, None)
+            self._set_conflict_actions(())
             return
         row = self.conflicts_model.row_payload(current.row())
         conflict = next(
@@ -789,9 +1022,97 @@ class MainWindow(QMainWindow):
             ),
             None,
         )
+        self._selected_conflict = conflict
         _fill_tree(self.conflict_detail, conflict.to_dict() if conflict else None)
+        if conflict is None or self.controller.workspace is None:
+            self._set_conflict_actions(())
+            return
+        try:
+            self._set_conflict_actions(self.controller.available_actions(conflict))
+        except Exception as exc:  # noqa: BLE001 - preserve read-side selection on capability errors
+            self._set_conflict_actions(())
+            self._set_status(f"Could not determine conflict actions: {exc}", error=True)
+
+    def _set_conflict_actions(self, actions: Sequence[ReviewAction]) -> None:
+        self._conflict_actions = tuple(actions)
+        self.conflict_candidate_combo.blockSignals(True)
+        self.conflict_candidate_combo.clear()
+        conflict = self._selected_conflict
+        if conflict is not None:
+            for candidate in conflict.candidates:
+                candidate_id = str(candidate.get("item_id") or "")
+                label = (
+                    str(candidate.get("text") or candidate.get("original_value") or candidate_id)
+                    + f"  [{candidate_id}]"
+                )
+                self.conflict_candidate_combo.addItem(label, candidate_id)
+        self.conflict_candidate_combo.blockSignals(False)
+        enabled = bool(self._conflict_actions) and conflict is not None and self._review is not None
+        self.conflict_candidate_combo.setEnabled(enabled)
+        self.conflict_actor_input.setEnabled(enabled)
+        self.conflict_reason_input.setEnabled(enabled)
+        self.conflict_action_button.setEnabled(enabled)
+        self.conflict_action_hint.setText(
+            "Resolve this conflict by explicitly selecting one recorded candidate; the other facts remain as history."
+            if enabled
+            else "Select an open conflict to choose one of its recorded candidates."
+        )
+
+    @Slot()
+    def confirm_conflict_action(self) -> None:
+        if self._action_thread is not None or self._review_thread is not None:
+            return
+        conflict = self._selected_conflict
+        action = self._conflict_actions[0] if self._conflict_actions else None
+        chosen_item_id = str(self.conflict_candidate_combo.currentData() or "")
+        actor = self.conflict_actor_input.text().strip()
+        reason = self.conflict_reason_input.text()
+        if conflict is None or action is None:
+            self._set_status("Select an open conflict first.", error=True)
+            return
+        if not chosen_item_id:
+            self._set_status("Choose one of the recorded conflict candidates.", error=True)
+            return
+        if not actor:
+            self._set_status("An explicit actor is required before resolving a conflict.", error=True)
+            self.conflict_actor_input.setFocus()
+            return
+        answer = QMessageBox.question(
+            self,
+            "Confirm conflict resolution",
+            (
+                f"{action.confirmation}?\n\n"
+                f"Conflict: {conflict.conflict_id}\n"
+                f"Candidate: {chosen_item_id}\n"
+                f"Actor: {actor}\n"
+                f"Reason / note: {reason.strip() or '—'}\n\n"
+                "The losing facts will remain stored as retired history."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        request = ReviewActionRequest(
+            record_type="knowledge_conflict",
+            record_id=conflict.conflict_id,
+            action=action.action_id,
+            actor=actor,
+            reason=reason,
+            note=reason,
+            well_id=str(self._review.request.get("well_id") if self._review else ""),
+            expected_status=conflict.status,
+            expected_current=conflict.current,
+            expected_updated_at=str(conflict.data.get("updated_at") or ""),
+            chosen_item_id=chosen_item_id,
+        )
+        self._start_action_worker(request)
 
     def _clear_detail_views(self) -> None:
+        self._selected_record = None
+        self._selected_conflict = None
+        self._set_record_actions(())
+        self._set_conflict_actions(())
         _fill_tree(self.record_detail, None)
         _fill_tree(self.conflict_detail, None)
 
@@ -802,6 +1123,16 @@ class MainWindow(QMainWindow):
         self.lifecycle_combo.setEnabled(not busy and self.well_combo.count() > 0)
         self.load_button.setEnabled(not busy and self.well_combo.count() > 0)
         self.verify_button.setEnabled(not busy and self.well_combo.count() > 0)
+        action_available = bool(self._record_actions) and self._review is not None
+        self.record_action_combo.setEnabled(not busy and action_available)
+        self.record_actor_input.setEnabled(not busy and action_available)
+        self.record_reason_input.setEnabled(not busy and action_available)
+        self.record_action_button.setEnabled(not busy and action_available)
+        conflict_available = bool(self._conflict_actions) and self._selected_conflict is not None
+        self.conflict_candidate_combo.setEnabled(not busy and conflict_available)
+        self.conflict_actor_input.setEnabled(not busy and conflict_available)
+        self.conflict_reason_input.setEnabled(not busy and conflict_available)
+        self.conflict_action_button.setEnabled(not busy and conflict_available)
 
     def _set_status(self, message: str, *, error: bool = False) -> None:
         self.status_label.setText(message)
@@ -829,14 +1160,15 @@ class MainWindow(QMainWindow):
         self.banner.setVisible(True)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        thread = self._review_thread
-        if thread is not None and thread.isRunning():
-            thread.requestInterruption()
-            thread.quit()
-            if not thread.wait(10000):
-                self._set_status("Waiting for the read-only review worker to finish.", error=True)
-                event.ignore()
-                return
+        threads = [thread for thread in (self._review_thread, self._action_thread) if thread is not None]
+        for thread in threads:
+            if thread.isRunning():
+                thread.requestInterruption()
+                thread.quit()
+                if not thread.wait(10000):
+                    self._set_status("Waiting for a review worker to finish.", error=True)
+                    event.ignore()
+                    return
         self.controller.close()
         event.accept()
 

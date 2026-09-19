@@ -889,7 +889,7 @@ def command_knowledge(args: argparse.Namespace) -> int:
                 args.conflict_id,
                 chosen_item_id=args.choose,
                 note=args.note or "",
-                by=args.by or "operator",
+                by=args.by or "",
             )
             recheck = payload["recheck"]
             lines = [
@@ -2259,7 +2259,7 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument(
         "--note", help="why this side was chosen (recorded in the conflict and the audit trail)"
     )
-    resolve.add_argument("--by", help="who decided (default: the current user, else 'operator')")
+    resolve.add_argument("--by", help="who decided (required; no implicit operator identity)")
     resolve.set_defaults(handler=command_knowledge)
 
     doctor = sub.add_parser(

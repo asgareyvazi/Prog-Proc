@@ -6,6 +6,16 @@ keeps the database and the existing evidence/citation paths authoritative while 
 future UI one stable, JSON-serialisable answer to inspect.
 """
 
+from .actions import (
+    ActionCapability,
+    ActionRequest,
+    ActionResult,
+    ReviewAction,
+    ReviewActionError,
+    ReviewActionRequest,
+    ReviewActionResult,
+    ReviewActionService,
+)
 from .contract import (
     REVIEW_CURRENT,
     REVIEW_HISTORY,
@@ -20,9 +30,17 @@ from .service import DomainReviewService
 __all__ = [
     "REVIEW_CURRENT",
     "REVIEW_HISTORY",
+    "ActionCapability",
+    "ActionRequest",
+    "ActionResult",
     "DomainReview",
     "DomainReviewRequest",
     "DomainReviewService",
+    "ReviewAction",
+    "ReviewActionError",
+    "ReviewActionRequest",
+    "ReviewActionResult",
+    "ReviewActionService",
     "ReviewConflict",
     "ReviewRecord",
     "ReviewVerification",

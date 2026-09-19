@@ -515,13 +515,16 @@ class EngineeringRepository:
         chain would read as though somebody had approved revision 4's text too.
         """
         row = self.get_procedure(procedure_id)
-        was_approved = str(row.status) == str(ProcedureLifecycle.APPROVED)
-        if not was_approved:
-            row = self.set_procedure_status(
-                procedure_id, ProcedureLifecycle.APPROVED, by=by, reason=note
-            )
         if not str(by or "").strip():  # pragma: no cover - the lifecycle already refused
             raise ValidationError("an approval needs an approver")
+        # ``set_record_status`` deliberately treats a same-state transition as a safe no-op.  Do
+        # not turn that no-op into a second approval by rewriting the attribution or its timestamp:
+        # retrying a confirmed UI action must preserve the decision that is already on the row.
+        if str(row.status) == str(ProcedureLifecycle.APPROVED):
+            return row
+        row = self.set_procedure_status(
+            procedure_id, ProcedureLifecycle.APPROVED, by=by, reason=note
+        )
         row.approved_by = by
         row.approved_at = datetime.now(UTC)
         row.reviewer = by
@@ -898,6 +901,7 @@ class EngineeringRepository:
         reason: str = "",
     ) -> DrillingProgram:
         row = self.get_program(program_id)
+        before = str(row.status)
         target = set_record_status(
             self.session,
             row,
@@ -908,7 +912,12 @@ class EngineeringRepository:
         )
         # ``submitted_at`` records the moment the program went into review, which is the timestamp an
         # approver is implicitly commenting on; the shared status helper does not know this column.
-        if str(target) == str(ProgramLifecycle.IN_REVIEW) and row.submitted_at is None:
+        # Only a real edge gets a new lifecycle timestamp.  Same-state retries are read-only.
+        if (
+            before != str(target)
+            and str(target) == str(ProgramLifecycle.IN_REVIEW)
+            and row.submitted_at is None
+        ):
             row.submitted_at = datetime.now(UTC)
             self.session.flush()
         return row
@@ -917,10 +926,13 @@ class EngineeringRepository:
         self, program_id: str, *, by: str, note: str = "", at: object = None
     ) -> DrillingProgram:
         row = self.get_program(program_id)
-        if str(row.status) != str(ProgramLifecycle.APPROVED):
-            row = self.set_program_status(program_id, ProgramLifecycle.APPROVED, by=by, reason=note)
         if not str(by or "").strip():  # pragma: no cover - the lifecycle already refused
             raise ValidationError("an approval needs an approver")
+        # Approval metadata is part of the authoritative decision, not a request log.  A retry of
+        # an already-approved program is a no-op and must not replace who approved it or when.
+        if str(row.status) == str(ProgramLifecycle.APPROVED):
+            return row
+        row = self.set_program_status(program_id, ProgramLifecycle.APPROVED, by=by, reason=note)
         row.approver = by
         row.approved_at = at or datetime.now(UTC)  # type: ignore[assignment]
         self.session.flush()

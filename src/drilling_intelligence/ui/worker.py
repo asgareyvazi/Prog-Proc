@@ -15,6 +15,7 @@ from ..core.errors import (
     ValidationError,
 )
 from ..database.integrity import KnowledgeIntegrityError
+from ..review import ReviewActionRequest
 from .controller import ReviewController
 
 
@@ -126,4 +127,83 @@ class ReviewWorker(QObject):
             self.succeeded.emit(review)
 
 
-__all__ = ["ReviewWorker", "WorkerError"]
+class ReviewActionWorker(QObject):
+    """Run one confirmed domain action outside the GUI event loop.
+
+    The worker receives an immutable request containing the displayed preconditions.  It never
+    updates widgets or a review value itself; success is followed by a fresh DomainReview read by
+    the window, while failure leaves the displayed review untouched.
+    """
+
+    succeeded = Signal(object)
+    failed = Signal(object)
+
+    def __init__(
+        self,
+        controller: ReviewController,
+        request: ReviewActionRequest,
+        *,
+        parent: Any = None,
+    ) -> None:
+        super().__init__(parent)
+        self._controller = controller
+        self._request = request
+
+    @Slot()
+    def run(self) -> None:
+        if QThread.currentThread().isInterruptionRequested():
+            self.failed.emit(
+                WorkerError("cancelled", "The review action was cancelled before it started.")
+            )
+            return
+        try:
+            result = self._controller.execute_action(self._request)
+        except ValidationError as exc:
+            self.failed.emit(
+                WorkerError(
+                    "action",
+                    str(exc),
+                    str(exc.context.get("hint") or exc.hint or "Reload the review and try again."),
+                    type(exc).__name__,
+                )
+            )
+        except DrillingIntelligenceError as exc:
+            self.failed.emit(
+                WorkerError(
+                    "domain",
+                    str(exc),
+                    str(exc.context.get("hint") or exc.hint or "The domain rejected this action."),
+                    type(exc).__name__,
+                )
+            )
+        except OSError as exc:
+            self.failed.emit(
+                WorkerError(
+                    "unavailable",
+                    str(exc),
+                    "The authoritative database is unavailable; check the workspace path.",
+                    type(exc).__name__,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve a visible worker boundary
+            exception_type = type(exc).__name__
+            category = (
+                "integrity"
+                if exception_type == "IntegrityError"
+                else "unavailable"
+                if exception_type in {"OperationalError", "DatabaseError"}
+                else "unexpected"
+            )
+            hint = (
+                "The authoritative database reported an integrity failure."
+                if category == "integrity"
+                else "The authoritative database is unavailable; check the workspace path."
+                if category == "unavailable"
+                else "Enable debug logging for the underlying exception."
+            )
+            self.failed.emit(WorkerError(category, str(exc), hint, exception_type))
+        else:
+            self.succeeded.emit(result)
+
+
+__all__ = ["ReviewActionWorker", "ReviewWorker", "WorkerError"]

@@ -608,10 +608,17 @@ class LessonRepository:
     # -- review ---------------------------------------------------------------
     def submit_for_review(self, lesson_id: str, *, by: str = "") -> LessonLearned:
         row = self.get_lesson(lesson_id)
+        before = str(row.status)
         set_record_status(
             self.session, row, LessonLifecycle.REVIEW, by=by, lifecycle=LESSON_LIFECYCLE
         )
-        if str(row.reviewer or "") == "" and str(by or "").strip():
+        # Reviewer attribution belongs to the transition into REVIEW.  A repeated submission must
+        # not fill or replace metadata after the state machine correctly returned a no-op.
+        if (
+            before != str(LessonLifecycle.REVIEW)
+            and str(row.reviewer or "") == ""
+            and str(by or "").strip()
+        ):
             row.reviewer = by
             self.session.flush()
         return row
@@ -626,6 +633,10 @@ class LessonRepository:
         row = self.get_lesson(lesson_id)
         if not str(by or "").strip():
             raise ValidationError("an approval needs an approver", hint="pass by=<who accepted it>")
+        # The status helper makes a same-state approval a safe no-op.  Returning before the
+        # metadata writes is what makes a retry preserve the original reviewer and timestamp.
+        if str(row.status) == str(LessonLifecycle.APPROVED):
+            return row
         if str(row.created_by or "") and str(row.created_by) == str(by):
             raise ValidationError(
                 "the author of a lesson cannot approve it",
@@ -1000,6 +1011,10 @@ class LessonRepository:
         row = self.get_practice(practice_id)
         if not str(by or "").strip():
             raise ValidationError("an approval needs an approver")
+        # Do not rewrite approval attribution on a duplicate confirmation.  In particular, a
+        # delayed worker response from another reviewer must not appear to be a new approval.
+        if str(row.status) == str(ProcedureLifecycle.APPROVED):
+            return row
         if str(row.created_by or "") == str(by):
             raise ValidationError(
                 "the author of a practice cannot approve it",
@@ -1260,6 +1275,10 @@ class LessonRepository:
         if not str(by or "").strip():
             raise ValidationError("a decision on a recommendation needs a person", hint="pass by=")
         target = str(RECOMMENDATION_LIFECYCLE.parse(decision))
+        # A retry of the same decision is idempotent.  The existing decision, actor, timestamp and
+        # decline explanation are authoritative; never rewrite them because a worker retried later.
+        if str(row.status) == target:
+            return row
         if target == str(RecommendationLifecycle.DECLINED) and not str(reason or "").strip():
             raise ValidationError(
                 "declining a recommendation needs a reason",
