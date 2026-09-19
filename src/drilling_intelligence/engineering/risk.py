@@ -444,6 +444,7 @@ class RiskRepository:
         min_severity: int = 0,
         unscored_only: bool = False,
         include_closed: bool = True,
+        include_child_wells: bool = True,
         limit: int = 500,
     ) -> list[RiskRecord]:
         statement = select(RiskRecord)
@@ -453,13 +454,11 @@ class RiskRepository:
             )
         for label, value in (("field_id", field_id), ("project_id", project_id)):
             if value:
-                scoped_wells = select(Well.id).where(getattr(Well, label) == value)
-                statement = statement.where(
-                    or_(
-                        getattr(RiskRecord, label) == value,
-                        RiskRecord.well_id.in_(scoped_wells),
-                    )
-                )
+                clauses = [getattr(RiskRecord, label) == value]
+                if include_child_wells:
+                    scoped_wells = select(Well.id).where(getattr(Well, label) == value)
+                    clauses.append(RiskRecord.well_id.in_(scoped_wells))
+                statement = statement.where(or_(*clauses))
         if category:
             statement = statement.where(RiskRecord.category == _token(category))
         if status:

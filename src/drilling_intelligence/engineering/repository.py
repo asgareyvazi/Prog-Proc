@@ -678,7 +678,12 @@ class EngineeringRepository:
         )
 
     def procedures_for_well(
-        self, well_id: str, *, include_field: bool = True, include_project: bool = True
+        self,
+        well_id: str,
+        *,
+        include_field: bool = True,
+        include_project: bool = True,
+        include_superseded: bool = False,
     ) -> list[ProcedureRecord]:
         """The procedures that apply to a well: its own, plus its field's when that is asked for.
 
@@ -695,11 +700,12 @@ class EngineeringRepository:
             scopes.append(ProcedureRecord.field_id == well.field_id)
         if include_project and well.project_id:
             scopes.append(ProcedureRecord.project_id == well.project_id)
+        statement = select(ProcedureRecord).where(or_(*scopes))
+        if not include_superseded:
+            statement = statement.where(ProcedureRecord.is_current.is_(True))
         return list(
             self.session.execute(
-                select(ProcedureRecord)
-                .where(ProcedureRecord.is_current.is_(True), or_(*scopes))
-                .order_by(ProcedureRecord.code, ProcedureRecord.revision.desc())
+                statement.order_by(ProcedureRecord.code, ProcedureRecord.revision.desc())
             ).scalars()
         )
 
@@ -1018,12 +1024,16 @@ class EngineeringRepository:
             ).scalars()
         )
 
-    def programs_for_well(self, well_id: str) -> list[DrillingProgram]:
-        """The current programs that govern a well: its own, then its field's and project's.
+    def programs_for_well(
+        self, well_id: str, *, include_superseded: bool = False
+    ) -> list[DrillingProgram]:
+        """The programs that govern a well: its own, then its field's and project's.
 
         Ordered most specific first, and *not* merged into a single "the program": a well drilled to a
         field template with a well-specific addendum has two documents in play, and an answer that
-        flattened them would hide which one a number came from.
+        flattened them would hide which one a number came from.  ``include_superseded`` keeps the
+        same scope semantics for a historical review without widening the answer to every programme
+        filed in the well's field or project.
         """
         well = self.session.get(Well, str(well_id))
         if well is None:
@@ -1032,11 +1042,12 @@ class EngineeringRepository:
         for label, value in (("field_id", well.field_id), ("project_id", well.project_id)):
             if value:
                 scopes.append(getattr(DrillingProgram, label) == value)
+        statement = select(DrillingProgram).where(or_(*scopes))
+        if not include_superseded:
+            statement = statement.where(DrillingProgram.is_current.is_(True))
         rows = list(
             self.session.execute(
-                select(DrillingProgram)
-                .where(DrillingProgram.is_current.is_(True), or_(*scopes))
-                .order_by(DrillingProgram.revision.desc(), DrillingProgram.id)
+                statement.order_by(DrillingProgram.revision.desc(), DrillingProgram.id)
             ).scalars()
         )
         rows.sort(key=lambda row: 0 if row.well_id == well.id else (1 if row.field_id else 2))

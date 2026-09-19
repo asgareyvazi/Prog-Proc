@@ -749,7 +749,13 @@ class LessonRepository:
             ).scalars()
         )
 
-    def lessons_for_well(self, well_id: str, *, approved_only: bool = True) -> list[LessonLearned]:
+    def lessons_for_well(
+        self,
+        well_id: str,
+        *,
+        approved_only: bool = True,
+        include_superseded: bool = False,
+    ) -> list[LessonLearned]:
         """Lessons written for this well, plus its field's, so a plan can be checked against both."""
         well = self.session.get(Well, str(well_id))
         if well is None:
@@ -758,7 +764,9 @@ class LessonRepository:
         for label, value in (("field_id", well.field_id), ("project_id", well.project_id)):
             if value:
                 scopes.append(getattr(LessonLearned, label) == value)
-        statement = select(LessonLearned).where(LessonLearned.is_current.is_(True), or_(*scopes))
+        statement = select(LessonLearned).where(or_(*scopes))
+        if not include_superseded:
+            statement = statement.where(LessonLearned.is_current.is_(True))
         if approved_only:
             statement = statement.where(LessonLearned.status == str(LessonLifecycle.APPROVED))
         return list(
@@ -1006,28 +1014,32 @@ class LessonRepository:
     def list_practices(
         self,
         *,
+        well_id: str = "",
         field_id: str = "",
         project_id: str = "",
         practice_type: str = "",
         status: str = "",
         include_superseded: bool = False,
+        include_child_wells: bool = True,
         limit: int = 200,
     ) -> list[BestPractice]:
         statement = select(BestPractice)
+        if well_id:
+            statement = statement.where(BestPractice.well_id == well_id)
         if field_id:
-            statement = statement.where(
-                or_(
-                    BestPractice.field_id == field_id,
-                    BestPractice.well_id.in_(select(Well.id).where(Well.field_id == field_id)),
+            clauses = [BestPractice.field_id == field_id]
+            if include_child_wells:
+                clauses.append(
+                    BestPractice.well_id.in_(select(Well.id).where(Well.field_id == field_id))
                 )
-            )
+            statement = statement.where(or_(*clauses))
         if project_id:
-            statement = statement.where(
-                or_(
-                    BestPractice.project_id == project_id,
-                    BestPractice.well_id.in_(select(Well.id).where(Well.project_id == project_id)),
+            clauses = [BestPractice.project_id == project_id]
+            if include_child_wells:
+                clauses.append(
+                    BestPractice.well_id.in_(select(Well.id).where(Well.project_id == project_id))
                 )
-            )
+            statement = statement.where(or_(*clauses))
         if practice_type:
             statement = statement.where(BestPractice.practice_type == _token(practice_type))
         if status:

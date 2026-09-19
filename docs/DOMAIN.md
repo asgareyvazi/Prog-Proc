@@ -157,6 +157,7 @@ as the approvals below: the person deciding needs to read the evidence, and a te
 | command | what it reads | behind it |
 | --- | --- | --- |
 | `records list/summary/promote` | `ddr_report`, `well_operation`, `well_event`, `npt_record`, `problem_occurrence` | `OperationsRepository` / `OperationsService` + `VersionPromoter` |
+| `records review` | one well's authoritative domain rows, sections, conflicts, relations, evidence and plan/actual projection | `DomainReviewService` + the existing repositories and `CitationAuditor` |
 | `timeline` | the same tables, plus the versioned records and the well itself | `intelligence.timeline.build_timeline` |
 | `fields list/summary/offsets` | per-field rollups, and other wells with the same recorded problems | `FieldIntelligence`, `IntelligenceService` |
 | `patterns find/snapshot/list/stale/confirm/recommend` | `problem_occurrence` groupings and `field_pattern`/`recommendation` rows | `intelligence.patterns` |
@@ -166,14 +167,38 @@ as the approvals below: the person deciding needs to read the evidence, and a te
 Every one of them takes `--well`, `--field` or `--project` (a name or an id) and `--json`, and every one of
 them prints the same dictionaries `--json` emits rather than a second implementation of the query.
 
-That table is also the boundary: there is **no CLI for procedures, programmes, risks, costs, rigs or
-service companies**. Those are written and read through `EngineeringRepository`, `RiskRepository` and
-`CostRepository` (and their revision/approval methods), which is where the invariants live; a `--json`
-dumper for them would advertise a workflow - approve a programme, retire a procedure - that needs an
-evidence view this repository does not have. Approving a lesson is likewise not a CLI verb: the
-repository's `LessonRepository.approve(lesson_id, by=..., note=...)` refuses an unattributed approval,
-refuses the lesson's own author as its approver, and refuses a lesson that cites no evidence. All three
-belong in a review screen rather than behind a flag a shell history can re-run.
+That table is also the boundary: there is **no mutation CLI for procedures, programmes, risks, costs, rigs or
+service companies**. Those are written through `EngineeringRepository`, `RiskRepository` and
+`CostRepository` (and their revision/approval methods), which is where the invariants live. The read-only
+`records review` boundary exposes those existing rows for inspection without advertising a workflow -
+approve a programme, retire a procedure - that a shell history can re-run. Approving a lesson is likewise
+not a CLI verb: the repository's `LessonRepository.approve(lesson_id, by=..., note=...)` refuses an
+unattributed approval, refuses the lesson's own author as its approver, and refuses a lesson that cites no
+evidence. These decisions belong in a human review flow, not in the read boundary.
+
+## Domain Review: the read-only human decision boundary
+
+`DomainReviewRequest(well_id=..., lifecycle="current"|"history", limit=0, verify_citations=False)` is the
+single subject-scoped read contract. `DomainReviewService` opens the database's explicit `read_only`
+session and composes the existing rows; it never writes a snapshot, audit event, cache entry, search
+sidecar row or migration. `drillintel records review --well A-3 --json` is a thin rendering of the same
+contract, and `--verify-citations` opts into the existing file citation auditor.
+
+The result preserves `record_to_dict` data, raw status/record-state, current/history identity, scope,
+provenance/evidence references, knowledge relations, open and resolved conflict candidates, and explicit
+verification metadata. Programs and procedures use their repository inheritance rules; `program_target`
+remains owned by its `drilling_program`; and plan/actual rows are delegated to
+`EngineeringRepository.plan_actual_summary`, so WellSection's as-drilled depth and missing-side statuses
+are not reimplemented here. Calculations carry method/version, indexed inputs, outputs, assumptions,
+validation, uncertainty, status and provenance while being labelled `NOT_EXECUTABLE_IN_REPOSITORY` - the
+review does not execute or recompute them.
+
+Records are stably ordered by table/id (sections and relations have explicit tie-breakers), conflicts
+carry both candidates without choosing a winner, and the output contains observations/counts only: no
+risk, quality, confidence, approval, safety or business decision is invented. Search is deliberately not
+a discovery source for this boundary; the result says `search_sidecar_used: false`. A citation audit
+reports `MATCH`, `MISMATCH`, `UNREADABLE` and `NOT_CHECKABLE` through the existing evidence contract and
+never changes the registry.
 
 ## How this coexists with search and knowledge
 

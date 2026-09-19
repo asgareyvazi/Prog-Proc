@@ -131,6 +131,7 @@ class DocumentRepository:
         *,
         workspace_id: str | None = None,
         well_id: str | None = None,
+        project_id: str | None = None,
         classification: str | None = None,
         processing_status: str | None = None,
         search_text: str | None = None,
@@ -142,6 +143,8 @@ class DocumentRepository:
             stmt = stmt.where(Document.workspace_id == workspace_id)
         if well_id:
             stmt = stmt.where(Document.well_id == well_id)
+        if project_id:
+            stmt = stmt.where(Document.project_id == project_id)
         if classification:
             stmt = stmt.where(Document.classification == classification)
         if processing_status:

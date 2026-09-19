@@ -31,7 +31,7 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Engineering records: programmes with targets, versioned procedures, lessons, best practices, recommendations, risks, costs, rigs, service companies | **implemented, tested** (revision chains and lifecycles enforced in the schema) |
 | The generic engineering record: a computed number stored with its method, version, inputs and units, assumptions, validation, confidence and evidence | **implemented, tested** (`record_calculation`; re-running is a no-op, superseding keeps the old row) |
 | Field intelligence: derived timelines, NPT/problem rollups, offset candidates, recurring patterns with staleness checks | **implemented, tested on a two-well golden field** (`docs/DOMAIN.md`) |
-| Domain CLI: `records`, `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
+| Domain CLI: `records`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
 | Skills, AI providers, desktop UI, and engineering-calculation *engines* | planned — the record that stores a result exists and cites its evidence; nothing in this repository computes one, and `docs/DECISIONS.md` ADR-0012 keeps that split |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
@@ -116,6 +116,7 @@ src/drilling_intelligence/
   operations/     the operational spine: reports, operations, events, NPT, problems; the promoter
   engineering/    programmes and targets, procedures, plan-vs-actual, risks, costs
   lessons/        lessons learned, best practices, recommendations and their decisions
+  review/         deterministic read-only per-well Domain Review contract and service
   intelligence/   timelines, field rollups, recurring patterns and their snapshots
   ingestion/      scanner, planner (incremental decisions), pipeline
   integrations/   MinerU client (subprocess/HTTP), disabled by default
@@ -177,6 +178,8 @@ a deterministic pass, they keep the citation of the version they came from, and 
 ```bash
 drillintel records promote --field "North Cormorant"      # idempotent: re-running reports `unchanged`
 drillintel records list --table npt --field "North Cormorant" --json
+drillintel records review --well A-3 --lifecycle current --json  # authoritative, read-only review
+drillintel records review --well A-3 --lifecycle history --verify-citations --json
 drillintel timeline --well A-3 --since 2025-06-13 --until 2025-06-14
 drillintel fields summary --field "North Cormorant"
 drillintel patterns find --field "North Cormorant"        # recurrence in the rows, not a prediction

@@ -1058,6 +1058,60 @@ def command_records(args: argparse.Namespace) -> int:
         from ..operations.repository import OperationsRepository
         from ..operations.service import OperationalService
 
+        if args.action == "review":
+            from ..review import DomainReviewRequest, DomainReviewService
+
+            scope = _scope(args, workspace, required=True)
+            well_id = str(scope.get("well_id") or "")
+            if not well_id:
+                raise DrillingIntelligenceError(
+                    "a domain review is about one well",
+                    hint="pass --well (a name works as well as an id)",
+                )
+            review = DomainReviewService.for_workspace(workspace).review(
+                DomainReviewRequest(
+                    well_id=well_id,
+                    lifecycle=args.lifecycle,
+                    verify_citations=bool(args.verify_citations),
+                    limit=args.limit,
+                )
+            )
+            payload = review.to_dict()
+            audit = payload.get("citation_audit") or {}
+            _emit(
+                payload,
+                as_json=args.json,
+                lines=[
+                    f"well: {review.subject['well'].get('name', well_id)} ({well_id})",
+                    f"records: {review.record_count}, sections: {len(review.sections)}, "
+                    f"conflicts: {len(review.conflicts)}",
+                    "observations: "
+                    + ", ".join(
+                        f"{key} {value}"
+                        for key, value in sorted(review.observations.items())
+                        if key
+                        in {
+                            "candidate_records",
+                            "pending_review_records",
+                            "explicitly_reviewed_records",
+                            "records_without_recorded_provenance",
+                            "open_conflicts",
+                        }
+                    ),
+                    (
+                        "citation audit: "
+                        + ", ".join(
+                            f"{key} {value}"
+                            for key, value in sorted((audit.get("counts") or {}).items())
+                        )
+                        if audit
+                        else "citation audit: not run (use --verify-citations to re-read source files)"
+                    ),
+                    "search sidecar: not used; records came from authoritative scope reads",
+                ],
+            )
+            return 0
+
         if args.action == "promote":
             scope = _scope(args, workspace, required=False)
             service = OperationalService.for_workspace(workspace)
@@ -2258,6 +2312,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("list", "the rows a promotion wrote, one table at a time"),
         ("summary", "how many rows of each kind a scope holds, and how many are promoted"),
+        ("review", "inspect one well's authoritative records and evidence without writing"),
         ("promote", "turn a document version's tables into operations, events, NPT and problems"),
         (
             "impact",
@@ -2273,6 +2328,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     ):
         action = records_sub.add_parser(name, help=help_text, parents=[common])
+        if name == "review":
+            action.add_argument("--well", required=True, help="the well to inspect (id or name)")
+            action.add_argument(
+                "--lifecycle",
+                choices=("current", "history"),
+                default="current",
+                help="current records, or current plus preserved history",
+            )
+            action.add_argument(
+                "--verify-citations",
+                action="store_true",
+                help="re-read recorded source-file citations through the existing citation auditor",
+            )
+            action.add_argument(
+                "--limit",
+                type=int,
+                default=0,
+                help="at most N returned records (0 = no application-level cap)",
+            )
+            action.set_defaults(handler=command_records)
+            continue
         if name not in ("promote", "impact", "rollup", "plan-actual"):
             action.add_argument(
                 "--table",
