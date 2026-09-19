@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.enums import (
@@ -454,10 +454,25 @@ class RiskRepository:
             )
         for label, value in (("field_id", field_id), ("project_id", project_id)):
             if value:
-                clauses = [getattr(RiskRecord, label) == value]
                 if include_child_wells:
+                    clauses = [getattr(RiskRecord, label) == value]
                     scoped_wells = select(Well.id).where(getattr(Well, label) == value)
                     clauses.append(RiskRecord.well_id.in_(scoped_wells))
+                elif label == "field_id":
+                    clauses = [
+                        and_(
+                            RiskRecord.field_id == value,
+                            RiskRecord.well_id.is_(None),
+                        )
+                    ]
+                else:
+                    clauses = [
+                        and_(
+                            RiskRecord.project_id == value,
+                            RiskRecord.well_id.is_(None),
+                            RiskRecord.field_id.is_(None),
+                        )
+                    ]
                 statement = statement.where(or_(*clauses))
         if category:
             statement = statement.where(RiskRecord.category == _token(category))

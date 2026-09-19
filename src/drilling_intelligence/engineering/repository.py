@@ -33,8 +33,8 @@ from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
 from sqlalchemy import and_ as sa_and
+from sqlalchemy import case, func, or_, select
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.enums import (
@@ -684,6 +684,7 @@ class EngineeringRepository:
         include_field: bool = True,
         include_project: bool = True,
         include_superseded: bool = False,
+        limit: int = 0,
     ) -> list[ProcedureRecord]:
         """The procedures that apply to a well: its own, plus its field's when that is asked for.
 
@@ -697,15 +698,40 @@ class EngineeringRepository:
             raise ValidationError(f"no well {well_id!r}")
         scopes = [ProcedureRecord.well_id == well.id]
         if include_field and well.field_id:
-            scopes.append(ProcedureRecord.field_id == well.field_id)
+            scopes.append(
+                sa_and(
+                    ProcedureRecord.field_id == well.field_id,
+                    ProcedureRecord.well_id.is_(None),
+                )
+            )
         if include_project and well.project_id:
-            scopes.append(ProcedureRecord.project_id == well.project_id)
+            scopes.append(
+                sa_and(
+                    ProcedureRecord.project_id == well.project_id,
+                    ProcedureRecord.well_id.is_(None),
+                    ProcedureRecord.field_id.is_(None),
+                )
+            )
         statement = select(ProcedureRecord).where(or_(*scopes))
         if not include_superseded:
             statement = statement.where(ProcedureRecord.is_current.is_(True))
+        scope_rank = case(
+            (ProcedureRecord.well_id == well.id, 0),
+            *(
+                [(ProcedureRecord.field_id == well.field_id, 1)]
+                if include_field and well.field_id
+                else []
+            ),
+            else_=2,
+        )
         return list(
             self.session.execute(
-                statement.order_by(ProcedureRecord.code, ProcedureRecord.revision.desc())
+                statement.order_by(
+                    scope_rank,
+                    ProcedureRecord.code,
+                    ProcedureRecord.revision.desc(),
+                    ProcedureRecord.id,
+                ).limit(_bounded(limit))
             ).scalars()
         )
 
@@ -1025,7 +1051,7 @@ class EngineeringRepository:
         )
 
     def programs_for_well(
-        self, well_id: str, *, include_superseded: bool = False
+        self, well_id: str, *, include_superseded: bool = False, limit: int = 0
     ) -> list[DrillingProgram]:
         """The programs that govern a well: its own, then its field's and project's.
 
@@ -1039,15 +1065,34 @@ class EngineeringRepository:
         if well is None:
             raise ValidationError(f"no well {well_id!r}")
         scopes = [DrillingProgram.well_id == well.id]
-        for label, value in (("field_id", well.field_id), ("project_id", well.project_id)):
-            if value:
-                scopes.append(getattr(DrillingProgram, label) == value)
+        if well.field_id:
+            scopes.append(
+                sa_and(
+                    DrillingProgram.field_id == well.field_id,
+                    DrillingProgram.well_id.is_(None),
+                )
+            )
+        if well.project_id:
+            scopes.append(
+                sa_and(
+                    DrillingProgram.project_id == well.project_id,
+                    DrillingProgram.well_id.is_(None),
+                    DrillingProgram.field_id.is_(None),
+                )
+            )
         statement = select(DrillingProgram).where(or_(*scopes))
         if not include_superseded:
             statement = statement.where(DrillingProgram.is_current.is_(True))
+        scope_rank = case(
+            (DrillingProgram.well_id == well.id, 0),
+            *([(DrillingProgram.field_id == well.field_id, 1)] if well.field_id else []),
+            else_=2,
+        )
         rows = list(
             self.session.execute(
-                statement.order_by(DrillingProgram.revision.desc(), DrillingProgram.id)
+                statement.order_by(
+                    scope_rank, DrillingProgram.revision.desc(), DrillingProgram.id
+                ).limit(_bounded(limit))
             ).scalars()
         )
         rows.sort(key=lambda row: 0 if row.well_id == well.id else (1 if row.field_id else 2))
@@ -1124,25 +1169,59 @@ class EngineeringRepository:
         # not against every revision anybody ever wrote.  Naming a program is the one explicit
         # exception: asking for ``program_id`` asks for that program, current or not, because a
         # reviewer reopening an old revision wants its numbers, not the latest ones.
-        target_statement = select(ProgramTarget)
+        target_statement = select(ProgramTarget).where(
+            or_(
+                ProgramTarget.section_id.is_(None),
+                ProgramTarget.section_id.in_([section.id for section in sections]),
+            )
+        )
         if program_id:
             target_statement = target_statement.where(ProgramTarget.program_id == program_id)
+            target_order = (ProgramTarget.sequence, ProgramTarget.id)
         else:
-            program_scope = select(DrillingProgram.id).where(DrillingProgram.is_current.is_(True))
-            if well_id:
-                program_scope = program_scope.where(DrillingProgram.well_id == well_id)
-            else:
-                # A section-scoped comparison is against the programs governing that section's well,
-                # never against the whole workspace's targets.
-                program_scope = program_scope.where(
-                    DrillingProgram.well_id.in_({section.well_id for section in sections})
-                )
+            # A well's governing program may be filed at the well, its field or its project.  Keep
+            # the same inheritance boundary as ``programs_for_well``: a well-owned row wins over an
+            # unscoped field row, which wins over an unscoped project row.  The section ids above
+            # provide the hard subject boundary; an unbound target is still allowed to match by name
+            # because that is the existing template contract, but only inside a governing program.
+            subject_well_ids = {str(section.well_id) for section in sections}
+            subject_field_ids = select(Well.field_id).where(Well.id.in_(subject_well_ids))
+            subject_project_ids = select(Well.project_id).where(Well.id.in_(subject_well_ids))
+            program_scope = select(DrillingProgram.id).where(
+                DrillingProgram.is_current.is_(True),
+                or_(
+                    DrillingProgram.well_id.in_(subject_well_ids),
+                    sa_and(
+                        DrillingProgram.well_id.is_(None),
+                        DrillingProgram.field_id.in_(subject_field_ids),
+                    ),
+                    sa_and(
+                        DrillingProgram.well_id.is_(None),
+                        DrillingProgram.field_id.is_(None),
+                        DrillingProgram.project_id.in_(subject_project_ids),
+                    ),
+                ),
+            )
             target_statement = target_statement.where(ProgramTarget.program_id.in_(program_scope))
-        targets = list(
-            self.session.execute(
-                target_statement.order_by(ProgramTarget.sequence, ProgramTarget.id)
-            ).scalars()
-        )
+            target_statement = target_statement.join(
+                DrillingProgram, DrillingProgram.id == ProgramTarget.program_id
+            )
+            target_order = (
+                case(
+                    (DrillingProgram.well_id.in_(subject_well_ids), 0),
+                    (
+                        sa_and(
+                            DrillingProgram.well_id.is_(None),
+                            DrillingProgram.field_id.in_(subject_field_ids),
+                        ),
+                        1,
+                    ),
+                    else_=2,
+                ),
+                ProgramTarget.sequence,
+                ProgramTarget.id,
+            )
+        targets = list(self.session.execute(target_statement.order_by(*target_order)).scalars())
         # NPT hours are summed once per section, not once per section inside the loop: a ten-section
         # well must not become eleven round trips.
         npt_hours = self._npt_hours_by_section([section.id for section in sections])
@@ -1707,6 +1786,7 @@ class EngineeringRepository:
         status: str = "",
         current_only: bool = False,
         limit: int = 200,
+        scope_wide_only: bool = False,
     ) -> list[Calculation]:
         """The calculation records in scope, newest first.
 
@@ -1728,6 +1808,11 @@ class EngineeringRepository:
             statement = statement.where(Calculation.section_id == section_id)
         if project_id:
             statement = statement.where(Calculation.project_id == project_id)
+        if scope_wide_only:
+            if project_id:
+                statement = statement.where(Calculation.well_id.is_(None))
+            if section_id:
+                statement = statement.where(Calculation.well_id.is_(None))
         if status:
             statement = statement.where(Calculation.status == str(CalculationStatus.parse(status)))
         if current_only:

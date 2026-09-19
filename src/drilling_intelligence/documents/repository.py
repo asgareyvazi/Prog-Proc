@@ -137,6 +137,7 @@ class DocumentRepository:
         search_text: str | None = None,
         limit: int = 500,
         offset: int = 0,
+        scope_wide_only: bool = False,
     ) -> list[Document]:
         stmt = select(Document)
         if workspace_id:
@@ -145,6 +146,8 @@ class DocumentRepository:
             stmt = stmt.where(Document.well_id == well_id)
         if project_id:
             stmt = stmt.where(Document.project_id == project_id)
+        if scope_wide_only and project_id:
+            stmt = stmt.where(Document.well_id.is_(None))
         if classification:
             stmt = stmt.where(Document.classification == classification)
         if processing_status:

@@ -12,9 +12,12 @@ from typing import Any
 from sqlalchemy import inspect, select
 from tests.fixtures.fieldops import add_casing_program, ingest, promote, well_id_for
 
+from drilling_intelligence.database.models import DdrReport, Well
 from drilling_intelligence.database.serialize import record_to_dict
 from drilling_intelligence.engineering.repository import EngineeringRepository
+from drilling_intelligence.lessons.repository import LessonRepository
 from drilling_intelligence.review import DomainReviewRequest, DomainReviewService
+from drilling_intelligence.wells.repository import WellRepository
 
 
 def _database_snapshot(workspace) -> tuple[Any, ...]:
@@ -127,6 +130,82 @@ def test_review_keeps_program_history_and_plan_actual_lineage_visible(workspace)
     assert old_program.id not in current_plan_programs
     assert old_program.id in history_plan_programs
     assert any(record.current for record in _records(history_review, "program_target"))
+
+
+def test_review_intersects_inherited_program_targets_with_the_subject_well(workspace) -> None:
+    """A field-scoped program may own targets for several wells, but a well review may not leak them."""
+    ingest(workspace)
+    promote(workspace)
+    a_id = well_id_for(workspace, "A-3")
+    b_id = well_id_for(workspace, "B-11")
+
+    with workspace.database.unit_of_work() as session:
+        b_well = session.get(Well, b_id)
+        assert b_well is not None
+        b_section = WellRepository(session).get_or_create_section(b_well, "B-only review section")
+        a_well = session.get(Well, a_id)
+        assert a_well is not None
+        a_section = WellRepository(session).get_or_create_section(a_well, "A-only review section")
+        repository = EngineeringRepository(session)
+        inherited = repository.create_program(
+            title="field template with A and B targets",
+            field_id=str(a_well.field_id),
+            project_id=str(a_well.project_id),
+        )
+        a_target = repository.add_target(
+            inherited.id,
+            name=a_section.name,
+            section_id=a_section.id,
+            planned_depth_md_value=9876.0,
+        )
+        b_target = repository.add_target(
+            inherited.id,
+            name=b_section.name,
+            section_id=b_section.id,
+            planned_depth_md_value=1234.0,
+        )
+        inherited_id, a_target_id, b_target_id = inherited.id, a_target.id, b_target.id
+
+    service = DomainReviewService.for_workspace(workspace)
+    for lifecycle in ("current", "history"):
+        review = service.review(DomainReviewRequest(well_id=a_id, lifecycle=lifecycle))
+        assert inherited_id in {record.record_id for record in _records(review, "drilling_program")}
+        target_ids = {record.record_id for record in _records(review, "program_target")}
+        assert a_target_id in target_ids
+        assert b_target_id not in target_ids
+        assert any(row["program_id"] == inherited_id for row in review.plan_actual)
+        assert all(row["well_id"] == a_id for row in review.plan_actual)
+        assert all(record.scope.get("well_id") != b_id for record in review.records)
+
+
+def test_review_audits_file_citations_carried_in_record_evidence(workspace) -> None:
+    """A row-level evidence citation is not merely displayed; the opt-in audit re-reads it."""
+    ingest(workspace)
+    promote(workspace)
+    well_id = well_id_for(workspace, "A-3")
+    with workspace.database.read_only() as session:
+        source = session.scalar(select(DdrReport).where(DdrReport.well_id == well_id))
+        assert source is not None and source.provenance
+        citation = dict(source.provenance[0])
+
+    with workspace.database.unit_of_work() as session:
+        recommendation = LessonRepository(session).propose_recommendation(
+            statement="Keep the cited review evidence attached",
+            reason="domain review citation coverage",
+            evidence=[citation],
+            well_id=well_id,
+        )
+        recommendation_id = recommendation.id
+
+    review = DomainReviewService.for_workspace(workspace).review(
+        DomainReviewRequest(well_id=well_id, verify_citations=True)
+    )
+    record = next(
+        row for row in _records(review, "recommendation") if row.record_id == recommendation_id
+    )
+    assert citation in record.evidence
+    assert record.verification.citation_audit == "MATCH"
+    assert review.citation_audit["counts"]["MATCH"] > 0
 
 
 def test_review_exposes_calculation_contract_without_claiming_reproducibility(workspace) -> None:

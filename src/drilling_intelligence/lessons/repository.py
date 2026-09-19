@@ -33,7 +33,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.enums import (
@@ -755,15 +755,28 @@ class LessonRepository:
         *,
         approved_only: bool = True,
         include_superseded: bool = False,
+        limit: int = 0,
     ) -> list[LessonLearned]:
         """Lessons written for this well, plus its field's, so a plan can be checked against both."""
         well = self.session.get(Well, str(well_id))
         if well is None:
             raise ValidationError(f"no well {well_id!r}")
         scopes = [LessonLearned.well_id == well.id]
-        for label, value in (("field_id", well.field_id), ("project_id", well.project_id)):
-            if value:
-                scopes.append(getattr(LessonLearned, label) == value)
+        if well.field_id:
+            scopes.append(
+                and_(
+                    LessonLearned.field_id == well.field_id,
+                    LessonLearned.well_id.is_(None),
+                )
+            )
+        if well.project_id:
+            scopes.append(
+                and_(
+                    LessonLearned.project_id == well.project_id,
+                    LessonLearned.well_id.is_(None),
+                    LessonLearned.field_id.is_(None),
+                )
+            )
         statement = select(LessonLearned).where(or_(*scopes))
         if not include_superseded:
             statement = statement.where(LessonLearned.is_current.is_(True))
@@ -771,7 +784,9 @@ class LessonRepository:
             statement = statement.where(LessonLearned.status == str(LessonLifecycle.APPROVED))
         return list(
             self.session.execute(
-                statement.order_by(LessonLearned.approved_at.desc().nulls_last(), LessonLearned.id)
+                statement.order_by(
+                    LessonLearned.approved_at.desc().nulls_last(), LessonLearned.id
+                ).limit(_bounded(limit))
             ).scalars()
         )
 
@@ -1027,18 +1042,33 @@ class LessonRepository:
         if well_id:
             statement = statement.where(BestPractice.well_id == well_id)
         if field_id:
-            clauses = [BestPractice.field_id == field_id]
             if include_child_wells:
+                clauses = [BestPractice.field_id == field_id]
                 clauses.append(
                     BestPractice.well_id.in_(select(Well.id).where(Well.field_id == field_id))
                 )
+            else:
+                clauses = [
+                    and_(
+                        BestPractice.field_id == field_id,
+                        BestPractice.well_id.is_(None),
+                    )
+                ]
             statement = statement.where(or_(*clauses))
         if project_id:
-            clauses = [BestPractice.project_id == project_id]
             if include_child_wells:
+                clauses = [BestPractice.project_id == project_id]
                 clauses.append(
                     BestPractice.well_id.in_(select(Well.id).where(Well.project_id == project_id))
                 )
+            else:
+                clauses = [
+                    and_(
+                        BestPractice.project_id == project_id,
+                        BestPractice.well_id.is_(None),
+                        BestPractice.field_id.is_(None),
+                    )
+                ]
             statement = statement.where(or_(*clauses))
         if practice_type:
             statement = statement.where(BestPractice.practice_type == _token(practice_type))
@@ -1057,7 +1087,7 @@ class LessonRepository:
         )
 
     def practices_for_well(
-        self, well_id: str, *, hole_size_in: float | None = None
+        self, well_id: str, *, hole_size_in: float | None = None, limit: int = 0
     ) -> list[BestPractice]:
         """The approved practices that govern this well's field, optionally for one hole size.
 
@@ -1087,6 +1117,7 @@ class LessonRepository:
                     or_(*scopes),
                 )
                 .order_by(BestPractice.code, BestPractice.title)
+                .limit(_bounded(limit))
             ).scalars()
         )
         if hole_size_in is None:
@@ -1259,6 +1290,7 @@ class LessonRepository:
         lesson_id: str = "",
         pattern_id: str = "",
         limit: int = 200,
+        include_child_wells: bool = True,
     ) -> list[Recommendation]:
         statement = select(Recommendation)
         for label, value in (
@@ -1270,6 +1302,13 @@ class LessonRepository:
         ):
             if value:
                 statement = statement.where(getattr(Recommendation, label) == value)
+        if not include_child_wells:
+            if field_id:
+                statement = statement.where(Recommendation.well_id.is_(None))
+            if project_id:
+                statement = statement.where(
+                    Recommendation.well_id.is_(None), Recommendation.field_id.is_(None)
+                )
         if status:
             statement = statement.where(
                 Recommendation.status == str(RECOMMENDATION_LIFECYCLE.parse(status))

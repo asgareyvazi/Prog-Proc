@@ -16,7 +16,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..core.enums import KnowledgeOrigin, KnowledgeStatus
@@ -132,7 +132,47 @@ def _dedupe_rows(rows: Iterable[Any]) -> list[Any]:
 
 
 def _fetch_limit(request: DomainReviewRequest) -> int:
+    """The bounded look-ahead used by every repository read.
+
+    ``limit`` is a result cap, not a license for each repository to return ``limit`` rows and then
+    silently discard the rest.  Fetching one extra row lets the service distinguish a complete group
+    from a bounded group while keeping the existing deterministic prefix contract.  A zero request
+    still has the explicit safety cap that the boundary has always promised.
+    """
+    requested = int(request.limit) if request.limit > 0 else _SAFE_LIMIT
+    return requested + 1
+
+
+def _result_limit(request: DomainReviewRequest) -> int:
+    """The number of records the review may expose after its bounded reads."""
     return int(request.limit) if request.limit > 0 else _SAFE_LIMIT
+
+
+def _citation_entries(entries: Iterable[Any]) -> tuple[Mapping[str, Any], ...]:
+    """Flatten only recorded file citations from row/evidence graphs.
+
+    Review records deliberately keep both the raw row provenance and richer evidence pointers.  A
+    relation entry often nests its file provenance under ``provenance``; handing the wrapper to the
+    citation auditor would make that citation invisible.  This helper does not manufacture a
+    citation or reinterpret an evidence reference: it only carries mappings that already expose a
+    ``locator`` and recursively visits their existing provenance/evidence containers.
+    """
+    found: list[Mapping[str, Any]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            if "locator" in value:
+                found.append(dict(_plain(value)))
+                return
+            for nested in value.values():
+                visit(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                visit(nested)
+
+    for entry in entries:
+        visit(entry)
+    return _dedupe_mappings(found)
 
 
 def _scope_from(data: Mapping[str, Any]) -> dict[str, str]:
@@ -239,6 +279,7 @@ def _record_from_row(
     conflict_ids: Sequence[str] = (),
     extra_evidence: Sequence[Mapping[str, Any]] = (),
     data_extra: Mapping[str, Any] | None = None,
+    scope_extra: Mapping[str, Any] | None = None,
 ) -> ReviewRecord:
     data = dict(_plain(record_to_dict(row)))
     if data_extra:
@@ -251,13 +292,22 @@ def _record_from_row(
         current_programs=current_programs,
     )
     conflicts = tuple(sorted(str(value) for value in conflict_ids))
+    scope = _scope_from(data)
+    if scope_extra:
+        scope.update(
+            {
+                str(key): str(value or "")
+                for key, value in scope_extra.items()
+                if key in {"well_id", "field_id", "project_id", "section_id"}
+            }
+        )
     return ReviewRecord(
         record_type=str(getattr(type(row), "__tablename__", type(row).__name__)),
         record_id=str(row.id),
         status=status,
         record_state=_record_state(row),
         current=current,
-        scope=_scope_from(data),
+        scope=scope,
         data=data,
         provenance=provenance,
         evidence=_row_evidence(row, provenance, extra_evidence),
@@ -402,11 +452,13 @@ class DomainReviewService:
             },
         }
         limit = _fetch_limit(request)
+        result_limit = _result_limit(request)
         sections_rows = sorted(
-            WellRepository(session).list_sections(well.id),
+            WellRepository(session).list_sections(well.id, limit=_SAFE_LIMIT + 1),
             key=lambda row: (row.sequence, row.id),
         )
-        sections = tuple(_plain(record_to_dict(row)) for row in sections_rows)
+        sections_truncated = len(sections_rows) > _SAFE_LIMIT
+        sections = tuple(_plain(record_to_dict(row)) for row in sections_rows[:_SAFE_LIMIT])
 
         operational = OperationsRepository(session)
         rows: list[Any] = []
@@ -442,7 +494,11 @@ class DomainReviewService:
         document_rows = _for_well(
             _merge_by_id(
                 documents.list_documents(well_id=well.id, limit=limit),
-                documents.list_documents(project_id=str(well.project_id), limit=limit)
+                documents.list_documents(
+                    project_id=str(well.project_id),
+                    limit=limit,
+                    scope_wide_only=True,
+                )
                 if well.project_id
                 else (),
             ),
@@ -461,20 +517,26 @@ class DomainReviewService:
                         DocumentVersion.version_number,
                         DocumentVersion.id,
                     )
+                    .limit(limit)
                 ).scalars()
             )
             rows.extend(version_rows)
+            bounded_groups.append(version_rows)
 
         engineering = EngineeringRepository(session)
         programs = _for_well(
             engineering.programs_for_well(
-                well.id, include_superseded=request.lifecycle == REVIEW_HISTORY
+                well.id,
+                include_superseded=request.lifecycle == REVIEW_HISTORY,
+                limit=limit,
             ),
             well.id,
         )
         procedures = _for_well(
             engineering.procedures_for_well(
-                well.id, include_superseded=request.lifecycle == REVIEW_HISTORY
+                well.id,
+                include_superseded=request.lifecycle == REVIEW_HISTORY,
+                limit=limit,
             ),
             well.id,
         )
@@ -484,19 +546,32 @@ class DomainReviewService:
         program_ids = sorted({str(row.id) for row in programs})
         target_rows: list[Any] = []
         if program_ids:
+            # ProgramTarget is owned by its program, but an inherited field/project program may
+            # contain targets explicitly attached to another well's section.  Keep unbound template
+            # targets and targets for this well's sections; never expose the other well's target in a
+            # subject-scoped review.
+            section_ids = [str(row.id) for row in sections_rows]
+            target_scope = [ProgramTarget.section_id.is_(None)]
+            if section_ids:
+                target_scope.append(ProgramTarget.section_id.in_(section_ids))
             target_rows = list(
                 session.execute(
                     select(ProgramTarget)
-                    .where(ProgramTarget.program_id.in_(program_ids))
+                    .where(
+                        ProgramTarget.program_id.in_(program_ids),
+                        or_(*target_scope),
+                    )
                     .order_by(
                         ProgramTarget.program_id,
                         ProgramTarget.sequence,
                         ProgramTarget.name,
                         ProgramTarget.id,
                     )
+                    .limit(limit)
                 ).scalars()
             )
             rows.extend(target_rows)
+            bounded_groups.append(target_rows)
 
         risk_repo = RiskRepository(session)
         risks = risk_repo.list_risks(well_id=well.id, include_closed=True, limit=limit)
@@ -526,10 +601,14 @@ class DomainReviewService:
         costs = _for_well(
             _merge_by_id(
                 cost_repository.list_items(well_id=well.id, limit=limit),
-                cost_repository.list_items(field_id=str(well.field_id), limit=limit)
+                cost_repository.list_items(
+                    field_id=str(well.field_id), limit=limit, scope_wide_only=True
+                )
                 if well.field_id
                 else (),
-                cost_repository.list_items(project_id=str(well.project_id), limit=limit)
+                cost_repository.list_items(
+                    project_id=str(well.project_id), limit=limit, scope_wide_only=True
+                )
                 if well.project_id
                 else (),
             ),
@@ -543,6 +622,7 @@ class DomainReviewService:
                 well.id,
                 approved_only=False,
                 include_superseded=request.lifecycle == REVIEW_HISTORY,
+                limit=limit,
             ),
             well.id,
         )
@@ -576,10 +656,18 @@ class DomainReviewService:
         recommendations = _for_well(
             _merge_by_id(
                 lesson_repo.list_recommendations(well_id=well.id, limit=limit),
-                lesson_repo.list_recommendations(field_id=str(well.field_id or ""), limit=limit)
+                lesson_repo.list_recommendations(
+                    field_id=str(well.field_id or ""),
+                    limit=limit,
+                    include_child_wells=False,
+                )
                 if well.field_id
                 else (),
-                lesson_repo.list_recommendations(project_id=str(well.project_id or ""), limit=limit)
+                lesson_repo.list_recommendations(
+                    project_id=str(well.project_id or ""),
+                    limit=limit,
+                    include_child_wells=False,
+                )
                 if well.project_id
                 else (),
             ),
@@ -598,7 +686,11 @@ class DomainReviewService:
         calculations = _for_well(
             _merge_by_id(
                 engineering.calculations_for(well_id=well.id, limit=limit),
-                engineering.calculations_for(project_id=str(well.project_id or ""), limit=limit)
+                engineering.calculations_for(
+                    project_id=str(well.project_id or ""),
+                    limit=limit,
+                    scope_wide_only=True,
+                )
                 if well.project_id
                 else (),
             ),
@@ -614,18 +706,35 @@ class DomainReviewService:
                 .order_by(
                     CalculationInput.calculation_id, CalculationInput.name, CalculationInput.id
                 )
+                .limit(limit)
             ).scalars()
+            input_rows = list(input_rows)
+            bounded_groups.append(input_rows)
             for input_row in input_rows:
                 calculation_inputs[str(input_row.calculation_id)].append(
                     _plain(record_to_dict(input_row))
                 )
 
         assets = AssetRepository(session)
-        rows.extend(assets.rigs_for_well(well.id))
-        rows.extend(assets.service_companies_for_well(well.id))
+        rig_rows = assets.rigs_for_well(well.id, limit=limit)
+        service_company_rows = assets.service_companies_for_well(well.id, limit=limit)
+        rows.extend(rig_rows)
+        rows.extend(service_company_rows)
+        bounded_groups.extend((rig_rows, service_company_rows))
 
         knowledge = KnowledgeRepository(session)
         facts = knowledge.facts_for_well(well.id, include_superseded=True, limit=limit)
+        subject_section_ids = {str(row.id) for row in sections_rows}
+        # The knowledge repository indexes the explicit ``well_id`` column.  A malformed or
+        # hand-authored row can still carry a different section/project alongside that well, so
+        # intersect the inherited identifiers here as well rather than trusting denormalised scope.
+        facts = [
+            fact
+            for fact in facts
+            if (not fact.resolved_section_id or fact.resolved_section_id in subject_section_ids)
+            and (not fact.project_id or str(fact.project_id) == str(well.project_id or ""))
+            and (not fact.resolved_well_id or str(fact.resolved_well_id) == str(well.id))
+        ]
         conflicts = knowledge.conflicts(well_id=well.id, status=None, limit=limit)
         bounded_groups.extend((facts, conflicts))
         conflict_by_item: dict[str, list[str]] = defaultdict(list)
@@ -660,19 +769,23 @@ class DomainReviewService:
         lesson_ids = sorted({str(row.id) for row in lessons})
         lesson_evidence: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
         if lesson_ids:
-            edge_rows = session.execute(
-                select(KnowledgeRelation)
-                .where(
-                    KnowledgeRelation.source_type == "lesson",
-                    KnowledgeRelation.source_id.in_(lesson_ids),
-                )
-                .order_by(
-                    KnowledgeRelation.source_id,
-                    KnowledgeRelation.relation,
-                    KnowledgeRelation.target_id,
-                    KnowledgeRelation.id,
-                )
-            ).scalars()
+            edge_rows = list(
+                session.execute(
+                    select(KnowledgeRelation)
+                    .where(
+                        KnowledgeRelation.source_type == "lesson",
+                        KnowledgeRelation.source_id.in_(lesson_ids),
+                    )
+                    .order_by(
+                        KnowledgeRelation.source_id,
+                        KnowledgeRelation.relation,
+                        KnowledgeRelation.target_id,
+                        KnowledgeRelation.id,
+                    )
+                    .limit(limit)
+                ).scalars()
+            )
+            bounded_groups.append(edge_rows)
             for edge in edge_rows:
                 lesson_evidence[str(edge.source_id)].append(
                     {
@@ -684,33 +797,73 @@ class DomainReviewService:
                     }
                 )
 
-        superseded_calculations = {
-            str(value)
-            for (value,) in session.execute(
-                select(Calculation.supersedes_id).where(Calculation.supersedes_id.is_not(None))
-            ).all()
-            if value
-        }
+        superseded_calculations = (
+            {
+                str(value)
+                for (value,) in session.execute(
+                    select(Calculation.supersedes_id).where(
+                        Calculation.supersedes_id.in_(calculation_ids)
+                    )
+                ).all()
+                if value
+            }
+            if calculation_ids
+            else set()
+        )
         current_programs = {
             str(row.id) for row in programs if bool(getattr(row, "is_current", False))
         }
+        program_by_id = {str(row.id): row for row in programs}
+
+        def row_in_scope(row: Any) -> bool:
+            row_well_id = str(getattr(row, "well_id", "") or "")
+            row_field_id = str(getattr(row, "field_id", "") or "")
+            row_project_id = str(getattr(row, "project_id", "") or "")
+            row_section_id = str(getattr(row, "section_id", "") or "")
+            return (
+                (not row_well_id or row_well_id == str(well.id))
+                and (not row_field_id or row_field_id == str(well.field_id or ""))
+                and (not row_project_id or row_project_id == str(well.project_id or ""))
+                and (not row_section_id or row_section_id in subject_section_ids)
+            )
+
         row_records: list[ReviewRecord] = []
         for row in _dedupe_rows(rows):
+            if not row_in_scope(row):
+                continue
             table = str(getattr(type(row), "__tablename__", ""))
-            extra: Sequence[Mapping[str, Any]] = ()
+            extra_entries: list[Mapping[str, Any]] = []
             data_extra: dict[str, Any] = {}
+            scope_extra: dict[str, Any] = {}
             if table == "lesson_learned":
-                extra = lesson_evidence.get(str(row.id), ())
+                extra_entries.extend(lesson_evidence.get(str(row.id), ()))
             if table == "calculation":
-                data_extra["indexed_inputs"] = calculation_inputs.get(str(row.id), [])
+                indexed_inputs = calculation_inputs.get(str(row.id), [])
+                data_extra["indexed_inputs"] = indexed_inputs
+                # CalculationInput is the indexed view of the same calculation contract.  Its
+                # provenance is evidence too; leaving it only inside ``data`` makes a citation
+                # visible but makes the optional audit skip it.
+                for input_row in indexed_inputs:
+                    extra_entries.extend(_mapping_entries(input_row.get("provenance")))
+            if table == "program_target":
+                owner = program_by_id.get(str(getattr(row, "program_id", "") or ""))
+                if owner is not None:
+                    scope_extra.update(
+                        {
+                            "well_id": getattr(owner, "well_id", ""),
+                            "field_id": getattr(owner, "field_id", ""),
+                            "project_id": getattr(owner, "project_id", ""),
+                        }
+                    )
             row_records.append(
                 _record_from_row(
                     row,
                     superseded_calculations=superseded_calculations,
                     current_programs=current_programs,
                     conflict_ids=conflict_by_item.get(str(row.id), ()),
-                    extra_evidence=extra,
+                    extra_evidence=tuple(extra_entries),
                     data_extra=data_extra,
+                    scope_extra=scope_extra,
                 )
             )
         row_records.extend(
@@ -746,9 +899,18 @@ class DomainReviewService:
             )
         )
         bounded_groups.append(relation_rows)
-        truncated = any(len(group) >= limit for group in bounded_groups)
-        if request.limit > 0 and len(row_records) > request.limit:
-            row_records = row_records[: request.limit]
+        truncated = sections_truncated or any(len(group) >= limit for group in bounded_groups)
+        if len(row_records) > result_limit:
+            row_records = row_records[:result_limit]
+            truncated = True
+        if len(review_conflicts) > result_limit:
+            review_conflicts = review_conflicts[:result_limit]
+            truncated = True
+        if len(relations) > result_limit:
+            relations = relations[:result_limit]
+            truncated = True
+        if len(plan_actual) > _SAFE_LIMIT:
+            plan_actual = plan_actual[:_SAFE_LIMIT]
             truncated = True
 
         observations = self._observations(row_records, review_conflicts, truncated=truncated)
@@ -778,6 +940,12 @@ class DomainReviewService:
         for program in programs:
             for row in repository.plan_actual_summary(program_id=str(program.id)):
                 payload = dict(_plain(row))
+                # A field/project program can own targets for several wells.  The repository must
+                # return those rows for a program-scoped question, but a well review is still one
+                # subject.  Filtering by the authoritative section-side well id prevents history
+                # from carrying another well's actuals beside this well's plan.
+                if str(payload.get("well_id") or "") != str(well_id):
+                    continue
                 key = (
                     str(payload.get("section_id") or ""),
                     str(payload.get("metric") or ""),
@@ -893,7 +1061,11 @@ class DomainReviewService:
             current=record.current,
             document_id=str(data.get("document_id") or ""),
             document_version_id=str(data.get("document_version_id") or ""),
-            provenance=[dict(entry) for entry in record.provenance],
+            # Structured review items are audited through the existing structured-row path.  Carry
+            # every file citation already present in the row's evidence graph, including provenance
+            # nested on relation entries; otherwise ``review`` would display a citation that its
+            # optional audit never checked.
+            provenance=[dict(entry) for entry in _citation_entries(record.evidence)],
             title=title,
             text=text,
             record_date=record_date,
