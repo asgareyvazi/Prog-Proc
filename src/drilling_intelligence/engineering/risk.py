@@ -33,7 +33,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.enums import (
@@ -444,6 +444,7 @@ class RiskRepository:
         min_severity: int = 0,
         unscored_only: bool = False,
         include_closed: bool = True,
+        include_child_wells: bool = True,
         limit: int = 500,
     ) -> list[RiskRecord]:
         statement = select(RiskRecord)
@@ -453,13 +454,26 @@ class RiskRepository:
             )
         for label, value in (("field_id", field_id), ("project_id", project_id)):
             if value:
-                scoped_wells = select(Well.id).where(getattr(Well, label) == value)
-                statement = statement.where(
-                    or_(
-                        getattr(RiskRecord, label) == value,
-                        RiskRecord.well_id.in_(scoped_wells),
-                    )
-                )
+                if include_child_wells:
+                    clauses = [getattr(RiskRecord, label) == value]
+                    scoped_wells = select(Well.id).where(getattr(Well, label) == value)
+                    clauses.append(RiskRecord.well_id.in_(scoped_wells))
+                elif label == "field_id":
+                    clauses = [
+                        and_(
+                            RiskRecord.field_id == value,
+                            RiskRecord.well_id.is_(None),
+                        )
+                    ]
+                else:
+                    clauses = [
+                        and_(
+                            RiskRecord.project_id == value,
+                            RiskRecord.well_id.is_(None),
+                            RiskRecord.field_id.is_(None),
+                        )
+                    ]
+                statement = statement.where(or_(*clauses))
         if category:
             statement = statement.where(RiskRecord.category == _token(category))
         if status:

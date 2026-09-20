@@ -256,14 +256,15 @@ class WellRepository:
         return applied
 
     # -- sections -----------------------------------------------------------
-    def list_sections(self, well_id: str) -> list[WellSection]:
-        return list(
-            self.session.execute(
-                select(WellSection)
-                .where(WellSection.well_id == well_id)
-                .order_by(WellSection.sequence)
-            ).scalars()
+    def list_sections(self, well_id: str, *, limit: int = 0) -> list[WellSection]:
+        statement = (
+            select(WellSection)
+            .where(WellSection.well_id == well_id)
+            .order_by(WellSection.sequence, WellSection.id)
         )
+        if limit and limit > 0:
+            statement = statement.limit(int(limit))
+        return list(self.session.execute(statement).scalars())
 
     def get_or_create_section(
         self,

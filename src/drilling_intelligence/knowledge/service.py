@@ -48,7 +48,13 @@ from ..core.enums import (
     KnowledgeStatus,
     RecordState,
 )
-from ..database.models import Document, DocumentVersion, Extraction, KnowledgeItem
+from ..database.models import (
+    Document,
+    DocumentVersion,
+    Extraction,
+    KnowledgeConflict,
+    KnowledgeItem,
+)
 from ..documents.repository import DocumentRepository
 from .conflicts import detect_conflicts
 from .entities import (
@@ -648,7 +654,7 @@ class KnowledgeExtractionService:
         *,
         chosen_item_id: str,
         note: str = "",
-        by: str = "operator",
+        by: str = "",
         session: Any = None,
     ) -> dict[str, Any]:
         """Record a decision on one conflict, and re-compare the key it was about.
@@ -663,6 +669,10 @@ class KnowledgeExtractionService:
         with self._write_session(session) as active:
             documents = DocumentRepository(active)
             repository = KnowledgeRepository(active, documents=documents)
+            existing = active.get(KnowledgeConflict, str(conflict_id))
+            already_settled = (
+                existing is not None and str(existing.status) != ConflictResolution.OPEN.value
+            )
             conflict = resolve_conflict(
                 repository,
                 conflict_id,
@@ -671,22 +681,36 @@ class KnowledgeExtractionService:
                 by=by,
                 note=note,
             )
-            # Re-compare the key now that one side is retired: a resolved conflict must not keep
-            # its neighbours flagged, and "did the marking catch up?" is answered here rather than
-            # left for the next rebuild to notice.
-            report = detect_conflicts(repository, keys=[str(conflict.lookup_key or "")])
-            documents.audit(
-                action="knowledge.conflict_resolved",
-                subject_type="knowledge_conflict",
-                subject_id=str(conflict.id),
-                detail={
-                    "chosen_item_id": chosen_item_id,
-                    "note": note,
-                    "lookup_key": str(conflict.lookup_key or ""),
-                    "candidates": len(conflict.candidates or []),
-                },
-                actor=by,
-            )
+            if already_settled:
+                # ``resolve_conflict`` returned the same settled decision.  Re-running detection or
+                # appending another audit event would make a retry look like a new human judgement.
+                report_payload = {
+                    "keys_examined": 0,
+                    "conflicts": 0,
+                    "agreements": 0,
+                    "items_marked": 0,
+                    "cleared": 0,
+                    "ambiguous_within_source": 0,
+                    "details": [],
+                }
+            else:
+                # Re-compare the key now that one side is retired: a resolved conflict must not keep
+                # its neighbours flagged, and "did the marking catch up?" is answered here rather than
+                # left for the next rebuild to notice.
+                report = detect_conflicts(repository, keys=[str(conflict.lookup_key or "")])
+                documents.audit(
+                    action="knowledge.conflict_resolved",
+                    subject_type="knowledge_conflict",
+                    subject_id=str(conflict.id),
+                    detail={
+                        "chosen_item_id": chosen_item_id,
+                        "note": note,
+                        "lookup_key": str(conflict.lookup_key or ""),
+                        "candidates": len(conflict.candidates or []),
+                    },
+                    actor=by,
+                )
+                report_payload = report.to_dict()
             # The decision and its audit event are one thing: a session that reads the trail before
             # committing (the CLI prints the outcome, the UI reloads the conflict) must see both.
             active.flush()
@@ -696,7 +720,7 @@ class KnowledgeExtractionService:
                 "lookup_key": str(conflict.lookup_key or ""),
                 "chosen_item_id": chosen_item_id,
                 "resolution": dict(conflict.resolution or {}),
-                "recheck": report.to_dict(),
+                "recheck": report_payload,
             }
         return payload
 

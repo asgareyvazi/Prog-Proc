@@ -518,7 +518,8 @@ same inputs. Widening a table that already has rows in it is the part with choic
     it behind an adapter.
 *   **Identity is the content, so re-recording is idempotent.** `identity_key` is `sha256` over the
     canonical payload (method, version, type, scope, inputs, outputs, assumptions, validation, uncertainty,
-    confidence, triggered-by) truncated to 32 hex characters, prefixed `calc:`; a caller who already knows
+    confidence) truncated to 32 hex characters, prefixed `calc:`; actor and trigger fields remain audit
+    metadata and are deliberately excluded from semantic identity; a caller who already knows
     its own key may pass one. The same content returns the row it wrote; different content is a new row, and
     `supersedes_id` marks the parent `SUPERSEDED` at `revision + 1`, because a decision may have been made on
     the older number. A unique index enforces that across concurrent writers, and `NULL` identities coexist,
@@ -1218,3 +1219,111 @@ repository defect behind an argument parser, and the combinations are legitimate
 this section" is exactly what a reviewer asks); letting the most specific scope win (precedence is
 what produced the contamination); and raising an error on a contradictory scope instead of returning
 `[]` (an empty intersection is a correct answer to a well-formed question, not a usage mistake).
+
+## ADR-0023 — Desktop Review Workbench is an optional read-only consumer
+
+The first desktop consumer is a Qt Review Workbench, but the headless package remains the default.
+`PySide6-Essentials` is therefore an optional `ui` extra and the `drillintel-ui` entry point imports Qt
+lazily. A host without Qt's native runtime libraries receives an actionable launcher error; importing
+`drilling_intelligence.ui` itself remains safe for the CLI and library.
+
+The UI has one application boundary: `ReviewController` opens an existing `Workspace`, resolves wells
+through `WellRepository`, builds the existing `DomainReviewRequest`, and delegates to
+`DomainReviewService`. A single `QThread` worker performs the potentially slow review read and opt-in
+citation audit. `MainWindow` and its Qt models only format the returned `DomainReview`, `ReviewRecord`,
+`ReviewConflict` and `ReviewVerification` values. They do not use SQL, ORM sessions, search-sidecar
+discovery, source-file hashing, a second query language, or a UI persistence store.
+
+Current/history is a lifecycle request to the service, not a client-side row toggle. Citation verification
+is an explicit button and remains the existing `CitationAuditor` path. Plan/actual rows, missing-side
+states (`NO_PLAN`, `NO_ACTUAL`), calculation capability (`EXECUTABLE`, `STORED_ONLY`, `INCOMPLETE`,
+`STALE`, `UNRESOLVED`), evidence states, provenance, scope, conflicts and truncation are displayed as
+returned. Filters are ordinary Qt proxy-model presentation filters over the already loaded record set.
+
+The workbench has explicit empty, truncation, audit-not-run, audit-result and worker error states. It has
+no approval, edit, resolve, retire, supersede, delete, recalculate or persistence action. Closing the
+window waits for the read-only worker and closes the existing workspace. Offscreen UI tests use the real
+fixture and real `DomainReviewService`; they skip only when the host cannot load `QtWidgets`, preserving
+the loader reason rather than treating a missing system library as a missing Python dependency.
+
+**Rejected.** A UI-specific domain read model (it would duplicate lifecycle and evidence semantics),
+search-sidecar discovery (it is not authoritative), a GUI-owned citation verifier or calculation engine,
+local UI state tables, hidden truncation, automatic citation verification, and a dashboard with invented
+scores or readiness/quality judgments.
+
+## ADR-0024 — NPT roll-up is the only executable calculation capability in V1
+
+**Status:** accepted (2026-09-19)
+
+The calculation tables and generic `record_calculation` writer are deliberately broader than the
+methods this repository can execute. Treating every stored row as executable, or treating every row as
+`NOT_EXECUTABLE_IN_REPOSITORY`, loses two different truths: a stored result can be complete without a
+local executor, while the NPT roll-up can be re-run from authoritative promoted evidence. V1 therefore
+uses one narrow capability contract rather than a computation framework.
+
+**Decision.** `EngineeringService.record_npt_rollup` is the only registered executable method:
+`method_id = npt.hours_rollup`, `method_version = 1`, property `npt_hours`, unit `h`, one registered well as
+scope, and deterministic four-decimal rounding with Python's existing `round(total, 4)` reporting policy after summing finite duration hours.
+Only promoted, non-rejected NPT rows with complete evidence and resolvable current document versions are
+eligible. Rows without duration are reported in validation and excluded from the total; malformed,
+non-finite, rejected, cross-well, mixed-version, incomplete, or unsafe evidence fails closed before the
+calculation is persisted. The executor re-reads authoritative NPT rows, does not trust the search
+sidecar, and delegates the durable write to `EngineeringRepository`.
+
+The method writes the existing `calculation` and `calculation_input` rows with content identity,
+method/version, scope, validation, indexed inputs, outputs, source/provenance references, actor and
+trigger metadata. Actor names and volatile timestamps are not calculation identity. Repeating the same
+evidence is an idempotent no-op, concurrent duplicate writes resolve to one row, changed evidence is a
+new historical row, and explicit `supersedes_id` preserves a revision chain rather than overwriting it.
+SQLite borrowed sessions issue a physical `BEGIN` only when required; the repository does not commit a
+borrowed session, and calculation plus input indexing remain one atomic transaction.
+
+Domain Review, `records review`, the optional UI, stale detection, dependency impact and indexing are
+read-only. They never invoke the executor. Review classifies stored rows as `EXECUTABLE` only when the
+registered NPT V1 contract and current evidence are complete; as `STORED_ONLY` for a complete unknown
+method; as `INCOMPLETE` for malformed contract/evidence; as `STALE` for an otherwise valid old source
+version; and as `UNRESOLVED` for an otherwise valid missing dependency. Source navigation is projected
+from existing provenance, document-version and locator metadata. No second evidence, audit, workflow or
+execution-history system is introduced.
+
+The CLI exposes the same boundary: `records rollup` is an explicit execution command, while
+`records review` and `records impact` are read-only. JSON includes the stored calculation identity,
+method/version, scope, validation, actor metadata and dependency/source observations without silently
+recomputing a value. The UI exposes the stored execution/dependency labels and an opt-in open-source
+navigation affordance; it does not calculate or mutate.
+
+**Rejected.** A plugin marketplace or generic solver registry; recalculation while loading review,
+indexing or detecting stale evidence; deleting or overwriting historical calculations; a second evidence
+or audit table; relying on search results as calculation inputs; broadening the roll-up to field/project
+scope; and using actor/time/UI metadata in semantic identity.
+
+---
+
+## ADR-0020 — Static document/domain promotion contracts (V2)
+
+**Status:** accepted (2026-09-20)
+
+**Context.** The repository has a broad document taxonomy and a broad knowledge/entity vocabulary,
+but those are not evidence that a safe domain writer exists for every class. Treating every table,
+folder item, search hit, or filename as a promotion candidate would fabricate operations, costs,
+procedures, surveys, or invoices and would make unsupported coverage impossible to inspect.
+
+**Decision.** `operations/contracts.py` is the single static registry for document-to-domain promotion.
+It has one entry for every `DocumentClassification`, but only the existing `program` and `report`
+handlers are allowed to write domain rows for `DRILLING_PROGRAM`, `DDR`, `NPT`, and `TIME_BREAKDOWN`.
+The promoter resolves the contract before entering a writer. Every other class returns an explicit
+`UNSUPPORTED` result (or remains extract/knowledge evidence) and is never routed through an arbitrary
+NPT/table fallback. The registry names destination models and evidence requirements; adding a handler
+requires a visible contract, a concrete writer and a certification test.
+
+Promotion eligibility is checked against stored artefacts: classification, handler, recognised table or
+field shape, quality/unit/linkage and provenance. Missing or ambiguous evidence is not normalized into
+a value. Promotion result output distinguishes eligible, promoted, unchanged, unsupported, ambiguous,
+missing artefact/well/provenance, invalid fields, conflict and error. A conflict does not overwrite a
+row that a person may have confirmed. Planned program targets remain planned; actual section values
+are not populated from them. Search is never authoritative.
+
+**Consequences.** The coverage matrix is reviewable without reading implementation details, the CLI can
+run an explicit unsupported audit, and a new taxonomy enum member fails at import until a contract is
+chosen. Some classes remain evidence-only by design. This is preferable to a generic writer whose
+output looks complete but cannot be defended.

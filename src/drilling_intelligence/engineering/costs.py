@@ -218,6 +218,7 @@ class CostRepository:
         category: str = "",
         record_state: str = "",
         limit: int = 200,
+        scope_wide_only: bool = False,
         **scope: Any,
     ) -> list[CostItem]:
         unknown = sorted(set(scope) - set(COST_SCOPE_KEYS))
@@ -229,6 +230,11 @@ class CostRepository:
         for key, value in scope.items():
             if value:
                 statement = statement.where(getattr(CostItem, key) == str(value))
+        if scope_wide_only:
+            if scope.get("field_id"):
+                statement = statement.where(CostItem.well_id.is_(None))
+            if scope.get("project_id"):
+                statement = statement.where(CostItem.well_id.is_(None), CostItem.field_id.is_(None))
         if status:
             statement = statement.where(CostItem.status == str(status).upper())
         if category:

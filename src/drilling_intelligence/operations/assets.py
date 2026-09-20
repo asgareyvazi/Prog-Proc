@@ -402,26 +402,30 @@ class AssetRepository:
             note=note or "service assignment",
         )
 
-    def _targets(self, *, source_type: str, source_id: str, relation: str) -> list[str]:
+    def _targets(
+        self, *, source_type: str, source_id: str, relation: str, limit: int = 0
+    ) -> list[str]:
         """The ids on the far side of one kind of edge, in the order they were written."""
-        return list(
-            self.session.execute(
-                select(KnowledgeRelation.target_id)
-                .where(
-                    KnowledgeRelation.source_type == source_type,
-                    KnowledgeRelation.source_id == str(source_id),
-                    KnowledgeRelation.relation == relation,
-                )
-                .order_by(KnowledgeRelation.created_at, KnowledgeRelation.id)
-            ).scalars()
+        statement = (
+            select(KnowledgeRelation.target_id)
+            .where(
+                KnowledgeRelation.source_type == source_type,
+                KnowledgeRelation.source_id == str(source_id),
+                KnowledgeRelation.relation == relation,
+            )
+            .order_by(KnowledgeRelation.created_at, KnowledgeRelation.id)
         )
+        if limit and limit > 0:
+            statement = statement.limit(int(limit))
+        return list(self.session.execute(statement).scalars())
 
-    def rigs_for_well(self, well_id: str) -> list[Rig]:
+    def rigs_for_well(self, well_id: str, *, limit: int = 0) -> list[Rig]:
         """The rigs this well was assigned to, read out of the graph - not guessed from names."""
         ids = self._targets(
             source_type="well",
             source_id=well_id,
             relation=KnowledgeRelationType.WELL_USED_RIG.value,
+            limit=limit,
         )
         if not ids:
             return []
@@ -431,11 +435,12 @@ class AssetRepository:
             ).scalars()
         )
 
-    def service_companies_for_well(self, well_id: str) -> list[ServiceCompany]:
+    def service_companies_for_well(self, well_id: str, *, limit: int = 0) -> list[ServiceCompany]:
         ids = self._targets(
             source_type="well",
             source_id=well_id,
             relation=KnowledgeRelationType.WELL_USED_SERVICE.value,
+            limit=limit,
         )
         if not ids:
             return []

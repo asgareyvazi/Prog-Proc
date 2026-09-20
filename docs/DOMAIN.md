@@ -79,11 +79,13 @@ Things this layer does *not* do, each because doing it would make a number unacc
 - **It does not convert currency.** `cost_item` totals per currency only: no rate, no inflation, no AFE
   logic, and an absent side of a variance is `None` rather than zero. A summary also never filters cost
   lines by the lifecycle state of the record they cite - a cancelled AFE line is still a spent dollar.
-- **It does not run an engineering calculation.** `calculation` stores a result - method id and version,
-  inputs with their units, outputs, assumptions, a validation status, an uncertainty, a confidence, a
-  provenance - and nothing computes it here. Arithmetic belongs with a method, a reviewer and a document;
-  an engine that had all three would still be an adapter, not this layer, and a number a model produced is
-  not an engineering result at all.
+- **It does not run arbitrary engineering calculations.** The sole V1 exception is the explicit
+  `npt.hours_rollup` method in `EngineeringService`: it reads promoted NPT rows for one well, validates their
+  evidence and scope, performs deterministic finite-hour summation, and records the result through the
+  existing calculation tables. No other method is executable. `calculation` still stores method id and
+  version, inputs with their units, outputs, assumptions, validation, uncertainty, confidence and
+  provenance; review, indexing, stale detection and UI display never execute it. An additional method
+  needs its own narrow capability contract rather than a generic computation engine.
 - **It does not store a timeline.** `drillintel timeline` projects the tables into a sequence at read time.
   An entry exists only because a record carries its own timestamp, and the undated ones are reported as
   undated rather than placed at the end of a guess.
@@ -108,16 +110,27 @@ identity key, so the pass is idempotent: a second run creates nothing and report
 cannot place is skipped and counted (`ZERO_NPT`, `NOT_A_REPORT`, an unknown well name), never filed
 somewhere plausible.
 
-The generic engineering record has the same shape and no automation behind it:
-:func:`~drilling_intelligence.engineering.repository.EngineeringRepository.record_calculation` requires a
-`method_id`, refuses a row whose `origin` is not `MANUAL` unless it cites its evidence, hashes its content
-into `identity_key` so a re-record returns the row it wrote instead of a twin (the unique index makes that
-hold across concurrent callers too), and writes one `calculation_input` per input so that "which results
-used this value" is an indexed query. A record whose content differs is a new row, and `supersedes_id` marks
-the parent `SUPERSEDED` with the child at `revision + 1` - the chain is append-only, and `current_only`
-means "nobody has superseded it", decided by the chain rather than by a status column that can drift.
-Nothing in it evaluates a formula: `drilling_intelligence.core.units` is there only to read `"10.2 ppg"`
-into a number and a unit, so the index is not a guess at a dimension.
+The generic engineering record has the same shape, and the only production writer in V1 is the explicit
+NPT method:
+:func:`~drilling_intelligence.engineering.service.EngineeringService.record_npt_rollup` reads authoritative
+promoted `NptRecord` rows for exactly one well, validates status, finite durations, source provenance,
+current document versions and evidence completeness, sums deterministic hours, and delegates persistence
+to :func:`~drilling_intelligence.engineering.repository.EngineeringRepository.record_calculation`.
+`npt.hours_rollup` version `1` is the registered capability; its method identity, scope, rounding policy,
+validation counts and input evidence are stored with the result. It never overwrites history. Re-running
+the same evidence is an idempotent no-op, while a changed evidence set is a new content identity and an
+explicit supersession is required for a revision chain.
+
+The repository write path still requires a `method_id`, refuses a row whose `origin` is not `MANUAL` unless
+it cites its evidence, hashes its content into `identity_key` so a re-record returns the row it wrote instead
+of a twin (the unique index makes that hold across concurrent callers too), and writes one
+`calculation_input` per input so that "which results used this value" is an indexed query. A record whose
+content differs is a new row, and `supersedes_id` marks the parent `SUPERSEDED` with the child at
+`revision + 1` - the chain is append-only, and `current_only` means "nobody has superseded it", decided by
+the chain rather than by a status column that can drift. Other methods may remain stored-only. Review
+classifies rows as `EXECUTABLE`, `STORED_ONLY`, `INCOMPLETE`, `STALE` or `UNRESOLVED` without invoking an
+executor. `drilling_intelligence.core.units` parses indexed values into a number and a unit; it does not
+invent a dimension or perform the NPT aggregation.
 
 The corpus the tests run against - two wells, one NPT export, one daily report - produces 22 rows: 2
 reports, 9 operations, 3 events, 5 NPT records and 3 problem occurrences, 59.25 h of non-productive time
@@ -157,6 +170,9 @@ as the approvals below: the person deciding needs to read the evidence, and a te
 | command | what it reads | behind it |
 | --- | --- | --- |
 | `records list/summary/promote` | `ddr_report`, `well_operation`, `well_event`, `npt_record`, `problem_occurrence` | `OperationsRepository` / `OperationsService` + `VersionPromoter` |
+| `records rollup` | promoted NPT rows and their existing evidence/provenance | `EngineeringService.record_npt_rollup` + `EngineeringRepository.record_calculation` |
+| `records impact` | indexed calculation inputs and current document-version state | `EngineeringRepository.calculation_impact` (read-only; `CURRENT` / `STALE` / `UNRESOLVED`) |
+| `records review` | one well's authoritative domain rows, sections, conflicts, relations, evidence, calculations and plan/actual projection | `DomainReviewService` + the existing repositories and `CitationAuditor` |
 | `timeline` | the same tables, plus the versioned records and the well itself | `intelligence.timeline.build_timeline` |
 | `fields list/summary/offsets` | per-field rollups, and other wells with the same recorded problems | `FieldIntelligence`, `IntelligenceService` |
 | `patterns find/snapshot/list/stale/confirm/recommend` | `problem_occurrence` groupings and `field_pattern`/`recommendation` rows | `intelligence.patterns` |
@@ -166,14 +182,42 @@ as the approvals below: the person deciding needs to read the evidence, and a te
 Every one of them takes `--well`, `--field` or `--project` (a name or an id) and `--json`, and every one of
 them prints the same dictionaries `--json` emits rather than a second implementation of the query.
 
-That table is also the boundary: there is **no CLI for procedures, programmes, risks, costs, rigs or
-service companies**. Those are written and read through `EngineeringRepository`, `RiskRepository` and
-`CostRepository` (and their revision/approval methods), which is where the invariants live; a `--json`
-dumper for them would advertise a workflow - approve a programme, retire a procedure - that needs an
-evidence view this repository does not have. Approving a lesson is likewise not a CLI verb: the
-repository's `LessonRepository.approve(lesson_id, by=..., note=...)` refuses an unattributed approval,
-refuses the lesson's own author as its approver, and refuses a lesson that cites no evidence. All three
-belong in a review screen rather than behind a flag a shell history can re-run.
+That table is also the boundary: there is **no mutation CLI for procedures, programmes, risks, costs, rigs or
+service companies**. Those are written through `EngineeringRepository`, `RiskRepository` and
+`CostRepository` (and their revision/approval methods), which is where the invariants live. The read-only
+`records review` boundary exposes those existing rows for inspection without advertising a workflow -
+approve a programme, retire a procedure - that a shell history can re-run. Approving a lesson is likewise
+not a CLI verb: the repository's `LessonRepository.approve(lesson_id, by=..., note=...)` refuses an
+unattributed approval, refuses the lesson's own author as its approver, and refuses a lesson that cites no
+evidence. These decisions belong in a human review flow, not in the read boundary.
+
+## Domain Review: the read-only human decision boundary
+
+`DomainReviewRequest(well_id=..., lifecycle="current"|"history", limit=0, verify_citations=False)` is the
+single subject-scoped read contract. `DomainReviewService` opens the database's explicit `read_only`
+session and composes the existing rows; it never writes a snapshot, audit event, cache entry, search
+sidecar row or migration. `drillintel records review --well A-3 --json` is a thin rendering of the same
+contract, and `--verify-citations` opts into the existing file citation auditor.
+
+The result preserves `record_to_dict` data, raw status/record-state, current/history identity, scope,
+provenance/evidence references, knowledge relations, open and resolved conflict candidates, and explicit
+verification metadata. Programs and procedures use their repository inheritance rules; `program_target`
+remains owned by its `drilling_program`; and plan/actual rows are delegated to
+`EngineeringRepository.plan_actual_summary`, so WellSection's as-drilled depth and missing-side statuses
+are not reimplemented here. Calculations carry method/version, indexed inputs, outputs, assumptions,
+validation, uncertainty, status and provenance. The review projects their capability as
+`EXECUTABLE`, `STORED_ONLY`, `INCOMPLETE`, `STALE` or `UNRESOLVED`: only a complete current NPT V1 contract
+is executable, an unknown complete method is stored-only, and malformed evidence/scope/validation is
+incomplete. A cited old source is stale and a missing source is unresolved. These labels, dependency
+impact and source-navigation hints are read-only; the review never invokes NPT arithmetic or repairs a
+row.
+
+Records are stably ordered by table/id (sections and relations have explicit tie-breakers), conflicts
+carry both candidates without choosing a winner, and the output contains observations/counts only: no
+risk, quality, confidence, approval, safety or business decision is invented. Search is deliberately not
+a discovery source for this boundary; the result says `search_sidecar_used: false`. A citation audit
+reports `MATCH`, `MISMATCH`, `UNREADABLE` and `NOT_CHECKABLE` through the existing evidence contract and
+never changes the registry.
 
 ## How this coexists with search and knowledge
 
@@ -268,3 +312,25 @@ difference between the two is a bug waiting to be trusted), and the promise is k
 policed: `check_promoted_evidence` and the document-version checks report a citation that cannot be opened.
 On PostgreSQL the same migration is a fast `ADD COLUMN`, and adding real constraints there later is a
 one-line migration that needs no data movement.
+
+## V2 ingestion and promotion boundary
+
+The domain model is not expanded by classification alone. `operations/contracts.py` is the static
+contract registry for the current production path. It has a completeness guard over every
+`DocumentClassification`; only `DRILLING_PROGRAM`, `DDR`, `NPT`, and `TIME_BREAKDOWN` resolve to
+existing promotion handlers. A handler must read the stored normalized artefact, not search or
+narrative prose, and must retain row/field provenance, units, quality, linkage and source-version
+identity. A row with no trustworthy answer is reported as an explicit outcome rather than filled with
+zero, a nearest well, a guessed unit, or an inferred root cause.
+
+The promotion result vocabulary is version-level and exclusive: `ELIGIBLE`, `PROMOTED`, `UNCHANGED`,
+`UNSUPPORTED`, `AMBIGUOUS`, `MISSING_ARTEFACT`, `MISSING_WELL`, `MISSING_PROVENANCE`,
+`INVALID_FIELDS`, `CONFLICT`, and `ERROR`. Row counts continue to distinguish created, unchanged and
+conflict. A source edit never overwrites a row that may have been human-confirmed; the conflict is
+reported and the prior row remains. A newer program revision supersedes the previous current program
+without deleting its targets or changing actual section measurements. A re-run of one source version
+is identity-based and idempotent.
+
+See [`DOCUMENT_DOMAIN_COVERAGE.md`](DOCUMENT_DOMAIN_COVERAGE.md) for the per-class evidence matrix,
+[`PRODUCTION_INGESTION_V2_CERTIFICATION.md`](PRODUCTION_INGESTION_V2_CERTIFICATION.md) for the
+certification record, and `tests/golden_corpus/manifest.json` for the deterministic corpus index.

@@ -33,7 +33,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.enums import (
@@ -608,10 +608,17 @@ class LessonRepository:
     # -- review ---------------------------------------------------------------
     def submit_for_review(self, lesson_id: str, *, by: str = "") -> LessonLearned:
         row = self.get_lesson(lesson_id)
+        before = str(row.status)
         set_record_status(
             self.session, row, LessonLifecycle.REVIEW, by=by, lifecycle=LESSON_LIFECYCLE
         )
-        if str(row.reviewer or "") == "" and str(by or "").strip():
+        # Reviewer attribution belongs to the transition into REVIEW.  A repeated submission must
+        # not fill or replace metadata after the state machine correctly returned a no-op.
+        if (
+            before != str(LessonLifecycle.REVIEW)
+            and str(row.reviewer or "") == ""
+            and str(by or "").strip()
+        ):
             row.reviewer = by
             self.session.flush()
         return row
@@ -626,6 +633,10 @@ class LessonRepository:
         row = self.get_lesson(lesson_id)
         if not str(by or "").strip():
             raise ValidationError("an approval needs an approver", hint="pass by=<who accepted it>")
+        # The status helper makes a same-state approval a safe no-op.  Returning before the
+        # metadata writes is what makes a retry preserve the original reviewer and timestamp.
+        if str(row.status) == str(LessonLifecycle.APPROVED):
+            return row
         if str(row.created_by or "") and str(row.created_by) == str(by):
             raise ValidationError(
                 "the author of a lesson cannot approve it",
@@ -749,21 +760,44 @@ class LessonRepository:
             ).scalars()
         )
 
-    def lessons_for_well(self, well_id: str, *, approved_only: bool = True) -> list[LessonLearned]:
+    def lessons_for_well(
+        self,
+        well_id: str,
+        *,
+        approved_only: bool = True,
+        include_superseded: bool = False,
+        limit: int = 0,
+    ) -> list[LessonLearned]:
         """Lessons written for this well, plus its field's, so a plan can be checked against both."""
         well = self.session.get(Well, str(well_id))
         if well is None:
             raise ValidationError(f"no well {well_id!r}")
         scopes = [LessonLearned.well_id == well.id]
-        for label, value in (("field_id", well.field_id), ("project_id", well.project_id)):
-            if value:
-                scopes.append(getattr(LessonLearned, label) == value)
-        statement = select(LessonLearned).where(LessonLearned.is_current.is_(True), or_(*scopes))
+        if well.field_id:
+            scopes.append(
+                and_(
+                    LessonLearned.field_id == well.field_id,
+                    LessonLearned.well_id.is_(None),
+                )
+            )
+        if well.project_id:
+            scopes.append(
+                and_(
+                    LessonLearned.project_id == well.project_id,
+                    LessonLearned.well_id.is_(None),
+                    LessonLearned.field_id.is_(None),
+                )
+            )
+        statement = select(LessonLearned).where(or_(*scopes))
+        if not include_superseded:
+            statement = statement.where(LessonLearned.is_current.is_(True))
         if approved_only:
             statement = statement.where(LessonLearned.status == str(LessonLifecycle.APPROVED))
         return list(
             self.session.execute(
-                statement.order_by(LessonLearned.approved_at.desc().nulls_last(), LessonLearned.id)
+                statement.order_by(
+                    LessonLearned.approved_at.desc().nulls_last(), LessonLearned.id
+                ).limit(_bounded(limit))
             ).scalars()
         )
 
@@ -977,6 +1011,10 @@ class LessonRepository:
         row = self.get_practice(practice_id)
         if not str(by or "").strip():
             raise ValidationError("an approval needs an approver")
+        # Do not rewrite approval attribution on a duplicate confirmation.  In particular, a
+        # delayed worker response from another reviewer must not appear to be a new approval.
+        if str(row.status) == str(ProcedureLifecycle.APPROVED):
+            return row
         if str(row.created_by or "") == str(by):
             raise ValidationError(
                 "the author of a practice cannot approve it",
@@ -1006,28 +1044,47 @@ class LessonRepository:
     def list_practices(
         self,
         *,
+        well_id: str = "",
         field_id: str = "",
         project_id: str = "",
         practice_type: str = "",
         status: str = "",
         include_superseded: bool = False,
+        include_child_wells: bool = True,
         limit: int = 200,
     ) -> list[BestPractice]:
         statement = select(BestPractice)
+        if well_id:
+            statement = statement.where(BestPractice.well_id == well_id)
         if field_id:
-            statement = statement.where(
-                or_(
-                    BestPractice.field_id == field_id,
-                    BestPractice.well_id.in_(select(Well.id).where(Well.field_id == field_id)),
+            if include_child_wells:
+                clauses = [BestPractice.field_id == field_id]
+                clauses.append(
+                    BestPractice.well_id.in_(select(Well.id).where(Well.field_id == field_id))
                 )
-            )
+            else:
+                clauses = [
+                    and_(
+                        BestPractice.field_id == field_id,
+                        BestPractice.well_id.is_(None),
+                    )
+                ]
+            statement = statement.where(or_(*clauses))
         if project_id:
-            statement = statement.where(
-                or_(
-                    BestPractice.project_id == project_id,
-                    BestPractice.well_id.in_(select(Well.id).where(Well.project_id == project_id)),
+            if include_child_wells:
+                clauses = [BestPractice.project_id == project_id]
+                clauses.append(
+                    BestPractice.well_id.in_(select(Well.id).where(Well.project_id == project_id))
                 )
-            )
+            else:
+                clauses = [
+                    and_(
+                        BestPractice.project_id == project_id,
+                        BestPractice.well_id.is_(None),
+                        BestPractice.field_id.is_(None),
+                    )
+                ]
+            statement = statement.where(or_(*clauses))
         if practice_type:
             statement = statement.where(BestPractice.practice_type == _token(practice_type))
         if status:
@@ -1045,7 +1102,7 @@ class LessonRepository:
         )
 
     def practices_for_well(
-        self, well_id: str, *, hole_size_in: float | None = None
+        self, well_id: str, *, hole_size_in: float | None = None, limit: int = 0
     ) -> list[BestPractice]:
         """The approved practices that govern this well's field, optionally for one hole size.
 
@@ -1075,6 +1132,7 @@ class LessonRepository:
                     or_(*scopes),
                 )
                 .order_by(BestPractice.code, BestPractice.title)
+                .limit(_bounded(limit))
             ).scalars()
         )
         if hole_size_in is None:
@@ -1217,6 +1275,10 @@ class LessonRepository:
         if not str(by or "").strip():
             raise ValidationError("a decision on a recommendation needs a person", hint="pass by=")
         target = str(RECOMMENDATION_LIFECYCLE.parse(decision))
+        # A retry of the same decision is idempotent.  The existing decision, actor, timestamp and
+        # decline explanation are authoritative; never rewrite them because a worker retried later.
+        if str(row.status) == target:
+            return row
         if target == str(RecommendationLifecycle.DECLINED) and not str(reason or "").strip():
             raise ValidationError(
                 "declining a recommendation needs a reason",
@@ -1247,6 +1309,7 @@ class LessonRepository:
         lesson_id: str = "",
         pattern_id: str = "",
         limit: int = 200,
+        include_child_wells: bool = True,
     ) -> list[Recommendation]:
         statement = select(Recommendation)
         for label, value in (
@@ -1258,6 +1321,13 @@ class LessonRepository:
         ):
             if value:
                 statement = statement.where(getattr(Recommendation, label) == value)
+        if not include_child_wells:
+            if field_id:
+                statement = statement.where(Recommendation.well_id.is_(None))
+            if project_id:
+                statement = statement.where(
+                    Recommendation.well_id.is_(None), Recommendation.field_id.is_(None)
+                )
         if status:
             statement = statement.where(
                 Recommendation.status == str(RECOMMENDATION_LIFECYCLE.parse(status))

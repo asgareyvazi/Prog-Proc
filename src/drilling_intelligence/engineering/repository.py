@@ -28,13 +28,15 @@ The rules that matter here are the boring ones:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, NamedTuple
 
 from sqlalchemy import and_ as sa_and
+from sqlalchemy import case, func, or_, select
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.enums import (
@@ -515,13 +517,16 @@ class EngineeringRepository:
         chain would read as though somebody had approved revision 4's text too.
         """
         row = self.get_procedure(procedure_id)
-        was_approved = str(row.status) == str(ProcedureLifecycle.APPROVED)
-        if not was_approved:
-            row = self.set_procedure_status(
-                procedure_id, ProcedureLifecycle.APPROVED, by=by, reason=note
-            )
         if not str(by or "").strip():  # pragma: no cover - the lifecycle already refused
             raise ValidationError("an approval needs an approver")
+        # ``set_record_status`` deliberately treats a same-state transition as a safe no-op.  Do
+        # not turn that no-op into a second approval by rewriting the attribution or its timestamp:
+        # retrying a confirmed UI action must preserve the decision that is already on the row.
+        if str(row.status) == str(ProcedureLifecycle.APPROVED):
+            return row
+        row = self.set_procedure_status(
+            procedure_id, ProcedureLifecycle.APPROVED, by=by, reason=note
+        )
         row.approved_by = by
         row.approved_at = datetime.now(UTC)
         row.reviewer = by
@@ -678,7 +683,13 @@ class EngineeringRepository:
         )
 
     def procedures_for_well(
-        self, well_id: str, *, include_field: bool = True, include_project: bool = True
+        self,
+        well_id: str,
+        *,
+        include_field: bool = True,
+        include_project: bool = True,
+        include_superseded: bool = False,
+        limit: int = 0,
     ) -> list[ProcedureRecord]:
         """The procedures that apply to a well: its own, plus its field's when that is asked for.
 
@@ -692,14 +703,40 @@ class EngineeringRepository:
             raise ValidationError(f"no well {well_id!r}")
         scopes = [ProcedureRecord.well_id == well.id]
         if include_field and well.field_id:
-            scopes.append(ProcedureRecord.field_id == well.field_id)
+            scopes.append(
+                sa_and(
+                    ProcedureRecord.field_id == well.field_id,
+                    ProcedureRecord.well_id.is_(None),
+                )
+            )
         if include_project and well.project_id:
-            scopes.append(ProcedureRecord.project_id == well.project_id)
+            scopes.append(
+                sa_and(
+                    ProcedureRecord.project_id == well.project_id,
+                    ProcedureRecord.well_id.is_(None),
+                    ProcedureRecord.field_id.is_(None),
+                )
+            )
+        statement = select(ProcedureRecord).where(or_(*scopes))
+        if not include_superseded:
+            statement = statement.where(ProcedureRecord.is_current.is_(True))
+        scope_rank = case(
+            (ProcedureRecord.well_id == well.id, 0),
+            *(
+                [(ProcedureRecord.field_id == well.field_id, 1)]
+                if include_field and well.field_id
+                else []
+            ),
+            else_=2,
+        )
         return list(
             self.session.execute(
-                select(ProcedureRecord)
-                .where(ProcedureRecord.is_current.is_(True), or_(*scopes))
-                .order_by(ProcedureRecord.code, ProcedureRecord.revision.desc())
+                statement.order_by(
+                    scope_rank,
+                    ProcedureRecord.code,
+                    ProcedureRecord.revision.desc(),
+                    ProcedureRecord.id,
+                ).limit(_bounded(limit))
             ).scalars()
         )
 
@@ -866,6 +903,7 @@ class EngineeringRepository:
         reason: str = "",
     ) -> DrillingProgram:
         row = self.get_program(program_id)
+        before = str(row.status)
         target = set_record_status(
             self.session,
             row,
@@ -876,7 +914,12 @@ class EngineeringRepository:
         )
         # ``submitted_at`` records the moment the program went into review, which is the timestamp an
         # approver is implicitly commenting on; the shared status helper does not know this column.
-        if str(target) == str(ProgramLifecycle.IN_REVIEW) and row.submitted_at is None:
+        # Only a real edge gets a new lifecycle timestamp.  Same-state retries are read-only.
+        if (
+            before != str(target)
+            and str(target) == str(ProgramLifecycle.IN_REVIEW)
+            and row.submitted_at is None
+        ):
             row.submitted_at = datetime.now(UTC)
             self.session.flush()
         return row
@@ -885,10 +928,13 @@ class EngineeringRepository:
         self, program_id: str, *, by: str, note: str = "", at: object = None
     ) -> DrillingProgram:
         row = self.get_program(program_id)
-        if str(row.status) != str(ProgramLifecycle.APPROVED):
-            row = self.set_program_status(program_id, ProgramLifecycle.APPROVED, by=by, reason=note)
         if not str(by or "").strip():  # pragma: no cover - the lifecycle already refused
             raise ValidationError("an approval needs an approver")
+        # Approval metadata is part of the authoritative decision, not a request log.  A retry of
+        # an already-approved program is a no-op and must not replace who approved it or when.
+        if str(row.status) == str(ProgramLifecycle.APPROVED):
+            return row
+        row = self.set_program_status(program_id, ProgramLifecycle.APPROVED, by=by, reason=note)
         row.approver = by
         row.approved_at = at or datetime.now(UTC)  # type: ignore[assignment]
         self.session.flush()
@@ -1018,25 +1064,49 @@ class EngineeringRepository:
             ).scalars()
         )
 
-    def programs_for_well(self, well_id: str) -> list[DrillingProgram]:
-        """The current programs that govern a well: its own, then its field's and project's.
+    def programs_for_well(
+        self, well_id: str, *, include_superseded: bool = False, limit: int = 0
+    ) -> list[DrillingProgram]:
+        """The programs that govern a well: its own, then its field's and project's.
 
         Ordered most specific first, and *not* merged into a single "the program": a well drilled to a
         field template with a well-specific addendum has two documents in play, and an answer that
-        flattened them would hide which one a number came from.
+        flattened them would hide which one a number came from.  ``include_superseded`` keeps the
+        same scope semantics for a historical review without widening the answer to every programme
+        filed in the well's field or project.
         """
         well = self.session.get(Well, str(well_id))
         if well is None:
             raise ValidationError(f"no well {well_id!r}")
         scopes = [DrillingProgram.well_id == well.id]
-        for label, value in (("field_id", well.field_id), ("project_id", well.project_id)):
-            if value:
-                scopes.append(getattr(DrillingProgram, label) == value)
+        if well.field_id:
+            scopes.append(
+                sa_and(
+                    DrillingProgram.field_id == well.field_id,
+                    DrillingProgram.well_id.is_(None),
+                )
+            )
+        if well.project_id:
+            scopes.append(
+                sa_and(
+                    DrillingProgram.project_id == well.project_id,
+                    DrillingProgram.well_id.is_(None),
+                    DrillingProgram.field_id.is_(None),
+                )
+            )
+        statement = select(DrillingProgram).where(or_(*scopes))
+        if not include_superseded:
+            statement = statement.where(DrillingProgram.is_current.is_(True))
+        scope_rank = case(
+            (DrillingProgram.well_id == well.id, 0),
+            *([(DrillingProgram.field_id == well.field_id, 1)] if well.field_id else []),
+            else_=2,
+        )
         rows = list(
             self.session.execute(
-                select(DrillingProgram)
-                .where(DrillingProgram.is_current.is_(True), or_(*scopes))
-                .order_by(DrillingProgram.revision.desc(), DrillingProgram.id)
+                statement.order_by(
+                    scope_rank, DrillingProgram.revision.desc(), DrillingProgram.id
+                ).limit(_bounded(limit))
             ).scalars()
         )
         rows.sort(key=lambda row: 0 if row.well_id == well.id else (1 if row.field_id else 2))
@@ -1113,25 +1183,59 @@ class EngineeringRepository:
         # not against every revision anybody ever wrote.  Naming a program is the one explicit
         # exception: asking for ``program_id`` asks for that program, current or not, because a
         # reviewer reopening an old revision wants its numbers, not the latest ones.
-        target_statement = select(ProgramTarget)
+        target_statement = select(ProgramTarget).where(
+            or_(
+                ProgramTarget.section_id.is_(None),
+                ProgramTarget.section_id.in_([section.id for section in sections]),
+            )
+        )
         if program_id:
             target_statement = target_statement.where(ProgramTarget.program_id == program_id)
+            target_order = (ProgramTarget.sequence, ProgramTarget.id)
         else:
-            program_scope = select(DrillingProgram.id).where(DrillingProgram.is_current.is_(True))
-            if well_id:
-                program_scope = program_scope.where(DrillingProgram.well_id == well_id)
-            else:
-                # A section-scoped comparison is against the programs governing that section's well,
-                # never against the whole workspace's targets.
-                program_scope = program_scope.where(
-                    DrillingProgram.well_id.in_({section.well_id for section in sections})
-                )
+            # A well's governing program may be filed at the well, its field or its project.  Keep
+            # the same inheritance boundary as ``programs_for_well``: a well-owned row wins over an
+            # unscoped field row, which wins over an unscoped project row.  The section ids above
+            # provide the hard subject boundary; an unbound target is still allowed to match by name
+            # because that is the existing template contract, but only inside a governing program.
+            subject_well_ids = {str(section.well_id) for section in sections}
+            subject_field_ids = select(Well.field_id).where(Well.id.in_(subject_well_ids))
+            subject_project_ids = select(Well.project_id).where(Well.id.in_(subject_well_ids))
+            program_scope = select(DrillingProgram.id).where(
+                DrillingProgram.is_current.is_(True),
+                or_(
+                    DrillingProgram.well_id.in_(subject_well_ids),
+                    sa_and(
+                        DrillingProgram.well_id.is_(None),
+                        DrillingProgram.field_id.in_(subject_field_ids),
+                    ),
+                    sa_and(
+                        DrillingProgram.well_id.is_(None),
+                        DrillingProgram.field_id.is_(None),
+                        DrillingProgram.project_id.in_(subject_project_ids),
+                    ),
+                ),
+            )
             target_statement = target_statement.where(ProgramTarget.program_id.in_(program_scope))
-        targets = list(
-            self.session.execute(
-                target_statement.order_by(ProgramTarget.sequence, ProgramTarget.id)
-            ).scalars()
-        )
+            target_statement = target_statement.join(
+                DrillingProgram, DrillingProgram.id == ProgramTarget.program_id
+            )
+            target_order = (
+                case(
+                    (DrillingProgram.well_id.in_(subject_well_ids), 0),
+                    (
+                        sa_and(
+                            DrillingProgram.well_id.is_(None),
+                            DrillingProgram.field_id.in_(subject_field_ids),
+                        ),
+                        1,
+                    ),
+                    else_=2,
+                ),
+                ProgramTarget.sequence,
+                ProgramTarget.id,
+            )
+        targets = list(self.session.execute(target_statement.order_by(*target_order)).scalars())
         # NPT hours are summed once per section, not once per section inside the loop: a ten-section
         # well must not become eleven round trips.
         npt_hours = self._npt_hours_by_section([section.id for section in sections])
@@ -1301,46 +1405,157 @@ class EngineeringRepository:
                 "an engineering record has to name its method",
                 hint="pass method_id=<what computed this> (and method_version if it has one)",
             )
+        if len(method) > 80:
+            raise ValidationError(
+                "an engineering method id is too long", limit=80, method_id=method
+            )
+        version = str(method_version or "").strip()
+        if len(version) > 48:
+            raise ValidationError("an engineering method version is too long", limit=48)
         state = RecordState(str(getattr(record_state, "value", record_state)))
-        provenance_list = [dict(item) for item in (provenance or [])]
-        origin_value = str(getattr(origin, "value", origin))
+        if inputs is not None and not isinstance(inputs, Mapping):
+            raise ValidationError(
+                "an engineering calculation payload must use mapping objects",
+                hint="inputs must be a JSON object",
+                method_id=method,
+            )
+        if outputs is not None and not isinstance(outputs, Mapping):
+            raise ValidationError(
+                "an engineering calculation payload must use mapping objects",
+                hint="outputs must be a JSON object",
+                method_id=method,
+            )
+        if validation is not None and not isinstance(validation, Mapping):
+            raise ValidationError(
+                "an engineering calculation payload must use mapping objects",
+                hint="validation must be a JSON object",
+                method_id=method,
+            )
+        if uncertainty is not None and not isinstance(uncertainty, Mapping):
+            raise ValidationError(
+                "an engineering calculation payload must use mapping objects",
+                hint="uncertainty must be a JSON object",
+                method_id=method,
+            )
+        input_payload = dict(inputs or {})
+        output_payload = dict(outputs) if outputs is not None else None
+        validation_payload = dict(validation or {})
+        uncertainty_payload = dict(uncertainty) if uncertainty is not None else None
+        provenance_list = []
+        for item in provenance or ():
+            if not isinstance(item, Mapping):
+                raise ValidationError(
+                    "calculation provenance entries must be mappings",
+                    hint="preserve each source citation as a JSON object",
+                    method_id=method,
+                )
+            provenance_list.append(dict(item))
+        origin_value = str(getattr(origin, "value", origin) or KnowledgeOrigin.MANUAL.value).strip()
         if origin_value != KnowledgeOrigin.MANUAL.value and not provenance_list:
             raise ValidationError(
                 f"an engineering record with origin {origin_value} has to cite its evidence",
                 hint="pass provenance=[...] naming the document version or knowledge item",
                 method_id=method,
             )
+        actor = str(created_by or "").strip()
+        if not actor:
+            raise ValidationError(
+                "an engineering calculation needs an actor identity",
+                hint="pass created_by=<person, service or run identity>",
+                method_id=method,
+            )
+        if len(actor) > 80:
+            raise ValidationError("an engineering actor identity is too long", limit=80)
+        trigger = str(triggered_by or "").strip()
+        if not trigger:
+            raise ValidationError(
+                "an engineering calculation needs a trigger identity",
+                hint="pass triggered_by=<cli, ui or service boundary>",
+                method_id=method,
+            )
+        if len(trigger) > 40:
+            raise ValidationError("an engineering trigger identity is too long", limit=40)
+        try:
+            confidence_value = None if confidence is None else float(confidence)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValidationError(
+                "calculation confidence must be numeric", confidence=confidence
+            ) from error
+        if confidence_value is not None and not math.isfinite(confidence_value):
+            raise ValidationError("calculation confidence must be finite", confidence=confidence)
+        superseded_by = str(supersedes_id or "").strip()
         content = {
             "method_id": method,
-            "method_version": str(method_version or ""),
+            "method_version": version,
             "calculation_type": _token(calculation_type, ""),
             "record_state": state.value,
             "well_id": well_id or None,
             "section_id": section_id or None,
             "project_id": project_id or None,
-            "inputs": dict(inputs or {}),
-            "outputs": dict(outputs) if outputs is not None else None,
+            "source_id": source_id or None,
+            "document_id": document_id or None,
+            "document_version_id": document_version_id or None,
+            "origin": origin_value,
+            "inputs": input_payload,
+            "outputs": output_payload,
             "assumptions": list(assumptions or []),
-            "validation": dict(validation or {}),
-            # The result's quality is part of the claim, so it belongs in the identity: two runs that
-            # agree on the numbers but disagree on the uncertainty, confidence or how they were
-            # triggered are different records, and collapsing them would silently drop the newer
-            # assessment (ADR-0012 lists all three in the canonical payload).
-            "uncertainty": dict(uncertainty) if uncertainty is not None else None,
-            "confidence": float(confidence) if confidence is not None else None,
-            "triggered_by": str(triggered_by or "cli"),
+            "validation": validation_payload,
+            # Result quality is semantic calculation content.  ``triggered_by`` and ``created_by`` are
+            # audit metadata, not result content, so retries from a different worker or actor resolve to
+            # the same calculation identity rather than creating an invisible duplicate.
+            "uncertainty": uncertainty_payload,
+            "confidence": confidence_value,
             "provenance": provenance_list,
         }
+        if superseded_by:
+            # An explicit supersession is a deliberate new stored revision even when the arithmetic is
+            # byte-for-byte equal.  It is included only as the revision context; ordinary retries without
+            # --supersedes remain content-idempotent.
+            content["supersedes_id"] = superseded_by
         key = str(identity_key or "").strip() or "calc:" + sha256_obj(content)[:32]
+        if len(key) > 160:
+            raise ValidationError(
+                "an engineering calculation identity is too long",
+                hint="use the generated content identity or a key of at most 160 characters",
+                limit=160,
+            )
         existing = self.session.scalar(
             select(Calculation).where(Calculation.identity_key == key).limit(1)
         )
         if existing is not None:
             return existing, False
+
+        parent: Calculation | None = None
+        if superseded_by:
+            parent = self.get_calculation(superseded_by)
+            if parent.status == str(CalculationStatus.SUPERSEDED):
+                raise ValidationError(
+                    "a superseded calculation cannot be superseded again",
+                    hint="supersede the current leaf of the calculation chain",
+                    supersedes_id=superseded_by,
+                )
+            child_exists = self.session.scalar(
+                select(Calculation.id).where(Calculation.supersedes_id == parent.id).limit(1)
+            )
+            if child_exists is not None:
+                raise ValidationError(
+                    "a calculation already has a superseding revision",
+                    hint="the calculation chain must have one current leaf",
+                    supersedes_id=superseded_by,
+                )
+            requested_scope = (well_id or None, section_id or None, project_id or None)
+            parent_scope = (parent.well_id, parent.section_id, parent.project_id)
+            if requested_scope != parent_scope:
+                raise ValidationError(
+                    "a superseding calculation must keep the parent's scope",
+                    hint="a changed well or section is a new calculation, not a revision of this one",
+                    supersedes_id=superseded_by,
+                )
+
         row = Calculation(
             id=new_id("calc"),
             method_id=method,
-            method_version=str(method_version or ""),
+            method_version=version,
             calculation_type=str(content["calculation_type"]),
             record_state=state.value,
             well_id=well_id or None,
@@ -1351,32 +1566,58 @@ class EngineeringRepository:
             outputs=content["outputs"],
             assumptions=content["assumptions"],
             validation=content["validation"],
-            uncertainty=dict(uncertainty) if uncertainty is not None else None,
-            confidence=float(confidence) if confidence is not None else None,
+            uncertainty=uncertainty_payload,
+            confidence=confidence_value,
             provenance=provenance_list,
             status=str(getattr(status, "value", status)),
-            revision=1,
-            supersedes_id=supersedes_id or None,
+            revision=(int(parent.revision or 1) + 1) if parent is not None else 1,
+            supersedes_id=superseded_by or None,
             reviewer=reviewer or None,
             approval_note=approval_note or None,
-            triggered_by=str(triggered_by or "cli"),
+            triggered_by=trigger,
             error=error or None,
             origin=origin_value,
-            created_by=str(created_by or "system"),
+            created_by=actor,
             identity_key=key,
             document_id=document_id or None,
             document_version_id=document_version_id or None,
             attributes=dict(attributes or {}),
         )
-        self.session.add(row)
-        self.session.flush()
-        self._index_calculation_inputs(row)
-        if supersedes_id:
-            parent = self.get_calculation(supersedes_id)
-            parent.status = str(CalculationStatus.SUPERSEDED)
-            row.revision = int(parent.revision or 1) + 1
-            self.session.flush()
+
+        # A nested transaction is only atomic relative to an already-open *database* transaction.  A
+        # fresh SQLite session may have a SQLAlchemy transaction object after a read while the DBAPI
+        # connection is still outside ``BEGIN``; releasing its first savepoint would then be a real commit,
+        # violating the service contract that a borrowed caller transaction owns the rollback.
+        self._ensure_database_transaction()
+        # The unique identity index is the concurrency boundary.  The savepoint lets a losing duplicate
+        # writer recover its session and return the winner instead of leaking an IntegrityError; the input
+        # rows and parent status change are in the same atomic unit as the calculation row.
+        try:
+            with self.session.begin_nested():
+                self.session.add(row)
+                self.session.flush()
+                self._index_calculation_inputs(row)
+                if parent is not None:
+                    parent.status = str(CalculationStatus.SUPERSEDED)
+                    self.session.flush()
+        except IntegrityError:
+            self.session.expire_all()
+            winner = self.session.scalar(
+                select(Calculation).where(Calculation.identity_key == key).limit(1)
+            )
+            if winner is None:
+                raise
+            return winner, False
         return row, True
+
+    def _ensure_database_transaction(self) -> None:
+        """Make the borrowed-session rollback boundary real on SQLite's deferred transactions."""
+        connection = self.session.connection()
+        if connection.dialect.name != "sqlite":
+            return
+        raw = getattr(connection.connection, "driver_connection", connection.connection)
+        if not bool(getattr(raw, "in_transaction", False)):
+            connection.exec_driver_sql("BEGIN")
 
     def _index_calculation_inputs(self, row: Calculation) -> int:
         """One ``calculation_input`` row per input, derived from the payload on every write.
@@ -1389,8 +1630,34 @@ class EngineeringRepository:
             sa_delete(CalculationInput).where(CalculationInput.calculation_id == row.id)
         )
         added = 0
+        stored_names: set[str] = set()
         for name, value in (row.inputs or {}).items():
-            entry = value if isinstance(value, Mapping) else {"value": value}
+            input_name = str(name or "").strip()
+            if not input_name:
+                raise ValidationError(
+                    "a calculation input needs a name",
+                    hint="name each input so its dependency can be inspected",
+                    calculation_id=row.id,
+                )
+            if len(input_name) > 80:
+                raise ValidationError(
+                    "a calculation input name is too long",
+                    hint="use at most 80 characters; do not rely on silent truncation",
+                    calculation_id=row.id,
+                    input_name=input_name,
+                )
+            if input_name in stored_names:
+                raise ValidationError(
+                    "a calculation contains duplicate input names",
+                    hint="each indexed input needs one stable name",
+                    calculation_id=row.id,
+                    input_name=input_name,
+                )
+            stored_names.add(input_name)
+            if value is not None and not isinstance(value, Mapping):
+                entry = {"value": value}
+            else:
+                entry = value or {}
             raw = entry.get("value")
             number = None
             parsed: Quantity | None = None
@@ -1402,12 +1669,33 @@ class EngineeringRepository:
                     number = float(parsed.value)
                 except (UnitError, ValueError):
                     number = None
+            if number is not None and not math.isfinite(number):
+                raise ValidationError(
+                    "a calculation input value must be finite",
+                    hint="do not store NaN or infinity in a calculation dependency",
+                    calculation_id=row.id,
+                    input_name=input_name,
+                )
             # A unit stated only inside the value ("10.2 ppg") still counts as stated, and the registry
             # says what it means: the dimension column exists so a later query compares like with like
             # rather than trusting two callers to spell `ppg` and `MUD_WEIGHT` the same way.  A symbol the
             # registry does not know leaves the column empty - an unknown unit is not a licence to guess.
             unit_text = str(entry.get("unit") or (parsed.unit.symbol if parsed is not None else ""))
+            if len(unit_text) > 24:
+                raise ValidationError(
+                    "a calculation input unit is too long",
+                    hint="preserve a canonical unit token rather than truncating it",
+                    calculation_id=row.id,
+                    input_name=input_name,
+                )
             dimension_text = str(entry.get("dimension") or "")
+            if len(dimension_text) > 32:
+                raise ValidationError(
+                    "a calculation input dimension is too long",
+                    hint="preserve a canonical dimension token rather than truncating it",
+                    calculation_id=row.id,
+                    input_name=input_name,
+                )
             if not dimension_text and unit_text:
                 try:
                     dimension_text = resolve_unit(unit_text).dimension.value
@@ -1415,17 +1703,31 @@ class EngineeringRepository:
                     dimension_text = ""
             raw_subject = str(entry.get("subject_key") or entry.get("source") or "").strip()
             stored_subject, subject_kind, subject_id = resolve_input_subject(raw_subject)
+            source_kind = str(entry.get("source_kind") or ("knowledge" if raw_subject else "user"))
+            if len(source_kind) > 24:
+                raise ValidationError(
+                    "a calculation input source kind is too long",
+                    hint="preserve a stable source category rather than truncating it",
+                    calculation_id=row.id,
+                    input_name=input_name,
+                )
+            input_provenance = entry.get("provenance")
+            if input_provenance is not None and not isinstance(input_provenance, Mapping):
+                raise ValidationError(
+                    "a calculation input provenance must be a mapping",
+                    hint="store one JSON citation object per input",
+                    calculation_id=row.id,
+                    input_name=input_name,
+                )
             self.session.add(
                 CalculationInput(
                     id=new_id("cain"),
                     calculation_id=row.id,
-                    name=str(name)[:80],
+                    name=input_name,
                     value=number,
-                    unit=unit_text[:24],
-                    dimension=dimension_text[:32],
-                    source_kind=str(
-                        entry.get("source_kind") or ("knowledge" if raw_subject else "user")
-                    )[:24],
+                    unit=unit_text,
+                    dimension=dimension_text,
+                    source_kind=source_kind,
                     subject_key=stored_subject,
                     subject_kind=subject_kind,
                     subject_id=subject_id,
@@ -1591,7 +1893,12 @@ class EngineeringRepository:
                 "no input subject was named", hint="pass the subject key to look up"
             )
         stored_key, kind, identifier = resolve_input_subject(wanted)
+        # ``resolved`` preserves the public grammar answer (the key has a recognised durable anchor),
+        # while the per-input state below also checks that the anchored row still exists.  A canonical
+        # key can therefore be structurally understood yet still be an UNRESOLVED dependency after a
+        # dangling or hand-authored id, rather than being reported as having no impact.
         resolved = bool(kind and kind != LEGACY_KIND and identifier)
+        subject_exists = self._subject_exists(kind, identifier)
         calculations = self.calculations_using(
             wanted,
             current_only=current_only,
@@ -1614,13 +1921,29 @@ class EngineeringRepository:
             if by_id
             else []
         )
-        current_versions = self._current_version_ids(
-            {
-                str(item.provenance.get("document_version_id") or "")
-                for item in inputs
+        cited_versions = {
+            str(
+                (item.provenance or {}).get("document_version_id")
                 if isinstance(item.provenance, dict)
+                else ""
+            )
+            or str(by_id[item.calculation_id].document_version_id or "")
+            for item in inputs
+        }
+        cited_versions.update(
+            str(row.document_version_id or "") for row in calculations if row.document_version_id
+        )
+        version_rows = (
+            {
+                str(version.id): version
+                for version in self.session.execute(
+                    select(DocumentVersion).where(
+                        DocumentVersion.id.in_(sorted(value for value in cited_versions if value))
+                    )
+                ).scalars()
             }
-            | {str(row.document_version_id or "") for row in calculations}
+            if cited_versions
+            else {}
         )
         entries: list[dict[str, Any]] = []
         for item in inputs:
@@ -1630,9 +1953,20 @@ class EngineeringRepository:
                 if isinstance(item.provenance, dict)
                 else ""
             ) or str(row.document_version_id or "")
-            if not resolved:
+            item_subject_resolved = self._subject_exists(item.subject_kind, item.subject_id)
+            version = version_rows.get(cited) if cited else None
+            row_requires_evidence = str(row.origin or "") != KnowledgeOrigin.MANUAL.value
+            input_declares_evidence = bool(item.provenance)
+            missing_evidence = not cited and (row_requires_evidence or input_declares_evidence)
+            if (
+                not resolved
+                or not subject_exists
+                or not item_subject_resolved
+                or missing_evidence
+                or (cited and version is None)
+            ):
                 state = DEPENDENCY_UNRESOLVED
-            elif cited and cited not in current_versions:
+            elif cited and not bool(version.is_current):
                 state = DEPENDENCY_STALE
             else:
                 state = DEPENDENCY_CURRENT
@@ -1671,6 +2005,27 @@ class EngineeringRepository:
             "entries": entries,
         }
 
+    def _subject_exists(self, kind: str | None, identifier: str | None) -> bool:
+        """Whether a resolved dependency still names a durable authoritative row.
+
+        Parsing a canonical key only proves that its shape is known.  A deleted or fabricated id must stay
+        ``UNRESOLVED`` rather than looking like a current dependency with no impact, so the impact report
+        checks the existing domain table without creating a second identity system.
+        """
+        models = {
+            "well": Well,
+            "section": WellSection,
+            "document_version": DocumentVersion,
+            "document": Document,
+            "project": Project,
+        }
+        model = models.get(str(kind or ""))
+        return bool(
+            model is not None
+            and str(identifier or "").strip()
+            and self.session.get(model, identifier)
+        )
+
     def _current_version_ids(self, version_ids: set[str]) -> set[str]:
         """Which of these document versions the registry still calls current - in one query."""
         wanted = {value for value in version_ids if value}
@@ -1696,6 +2051,7 @@ class EngineeringRepository:
         status: str = "",
         current_only: bool = False,
         limit: int = 200,
+        scope_wide_only: bool = False,
     ) -> list[Calculation]:
         """The calculation records in scope, newest first.
 
@@ -1717,6 +2073,11 @@ class EngineeringRepository:
             statement = statement.where(Calculation.section_id == section_id)
         if project_id:
             statement = statement.where(Calculation.project_id == project_id)
+        if scope_wide_only:
+            if project_id:
+                statement = statement.where(Calculation.well_id.is_(None))
+            if section_id:
+                statement = statement.where(Calculation.well_id.is_(None))
         if status:
             statement = statement.where(Calculation.status == str(CalculationStatus.parse(status)))
         if current_only:

@@ -162,6 +162,23 @@ def test_an_unknown_kind_is_an_error_the_cli_reports_without_a_traceback(ready) 
     assert "known" in payload["context"], payload
 
 
+def test_records_review_is_the_read_only_domain_boundary(ready) -> None:
+    payload = call(ready, "records", "review", "--well", "A-3")
+    assert payload["request"]["lifecycle"] == "current"
+    assert payload["subject"]["well"]["name"] == "A-3"
+    assert payload["record_count"] > 0
+    assert payload["observations"]["search_sidecar_used"] is False
+    assert payload["plan_actual"]
+    assert payload["conflicts"]
+
+    audited = call(ready, "records", "review", "--well", "A-3", "--verify-citations")
+    assert audited["citation_audit"]["counts"]["MATCH"] > 0
+
+    text, _err = _text(ready, "records", "review", "--well", "A-3")
+    assert "search sidecar: not used" in text
+    assert "records:" in text
+
+
 def test_records_list_reads_one_table_and_records_summary_counts_them_all(ready) -> None:
     rows = call(ready, "records", "list", "--table", "npt", "--field", "North Cormorant")
     assert rows["count"] == 5

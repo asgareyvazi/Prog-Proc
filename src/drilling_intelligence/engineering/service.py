@@ -45,9 +45,10 @@ from sqlalchemy.orm import Session
 
 from ..core.enums import CalculationStatus, KnowledgeOrigin, RecordState
 from ..core.errors import ValidationError
+from ..core.hashing import sha256_text
 from ..core.ids import SubjectKey, normalize_property, normalize_state
 from ..core.units import UnitError, resolve_unit
-from ..database.models import Calculation, NptRecord, Well
+from ..database.models import Calculation, Document, DocumentVersion, NptRecord, Well
 from ..operations.repository import OperationsRepository
 from .repository import EngineeringRepository
 
@@ -83,8 +84,8 @@ _MAX_RECORDS = 5000
 #: requires such a row to cite its evidence.
 _ORIGIN = KnowledgeOrigin.DERIVED.value
 
-#: Fixed, because ``triggered_by`` is part of the content-addressed identity: if it varied with the caller,
-#: the CLI and a scheduled run would write two rows for one result.
+#: Fixed as an audit/trigger label.  The repository deliberately excludes it, and the actor, from
+#: semantic content identity so a CLI, UI or scheduled retry of the same evidence cannot create a duplicate.
 _TRIGGERED_BY = "engineering.npt_rollup"
 
 
@@ -119,8 +120,12 @@ class EngineeringService:
             yield session
             return
         with self.database.session() as own:
-            yield own
-            own.commit()
+            try:
+                yield own
+                own.commit()
+            except Exception:
+                own.rollback()
+                raise
 
     # -- lost-time roll-up ----------------------------------------------------
     def record_npt_rollup(
@@ -199,12 +204,78 @@ class EngineeringService:
             without_duration = 0
             without_evidence = 0
             for record in records:
-                hours = record.duration_hours
+                record_id = str(getattr(record, "id", "") or "").strip()
+                row_well_id = str(getattr(record, "well_id", "") or "").strip()
+                if not record_id:
+                    raise ValidationError(
+                        "an NPT input has no durable record id",
+                        hint="promote the source row again before rolling it up",
+                        well_id=identifier,
+                    )
+                if row_well_id and row_well_id != identifier:
+                    raise ValidationError(
+                        "an NPT input belongs to a different well",
+                        hint="a roll-up may only consume rows from its named well",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        input_well_id=row_well_id,
+                    )
+                status = str(
+                    getattr(getattr(record, "status", ""), "value", getattr(record, "status", ""))
+                    or ""
+                )
+                if status.strip().upper() in {"REJECTED", "SUPERSEDED", "RETIRED"}:
+                    raise ValidationError(
+                        "a rejected or superseded NPT row cannot be an executable input",
+                        hint="remove the rejected row from the authoritative scope or promote its replacement",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        status=status,
+                    )
+                record_state = (
+                    str(
+                        getattr(
+                            getattr(record, "record_state", ""),
+                            "value",
+                            getattr(record, "record_state", ""),
+                        )
+                        or ""
+                    )
+                    .strip()
+                    .upper()
+                )
+                if record_state and record_state != RecordState.ACTUAL.value:
+                    raise ValidationError(
+                        "an NPT input is not an ACTUAL record",
+                        hint="the NPT roll-up only accepts actual promoted source rows",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        record_state=record_state,
+                    )
+
+                hours = getattr(record, "duration_hours", None)
                 if hours is None:
                     # Counted, never imputed: "nothing was recorded" is not "nothing was lost".
                     without_duration += 1
                     continue
-                value = float(hours)
+                if isinstance(hours, bool):
+                    raise ValidationError(
+                        "an NPT row states a malformed duration",
+                        hint="duration_hours must be a finite non-negative number, not a boolean",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        duration_hours=repr(hours),
+                    )
+                try:
+                    value = float(hours)
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise ValidationError(
+                        "an NPT row states a malformed duration",
+                        hint="duration_hours must be a finite non-negative number",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        duration_hours=repr(hours),
+                    ) from error
                 if not math.isfinite(value):
                     # A NaN or an infinity would poison the total silently - every comparison against it
                     # is false, so the stored number would look like a number and behave like nothing.
@@ -212,15 +283,125 @@ class EngineeringService:
                         "an NPT row states a duration that is not a finite number",
                         hint="fix the promoted row; a total cannot be computed from it",
                         well_id=identifier,
-                        npt_record_id=str(record.id),
+                        npt_record_id=record_id,
                         duration_hours=repr(hours),
                     )
+                if value < 0.0:
+                    raise ValidationError(
+                        "an NPT row states a negative duration",
+                        hint="NPT duration_hours cannot be negative",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        duration_hours=value,
+                    )
+
                 evidence = _evidence_of(record)
-                if not evidence.get("document_version_id"):
+                row_version_id = str(getattr(record, "document_version_id", "") or "")
+                evidence_version_id = str(evidence.get("document_version_id") or "")
+                if row_version_id and evidence_version_id and row_version_id != evidence_version_id:
+                    raise ValidationError(
+                        "an NPT input cites conflicting document versions",
+                        hint="the row and its provenance must name the same source version",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        row_document_version_id=row_version_id,
+                        evidence_document_version_id=evidence_version_id,
+                    )
+                version_id = row_version_id or evidence_version_id
+                if not version_id:
                     without_evidence += 1
+                    raise ValidationError(
+                        "every summed NPT row must cite a document version",
+                        hint="re-promote the source row so its evidence and source digest are present",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                    )
+                version = active.get(DocumentVersion, version_id)
+                if version is None:
+                    raise ValidationError(
+                        "an NPT input cites a document version that does not exist",
+                        hint="repair the promoted source row before executing a calculation",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        document_version_id=version_id,
+                    )
+                if not bool(version.is_current):
+                    raise ValidationError(
+                        "an NPT input cites a superseded document version",
+                        hint="the stored historical calculation remains readable; promote the current source before re-running",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        document_version_id=version_id,
+                    )
+                if active.get(Document, str(version.document_id)) is None:
+                    raise ValidationError(
+                        "an NPT input cites a document version without its document",
+                        hint="repair the source registry before executing a calculation",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        document_version_id=version_id,
+                    )
+                if not _valid_sha256(str(version.sha256 or "")):
+                    raise ValidationError(
+                        "an NPT input cites a document version with a malformed digest",
+                        hint="re-ingest the source so its content digest is recorded",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        document_version_id=version_id,
+                    )
+                evidence["document_version_id"] = version_id
+                row_document_id = str(getattr(record, "document_id", "") or "")
+                evidence_document_id = str(evidence.get("document_id") or "")
+                version_document_id = str(version.document_id or "")
+                if row_document_id and row_document_id != version_document_id:
+                    raise ValidationError(
+                        "an NPT input names a document that does not own its version",
+                        hint="repair the promoted evidence chain before executing a calculation",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        document_id=row_document_id,
+                        document_version_id=version_id,
+                    )
+                if evidence_document_id and evidence_document_id != version_document_id:
+                    raise ValidationError(
+                        "an NPT input provenance names a document that does not own its version",
+                        hint="repair the promoted evidence chain before executing a calculation",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        document_id=evidence_document_id,
+                        document_version_id=version_id,
+                    )
+                evidence["document_id"] = (
+                    row_document_id or evidence_document_id or version_document_id
+                )
+                source_digest = str(evidence.get("source_sha256") or "")
+                if not _valid_sha256(source_digest) or source_digest != str(version.sha256 or ""):
+                    raise ValidationError(
+                        "an NPT input does not carry the digest of its cited source version",
+                        hint="re-promote the source row; an executable result needs verified evidence",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        document_version_id=version_id,
+                    )
+
+                input_name = _input_name(record)
+                if input_name in inputs:
+                    raise ValidationError(
+                        "two NPT inputs would have the same indexed name",
+                        hint="source row identities must be unique before a calculation can be stored",
+                        well_id=identifier,
+                        npt_record_id=record_id,
+                        input_name=input_name,
+                    )
                 total += value
+                if not math.isfinite(total):
+                    raise ValidationError(
+                        "the NPT total is not a finite number",
+                        hint="the source durations overflow the supported numeric range",
+                        well_id=identifier,
+                    )
                 quantified += 1
-                inputs[_input_name(record)] = {
+                inputs[input_name] = {
                     "value": value,
                     "unit": NPT_ROLLUP_UNIT,
                     "dimension": unit.dimension.value,
@@ -228,8 +409,7 @@ class EngineeringService:
                     "source_kind": "npt_record",
                     "provenance": evidence,
                 }
-                version_id = str(evidence.get("document_version_id") or "")
-                if version_id and version_id not in citations:
+                if version_id not in citations:
                     citations[version_id] = {
                         key: value
                         for key, value in evidence.items()
@@ -308,51 +488,60 @@ class EngineeringService:
         ).render()
 
 
+def _valid_sha256(value: str) -> bool:
+    """Accept only the registry's full lowercase/uppercase hexadecimal content digest."""
+    return len(value) == 64 and all(character in "0123456789abcdefABCDEF" for character in value)
+
+
 def _input_name(record: NptRecord) -> str:
-    """A stable name for the input one NPT row contributes.
+    """A stable, collision-resistant name for the input one NPT row contributes.
 
     ``identity_key`` is preferred because promotion derives it from what the source said and where it said
     it, so re-promoting the same version reuses it and the roll-up's identity does not move.  A row entered
-    by hand has none, and its primary key is the only stable handle it has.
+    by hand has none, and its primary key is the only stable handle it has.  A long source identity is
+    digested instead of truncated: two different rows must never overwrite one another in the JSON input
+    map just because their first 80 characters happen to match.
     """
     handle = str(getattr(record, "identity_key", "") or "").strip() or str(record.id)
-    return f"npt.{handle}"[:80]
+    candidate = f"npt.{handle}"
+    return candidate if len(candidate) <= 80 else f"npt.k256:{sha256_text(handle)[:64]}"
 
 
 def _evidence_of(record: NptRecord) -> dict[str, Any]:
-    """The citation for one NPT row: where it came from, in a form that cannot drift.
+    """Copy one NPT row's recorded evidence into its calculation input.
 
-    Only the identifying fields are copied - the document, the version, the source digest and the row's own
-    handles.  The row's full provenance (excerpt, parser, locator) stays where it is rather than being
-    duplicated here: this is a link to the evidence, and a link that carried a stale copy of the wording
-    would be the more dangerous of the two.  Nothing time-varying is included, because these bytes end up
-    inside the calculation's content-addressed identity.
+    The calculation keeps the complete selected provenance mapping, not only its ids.  That preserves the
+    locator, excerpt and source path needed for human navigation while the durable document/version ids and
+    digest remain the fields the execution validator checks.  The mapping is a snapshot of the promoted row;
+    it is not a second evidence system and it never attempts to re-read or reinterpret the source.
     """
-    citation: dict[str, Any] = {}
+    stored = getattr(record, "provenance", None)
+    entries: list[Mapping[str, Any]] = []
+    if isinstance(stored, Sequence) and not isinstance(stored, str | bytes):
+        entries.extend(item for item in stored if isinstance(item, Mapping))
+    elif isinstance(stored, Mapping):
+        entries.append(stored)
+
+    record_version_id = str(getattr(record, "document_version_id", "") or "")
+    selected: Mapping[str, Any] | None = None
+    if record_version_id:
+        selected = next(
+            (
+                item
+                for item in entries
+                if str(item.get("document_version_id") or "") == record_version_id
+            ),
+            None,
+        )
+    if selected is None and entries:
+        selected = entries[0]
+
+    citation: dict[str, Any] = dict(selected or {})
     for column in ("document_id", "document_version_id"):
         value = str(getattr(record, column, "") or "")
-        if value:
+        if value and not citation.get(column):
             citation[column] = value
-    stored = getattr(record, "provenance", None)
-    first: Mapping[str, Any] | None = None
-    if isinstance(stored, Sequence) and not isinstance(stored, str | bytes):
-        for item in stored:
-            if isinstance(item, Mapping):
-                first = item
-                break
-    elif isinstance(stored, Mapping):
-        first = stored
-    if first is not None:
-        for key in ("document_id", "document_version_id", "source_sha256"):
-            value = str(first.get(key) or "")
-            if value and key not in citation:
-                citation[key] = value
-        # The digest is what proves the cited version is the bytes that were read, so it is kept even
-        # when the ids were already present.
-        digest = str(first.get("source_sha256") or "")
-        if digest:
-            citation["source_sha256"] = digest
-    citation["npt_record_id"] = str(record.id)
+    citation["npt_record_id"] = str(getattr(record, "id", "") or "")
     handle = str(getattr(record, "identity_key", "") or "").strip()
     if handle:
         citation["npt_identity_key"] = handle

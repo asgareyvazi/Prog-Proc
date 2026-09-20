@@ -37,9 +37,9 @@ from ..database.models import (
     WellOperation,
 )
 from .assets import AssetRepository
-from .program import PROGRAM_CLASSIFICATIONS
-from .promote import PromotionResult, VersionPromoter, find_npt_tables
-from .repository import REPORT_CLASSIFICATIONS, OperationsRepository
+from .contracts import PromotionOutcome, promotion_contract
+from .promote import PromotionResult, VersionPromoter
+from .repository import OperationsRepository
 
 __all__ = ["OperationalService"]
 
@@ -105,14 +105,15 @@ class OperationalService:
         project_id: str = "",
         limit: int = 0,
         replace: bool = True,
+        include_unsupported: bool = False,
         session: Session | None = None,
     ) -> dict[str, Any]:
-        """Promote every report-like document version in scope, and report what changed.
+        """Promote current versions with a registered contract and report what changed.
 
-        Only versions with a stored artefact are visited, and only documents whose classification can
-        become a report or a program, or whose artefact holds a recognisable NPT table: a mud log is
-        not a schedule of lost time, and running the promoter over every file would spend the pass
-        deciding that.
+        The default visits only explicit domain handlers.  ``include_unsupported``
+        is an opt-in forensic mode that also visits evidence-only classes so the
+        caller can see their explicit ``UNSUPPORTED`` outcomes; it never makes
+        them promotable.
         """
         results: list[PromotionResult] = []
         with self._session(session) as active:
@@ -122,6 +123,7 @@ class OperationalService:
                 field_id=field_id,
                 project_id=project_id,
                 limit=limit,
+                include_unsupported=include_unsupported,
             )
             promoter = VersionPromoter(active)
             for document_id, version_id in pairs:
@@ -140,8 +142,15 @@ class OperationalService:
         field_id: str = "",
         project_id: str = "",
         limit: int = 0,
+        include_unsupported: bool = False,
     ) -> list[tuple[str, str]]:
-        """Current versions worth promoting, in a stable order (document path, then version)."""
+        """Current versions worth visiting, in a stable order (document path, then version).
+
+        The default is the safe domain batch (only registered handlers).  The
+        explicit ``include_unsupported`` mode is a forensic audit: it visits
+        every extracted current version and reports the static denial instead of
+        silently treating it as absent.
+        """
         statement = (
             select(Document.id, Document.current_version_id, Document.classification)
             .where(Document.current_version_id.is_not(None))
@@ -167,16 +176,8 @@ class OperationalService:
             statement = statement.limit(max(0, int(limit)))
         pairs: list[tuple[str, str]] = []
         for document_id, version_id, classification in session.execute(statement).all():
-            if str(classification or "") in REPORT_CLASSIFICATIONS | PROGRAM_CLASSIFICATIONS:
-                pairs.append((str(document_id), str(version_id)))
-                continue
-            # An NPT export nobody classified as one is still an NPT export; the header test is the
-            # one that matters, and it is cheap because it reads the artefact we already joined on.
-            extraction = session.execute(
-                select(Extraction).where(Extraction.document_version_id == version_id)
-            ).scalar_one_or_none()
-            payload = dict(extraction.document_json or {}) if extraction else {}
-            if find_npt_tables(payload):
+            contract = promotion_contract(str(classification or ""))
+            if include_unsupported or (contract is not None and contract.domain_promotable):
                 pairs.append((str(document_id), str(version_id)))
         return pairs
 
@@ -370,9 +371,25 @@ def combine_promotion_results(
     skipped: dict[str, int] = {}
     details: list[dict[str, str]] = []
     touched = 0
+    outcome_counts = {outcome.value.lower(): 0 for outcome in PromotionOutcome}
+    eligible_versions = 0
+    ineligible_versions = 0
     for result in results:
         if result.counts:
             touched += 1
+        if result.contract_id and result.outcome not in {
+            PromotionOutcome.UNSUPPORTED.value,
+            PromotionOutcome.MISSING_ARTEFACT.value,
+            PromotionOutcome.MISSING_WELL.value,
+            PromotionOutcome.MISSING_PROVENANCE.value,
+            PromotionOutcome.INVALID_FIELDS.value,
+            PromotionOutcome.AMBIGUOUS.value,
+            PromotionOutcome.ERROR.value,
+        }:
+            eligible_versions += 1
+        else:
+            ineligible_versions += 1
+        outcome_counts[result.outcome.lower()] = outcome_counts.get(result.outcome.lower(), 0) + 1
         for kind, values in result.counts.items():
             bucket = counts.setdefault(kind, {"created": 0, "unchanged": 0, "conflict": 0})
             for outcome in ("created", "unchanged", "conflict"):
@@ -384,6 +401,8 @@ def combine_promotion_results(
     return {
         "versions": int(versions),
         "versions_with_records": touched,
+        "eligibility": {"eligible": eligible_versions, "ineligible": ineligible_versions},
+        "outcomes": outcome_counts,
         "counts": counts,
         "totals": {
             outcome: sum(bucket[outcome] for bucket in counts.values())

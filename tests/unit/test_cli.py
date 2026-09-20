@@ -244,6 +244,17 @@ class TestCliParsers:
             ["index", "rebuild"],
             ["index", "prune"],
             ["doctor"],
+            [
+                "records",
+                "review",
+                "--well",
+                "A-3",
+                "--lifecycle",
+                "history",
+                "--verify-citations",
+                "--limit",
+                "10",
+            ],
         ):
             assert parser.parse_args(argv).command, argv
 

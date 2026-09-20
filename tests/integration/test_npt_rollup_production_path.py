@@ -60,6 +60,7 @@ from drilling_intelligence.engineering.service import (
     EngineeringService,
 )
 from drilling_intelligence.operations.repository import OperationsRepository
+from drilling_intelligence.review import DomainReviewRequest, DomainReviewService
 
 #: The corpus states lost time on A-3 in two documents; B-11's single line lives in the CSV only.
 WELL = "A-3"
@@ -599,3 +600,69 @@ def test_the_command_refuses_a_scope_that_is_not_one_well(promoted, capsys) -> N
 
     with promoted.database.read_only() as session:
         assert session.scalars(select(Calculation)).all() == []
+
+
+def test_domain_review_distinguishes_executable_calculation_and_source_navigation(promoted) -> None:
+    """Review inspects the stored V1 contract; it does not recalculate the total."""
+    calculation, _ = _rollup(promoted)
+    review = DomainReviewService.for_workspace(promoted).review(
+        DomainReviewRequest(well_id=calculation.well_id)
+    )
+
+    record = next(item for item in review.records if item.record_id == calculation.id)
+    assert record.verification.reproducibility == "EXECUTABLE"
+    assert "calculation_executable" in record.flags
+    assert record.data["dependency_impact"]["counts"]["CURRENT"] == len(calculation.inputs)
+    assert record.data["source_navigation"]
+    assert all(item["document_version_id"] for item in record.data["source_navigation"])
+
+
+def test_domain_review_labels_a_historical_npt_result_stale_without_recalculation(promoted) -> None:
+    """Changing source currentness changes the observation, never the stored result."""
+    calculation, _ = _rollup(promoted)
+    stale_version = calculation.provenance[0]["document_version_id"]
+    with promoted.database.session() as session:
+        version = session.get(DocumentVersion, stale_version)
+        document = session.get(Document, version.document_id)
+        DocumentRepository(session).create_version(
+            document,
+            sha256="e" * 64,
+            source_path=str(version.source_path or "revised"),
+            size_bytes=int(version.size_bytes or 1) + 1,
+            parser=str(version.parser or "text"),
+            parser_version=str(version.parser_version or "1"),
+            extraction_version=str(version.extraction_version or "1"),
+            origin=FileChangeKind.MODIFIED,
+        )
+        session.commit()
+
+    review = DomainReviewService.for_workspace(promoted).review(
+        DomainReviewRequest(well_id=calculation.well_id)
+    )
+    record = next(item for item in review.records if item.record_id == calculation.id)
+    assert record.verification.reproducibility == "STALE"
+    assert "calculation_stale_dependency" in record.flags
+    assert record.data["dependency_impact"]["counts"]["STALE"] >= 1
+    assert record.data["outputs"] == calculation.outputs
+
+
+def test_domain_review_labels_a_dangling_npt_dependency_unresolved(promoted) -> None:
+    """A missing cited version is not reported as current and review does not attempt to repair it."""
+    calculation, _ = _rollup(promoted)
+    with promoted.database.session() as session:
+        input_row = EngineeringRepository(session).calculation_inputs(calculation.id)[0]
+        provenance = dict(input_row.provenance or {})
+        provenance["npt_record_id"] = "npt-record-does-not-exist"
+        input_row.provenance = provenance
+        session.commit()
+
+    with mock.patch.object(
+        EngineeringService, "record_npt_rollup", side_effect=AssertionError("review recalculated")
+    ):
+        review = DomainReviewService.for_workspace(promoted).review(
+            DomainReviewRequest(well_id=calculation.well_id)
+        )
+    record = next(item for item in review.records if item.record_id == calculation.id)
+    assert record.verification.reproducibility == "UNRESOLVED"
+    assert "calculation_unresolved_dependency" in record.flags
+    assert record.data["dependency_impact"]["counts"]["UNRESOLVED"] >= 1

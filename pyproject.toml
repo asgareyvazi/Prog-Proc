@@ -54,12 +54,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Forward declarations, marked as such: the packages below are *not* imported by anything in
-# this repository yet.  ``ui`` is the toolkit the desktop front end will use (it is out of scope
-# for this phase, which is exactly why there is no ``drillintel-ui`` script entry point), and
-# ``vec`` is the optional FTS companion for vector recall.  They are extras rather than
-# dependencies so a headless install never pulls in Qt.
+# Optional desktop runtime.  The default/headless installation never imports or installs Qt;
+# ``drillintel-ui`` loads the toolkit lazily and reports a friendly host-runtime error when Qt
+# cannot initialize.
 ui = ["PySide6-Essentials>=6.6,<7.0"]
+# Optional FTS companion for vector recall.  Extras are kept separate so a headless install never
+# pulls in Qt or vector extensions.
 vec = ["sqlite-vec>=0.1.6,<0.2"]
 dev = [
     "pytest>=8.0",
@@ -69,10 +69,10 @@ dev = [
 [project.scripts]
 # One command, and it exists: `drillintel` is drilling_intelligence.cli (version, workspace,
 # wells, ingest, search, evidence, index, knowledge, doctor, timeline, records, fields,
-# patterns, lessons).  There is deliberately no `drillintel-ui` /
-# `[project.gui-scripts]` entry while the desktop front end is unimplemented - an entry point
-# naming a module that does not exist installs a command whose first run is a traceback.
+# patterns, lessons).  The optional desktop command is a thin lazy Qt launcher; it is present
+# only because the read-only Review Workbench is implemented and audited as a real application.
 drillintel = "drilling_intelligence.cli:main"
+drillintel-ui = "drilling_intelligence.ui.app:main"
 
 [tool.setuptools]
 # `py.typed` below is only shipped when package data is included; without this line the marker

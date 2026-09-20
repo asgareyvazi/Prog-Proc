@@ -73,6 +73,7 @@ from ..database.models import (
 from ..database.serialize import record_to_dict
 from ..engineering.repository import EngineeringRepository
 from ..wells.repository import WellRepository
+from .contracts import PromotionOutcome, promotion_contract
 from .program import PROGRAM_CLASSIFICATIONS, SectionPlan, find_program_plan
 from .repository import REPORT_CLASSIFICATIONS, OperationsRepository, _stamp
 
@@ -395,8 +396,53 @@ class PromotionResult:
     #: promoted row whose key is absent here is a row the artefact no longer supports.
     identities: set[str] = field(default_factory=set)
     report_id: str = ""
+    #: The static contract selected before any domain writer is entered.
+    contract_id: str = ""
+    #: Explicit version-level outcome; row counts remain available in ``counts``.
+    outcome: str = PromotionOutcome.ELIGIBLE.value
     #: Why nothing at all was promoted ("NO_WELL", "NO_ARTEFACT"), when that is the case.
     error: str = ""
+
+    def finalize(self) -> str:
+        """Select a deterministic outcome without hiding partial/degraded rows.
+
+        The outcome is deliberately derived after the writer has run.  ``PROMOTED``
+        means at least one new row exists; ``UNCHANGED`` means the contract was
+        eligible and every row was already present.  A refusal with a specific
+        reason remains distinct from an ordinary empty result.
+        """
+        reasons = {str(item.get("reason") or "") for item in self.skipped}
+        if self.outcome == PromotionOutcome.UNSUPPORTED.value:
+            return self.outcome
+        if self.error == "NO_ARTEFACT":
+            self.outcome = PromotionOutcome.MISSING_ARTEFACT.value
+        elif self.error == "NO_WELL":
+            self.outcome = PromotionOutcome.MISSING_WELL.value
+        elif self.error:
+            self.outcome = PromotionOutcome.ERROR.value
+        elif "AMBIGUOUS_SECTIONS" in reasons or "AMBIGUOUS" in reasons:
+            self.outcome = PromotionOutcome.AMBIGUOUS.value
+        elif "MISSING_PROVENANCE" in reasons:
+            self.outcome = PromotionOutcome.MISSING_PROVENANCE.value
+        elif (
+            any(
+                reason
+                in {"INVALID_FIELD", "UNPARSEABLE_TOTAL", "DEPTH_WITHOUT_UNIT", "NO_SECTION_STATED"}
+                for reason in reasons
+            )
+            and not self.wrote_anything
+            and not self.total("unchanged")
+        ):
+            self.outcome = PromotionOutcome.INVALID_FIELDS.value
+        elif self.total("conflict"):
+            self.outcome = PromotionOutcome.CONFLICT.value
+        elif self.wrote_anything:
+            self.outcome = PromotionOutcome.PROMOTED.value
+        elif self.total("unchanged"):
+            self.outcome = PromotionOutcome.UNCHANGED.value
+        else:
+            self.outcome = PromotionOutcome.ELIGIBLE.value
+        return self.outcome
 
     def bump(self, kind: str, outcome: str) -> None:
         """Count one row of one kind under one outcome."""
@@ -415,6 +461,19 @@ class PromotionResult:
             "document_id": self.document_id,
             "version_id": self.version_id,
             "classification": self.classification,
+            "contract_id": self.contract_id or None,
+            "eligible": bool(self.contract_id)
+            and self.outcome
+            not in {
+                PromotionOutcome.UNSUPPORTED.value,
+                PromotionOutcome.MISSING_ARTEFACT.value,
+                PromotionOutcome.MISSING_WELL.value,
+                PromotionOutcome.MISSING_PROVENANCE.value,
+                PromotionOutcome.INVALID_FIELDS.value,
+                PromotionOutcome.AMBIGUOUS.value,
+                PromotionOutcome.ERROR.value,
+            },
+            "outcome": self.outcome,
             "report_id": self.report_id,
             "counts": {kind: dict(values) for kind, values in sorted(self.counts.items())},
             "totals": {
@@ -441,6 +500,30 @@ class VersionPromoter:
         self.records = OperationsRepository(session)
         self.engineering = EngineeringRepository(session)
         self._wells_by_name: dict[str, Well | None] = {}
+
+    @staticmethod
+    def _missing_promotion_evidence(payload: Mapping[str, Any], handler: str) -> str:
+        """Return a blocking evidence finding before a domain writer is entered.
+
+        The stored artefact is authoritative for promotion.  A table or field that
+        cannot point back to its source is still retained for knowledge/review, but
+        it cannot create an operational row whose provenance would be empty.
+        """
+        if handler == "program":
+            plan = find_program_plan(payload)
+            if plan.sections and any(not section.provenance for section in plan.sections):
+                return "the planned section fields have no recorded source locator"
+            return ""
+        tables = find_npt_tables(payload) + find_breakdown_tables(payload)
+        if tables:
+            missing = [
+                str(table.get("table_id") or table.get("sheet") or table.get("page") or "table")
+                for table, _index in tables
+                if not isinstance(table.get("provenance"), Mapping)
+            ]
+            if missing:
+                return "table provenance is missing for: " + ", ".join(sorted(missing))
+        return ""
 
     # -- the pass -------------------------------------------------------------
     def promote(
@@ -477,10 +560,13 @@ class VersionPromoter:
             select(Extraction).where(Extraction.document_version_id == version.id)
         ).scalar_one_or_none()
         payload = dict((extraction.document_json if extraction else None) or {})
+        classification = str(document.classification or "")
+        contract = promotion_contract(classification)
         result = PromotionResult(
             document_id=document.id,
             version_id=version.id,
-            classification=str(document.classification or ""),
+            classification=classification,
+            contract_id=contract.contract_id if contract is not None else "",
         )
         if not payload:
             result.error = "NO_ARTEFACT"
@@ -490,14 +576,48 @@ class VersionPromoter:
                     "detail": f"version {version.id} has no stored artefact to promote from",
                 }
             )
+            result.finalize()
+            return result
+        if contract is None or not contract.domain_promotable:
+            # A document classification is not a writer permission.  Keep the legacy NOT_A_REPORT
+            # diagnostic used by callers that ask why a mud/reference file produced no operational row,
+            # and add the explicit V2 outcome that makes the denial machine-readable.
+            result.outcome = PromotionOutcome.UNSUPPORTED.value
+            result.skipped.append(
+                {
+                    "reason": "UNSUPPORTED_CLASSIFICATION",
+                    "detail": (
+                        f"{classification or 'unclassified'} has no registered domain promotion contract; "
+                        "stored extraction/knowledge remain available"
+                    ),
+                }
+            )
+            if classification not in REPORT_CLASSIFICATIONS | PROGRAM_CLASSIFICATIONS:
+                result.skipped.append(
+                    {
+                        "reason": "NOT_A_REPORT",
+                        "detail": f"{classification or 'unclassified'} has no report/program writer",
+                    }
+                )
+            result.finalize()
+            return result
+        missing = self._missing_promotion_evidence(payload, contract.handler)
+        if missing:
+            result.skipped.append({"reason": "MISSING_PROVENANCE", "detail": missing})
+            result.finalize()
             return result
         fields = [dict(item) for item in (payload.get("extracted_fields") or [])]
-        if str(document.classification or "") in PROGRAM_CLASSIFICATIONS:
+        if contract.handler == "program":
             # A program states a plan, not a day's work.  It leaves the report path entirely: running
             # it through ``_promote_report`` would file next month's intention as this well's history.
             self._promote_program(
                 payload=payload, document=document, version=version, result=result
             )
+            result.finalize()
+            return result
+        if contract.handler != "report":  # pragma: no cover - import-time registry guard
+            result.error = "UNKNOWN_HANDLER"
+            result.finalize()
             return result
         report = self._promote_report(
             document=document, version=version, fields=fields, result=result
@@ -523,6 +643,7 @@ class VersionPromoter:
             if removed:
                 # Its own kind, so a reader never mistakes a removal for a row promoted this pass.
                 result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        result.finalize()
         return result
 
     def delete_orphans(self, *, version_id: str, kept: set[str]) -> int:
