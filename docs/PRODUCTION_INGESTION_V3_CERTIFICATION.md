@@ -1,10 +1,10 @@
 # PROG-PROC — Drilling Domain Core V3 forensic certification (A–Z)
 
-**Certification date:** 2026-09-20  
-**Repository:** `asgareyvazi/Prog-Proc`  
-**Branch:** `arena/01a0b7fd-prog-proc`  
-**Source baseline:** `b2e76fad64e9b8acac187af45eb9bb8d9d1175c5`  
-**Implementation HEAD inspected:** `6af4e42cdcf43011c9789e829826296082062034`  
+**Certification date:** 2026-09-22
+**Repository:** `asgareyvazi/Prog-Proc`
+**Branch:** `arena/01a0b7fd-prog-proc`
+**Source baseline:** `b2e76fad64e9b8acac187af45eb9bb8d9d1175c5`
+**Implementation HEAD inspected:** `7b9d172588187ba114147ae8f9252d892533cabe`
 **Authority:** checked-out source, migrations, real generated fixtures, executable tests and Git history; prior V2 reports are not evidence.
 
 This is a forensic certification record, not a claim that the drilling taxonomy has a writer for every
@@ -22,8 +22,9 @@ classifier scores, search results and model vocabulary do not authorize promotio
 ## B — Branch, baseline and reproducibility
 
 All work stayed on `arena/01a0b7fd-prog-proc`; no reset, clean, destructive restore, branch switch,
-force-push or history rewrite was used. The worktree preserves the pre-existing V3 edits and the final
-patch. The current date is 2026-09-20 in the operator's Asia/Tehran timezone.
+force-push or history rewrite was used. The pre-existing V3 edits were committed, the fetched remote
+history was merged with a normal merge commit, and the branch was published without force-push. The
+certification run was performed on 2026-09-22 in the operator's Asia/Tehran timezone.
 
 ## C — Classification census
 
@@ -155,24 +156,24 @@ and a stale sidecar cannot become evidence merely by being indexed.
 
 ## T — Test gates
 
-The exact final results below are filled from the clean final run in this checkout. Commands use the
-repository's configured Python environment and `PYTHONPATH=.:src` where the test package requires it.
+The exact final results below come from executable runs in this checkout. The focused commands were run
+with the repository's `/tmp/progproc-venv` environment; the full run collected 1,089 tests, of which the
+three explicit optional-Qt tests were skipped.
 
 | Gate | Command / scope | Final result |
 | --- | --- | --- |
-| V3 mud replacement and 12-case corpus | `pytest -q tests/integration/test_mud_promotion_v3.py tests/integration/test_v3_forensic_corpus.py` | **2 passed** |
-| Promotion/cache/CLI contracts | focused A group: promotion, cache, CLI, V3 corpus and contract suites | **75 passed** |
-| Search/retrieval/evidence/review | focused B group: structured search, retrieval, citation/package and review suites | **155 passed** |
-| Field/intelligence/ingestion/migrations | focused C group: field, intelligence, ingestion, search pipeline, migrations and mud replacement | **125 passed** |
-| Full test suite | `PYTHONPATH=.:src pytest -ra` | **1086 passed, 3 skipped** in 564.11s |
-| Compile | `python -m compileall -q src tests migrations` | **passed** |
-| Lint | `ruff check src tests migrations --output-format=concise` | **passed — All checks passed!** |
-| Format | `ruff format --check src tests migrations` | **passed — 182 files already formatted** |
+| V3 corpus and promotion contracts | `/tmp/progproc-venv/bin/python -m pytest -q -rA tests/integration/test_mud_promotion_v3.py tests/integration/test_v3_forensic_corpus.py tests/integration/test_promotion_contract_outcomes.py tests/unit/test_promotion_contracts.py` | **8 passed** |
+| Search/retrieval/evidence/review | `/tmp/progproc-venv/bin/python -m pytest -q -rA` over `test_domain_review.py`, retrieval/evidence suites, search suites and review units | **256 passed** |
+| Field/intelligence/ingestion/migrations | `/tmp/progproc-venv/bin/python -m pytest -q -rA` over field/intelligence, ingestion/cache and migration suites | **167 passed** |
+| Full test suite | `/tmp/progproc-venv/bin/python -m pytest -q --disable-warnings --maxfail=1` | **1086 passed, 3 skipped** in 657.49s |
+| Compile | `/tmp/progproc-venv/bin/python -m compileall -q src tests migrations` | **passed** |
+| Lint | `/tmp/progproc-venv/bin/python -m ruff check src tests migrations --output-format=concise` | **passed — All checks passed!** |
+| Format | `/tmp/progproc-venv/bin/python -m ruff format --check src tests migrations` | **passed — 182 files already formatted** |
 | Diff hygiene | `git diff --check` | **passed** |
 
 The three skips are the optional Qt workbench tests: PySide6 is unavailable in the headless validation
-environment. No test failure was hidden or converted into a skip. The full-suite count is copied from
-pytest output, not from the prior V2 report.
+environment. No test failure was hidden or converted into a skip. The full-suite count is from the clean
+run, not from the prior V2 report.
 
 ## U — UI and headless packaging
 
@@ -194,14 +195,14 @@ and cross-row checks. Doctor/integrity paths include the admitted tables and pre
 ## W — Worktree and artifacts
 
 Generated build output, temporary workspaces and large datasets are not part of the required source change.
-The final build was `python -m build --outdir /tmp/progproc-build` and produced:
+The final build was `/tmp/progproc-venv/bin/python -m build --outdir /tmp/progproc-build-current` and produced:
 
 | Artifact | SHA-256 | Result |
 | --- | --- | --- |
-| `drilling_intelligence-0.0.1a0-py3-none-any.whl` | `90d2bce03abb3ec4852a339339197faa0e300120da320e76261fa4559811d1cb` | built |
-| `drilling_intelligence-0.0.1a0.tar.gz` | `6538ac7ce4ad6644d0d8bf2b3745bf3b4854104ece48c027f18ab71a67e53054` | built |
+| `drilling_intelligence-0.0.1a0-py3-none-any.whl` | `0f14aef97e5d4d4999d226b9d81c5e763d334d9ffe71158984ac0c637aaac5a9` | built |
+| `drilling_intelligence-0.0.1a0.tar.gz` | `93d632db61a8f1b57db171d62088597db20a976a9c6408ebecd3bb55d18aa031` | built |
 
-A fresh `/tmp/progproc-clean` virtual environment installed the wheel without the source checkout on
+A fresh `/tmp/progproc-clean-current` virtual environment installed the wheel without the source checkout on
 `sys.path`. It verified **26 classifications and 26 contracts**, printed
 `drillintel 0.0.1a0 (python 3.11.2, linux)`, and rendered `records promote --help` with
 `--include-unsupported`. The default package remained headless. Build emitted only the existing setuptools
@@ -228,5 +229,5 @@ cleanup command was used destructively.
 **Disposition:** V3 is certified for the admitted, source-justified surface: drilling program, DDR, NPT
 and the narrow mud report/measurement contract. All other classes retain explicit evidence/knowledge or
 extract-only denials. The exact test, lint, format, compile, package, clean-install, CLI and optional UI
-results are recorded above. Git status/remote verification is recorded at delivery time; no push or PR is
-required to preserve this Arena worktree.
+results are recorded above. Git status and remote verification are recorded at delivery time; the
+published branch is the source of truth for this certification.
