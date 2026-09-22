@@ -1644,6 +1644,32 @@ class VersionPromoter:
         return [dict(provenance)] if isinstance(provenance, Mapping) else []
 
     @staticmethod
+    def _row_provenance(
+        provenance: Sequence[Mapping[str, Any]], row_number: int
+    ) -> list[dict[str, Any]]:
+        """Narrow table provenance to the source row without inventing a cell locator.
+
+        CSV/text rows have a real line number; Excel/DOCX table locators can carry a row number.  For
+        other locator kinds the table locator is retained, because pretending that a page or an
+        unstructured excerpt identifies one row would be less trustworthy than a bounded table cite.
+        """
+        narrowed: list[dict[str, Any]] = []
+        for item in provenance:
+            copy = dict(item)
+            locator = item.get("locator")
+            if isinstance(locator, Mapping):
+                locator_copy = dict(locator)
+                kind = str(locator_copy.get("locator_kind") or locator_copy.get("kind") or "")
+                if kind == "text":
+                    locator_copy["line_start"] = row_number
+                    locator_copy["line_end"] = row_number
+                elif kind in {"excel", "docx"}:
+                    locator_copy["row"] = row_number
+                copy["locator"] = locator_copy
+            narrowed.append(copy)
+        return narrowed
+
+    @staticmethod
     def _data_rows(
         table: Mapping[str, Any], index: Mapping[str, int], duration: Sequence[str]
     ) -> tuple[list[list[Any]], int]:
@@ -1704,7 +1730,7 @@ class VersionPromoter:
                         sheet=str(table.get("sheet") or ""),
                         positions=positions,
                         hours_column=hours_column,
-                        provenance=provenance,
+                        provenance=self._row_provenance(provenance, offset + 2),
                         document=document,
                         version=version,
                         report=report,
@@ -2039,10 +2065,12 @@ class VersionPromoter:
             "created_by": "promoter",
             "status": ConfirmationStatus.CANDIDATE,
             "provenance": provenance,
-            # Only where the row came from: the hours themselves live in ``duration_text`` on the NPT
-            # row and in the operation's own columns, and a copy in attributes is a second answer.
+            # Keep the raw activity duration even when the row is productive and therefore has no NPT
+            # child.  The operational schema has no generic duration column; this source-owned value
+            # is not converted or used as an executable calculation.
             "attributes": {
-                "promoted_from": {"table_id": table_id, "sheet": sheet, "row": offset + 2}
+                "promoted_from": {"table_id": table_id, "sheet": sheet, "row": offset + 2},
+                "source_duration": {"text": hours_text},
             },
         }
         payload = {

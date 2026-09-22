@@ -310,6 +310,26 @@ def build_npt_csv(path: Path) -> Path:
     return path
 
 
+def build_time_breakdown_csv(path: Path) -> Path:
+    """A standalone source-shaped activity/time breakdown with explicit NPT coding.
+
+    It is intentionally not part of the six-file V3 corpus: V3 certifies the admitted writers, while
+    this fixture gives the existing TIME_BREAKDOWN contract its own classification and promotion gate.
+    The total row is source-shaped reporting noise, not another activity.
+    """
+    payload = """Date,Activity,Hours,Code,Well,Notes
+2025-06-15,Drilling,8.25,DRILL,A-3,Productive time
+2025-06-15,Tripping,14.00,TRIP,A-3,Trip time
+2025-06-15,Circulating,1.50,CIRC,A-3,Rig time
+2025-06-15,NPT - stuck bit,6.50,NPT,A-3,Flat time
+2025-06-15,NPT - equipment,12.00,NPT,A-3,Flat time
+2025-06-15,Total,42.25,TOTAL,A-3,Total productive time
+"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    return path
+
+
 def build_lesson_txt(path: Path) -> Path:
     """A lessons-learned note: plain text, where line provenance is everything."""
     payload = """LESSON LEARNED - NORTH CORMORANT FIELD - LL-2025-014
@@ -471,5 +491,6 @@ __all__ = [
     "build_placeholder_scan",
     "build_program_pdf",
     "build_scanned_pdf",
+    "build_time_breakdown_csv",
     "build_v3_forensic_corpus",
 ]

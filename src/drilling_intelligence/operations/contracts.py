@@ -145,17 +145,22 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
     ),
     DocumentClassification.TIME_BREAKDOWN: PromotionContract(
         classification=DocumentClassification.TIME_BREAKDOWN,
-        level=CoverageLevel.DOMAIN_PROMOTABLE,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
         handler="report",
         target_models=("ddr_report", "well_operation", "npt_record"),
         required_evidence=(
             "stored_extraction",
             "activity_header",
             "duration_header",
+            "source_duration_preserved",
             "row_provenance",
             "well_linkage",
+            "explicit_actual_state",
         ),
-        notes="Promotable by explicit activity/hours table; V2 still requires a dedicated certification fixture.",
+        notes=(
+            "Certified on a standalone source-shaped activity/hours table: every source activity becomes "
+            "an actual candidate operation, only explicit NPT-coded rows become NPT, and totals are not rows."
+        ),
     ),
     DocumentClassification.MUD_REPORT: PromotionContract(
         classification=DocumentClassification.MUD_REPORT,
