@@ -1,10 +1,10 @@
 # Document/domain coverage matrix (V3 authority)
 
 **Status:** authoritative source-derived registry and certification index
-**As of:** 2026-09-20 (Asia/Tehran)
+**As of:** 2026-09-22 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0b7fd-prog-proc`
-**Inspected HEAD before final validation:** `6af4e42cdcf43011c9789e829826296082062034`
+**Inspected HEAD before final validation:** `b7703baf35abd84881432a93264a979c33751c6c`
 **Contract source:** `src/drilling_intelligence/operations/contracts.py`
 **Forensic corpus:** `tests/golden_corpus/manifest.json`
 
@@ -19,8 +19,8 @@ entity, filename, folder, search hit or approval stamp is not permission to writ
 | `DocumentClassification` members | **26** | `core/enums.py` |
 | explicit static contracts | **26** | `contract_registry()` import-time completeness guard |
 | domain handlers | **5** | `program`, `report`, `mud_report` (DDR/NPT/TIME_BREAKDOWN share the named `report` handler) |
-| `END_TO_END_CERTIFIED` | **4** | drilling program, DDR, NPT, mud report |
-| `DOMAIN_PROMOTABLE` but not end-to-end certified | **1** | time breakdown |
+| `END_TO_END_CERTIFIED` | **5** | drilling program, DDR, NPT, mud report, time breakdown |
+| `DOMAIN_PROMOTABLE` but not end-to-end certified | **0** | no remaining restricted domain writer |
 | `KNOWLEDGE_SUPPORTED`, no domain writer | **16** | explicit deny-by-no-handler registry entries |
 | `EXTRACT_ONLY`, no type-specific knowledge/domain contract | **5** | explicit deny-by-no-handler registry entries |
 | deterministic V3 corpus cases | **12** | `build_v3_forensic_corpus()` and `test_v3_forensic_corpus.py` |
@@ -65,7 +65,7 @@ mean a specialized writer exists. **Target models** are the only tables a contra
 | 15 | `NPT` | yes | yes | yes | `END_TO_END_CERTIFIED` | `report` -> operational typed rows | yes | Certified; explicit NPT headers/codes and units gate promotion. |
 | 16 | `COST` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no source handler | yes | Manual/governed cost APIs exist; source text is not made into a cost row. |
 | 17 | `INVOICE` | manual/none | yes | no type-specific contract | `EXTRACT_ONLY` | no handler | evidence | No payable parser or writer; monetary prose cannot become cost. |
-| 18 | `TIME_BREAKDOWN` | yes | yes | yes | `DOMAIN_PROMOTABLE` | `report` -> `ddr_report`, `well_operation`, `npt_record` | yes | Restricted writer; requires explicit activity and duration columns. No standalone V3 certification fixture. |
+| 18 | `TIME_BREAKDOWN` | yes | yes | yes | `END_TO_END_CERTIFIED` | `report` -> `ddr_report`, `well_operation`, `npt_record` | yes | Certified on a standalone real CSV: explicit activity/duration rows, source duration text, row provenance, actual candidate state, NPT-code boundary and idempotence. See [`TIME_BREAKDOWN_CERTIFICATION.md`](TIME_BREAKDOWN_CERTIFICATION.md). |
 | 19 | `EOWR` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retrospective evidence only; no source-owned replacement writer. |
 | 20 | `PROCEDURE` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no source handler | yes | Human/domain procedure APIs remain explicit; ingestion does not author a procedure. |
 | 21 | `STANDARD` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Reference evidence only; no compliance/requirement writer. |

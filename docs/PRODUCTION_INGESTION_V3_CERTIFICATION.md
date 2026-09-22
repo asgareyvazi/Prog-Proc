@@ -4,7 +4,7 @@
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0b7fd-prog-proc`
 **Source baseline:** `b2e76fad64e9b8acac187af45eb9bb8d9d1175c5`
-**Implementation HEAD inspected:** `7b9d172588187ba114147ae8f9252d892533cabe`
+**Implementation HEAD inspected:** `b7703baf35abd84881432a93264a979c33751c6c`
 **Authority:** checked-out source, migrations, real generated fixtures, executable tests and Git history; prior V2 reports are not evidence.
 
 This is a forensic certification record, not a claim that the drilling taxonomy has a writer for every
@@ -29,7 +29,7 @@ certification run was performed on 2026-09-22 in the operator's Asia/Tehran time
 ## C — Classification census
 
 The enum contains exactly **26** classes. The static registry contains exactly **26** contracts:
-**5** domain handlers, **4** end-to-end-certified classes, **1** restricted-but-not-certified class,
+**5** domain handlers, **5** end-to-end-certified classes, **0** restricted-but-not-certified classes,
 **16** knowledge-supported denials and **5** extract-only denials. The import-time completeness guard
 requires a deliberate entry for every future enum value.
 
@@ -212,9 +212,9 @@ license-table deprecation warning; it did not fail.
 
 The V3 writer does not claim BHA, bit, survey, casing, cement, well-control, logging, LWD/MWD, service,
 HSE, cost, invoice, EOWR, procedure, standard, contract, technical-reference, book or lesson automatic
-promotion. `TIME_BREAKDOWN` remains promotable under its existing restricted handler but lacks a dedicated
-standalone certification fixture. Mud section matching is intentionally conservative. No OCR engine,
-`wellpathpy`, plotting, ML, AI or numerical framework was added.
+promotion. `TIME_BREAKDOWN` is certified separately at its narrow explicit activity/hours surface in
+[`TIME_BREAKDOWN_CERTIFICATION.md`](TIME_BREAKDOWN_CERTIFICATION.md). Mud section matching remains
+intentionally conservative. No OCR engine, `wellpathpy`, plotting, ML, AI or numerical framework was added.
 
 ## Y — Yield and cleanup
 
