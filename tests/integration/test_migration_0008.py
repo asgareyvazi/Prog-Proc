@@ -150,9 +150,9 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
         assert identity_keys(engine) == identities_before, (
             "0008 must not touch calculation identity - a historical record stays identifiable"
         )
-        assert heads() == ["0009"], heads()  # a single head; 0009 is the latest link
+        assert heads() == ["0010"], heads()  # a single head; 0010 is the latest link
         assert schema_diff(engine) == {
-            "missing_tables": [],
+            "missing_tables": sorted(("mud_report", "mud_measurement")),
             "extra_tables": [],
             "missing_columns": sorted(LATER_MIGRATION_COLUMNS),
             "extra_columns": [],

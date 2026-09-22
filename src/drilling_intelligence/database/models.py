@@ -874,6 +874,107 @@ class DdrReport(Base, TimestampMixin):
     attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
 
 
+class MudReport(Base, TimestampMixin):
+    """One source-version mud report, with summary metadata and repeated measurements.
+
+    The report is deliberately not a single ``mud_weight`` column.  Summary values and repeated daily
+    tests are separate :class:`MudMeasurement` rows, each retaining the source label, source unit,
+    sample context, quality and locator.  ``section_id`` is nullable: an MD in a mud workbook is not a
+    section identifier, and an ambiguous or absent section remains explicitly unresolved.
+
+    ``is_current`` is the source-owned replacement view.  A newer derived version can stand an older
+    candidate down, but it never deletes or edits a human-confirmed row; the confirmation status and
+    historical row remain available to review.
+    """
+
+    __tablename__ = "mud_report"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_mud_report_identity"),
+        Index("ix_mud_report_well_date", "well_id", "report_date"),
+        Index("ix_mud_report_version", "document_version_id"),
+        Index("ix_mud_report_current", "well_id", "is_current"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    report_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    report_date_text: Mapped[str | None] = mapped_column(String(80))
+    report_number: Mapped[str | None] = mapped_column(String(64))
+    revision: Mapped[str | None] = mapped_column(String(64))
+    depth_md_value: Mapped[float | None] = mapped_column(Float)
+    depth_md_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    depth_tvd_value: Mapped[float | None] = mapped_column(Float)
+    depth_tvd_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    document_status: Mapped[str | None] = mapped_column(String(32))
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    identity_key: Mapped[str | None] = mapped_column(String(160))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
+class MudMeasurement(Base, TimestampMixin):
+    """One typed summary or repeated mud-test value.
+
+    ``value`` is the numeric value as written; ``unit`` is the source unit and is never silently
+    converted.  ``normalized_value``/``normalized_unit`` are optional and stay NULL in V3 because the
+    repository has no certified conversion contract for cP, lb/100ft2 or mg/l.  ``sample_key`` keeps
+    the three daily slips distinct from one another and from the summary.
+    """
+
+    __tablename__ = "mud_measurement"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_mud_measurement_identity"),
+        Index("ix_mud_measurement_report", "mud_report_id", "property_name", "sample_key"),
+        Index("ix_mud_measurement_well", "well_id", "property_name"),
+        Index("ix_mud_measurement_version", "document_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    mud_report_id: Mapped[str] = mapped_column(
+        ForeignKey("mud_report.id", ondelete="CASCADE"), nullable=False
+    )
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    property_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_label: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    sample_key: Mapped[str] = mapped_column(String(160), default="SUMMARY", nullable=False)
+    sample_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sample_label: Mapped[str | None] = mapped_column(String(80))
+    measured_at_text: Mapped[str | None] = mapped_column(String(80))
+    value: Mapped[float | None] = mapped_column(Float)
+    unit: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    normalized_value: Mapped[float | None] = mapped_column(Float)
+    normalized_unit: Mapped[str | None] = mapped_column(String(32))
+    source_value_text: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    source_remark: Mapped[str | None] = mapped_column(Text)
+    quality: Mapped[str] = mapped_column(String(24), default="VALID", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
 class WellOperation(Base, TimestampMixin):
     """What was being done: a span of activity, bounded by what the source said and no more.
 
@@ -1810,6 +1911,8 @@ __all__ = [
     "KnowledgeItem",
     "KnowledgeRelation",
     "LessonLearned",
+    "MudMeasurement",
+    "MudReport",
     "NptRecord",
     "ProblemOccurrence",
     "ProcedureRecord",

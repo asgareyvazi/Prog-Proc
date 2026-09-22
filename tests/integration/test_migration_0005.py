@@ -61,7 +61,7 @@ LATER_MIGRATION_COLUMNS = (
     "well_section.document_id",  # 0009
     "well_section.document_version_id",  # 0009
 )
-LATER_MIGRATION_TABLES = ("problem_definition",)  # 0007
+LATER_MIGRATION_TABLES = ("problem_definition", "mud_report", "mud_measurement")  # 0007, 0010
 
 #: The foreign keys ``calculation`` already had; a table rebuild that loses one of these is a data bug.
 PRE_EXISTING_FOREIGN_KEYS = (
@@ -420,7 +420,7 @@ def test_head_still_matches_the_models_and_the_knowledge_layer_is_intact(tmp_pat
             )
         status = upgrade(engine, "head")
         assert status.up_to_date and status.current == heads()[0], status.to_dict()
-        assert heads() == ["0009"], heads()  # a single head; 0009 is the latest link
+        assert heads() == ["0010"], heads()  # a single head; 0010 is the latest link
         assert schema_diff(engine) == {
             "missing_tables": [],
             "extra_tables": [],

@@ -39,7 +39,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -55,6 +55,7 @@ from ..core.enums import (
 )
 from ..core.errors import UnitError
 from ..core.hashing import sha256_obj
+from ..core.ids import new_id
 from ..core.units import Quantity, parse_decimal
 from ..core.vocabulary import problem_type
 from ..database.models import (
@@ -63,6 +64,9 @@ from ..database.models import (
     DocumentVersion,
     DrillingProgram,
     Extraction,
+    Field,
+    MudMeasurement,
+    MudReport,
     NptRecord,
     ProblemOccurrence,
     Well,
@@ -73,6 +77,21 @@ from ..database.models import (
 from ..database.serialize import record_to_dict
 from ..engineering.repository import EngineeringRepository
 from ..wells.repository import WellRepository
+from .contracts import PromotionOutcome, promotion_contract
+from .mud import (
+    SummaryEntry,
+    daily_entries,
+    summary_entries,
+)
+from .mud import (
+    numeric as mud_numeric,
+)
+from .mud import (
+    table_key as mud_table_key,
+)
+from .mud import (
+    tables as mud_tables,
+)
 from .program import PROGRAM_CLASSIFICATIONS, SectionPlan, find_program_plan
 from .repository import REPORT_CLASSIFICATIONS, OperationsRepository, _stamp
 
@@ -299,8 +318,10 @@ def _comparable(value: Any) -> Any:
     """
     if value is None:
         return ""
-    if isinstance(value, datetime | date):
-        return value.isoformat()
+    if isinstance(value, datetime):
+        return (value if value.tzinfo else value.replace(tzinfo=UTC)).isoformat()
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time(), tzinfo=UTC).isoformat()
     if isinstance(value, str) and value.strip():
         stamp = _stamp(value)
         if stamp is not None:
@@ -395,8 +416,53 @@ class PromotionResult:
     #: promoted row whose key is absent here is a row the artefact no longer supports.
     identities: set[str] = field(default_factory=set)
     report_id: str = ""
+    #: The static contract selected before any domain writer is entered.
+    contract_id: str = ""
+    #: Explicit version-level outcome; row counts remain available in ``counts``.
+    outcome: str = PromotionOutcome.ELIGIBLE.value
     #: Why nothing at all was promoted ("NO_WELL", "NO_ARTEFACT"), when that is the case.
     error: str = ""
+
+    def finalize(self) -> str:
+        """Select a deterministic outcome without hiding partial/degraded rows.
+
+        The outcome is deliberately derived after the writer has run.  ``PROMOTED``
+        means at least one new row exists; ``UNCHANGED`` means the contract was
+        eligible and every row was already present.  A refusal with a specific
+        reason remains distinct from an ordinary empty result.
+        """
+        reasons = {str(item.get("reason") or "") for item in self.skipped}
+        if self.outcome == PromotionOutcome.UNSUPPORTED.value:
+            return self.outcome
+        if self.error == "NO_ARTEFACT":
+            self.outcome = PromotionOutcome.MISSING_ARTEFACT.value
+        elif self.error == "NO_WELL":
+            self.outcome = PromotionOutcome.MISSING_WELL.value
+        elif self.error:
+            self.outcome = PromotionOutcome.ERROR.value
+        elif "AMBIGUOUS_SECTIONS" in reasons or "AMBIGUOUS" in reasons:
+            self.outcome = PromotionOutcome.AMBIGUOUS.value
+        elif "MISSING_PROVENANCE" in reasons:
+            self.outcome = PromotionOutcome.MISSING_PROVENANCE.value
+        elif (
+            any(
+                reason
+                in {"INVALID_FIELD", "UNPARSEABLE_TOTAL", "DEPTH_WITHOUT_UNIT", "NO_SECTION_STATED"}
+                for reason in reasons
+            )
+            and not self.wrote_anything
+            and not self.total("unchanged")
+        ):
+            self.outcome = PromotionOutcome.INVALID_FIELDS.value
+        elif self.total("conflict"):
+            self.outcome = PromotionOutcome.CONFLICT.value
+        elif self.wrote_anything:
+            self.outcome = PromotionOutcome.PROMOTED.value
+        elif self.total("unchanged"):
+            self.outcome = PromotionOutcome.UNCHANGED.value
+        else:
+            self.outcome = PromotionOutcome.ELIGIBLE.value
+        return self.outcome
 
     def bump(self, kind: str, outcome: str) -> None:
         """Count one row of one kind under one outcome."""
@@ -415,6 +481,19 @@ class PromotionResult:
             "document_id": self.document_id,
             "version_id": self.version_id,
             "classification": self.classification,
+            "contract_id": self.contract_id or None,
+            "eligible": bool(self.contract_id)
+            and self.outcome
+            not in {
+                PromotionOutcome.UNSUPPORTED.value,
+                PromotionOutcome.MISSING_ARTEFACT.value,
+                PromotionOutcome.MISSING_WELL.value,
+                PromotionOutcome.MISSING_PROVENANCE.value,
+                PromotionOutcome.INVALID_FIELDS.value,
+                PromotionOutcome.AMBIGUOUS.value,
+                PromotionOutcome.ERROR.value,
+            },
+            "outcome": self.outcome,
             "report_id": self.report_id,
             "counts": {kind: dict(values) for kind, values in sorted(self.counts.items())},
             "totals": {
@@ -441,6 +520,56 @@ class VersionPromoter:
         self.records = OperationsRepository(session)
         self.engineering = EngineeringRepository(session)
         self._wells_by_name: dict[str, Well | None] = {}
+
+    @staticmethod
+    def _missing_promotion_evidence(payload: Mapping[str, Any], handler: str) -> str:
+        """Return a blocking evidence finding before a domain writer is entered.
+
+        The stored artefact is authoritative for promotion.  A table or field that
+        cannot point back to its source is still retained for knowledge/review, but
+        it cannot create an operational row whose provenance would be empty.
+        """
+        if handler == "program":
+            plan = find_program_plan(payload)
+            if plan.sections and any(not section.provenance for section in plan.sections):
+                return "the planned section fields have no recorded source locator"
+            return ""
+        if handler == "mud_report":
+            summary = summary_entries(payload)
+            daily = daily_entries(payload)
+            if not summary:
+                return "no recognised mud summary label/value rows were stored"
+            if not daily:
+                return "no repeated daily mud-test table with sample labels was stored"
+            relevant = {mud_table_key(entry.table) for entry in (*summary, *daily)}
+            missing = [
+                key or "table"
+                for key in sorted(relevant)
+                if not isinstance(
+                    next(
+                        (
+                            table.get("provenance")
+                            for table in mud_tables(payload)
+                            if mud_table_key(table) == key
+                        ),
+                        None,
+                    ),
+                    Mapping,
+                )
+            ]
+            if missing:
+                return "mud table provenance is missing for: " + ", ".join(missing)
+            return ""
+        tables = find_npt_tables(payload) + find_breakdown_tables(payload)
+        if tables:
+            missing = [
+                str(table.get("table_id") or table.get("sheet") or table.get("page") or "table")
+                for table, _index in tables
+                if not isinstance(table.get("provenance"), Mapping)
+            ]
+            if missing:
+                return "table provenance is missing for: " + ", ".join(sorted(missing))
+        return ""
 
     # -- the pass -------------------------------------------------------------
     def promote(
@@ -473,14 +602,22 @@ class VersionPromoter:
             raise ValueError(
                 f"document {document_id!r} points at a version that is not in the database"
             )
+        # A forced re-extraction may retain immutable artefact history for the same source version.
+        # Promotion consumes the newest stored artefact deterministically, never an arbitrary row.
         extraction = self.session.execute(
-            select(Extraction).where(Extraction.document_version_id == version.id)
+            select(Extraction)
+            .where(Extraction.document_version_id == version.id)
+            .order_by(Extraction.created_at.desc(), Extraction.id.desc())
+            .limit(1)
         ).scalar_one_or_none()
         payload = dict((extraction.document_json if extraction else None) or {})
+        classification = str(document.classification or "")
+        contract = promotion_contract(classification)
         result = PromotionResult(
             document_id=document.id,
             version_id=version.id,
-            classification=str(document.classification or ""),
+            classification=classification,
+            contract_id=contract.contract_id if contract is not None else "",
         )
         if not payload:
             result.error = "NO_ARTEFACT"
@@ -490,14 +627,54 @@ class VersionPromoter:
                     "detail": f"version {version.id} has no stored artefact to promote from",
                 }
             )
+            result.finalize()
+            return result
+        if contract is None or not contract.domain_promotable:
+            # A document classification is not a writer permission.  Keep the legacy NOT_A_REPORT
+            # diagnostic used by callers that ask why a mud/reference file produced no operational row,
+            # and add the explicit V2 outcome that makes the denial machine-readable.
+            result.outcome = PromotionOutcome.UNSUPPORTED.value
+            result.skipped.append(
+                {
+                    "reason": "UNSUPPORTED_CLASSIFICATION",
+                    "detail": (
+                        f"{classification or 'unclassified'} has no registered domain promotion contract; "
+                        "stored extraction/knowledge remain available"
+                    ),
+                }
+            )
+            if classification not in REPORT_CLASSIFICATIONS | PROGRAM_CLASSIFICATIONS:
+                result.skipped.append(
+                    {
+                        "reason": "NOT_A_REPORT",
+                        "detail": f"{classification or 'unclassified'} has no report/program writer",
+                    }
+                )
+            result.finalize()
+            return result
+        missing = self._missing_promotion_evidence(payload, contract.handler)
+        if missing:
+            result.skipped.append({"reason": "MISSING_PROVENANCE", "detail": missing})
+            result.finalize()
             return result
         fields = [dict(item) for item in (payload.get("extracted_fields") or [])]
-        if str(document.classification or "") in PROGRAM_CLASSIFICATIONS:
+        if contract.handler == "program":
             # A program states a plan, not a day's work.  It leaves the report path entirely: running
             # it through ``_promote_report`` would file next month's intention as this well's history.
             self._promote_program(
                 payload=payload, document=document, version=version, result=result
             )
+            result.finalize()
+            return result
+        if contract.handler == "mud_report":
+            self._promote_mud_report(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
+        if contract.handler != "report":  # pragma: no cover - import-time registry guard
+            result.error = "UNKNOWN_HANDLER"
+            result.finalize()
             return result
         report = self._promote_report(
             document=document, version=version, fields=fields, result=result
@@ -523,6 +700,7 @@ class VersionPromoter:
             if removed:
                 # Its own kind, so a reader never mistakes a removal for a row promoted this pass.
                 result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        result.finalize()
         return result
 
     def delete_orphans(self, *, version_id: str, kept: set[str]) -> int:
@@ -751,6 +929,585 @@ class VersionPromoter:
                 row.status = str(ProgramLifecycle.SUPERSEDED)
         self.session.flush()
         return previous[0]
+
+    # -- mud report -----------------------------------------------------------
+    @staticmethod
+    def _mud_provenance(
+        table: Mapping[str, Any],
+        *,
+        document: Document,
+        version: DocumentVersion,
+        row_index: int | None = None,
+        column_index: int | None = None,
+        source_label: str = "",
+        source_unit: str = "",
+        source_remark: str = "",
+    ) -> list[dict[str, Any]]:
+        """Enrich stored table provenance with owning registry ids without changing the locator.
+
+        Direct router output has blank ids because it has not entered the registry yet.  Promotion is
+        the first point at which the immutable document/version and its source hash are known, so it
+        fills those linkage fields here.  It never fabricates a sheet, range or cell: those remain
+        exactly what the stored table carried.
+        """
+        raw = table.get("provenance")
+        if not isinstance(raw, Mapping):
+            return []
+        evidence = dict(raw)
+        for key, value in (
+            ("document_id", document.id),
+            ("document_version_id", version.id),
+            ("source_sha256", version.sha256),
+            ("filename", document.filename),
+            ("source_relative_path", version.source_relative_path or document.identity_path),
+            ("source_table_id", table.get("table_id") or ""),
+            ("source_sheet", table.get("sheet") or ""),
+            ("source_range", table.get("anchor") or ""),
+        ):
+            if value and not evidence.get(key):
+                evidence[key] = value
+        if row_index is not None:
+            evidence["source_row_index"] = int(row_index)
+        if column_index is not None:
+            evidence["source_column_index"] = int(column_index)
+        if source_label:
+            evidence["source_label"] = source_label
+        if source_unit:
+            evidence["source_unit"] = source_unit
+        if source_remark:
+            evidence["source_remark"] = source_remark
+        return [evidence]
+
+    @staticmethod
+    def _mud_date(value: str) -> tuple[datetime | None, str]:
+        iso, wording = _iso(value)
+        if not iso:
+            return None, wording
+        return _stamp(iso), wording
+
+    def _mud_section(
+        self,
+        *,
+        well: Well,
+        summary: Sequence[SummaryEntry],
+        result: PromotionResult,
+    ) -> tuple[str | None, str]:
+        """Resolve only explicit section identifiers or exact deterministic attributes.
+
+        MD/TVD are intentionally absent from this decision.  A depth locates a sample in a well but
+        does not identify which durable section owns it.  Multiple hole-size/name matches remain NULL
+        and are reported rather than selected by order or proximity.
+        """
+        explicit_id = next(
+            (
+                entry.source_value.strip()
+                for entry in summary
+                if entry.property_name == "section_id"
+            ),
+            "",
+        )
+        explicit_name = next(
+            (entry.source_value.strip() for entry in summary if entry.property_name == "section"),
+            "",
+        )
+        hole_entry = next(
+            (entry for entry in summary if entry.property_name == "hole_size_in"), None
+        )
+        sections = list(
+            self.session.execute(
+                select(WellSection)
+                .where(WellSection.well_id == well.id)
+                .order_by(WellSection.sequence, WellSection.id)
+            ).scalars()
+        )
+        if not explicit_id and not explicit_name and hole_entry is None:
+            return None, "NOT_STATED"
+        candidates: list[WellSection] = []
+        if explicit_id:
+            candidates = [
+                section
+                for section in sections
+                if str(section.id) == explicit_id
+                or str(section.name).strip().casefold() == explicit_id.casefold()
+            ]
+        elif explicit_name:
+            candidates = [
+                section
+                for section in sections
+                if str(section.name).strip().casefold() == explicit_name.casefold()
+            ]
+        elif hole_entry is not None:
+            hole = mud_numeric(hole_entry.source_value)
+            if hole is not None:
+                candidates = [
+                    section
+                    for section in sections
+                    if section.hole_size_in is not None and float(section.hole_size_in) == hole
+                ]
+        if len(candidates) == 1:
+            return str(candidates[0].id), "EXPLICIT" if (
+                explicit_id or explicit_name
+            ) else "ATTRIBUTE"
+        if len(candidates) > 1:
+            result.skipped.append(
+                {
+                    "reason": "AMBIGUOUS_SECTIONS",
+                    "detail": "explicit mud section attributes match more than one well section",
+                }
+            )
+            return None, "AMBIGUOUS"
+        result.skipped.append(
+            {
+                "reason": "SECTION_NOT_FOUND",
+                "detail": "explicit mud section attributes do not match a durable section of the well",
+            }
+        )
+        return None, "UNMATCHED"
+
+    def _mud_confirm(
+        self,
+        model: type,
+        identity_key: str,
+        content: Mapping[str, Any],
+        label: str,
+        result: PromotionResult,
+    ) -> tuple[Any | None, str]:
+        """Compare a reprocessed row and never overwrite a row a person may have confirmed."""
+        existing = self.session.execute(
+            select(model).where(model.identity_key == identity_key)
+        ).scalar_one_or_none()
+        if existing is None:
+            return None, "created"
+        differing = [
+            key
+            for key, value in content.items()
+            if key in record_to_dict(existing)
+            and _comparable(getattr(existing, key, None)) != _comparable(value)
+        ]
+        if differing:
+            result.skipped.append(
+                {
+                    "reason": "SOURCE_CHANGED",
+                    "detail": (
+                        f"the stored {label} row {existing.id} differs from this artefact in "
+                        f"{', '.join(sorted(differing))}; left as it is"
+                    ),
+                }
+            )
+            return existing, "conflict"
+        return existing, "unchanged"
+
+    def _supersede_mud_sources(
+        self, *, document: Document, version: DocumentVersion, well: Well
+    ) -> None:
+        """Stand down older derived source versions, retaining every human decision and row."""
+        previous = list(
+            self.session.execute(
+                select(MudReport)
+                .where(
+                    MudReport.document_id == document.id,
+                    MudReport.well_id == well.id,
+                    MudReport.document_version_id != version.id,
+                    MudReport.origin == KnowledgeOrigin.DERIVED.value,
+                    MudReport.is_current.is_(True),
+                )
+                .order_by(MudReport.id)
+            ).scalars()
+        )
+        for report in previous:
+            old_version = (
+                self.session.get(DocumentVersion, str(report.document_version_id))
+                if report.document_version_id
+                else None
+            )
+            if old_version is not None and old_version.version_number >= version.version_number:
+                continue
+            report.is_current = False
+            if str(report.status or "") != ConfirmationStatus.CONFIRMED.value:
+                report.status = "SUPERSEDED"
+            measurements = list(
+                self.session.execute(
+                    select(MudMeasurement).where(
+                        MudMeasurement.mud_report_id == report.id,
+                        MudMeasurement.is_current.is_(True),
+                    )
+                ).scalars()
+            )
+            for measurement in measurements:
+                measurement.is_current = False
+                if str(measurement.status or "") != ConfirmationStatus.CONFIRMED.value:
+                    measurement.status = "SUPERSEDED"
+        if previous:
+            self.session.flush()
+
+    def _write_mud_measurement(
+        self,
+        *,
+        report: MudReport,
+        property_name: str,
+        source_label: str,
+        source_value_text: str,
+        source_unit: str,
+        sample_key: str,
+        sample_index: int,
+        sample_label: str,
+        measured_at_text: str,
+        source_remark: str,
+        provenance: list[dict[str, Any]],
+        table_id: str,
+        row_index: int,
+        column_index: int | None,
+        result: PromotionResult,
+    ) -> None:
+        value = mud_numeric(source_value_text)
+        if value is None:
+            return
+        quality = "VALID" if source_unit else "UNVERIFIED"
+        identity = promotion_identity(
+            version_id=str(report.document_version_id or ""),
+            kind="mud-measurement",
+            table_id=table_id,
+            row_index=row_index,
+            well_id=report.well_id,
+            extra=f"{property_name}:{sample_key}:{column_index if column_index is not None else ''}",
+        )
+        result.identities.add(identity)
+        content = {
+            "property_name": property_name,
+            "source_label": source_label,
+            "sample_key": sample_key,
+            "sample_label": sample_label or None,
+            "measured_at_text": measured_at_text or None,
+            "source_value_text": source_value_text,
+            "unit": source_unit,
+            "value": value,
+            "source_remark": source_remark or None,
+            "quality": quality,
+        }
+        existing, outcome = self._mud_confirm(
+            MudMeasurement, identity, content, "mud measurement", result
+        )
+        if existing is not None:
+            result.bump("mud_measurement", outcome)
+            return
+        self.session.add(
+            MudMeasurement(
+                id=new_id("mudm"),
+                mud_report_id=report.id,
+                well_id=report.well_id,
+                section_id=report.section_id,
+                document_id=report.document_id,
+                document_version_id=report.document_version_id,
+                property_name=property_name,
+                source_label=source_label,
+                sample_key=sample_key,
+                sample_index=sample_index,
+                sample_label=sample_label or None,
+                measured_at_text=measured_at_text or None,
+                value=value,
+                unit=source_unit,
+                normalized_value=None,
+                normalized_unit=None,
+                source_value_text=source_value_text,
+                source_remark=source_remark or None,
+                quality=quality,
+                record_state=RecordState.ACTUAL.value,
+                status=ConfirmationStatus.CANDIDATE.value,
+                origin=KnowledgeOrigin.DERIVED.value,
+                created_by="promoter",
+                provenance=provenance,
+                identity_key=identity,
+                is_current=True,
+                attributes={"table_id": table_id, "source_row_index": row_index},
+            )
+        )
+        result.bump("mud_measurement", "created")
+
+    def _delete_mud_orphans(self, *, version_id: str, kept: set[str]) -> int:
+        """Remove only unconfirmed derived child rows no longer stated by this source version."""
+        rows = list(
+            self.session.execute(
+                select(MudMeasurement).where(
+                    MudMeasurement.document_version_id == version_id,
+                    MudMeasurement.origin == KnowledgeOrigin.DERIVED.value,
+                )
+            ).scalars()
+        )
+        removed = 0
+        for row in rows:
+            if str(row.identity_key or "") in kept:
+                continue
+            if str(row.status or "") == ConfirmationStatus.CONFIRMED.value:
+                row.is_current = False
+                row.attributes = {**(row.attributes or {}), "source_removed": True}
+                continue
+            self.session.delete(row)
+            removed += 1
+        if rows:
+            self.session.flush()
+        return removed
+
+    def _promote_mud_report(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> MudReport | None:
+        """Promote the stored summary and repeated daily-test tables, never a filename or prose."""
+        if not document.well_id:
+            result.error = "NO_WELL"
+            result.skipped.append(
+                {"reason": "NO_WELL", "detail": f"{document.filename} is not linked to a well"}
+            )
+            return None
+        well = self.session.get(Well, str(document.well_id))
+        if well is None:
+            result.error = "NO_WELL"
+            result.skipped.append({"reason": "NO_WELL", "detail": "the linked well does not exist"})
+            return None
+        summary = summary_entries(payload)
+        daily = daily_entries(payload)
+        source_well = next(
+            (entry.source_value for entry in summary if entry.property_name == "well"), ""
+        )
+        known_names = {str(well.name).strip().casefold()}
+        if well.well_identifier:
+            known_names.add(str(well.well_identifier).strip().casefold())
+        if source_well and source_well.strip().casefold() not in known_names:
+            result.error = "WELL_SCOPE_CONFLICT"
+            result.skipped.append(
+                {
+                    "reason": "WELL_SCOPE_CONFLICT",
+                    "detail": f"the mud summary names {source_well!r}, not the document's linked well {well.name!r}",
+                }
+            )
+            return None
+        source_field = next(
+            (entry.source_value for entry in summary if entry.property_name == "field"), ""
+        )
+        field = self.session.get(Field, str(well.field_id)) if well.field_id else None
+        known_field_names = {str(field.name).strip().casefold()} if field is not None else set()
+        if source_field and source_field.strip().casefold() not in known_field_names:
+            result.error = "WELL_SCOPE_CONFLICT"
+            result.skipped.append(
+                {
+                    "reason": "WELL_SCOPE_CONFLICT",
+                    "detail": f"the mud summary names field {source_field!r}, not the linked field {getattr(field, 'name', '')!r}",
+                }
+            )
+            return None
+        summary_table = next((entry.table for entry in summary if entry.table.get("rows")), {})
+        summary_id = mud_table_key(summary_table) or "summary"
+        section_id, section_resolution = self._mud_section(
+            well=well, summary=summary, result=result
+        )
+        report_date_entry = next(
+            (entry for entry in summary if entry.property_name == "report_date"), None
+        )
+        report_date, report_date_text = self._mud_date(
+            report_date_entry.source_value if report_date_entry else ""
+        )
+        revision_entry = next(
+            (entry for entry in summary if entry.property_name == "revision"), None
+        )
+        md_entry = next((entry for entry in summary if entry.property_name == "depth_md"), None)
+        tvd_entry = next((entry for entry in summary if entry.property_name == "depth_tvd"), None)
+        md_value = mud_numeric(md_entry.source_value) if md_entry else None
+        tvd_value = mud_numeric(tvd_entry.source_value) if tvd_entry else None
+        higher_current = bool(
+            self.session.scalar(
+                select(MudReport.id)
+                .join(
+                    DocumentVersion,
+                    DocumentVersion.id == MudReport.document_version_id,
+                    isouter=True,
+                )
+                .where(
+                    MudReport.document_id == document.id,
+                    MudReport.well_id == well.id,
+                    MudReport.is_current.is_(True),
+                    DocumentVersion.version_number > version.version_number,
+                )
+                .limit(1)
+            )
+        )
+        self._supersede_mud_sources(document=document, version=version, well=well)
+        report_identity = promotion_identity(
+            version_id=version.id,
+            kind="mud-report",
+            table_id=summary_id,
+            row_index=0,
+            well_id=well.id,
+            extra=section_id or "",
+        )
+        result.identities.add(report_identity)
+        parent_provenance = self._mud_provenance(summary_table, document=document, version=version)
+        report_content = {
+            "well_id": well.id,
+            "section_id": section_id,
+            "report_date": report_date,
+            "report_date_text": report_date_text or None,
+            "revision": revision_entry.source_value if revision_entry else None,
+            "depth_md_value": md_value,
+            "depth_md_unit": md_entry.source_unit if md_entry else "",
+            "depth_tvd_value": tvd_value,
+            "depth_tvd_unit": tvd_entry.source_unit if tvd_entry else "",
+        }
+        existing, outcome = self._mud_confirm(
+            MudReport, report_identity, report_content, "mud report", result
+        )
+        if existing is not None:
+            report = existing
+            result.bump("mud_report", outcome)
+        else:
+            report = MudReport(
+                id=new_id("mud"),
+                well_id=well.id,
+                section_id=section_id,
+                document_id=document.id,
+                document_version_id=version.id,
+                report_date=report_date,
+                report_date_text=report_date_text or None,
+                report_number=revision_entry.source_value if revision_entry else None,
+                revision=revision_entry.source_value if revision_entry else None,
+                depth_md_value=md_value,
+                depth_md_unit=md_entry.source_unit if md_entry else "",
+                depth_tvd_value=tvd_value,
+                depth_tvd_unit=tvd_entry.source_unit if tvd_entry else "",
+                record_state=RecordState.ACTUAL.value,
+                status=ConfirmationStatus.CANDIDATE.value,
+                document_status=str(version.status or document.status or ""),
+                origin=KnowledgeOrigin.DERIVED.value,
+                created_by="promoter",
+                provenance=parent_provenance,
+                identity_key=report_identity,
+                is_current=not higher_current,
+                attributes={
+                    "summary_table_id": summary_id,
+                    "section_resolution": section_resolution,
+                    "source_well_name": source_well,
+                    "source_field_name": source_field,
+                    "summary_properties": sorted(
+                        {
+                            entry.property_name
+                            for entry in summary
+                            if entry.property_name
+                            not in {
+                                "well",
+                                "field",
+                                "report_date",
+                                "revision",
+                                "section_id",
+                                "section",
+                                "hole_size_in",
+                            }
+                        }
+                    ),
+                },
+            )
+            if higher_current:
+                report.status = "SUPERSEDED"
+            self.session.add(report)
+            self.session.flush()
+            result.bump("mud_report", "created")
+        # A source-owned relation is useful for review/search and is the only graph edge this contract
+        # justifies.  It is asserted after the row exists so endpoint validation remains closed.
+        self.records.link(
+            source_type="well",
+            source_id=well.id,
+            relation=KnowledgeRelationType.WELL_HAS_MUD.value,
+            target_type="mud_report",
+            target_id=report.id,
+            provenance=parent_provenance,
+            note="source-version mud report promoted from stored extraction",
+        )
+        if section_id:
+            self.records.link(
+                source_type="well_section",
+                source_id=section_id,
+                relation=KnowledgeRelationType.SECTION_HAS_MUD.value,
+                target_type="mud_report",
+                target_id=report.id,
+                provenance=parent_provenance,
+                note="section explicitly matched by stored mud attributes",
+            )
+        for entry in summary:
+            if entry.property_name in {
+                "well",
+                "field",
+                "report_date",
+                "revision",
+                "section_id",
+                "section",
+                "hole_size_in",
+            }:
+                continue
+            if mud_numeric(entry.source_value) is None:
+                continue
+            self._write_mud_measurement(
+                report=report,
+                property_name=entry.property_name,
+                source_label=entry.source_label,
+                source_value_text=entry.source_value,
+                source_unit=entry.source_unit,
+                sample_key="SUMMARY",
+                sample_index=0,
+                sample_label="SUMMARY",
+                measured_at_text=report_date_text,
+                source_remark=entry.remark,
+                provenance=self._mud_provenance(
+                    entry.table,
+                    document=document,
+                    version=version,
+                    row_index=entry.row_index,
+                    source_label=entry.source_label,
+                    source_unit=entry.source_unit,
+                    source_remark=entry.remark,
+                ),
+                table_id=mud_table_key(entry.table) or summary_id,
+                row_index=entry.row_index,
+                column_index=1,
+                result=result,
+            )
+        for entry in daily:
+            self._write_mud_measurement(
+                report=report,
+                property_name=entry.property_name,
+                source_label=entry.header,
+                source_value_text=entry.source_value,
+                source_unit=entry.source_unit,
+                sample_key=f"{mud_table_key(entry.table) or 'daily'}:row:{entry.row_index}",
+                sample_index=entry.row_index,
+                sample_label=entry.sample_label,
+                measured_at_text=entry.sample_time,
+                source_remark=entry.note,
+                provenance=self._mud_provenance(
+                    entry.table,
+                    document=document,
+                    version=version,
+                    row_index=entry.row_index,
+                    column_index=entry.column_index,
+                    source_label=entry.header,
+                    source_unit=entry.source_unit,
+                    source_remark=entry.note,
+                ),
+                table_id=mud_table_key(entry.table) or "daily",
+                row_index=entry.row_index,
+                column_index=entry.column_index,
+                result=result,
+            )
+        if (
+            replace
+            and bool(result.identities)
+            and result.outcome != PromotionOutcome.UNSUPPORTED.value
+        ):
+            removed = self._delete_mud_orphans(version_id=version.id, kept=result.identities)
+            if removed:
+                result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        return report
 
     # -- report ---------------------------------------------------------------
     def _promote_report(

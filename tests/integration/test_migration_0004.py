@@ -531,7 +531,9 @@ def test_the_downgrade_removes_the_domain_and_keeps_the_workspace(tmp_path) -> N
         assert not set(NEW_TABLES) & tables, sorted(set(NEW_TABLES) & tables)
         assert snapshot(engine) == before, "downgrading the schema must not downgrade the data"
         diff = schema_diff(engine)
-        assert sorted(diff["missing_tables"]) == sorted((*NEW_TABLES, "problem_definition")), diff
+        assert sorted(diff["missing_tables"]) == sorted(
+            (*NEW_TABLES, "problem_definition", "mud_report", "mud_measurement")
+        ), diff
 
         again = upgrade(engine, heads()[0])
         assert again.mode == "migrated" and again.current == heads()[0], again.to_dict()

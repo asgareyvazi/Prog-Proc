@@ -1,4 +1,4 @@
-"""Structured search: the six operational/domain record types as a disposable search projection.
+"""Structured search: the seven operational/domain record types as a disposable search projection.
 
 The document half of the search index is covered in ``test_search_index.py`` and
 ``test_search_pipeline.py``; this file is about the second source type - that the same rebuild,
@@ -39,12 +39,13 @@ from drilling_intelligence.search.structured import (
 )
 
 #: The corpus, once promoted, produces exactly these counts (see tests/fixtures/fieldops.py):
-#: two problem definitions, three occurrences, five NPT rows and three events.
+#: two problem definitions, three occurrences, five NPT rows, three events and one mud report.
 _CORPUS_COUNTS = {
     "problem_definition": 2,
     "problem_occurrence": 3,
     "npt_record": 5,
     "well_event": 3,
+    "mud_report": 1,
 }
 
 
@@ -77,7 +78,7 @@ def test_the_projection_reads_the_authoritative_rows_not_a_copy(promoted) -> Non
     by_type: dict[str, list[StructuredRecord]] = {}
     for record in records:
         by_type.setdefault(record.record_type, []).append(record)
-    # Only the six declared types appear, and the counts are the corpus's, not the test's.
+    # Only the seven declared types appear, and the counts are the corpus's, not the test's.
     assert set(by_type) <= set(STRUCTURED_RECORD_TYPES), by_type
     assert {key: len(value) for key, value in by_type.items()} == _CORPUS_COUNTS
     # Every unit carries the deterministic identity, and it round-trips with the source id.
@@ -119,6 +120,17 @@ def test_record_types_filter_narrows_to_the_named_types(rebuilt) -> None:
     response = rebuilt.search("stuck", record_types=("npt_record",))
     assert response.results
     assert {hit.metadata["record_type"] for hit in response.results} == {"npt_record"}
+
+
+def test_mud_report_is_searchable_as_one_source_cited_structured_record(rebuilt) -> None:
+    response = rebuilt.search("chloride", record_types=("mud_report",))
+    assert len(response.results) == 1
+    hit = response.results[0]
+    assert hit.source_type == "structured"
+    assert hit.metadata["record_type"] == "mud_report"
+    assert "18500" in hit.text
+    assert hit.provenance["document_version_id"]
+    assert hit.provenance["measurement_evidence"]
 
 
 def test_category_filter_narrows_to_the_named_category(rebuilt) -> None:

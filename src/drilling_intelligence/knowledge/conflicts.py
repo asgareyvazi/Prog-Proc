@@ -523,7 +523,7 @@ def resolve_conflict(
     *,
     chosen_item_id: str,
     resolution: str = ConflictResolution.RESOLVED_MANUALLY.value,
-    by: str = "operator",
+    by: str = "",
     note: str = "",
 ) -> KnowledgeConflict:
     """Record a human (or, later, a reviewer workflow) picking a side.
@@ -544,6 +544,17 @@ def resolve_conflict(
         )
     if resolution not in {member.value for member in ConflictResolution}:
         raise ValueError(f"unknown conflict resolution {resolution!r}")
+    if not str(by or "").strip():
+        raise ValueError("resolving a conflict needs an explicit actor")
+    if conflict.status != ConflictResolution.OPEN.value:
+        previous = dict(conflict.resolution or {})
+        if str(previous.get("chosen_item_id") or "") == str(chosen_item_id):
+            # A retry after a successful commit is a read-only acknowledgement of the existing
+            # decision.  Do not rewrite its actor, note or timestamp.
+            return conflict
+        raise ValueError(
+            f"conflict {conflict_id!r} is already {conflict.status}; its decision cannot be replaced"
+        )
 
     for entry in candidates:
         item_id = str(entry.get("item_id") or "")

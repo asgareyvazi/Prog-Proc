@@ -45,6 +45,7 @@ __all__ = [
     "DEFAULT_MIN_WELLS",
     "MAX_LINKED_EVIDENCE",
     "find_recurring",
+    "mark_stale",
     "signature_for",
     "snapshot",
     "staleness",
@@ -536,7 +537,7 @@ def _link(
 
 
 def staleness(session: Session, pattern_id: str) -> dict[str, Any]:
-    """Re-run a snapshot's own query and report what has moved since it was taken.
+    """Purely re-run a snapshot's own query and report what has moved since it was taken.
 
     The re-run carries the stored parameters in full - scope *and window* - because the numbers a
     snapshot freezes are the numbers the stored query produced.  A snapshot taken over June must be
@@ -598,6 +599,23 @@ def staleness(session: Session, pattern_id: str) -> dict[str, Any]:
         "differences": differences,
         "computed_at": _iso(row.computed_at),
     }
+
+
+def mark_stale(session: Session, pattern_id: str) -> dict[str, Any]:
+    """Explicitly persist the first observed stale state after a pure :func:`staleness` check."""
+    report = staleness(session, pattern_id)
+    if report["stale"]:
+        row = get_pattern(session, pattern_id)
+        if row.stale_at is None:
+            row.stale_at = datetime.now(UTC)
+            row.stale_snapshot = report["differences"]
+            session.flush()
+            report["marked_at"] = _iso(row.stale_at)
+        else:
+            report["marked_at"] = _iso(row.stale_at)
+    else:
+        report["marked_at"] = None
+    return report
 
 
 def _number(value: object) -> float | None:

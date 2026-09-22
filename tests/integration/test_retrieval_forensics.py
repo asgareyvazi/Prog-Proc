@@ -653,10 +653,10 @@ class TestLifecycle:
         assert conflicted.current is True
 
 
-# ============================================================================ all six structured sources
+# ============================================================================ all seven structured sources
 class TestAllSixStructuredSources:
     def test_every_structured_type_resolves_through_one_mechanism(self, workspace) -> None:
-        """All six authoritative record types go through the same re-read, scope and identity rules."""
+        """All seven authoritative record types go through the same re-read, scope and identity rules."""
         world = _solo_world(workspace)
         with workspace.database.session() as session:
             ops = OperationsRepository(session)

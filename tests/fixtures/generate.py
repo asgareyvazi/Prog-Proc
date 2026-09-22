@@ -403,9 +403,44 @@ BUILDERS = {
     "scanned_well_b11_report.pdf": build_scanned_pdf,
 }
 
+# Six additional source-shaped cases keep the V3 forensic corpus broad without silently adding a
+# domain writer.  They are intentionally text/CSV fixtures: the classifier must recognise the real
+# class evidence, while promotion must report the explicit static denial for each one.
+V3_FORENSIC_TEXT = {
+    "bha_report_well-a3.txt": (
+        "BHA report - bottom hole assembly 14.\n"
+        "Drill collar, stabilizer, PDC motor, jar and nozzle tally.\n"
+    ),
+    "bit_record_well-a3.txt": (
+        "Bit record - bit no. 13, IADC 1-1-1.\n"
+        "Nozzle sizes, time on bit 22 h, footage drilled 345 ft, bearing seal condition.\n"
+    ),
+    "directional_survey_well-a3.csv": (
+        "MD,TVD,Inclination,Azimuth,DLS\n10000,9720,8.2,142.4,1.1\n"
+    ),
+    "casing_report_well-a3.txt": (
+        "Casing running report and casing tally.\n"
+        "Pup joint, weight per foot 47 lb/ft, grade P110, casing hanger.\n"
+    ),
+    "well_control_kill_sheet_well-a3.txt": (
+        "Well control kill sheet.\n"
+        "SIDPP 420 psi, SICP 610 psi, kick volume 12 bbl, MAASP 1850 psi.\n"
+    ),
+    "service_report_well-a3.txt": (
+        "Service report.\n"
+        "Service provided: mud logging support; equipment used and personnel engineer crew.\n"
+    ),
+}
+
+
+def _write_v3_text(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
 
 def build_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Path]:
-    """Write the fixture corpus into ``root`` and return ``{filename: path}``."""
+    """Write the six stable operational fixtures into ``root``."""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     written: dict[str, Path] = {}
@@ -416,9 +451,18 @@ def build_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Pa
     return written
 
 
+def build_v3_forensic_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Path]:
+    """Write the 12-case V3 corpus: the six operational fixtures plus six explicit denials."""
+    written = build_corpus(root, include_scan=include_scan)
+    for name, text in V3_FORENSIC_TEXT.items():
+        written[name] = _write_v3_text(Path(root) / name, text)
+    return written
+
+
 __all__ = [
     "BUILDERS",
     "GROUND_TRUTH",
+    "V3_FORENSIC_TEXT",
     "build_corpus",
     "build_ddr_docx",
     "build_lesson_txt",
@@ -427,4 +471,5 @@ __all__ = [
     "build_placeholder_scan",
     "build_program_pdf",
     "build_scanned_pdf",
+    "build_v3_forensic_corpus",
 ]

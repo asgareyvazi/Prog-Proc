@@ -1008,6 +1008,9 @@ def test_the_stale_flag_is_written_once_and_a_refresh_clears_it(world, service) 
         session.commit()
     assert service.pattern_staleness(pattern_id)["stale"] is True
     with workspace_session(service) as session:
+        assert get_pattern(session, pattern_id).stale_at is None
+    assert service.mark_pattern_stale(pattern_id)["stale"] is True
+    with workspace_session(service) as session:
         stamp = get_pattern(session, pattern_id).stale_at
     assert stamp is not None
     assert service.pattern_staleness(pattern_id)["stale"] is True
@@ -1149,7 +1152,9 @@ def test_a_read_does_not_commit_the_callers_pending_work(world, service) -> None
         assert other.get(NptRecord, "npt-a1a").duration_hours == 99.0
 
 
-def test_pattern_staleness_on_a_caller_session_is_the_callers_to_commit(world, service) -> None:
+def test_pattern_staleness_read_and_explicit_mark_have_caller_transaction_semantics(
+    world, service
+) -> None:
     with workspace_session(service) as session:
         row = snapshot(session, find_recurring(session, field_id="fld-a")[0])
         session.commit()
@@ -1168,10 +1173,13 @@ def test_pattern_staleness_on_a_caller_session_is_the_callers_to_commit(world, s
     with service.database.session() as caller:
         report = service.pattern_staleness(pattern_id, session=caller)
         assert report["stale"] is True
+        assert caller.get(FieldPattern, pattern_id).stale_at is None
+        marked = service.mark_pattern_stale(pattern_id, session=caller)
+        assert marked["stale"] is True
         caller.rollback()
     with service.database.read_only() as other:
         assert other.get(FieldPattern, pattern_id).stale_at is None, (
-            "the flag was written in the caller's transaction; rolling it back unwrites it"
+            "an explicit mark in the caller's transaction rolls back with the caller"
         )
 
 

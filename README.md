@@ -30,9 +30,11 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Operational records: DDR as a first-class record, operations, events, NPT, problems — written by an idempotent, self-reporting promotion | **implemented, tested end to end** (`docs/DECISIONS.md` ADR-0010) |
 | Engineering records: programmes with targets, versioned procedures, lessons, best practices, recommendations, risks, costs, rigs, service companies | **implemented, tested** (revision chains and lifecycles enforced in the schema) |
 | The generic engineering record: a computed number stored with its method, version, inputs and units, assumptions, validation, confidence and evidence | **implemented, tested** (`record_calculation`; re-running is a no-op, superseding keeps the old row) |
+| Executable calculation V1: the explicit, fail-closed NPT roll-up through `EngineeringService` | **implemented, tested end to end** — NPT roll-up V1 is the only registered executable method; review never recalculates |
 | Field intelligence: derived timelines, NPT/problem rollups, offset candidates, recurring patterns with staleness checks | **implemented, tested on a two-well golden field** (`docs/DOMAIN.md`) |
-| Domain CLI: `records`, `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
-| Skills, AI providers, desktop UI, and engineering-calculation *engines* | planned — the record that stores a result exists and cites its evidence; nothing in this repository computes one, and `docs/DECISIONS.md` ADR-0012 keeps that split |
+| Domain CLI: `records`, `records rollup`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
+| Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented, read-only** — PySide6-Essentials is optional; it consumes `DomainReviewService`, supports current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model |
+| Skills, AI providers, and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
 Nothing here needs a GPU, a model download, or a server. `mineru` (for scanned pages)
@@ -42,7 +44,7 @@ and Ollama (for optional AI) are both opt-in and absent by default.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-PYTHONPATH=src .venv/bin/python -m pytest            # 1057 tests: unit, engineering, integration
+PYTHONPATH=src .venv/bin/python -m pytest            # 1083 passed, 3 optional Qt skips in the V2 certification run
 .venv/bin/ruff check src tests migrations --output-format=concise
 .venv/bin/ruff format --check src tests migrations
 ```
@@ -62,6 +64,29 @@ drillintel index rebuild  --workspace /tmp/well-a3        # the sidecar is dispo
 drillintel records summary --well A-3 --workspace /tmp/well-a3
 drillintel doctor --workspace /tmp/well-a3                # what is healthy, and what to run next
 ```
+
+### Desktop Review Workbench (optional)
+
+The first desktop consumer is deliberately a read-only review surface. Install it only where a Qt
+workbench is wanted:
+
+```bash
+.venv/bin/pip install -e ".[ui]"
+# Open an existing workspace; --well accepts the registered well id or name.
+drillintel-ui --workspace /tmp/well-a3 --well A-3
+```
+
+The workbench opens the existing `workspace.toml`, loads the registered well hierarchy through the
+existing repositories, and requests `DomainReviewRequest` values from `DomainReviewService`. The
+Current/History selector changes the service lifecycle request; it does not hide rows in the client.
+`Verify citations` is an explicit opt-in call to the existing citation auditor. Tables use Qt
+model/view adapters and presentation-only filters, while the review result remains authoritative for
+scope, provenance, missing values, conflicts, calculation status and plan/actual semantics.
+
+No UI state is persisted and no review action mutates the workspace. The default installation does
+not import Qt. On a host where Qt's native runtime libraries cannot load, `drillintel-ui` reports the
+missing runtime dependency and `pytest -m ui` skips with the preserved loader reason; the UI tests run
+offscreen on hosts with a working Qt installation.
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,
 for callers embedding the library rather than driving the CLI:
@@ -94,6 +119,30 @@ Run it twice: the second run does no work at all. Edit a file and run again: it 
 new version that supersedes the old one and keeps its well link. Delete a file: it is
 reported as removed, and its document, provenance and audit history stay queryable.
 
+### Executable calculation: NPT roll-up V1
+
+The only executable calculation method in this phase is the explicit NPT roll-up. It reads promoted,
+accepted NPT rows for exactly one registered well, sums only finite duration hours, records rows without
+duration as excluded evidence, and stores the result in the existing `calculation` and
+`calculation_input` tables. It does not overwrite a historical result. Repeating the same run is an
+idempotent no-op; a changed promoted evidence set creates a new content identity, and an explicit
+`--supersedes` is required when that new run is a revision of an existing result.
+
+```bash
+drillintel records rollup --workspace /tmp/well-a3 --well A-3 --by engineer@example.com
+# JSON is explicit when automation needs the stored identity and validation details:
+drillintel records rollup --workspace /tmp/well-a3 --well A-3 --json
+# Impact is read-only and reports CURRENT, STALE and UNRESOLVED dependency states:
+drillintel records impact --workspace /tmp/well-a3 \\
+    "well:<well-id>|property:npt_hours|state:ACTUAL"
+```
+
+A successful roll-up stores method `npt.hours_rollup`, version `1`, unit `h`, scope, execution actor,
+input evidence, source/document-version navigation metadata, validation counts, and the existing
+provenance chain. Evidence or scope failures are rejected before a calculation is persisted. Domain
+Review and the optional UI classify the stored row as `EXECUTABLE`, `STORED_ONLY`, `INCOMPLETE`,
+`STALE`, or `UNRESOLVED`; these are read-side observations, never triggers for recalculation.
+
 ## Layout
 
 ```
@@ -116,6 +165,7 @@ src/drilling_intelligence/
   operations/     the operational spine: reports, operations, events, NPT, problems; the promoter
   engineering/    programmes and targets, procedures, plan-vs-actual, risks, costs
   lessons/        lessons learned, best practices, recommendations and their decisions
+  review/         deterministic read-only per-well Domain Review contract and service
   intelligence/   timelines, field rollups, recurring patterns and their snapshots
   ingestion/      scanner, planner (incremental decisions), pipeline
   integrations/   MinerU client (subprocess/HTTP), disabled by default
@@ -177,6 +227,8 @@ a deterministic pass, they keep the citation of the version they came from, and 
 ```bash
 drillintel records promote --field "North Cormorant"      # idempotent: re-running reports `unchanged`
 drillintel records list --table npt --field "North Cormorant" --json
+drillintel records review --well A-3 --lifecycle current --json  # authoritative, read-only review
+drillintel records review --well A-3 --lifecycle history --verify-citations --json
 drillintel timeline --well A-3 --since 2025-06-13 --until 2025-06-14
 drillintel fields summary --field "North Cormorant"
 drillintel patterns find --field "North Cormorant"        # recurrence in the rows, not a prediction
@@ -251,3 +303,32 @@ field in `pyproject.toml`. Third-party components keep their own terms — notab
 which is Apache-2.0 with additional conditions (attribution if it is ever offered to
 third parties as an online service), and is not vendored or required by this repository.
 `wellpathpy` (LGPL) is planned for a later phase behind a wrapper, per `docs/DECISIONS.md`.
+
+## Production ingestion & domain promotion V2
+
+V2 makes the boundary from evidence to domain rows inspectable. The authoritative matrix is
+[`docs/DOCUMENT_DOMAIN_COVERAGE.md`](docs/DOCUMENT_DOMAIN_COVERAGE.md), and the machine-readable
+registry is `drilling_intelligence.operations.contracts`. The registry covers every
+`DocumentClassification`, but only these static handlers can write source-derived domain rows:
+
+```text
+DRILLING_PROGRAM -> program
+DDR              -> report
+NPT              -> report
+TIME_BREAKDOWN   -> report
+```
+
+No other classification is promoted merely because its file has a table, its filename contains a
+keyword, a search hit exists, or an enum/knowledge entity exists. Evidence-only classes remain
+extractable and, where justified, knowledge-supported. Run `records promote --include-unsupported`
+when auditing a complete current corpus; the JSON/text report distinguishes `PROMOTED`, `UNCHANGED`,
+`UNSUPPORTED`, `AMBIGUOUS`, `MISSING_ARTEFACT`, `MISSING_WELL`, `MISSING_PROVENANCE`,
+`INVALID_FIELDS`, `CONFLICT`, and `ERROR`.
+
+Promotion consumes stored extraction artefacts rather than re-reading arbitrary files. It requires
+recognised headers, usable fields/units, explicit well linkage, and source provenance. It preserves
+source versions, current/history semantics, human confirmation, planned-versus-actual state and
+source-owned replacement boundaries. Search remains discovery-only. Review, indexing, ingestion and
+stale detection never execute a calculation; the explicit NPT roll-up is still the only executable
+calculation and is available in the optional workbench only behind an actor and confirmation action.
+The deterministic miniature corpus and its manifest are in `tests/golden_corpus`.

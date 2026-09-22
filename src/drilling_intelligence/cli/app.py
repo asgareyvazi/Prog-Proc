@@ -41,6 +41,7 @@ from ..database.integrity import (
     check_knowledge_relations,
     check_operational_integrity,
 )
+from ..database.models import Document, DocumentVersion
 from ..documents.repository import DocumentRepository
 from ..engineering.repository import PLAN_ACTUAL_METRICS
 from ..ingestion.pipeline import IngestionPipeline
@@ -109,6 +110,79 @@ def _emit(payload: Any, *, as_json: bool, lines: list[str]) -> None:
         return
     for line in lines:
         print(line)
+
+
+def _calculation_source_navigation(workspace: Workspace, calculation: Any) -> list[dict[str, Any]]:
+    """Project existing calculation provenance into CLI-friendly source navigation.
+
+    This is deliberately a read-only enrichment.  It never opens a source file, invokes an
+    executor, or repairs a missing citation; the version/document rows remain authoritative.
+    """
+    provenance = calculation.provenance if isinstance(calculation.provenance, list) else []
+    version_ids = {
+        str(entry.get("document_version_id"))
+        for entry in provenance
+        if isinstance(entry, Mapping) and entry.get("document_version_id")
+    }
+    document_ids = {
+        str(entry.get("document_id"))
+        for entry in provenance
+        if isinstance(entry, Mapping) and entry.get("document_id")
+    }
+    if not version_ids and not document_ids:
+        return []
+    with workspace.database.read_only() as session:
+        versions = {
+            str(row.id): row
+            for row in session.scalars(
+                select(DocumentVersion).where(DocumentVersion.id.in_(sorted(version_ids)))
+            )
+        }
+        document_ids.update(str(row.document_id) for row in versions.values())
+        documents = {
+            str(row.id): row
+            for row in session.scalars(
+                select(Document).where(Document.id.in_(sorted(document_ids)))
+            )
+        }
+    navigation: list[dict[str, Any]] = []
+    for entry in provenance:
+        if not isinstance(entry, Mapping):
+            continue
+        version_id = str(entry.get("document_version_id") or "")
+        version = versions.get(version_id)
+        document_id = str(entry.get("document_id") or (version.document_id if version else ""))
+        document = documents.get(document_id)
+        if version is None and not document:
+            navigation.append(
+                {
+                    "document_id": document_id,
+                    "document_version_id": version_id,
+                    "source_path": "",
+                    "source_available": False,
+                    "locator": entry.get("locator") or entry.get("source_locator") or "",
+                }
+            )
+            continue
+        source_path = (
+            (str(version.source_relative_path or "") if version is not None else "")
+            or (str(version.source_path) if version is not None else "")
+            or (str(document.identity_path) if document is not None else "")
+        )
+        navigation.append(
+            {
+                "document_id": document_id,
+                "document_version_id": version_id,
+                "document_filename": str(document.filename) if document is not None else "",
+                "version_number": int(version.version_number) if version is not None else None,
+                "is_current": bool(version.is_current) if version is not None else False,
+                "source_path": source_path,
+                "source_available": bool(source_path),
+                "sha256": str(version.sha256) if version is not None else "",
+                "locator": entry.get("locator") or entry.get("source_locator") or "",
+            }
+        )
+    return navigation
 
 
 def _resolve_well_id(workspace: Workspace, ref: str | None) -> str | None:
@@ -442,6 +516,15 @@ def command_ingest(args: argparse.Namespace) -> int:
                 f"{totals.get('created', 0)} row(s) new, {totals.get('unchanged', 0)} already there"
                 + (f", {totals['conflict']} conflicting" if totals.get("conflict") else "")
             )
+            if summary.get("outcomes"):
+                lines.append(
+                    "  promotion outcomes: "
+                    + ", ".join(
+                        f"{key} {value}"
+                        for key, value in sorted(summary["outcomes"].items())
+                        if value
+                    )
+                )
             skipped = summary.get("skipped") or {}
             if skipped:
                 lines.append(
@@ -889,7 +972,7 @@ def command_knowledge(args: argparse.Namespace) -> int:
                 args.conflict_id,
                 chosen_item_id=args.choose,
                 note=args.note or "",
-                by=args.by or "operator",
+                by=args.by or "",
             )
             recheck = payload["recheck"]
             lines = [
@@ -1058,6 +1141,60 @@ def command_records(args: argparse.Namespace) -> int:
         from ..operations.repository import OperationsRepository
         from ..operations.service import OperationalService
 
+        if args.action == "review":
+            from ..review import DomainReviewRequest, DomainReviewService
+
+            scope = _scope(args, workspace, required=True)
+            well_id = str(scope.get("well_id") or "")
+            if not well_id:
+                raise DrillingIntelligenceError(
+                    "a domain review is about one well",
+                    hint="pass --well (a name works as well as an id)",
+                )
+            review = DomainReviewService.for_workspace(workspace).review(
+                DomainReviewRequest(
+                    well_id=well_id,
+                    lifecycle=args.lifecycle,
+                    verify_citations=bool(args.verify_citations),
+                    limit=args.limit,
+                )
+            )
+            payload = review.to_dict()
+            audit = payload.get("citation_audit") or {}
+            _emit(
+                payload,
+                as_json=args.json,
+                lines=[
+                    f"well: {review.subject['well'].get('name', well_id)} ({well_id})",
+                    f"records: {review.record_count}, sections: {len(review.sections)}, "
+                    f"conflicts: {len(review.conflicts)}",
+                    "observations: "
+                    + ", ".join(
+                        f"{key} {value}"
+                        for key, value in sorted(review.observations.items())
+                        if key
+                        in {
+                            "candidate_records",
+                            "pending_review_records",
+                            "explicitly_reviewed_records",
+                            "records_without_recorded_provenance",
+                            "open_conflicts",
+                        }
+                    ),
+                    (
+                        "citation audit: "
+                        + ", ".join(
+                            f"{key} {value}"
+                            for key, value in sorted((audit.get("counts") or {}).items())
+                        )
+                        if audit
+                        else "citation audit: not run (use --verify-citations to re-read source files)"
+                    ),
+                    "search sidecar: not used; records came from authoritative scope reads",
+                ],
+            )
+            return 0
+
         if args.action == "promote":
             scope = _scope(args, workspace, required=False)
             service = OperationalService.for_workspace(workspace)
@@ -1068,6 +1205,8 @@ def command_records(args: argparse.Namespace) -> int:
                     payload,
                     as_json=args.json,
                     lines=[
+                        f"promotion outcome: {payload.get('outcome', 'UNKNOWN')} "
+                        f"({'eligible' if payload.get('eligible') else 'not eligible'})",
                         f"promoted {args.document}: "
                         + ", ".join(
                             f"{key} {value}"
@@ -1085,7 +1224,11 @@ def command_records(args: argparse.Namespace) -> int:
                 )
                 return 1 if (payload.get("totals") or {}).get("conflict") else 0
             with workspace.database.session() as session:
-                summary = service.promote_workspace(session=session, **scope)
+                summary = service.promote_workspace(
+                    session=session,
+                    include_unsupported=bool(getattr(args, "include_unsupported", False)),
+                    **scope,
+                )
                 session.commit()
             totals = summary.get("totals") or {}
             _emit(
@@ -1099,7 +1242,7 @@ def command_records(args: argparse.Namespace) -> int:
                     # Said out loud because "0 new, 0 already there" has two readings - everything was
                     # already promoted, or this scope holds no report-shaped version at all - and only one
                     # of them is a job that is done.
-                    f"{summary.get('versions', 0)} report-shaped version(s) in scope"
+                    f"{summary.get('versions', 0)} version(s) visited in scope"
                     + (
                         f" ({summary.get('versions_with_records', 0)} with records to write)"
                         if summary.get("versions")
@@ -1108,6 +1251,20 @@ def command_records(args: argparse.Namespace) -> int:
                     "rows written: "
                     f"{totals.get('created', 0)} new, {totals.get('unchanged', 0)} already there, "
                     f"{totals.get('conflict', 0)} conflicting",
+                    "version outcomes: "
+                    + (
+                        ", ".join(
+                            f"{key} {value}"
+                            for key, value in sorted((summary.get("outcomes") or {}).items())
+                            if value
+                        )
+                        or "none"
+                    ),
+                    "eligibility: "
+                    + ", ".join(
+                        f"{key} {value}"
+                        for key, value in sorted((summary.get("eligibility") or {}).items())
+                    ),
                     ", ".join(
                         f"{key} {value['created']} new/{value['unchanged']} unchanged"
                         for key, value in sorted((summary.get("counts") or {}).items())
@@ -1144,7 +1301,9 @@ def command_records(args: argparse.Namespace) -> int:
                 )
             service = EngineeringService.for_workspace(workspace)
             calculation, created = service.record_npt_rollup(
-                well_id=well_id, supersedes_id=str(getattr(args, "supersedes", "") or "")
+                well_id=well_id,
+                supersedes_id=str(getattr(args, "supersedes", "") or ""),
+                created_by=str(getattr(args, "by", "") or "cli"),
             )
             total = (calculation.outputs or {}).get("npt_hours") or {}
             validation = calculation.validation or {}
@@ -1153,17 +1312,37 @@ def command_records(args: argparse.Namespace) -> int:
                 "created": created,
                 "method_id": calculation.method_id,
                 "method_version": calculation.method_version,
+                "calculation_type": calculation.calculation_type,
+                "origin": calculation.origin,
+                "status": calculation.status,
                 "well_id": calculation.well_id,
+                "scope": {
+                    "well_id": calculation.well_id,
+                    "section_id": calculation.section_id,
+                    "project_id": calculation.project_id,
+                    "source_id": calculation.source_id,
+                },
                 "subject": service.npt_rollup_subject(calculation.well_id),
                 "value": total.get("value"),
                 "unit": total.get("unit"),
                 "records_summed": validation.get("records_summed"),
                 "records_without_duration": validation.get("records_without_duration"),
+                "records_without_evidence": validation.get("records_without_evidence"),
+                "validation": validation,
+                "inputs": calculation.inputs,
+                "outputs": calculation.outputs,
+                "assumptions": calculation.assumptions,
+                "uncertainty": calculation.uncertainty,
+                "confidence": calculation.confidence,
+                "created_by": calculation.created_by,
+                "triggered_by": calculation.triggered_by,
                 "revision": int(calculation.revision or 1),
                 "supersedes_id": calculation.supersedes_id or "",
+                "provenance": calculation.provenance,
                 "document_versions": [
                     entry.get("document_version_id") for entry in (calculation.provenance or [])
                 ],
+                "source_navigation": _calculation_source_navigation(workspace, calculation),
             }
             unquantified = int(validation.get("records_without_duration") or 0)
             _emit(
@@ -1499,6 +1678,16 @@ _LIST_COLUMNS: dict[str, list[tuple[str, int]]] = {
         ("root_cause_status", 14),
         ("status", 12),
     ],
+    "mud": [
+        ("id", 30),
+        ("report_date", 12),
+        ("revision", 10),
+        ("depth_md_value", 12),
+        ("depth_md_unit", 10),
+        ("section_id", 30),
+        ("is_current", 10),
+        ("status", 12),
+    ],
 }
 
 
@@ -1508,6 +1697,14 @@ def _list_records(repository: Any, args: argparse.Namespace, scope: dict[str, st
     common: dict[str, Any] = {"limit": args.limit, "status": args.status or ""}
     if table == "report":
         return repository.list_reports(since=args.since, until=args.until, **common, **scope)
+    if table == "mud":
+        return repository.list_mud_reports(
+            since=args.since,
+            until=args.until,
+            current_only=not bool(getattr(args, "include_history", False)),
+            **common,
+            **scope,
+        )
     if table == "operation":
         # Operations are filed per well, so a field or project scope is read as "each well in that scope"
         # - and the wells come from the field view, which is the one place in this codebase that decides
@@ -1688,6 +1885,8 @@ def command_fields(args: argparse.Namespace) -> int:
                 or "none",
                 f"events: {payload.get('events', 0)}, lessons: {payload.get('lessons', 0)}, "
                 f"reports: {payload.get('reports', 0)}",
+                f"mud: {payload.get('mud_reports', 0)} current report(s), "
+                f"{payload.get('mud_measurements', 0)} source measurement(s)",
                 "hours are summed per record: if two files describe one event, both are counted, and the "
                 "record that says so is `drillintel records list --table npt`",
             ],
@@ -1734,10 +1933,15 @@ def command_patterns(args: argparse.Namespace) -> int:
 
         service = IntelligenceService.for_workspace(workspace)
         with workspace.database.session() as session:
-            if args.action in {"stale", "confirm", "recommend"}:
-                if args.action == "stale":
-                    report = service.pattern_staleness(args.pattern, session=session)
-                    session.commit()
+            if args.action in {"stale", "mark-stale", "confirm", "recommend"}:
+                if args.action in {"stale", "mark-stale"}:
+                    report = (
+                        service.mark_pattern_stale(args.pattern, session=session)
+                        if args.action == "mark-stale"
+                        else service.pattern_staleness(args.pattern, session=session)
+                    )
+                    if args.action == "mark-stale":
+                        session.commit()
                     differences = report.get("differences") or {}
                     _emit(
                         report,
@@ -1752,7 +1956,11 @@ def command_patterns(args: argparse.Namespace) -> int:
                                 if report.get("stale")
                                 else "the snapshot still matches the records"
                             ),
-                            "the stored row is not rewritten - re-snapshot once a person has read this",
+                            (
+                                "stale state was marked explicitly"
+                                if args.action == "mark-stale"
+                                else "read-only check; use `patterns mark-stale` to persist the observation"
+                            ),
                         ],
                     )
                     return 1 if report.get("stale") else 0
@@ -2205,7 +2413,7 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument(
         "--note", help="why this side was chosen (recorded in the conflict and the audit trail)"
     )
-    resolve.add_argument("--by", help="who decided (default: the current user, else 'operator')")
+    resolve.add_argument("--by", help="who decided (required; no implicit operator identity)")
     resolve.set_defaults(handler=command_knowledge)
 
     doctor = sub.add_parser(
@@ -2258,6 +2466,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("list", "the rows a promotion wrote, one table at a time"),
         ("summary", "how many rows of each kind a scope holds, and how many are promoted"),
+        ("review", "inspect one well's authoritative records and evidence without writing"),
         ("promote", "turn a document version's tables into operations, events, NPT and problems"),
         (
             "impact",
@@ -2273,6 +2482,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     ):
         action = records_sub.add_parser(name, help=help_text, parents=[common])
+        if name == "review":
+            action.add_argument("--well", required=True, help="the well to inspect (id or name)")
+            action.add_argument(
+                "--lifecycle",
+                choices=("current", "history"),
+                default="current",
+                help="current records, or current plus preserved history",
+            )
+            action.add_argument(
+                "--verify-citations",
+                action="store_true",
+                help="re-read recorded source-file citations through the existing citation auditor",
+            )
+            action.add_argument(
+                "--limit",
+                type=int,
+                default=0,
+                help="at most N returned records (0 = no application-level cap)",
+            )
+            action.set_defaults(handler=command_records)
+            continue
         if name not in ("promote", "impact", "rollup", "plan-actual"):
             action.add_argument(
                 "--table",
@@ -2306,6 +2536,11 @@ def build_parser() -> argparse.ArgumentParser:
                 default="",
                 help="the calculation id this run replaces (marks it SUPERSEDED, keeps it readable)",
             )
+            action.add_argument(
+                "--by",
+                default="cli",
+                help="actor identity recorded on a newly stored calculation (default: cli)",
+            )
             action.set_defaults(handler=command_records)
             continue
         if name == "plan-actual":
@@ -2332,12 +2567,23 @@ def build_parser() -> argparse.ArgumentParser:
                 "--cause", help="root-cause state: KNOWN, INFERRED, UNKNOWN, CONFLICTED"
             )
             action.add_argument("--limit", type=int, default=50, help="at most N rows (default 50)")
+        if name == "list":
+            action.add_argument(
+                "--include-history",
+                action="store_true",
+                help="include superseded mud source versions (current mud reports are shown by default)",
+            )
         if name == "promote":
             action.add_argument(
                 "--document", help="promote one document id instead of a whole scope"
             )
             action.add_argument(
                 "--version", help="the version of that document (default: the current one)"
+            )
+            action.add_argument(
+                "--include-unsupported",
+                action="store_true",
+                help="visit evidence-only classifications and report UNSUPPORTED instead of omitting them",
             )
         action.set_defaults(handler=command_records)
 
@@ -2418,7 +2664,8 @@ def build_parser() -> argparse.ArgumentParser:
             )
         action.set_defaults(handler=command_patterns)
     for name, help_text in (
-        ("stale", "re-run a snapshot's own query and report what moved"),
+        ("stale", "read-only re-check of a snapshot's own query"),
+        ("mark-stale", "explicitly record the first observed stale state"),
         ("confirm", "record that a person reviewed a snapshot"),
         ("recommend", "propose advice from a snapshot, for a person to decide"),
     ):

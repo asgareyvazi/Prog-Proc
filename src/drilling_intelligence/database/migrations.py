@@ -41,7 +41,7 @@ ENV_MIGRATIONS_DIR = "DRILLINTEL_MIGRATIONS_DIR"
 #: Bump this with the migration that changes the models.  ``tests/integration`` asserts it against
 #: ``heads()``, so a new revision that forgets this constant fails there rather than silently
 #: stamping the wrong number into operators' databases.
-METADATA_REVISION = "0009"
+METADATA_REVISION = "0010"
 
 
 def find_migrations_dir(start: Path | None = None) -> Path | None:

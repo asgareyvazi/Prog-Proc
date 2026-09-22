@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select, union_all
+from sqlalchemy import Select, case, func, inspect, or_, select, union_all
 from sqlalchemy.orm import Session
 
 from ..core.errors import ValidationError
@@ -35,6 +35,8 @@ from ..database.models import (
     DdrReport,
     Field,
     LessonLearned,
+    MudMeasurement,
+    MudReport,
     NptRecord,
     ProblemOccurrence,
     Well,
@@ -297,57 +299,86 @@ class FieldIntelligence:
         since: object = None,
         until: object = None,
     ) -> dict[str, Any]:
-        """NPT in scope: total hours, rows, and the same split by category and by well.
+        """NPT in scope, with all counts and sums produced by grouped SQL.
 
-        ``unknown_duration`` is part of the answer rather than a footnote: it says how many of the rows
-        lost time that nobody wrote down, which is the number that decides whether the hours total can be
-        compared with another field's.
+        ``unknown_duration`` is part of the answer rather than a footnote.  A detail list is not
+        needed to calculate it, so this path never materialises every NPT row in Python.
         """
-        base = select(NptRecord).where(
-            NptRecord.well_id.in_(
-                self._wells(field_id=field_id, project_id=project_id, well_id=well_id)
-            )
-        )
+        # Database sessions deliberately disable autoflush.  Flush only the caller's transaction so a
+        # read sees its own pending edits without committing them; the service still owns no commit.
+        self.session.flush()
+        scope = self._wells(field_id=field_id, project_id=project_id, well_id=well_id)
+        filters: list[Any] = [NptRecord.well_id.in_(scope)]
         window = self._window(NptRecord.started_at, since, until)
-        if window:
-            base = base.where(*window)
-        rows = list(
-            self.session.execute(
-                base.order_by(NptRecord.started_at.asc().nulls_last(), NptRecord.id)
-            ).scalars()
+        filters.extend(window)
+        totals = self.session.execute(
+            select(
+                func.count(NptRecord.id),
+                func.count(NptRecord.duration_hours),
+                func.sum(NptRecord.duration_hours),
+                func.count(NptRecord.started_at),
+            ).where(*filters)
+        ).one()
+        rows_count, quantified, hours, _dated = (
+            int(totals[0] or 0),
+            int(totals[1] or 0),
+            totals[2],
+            int(totals[3] or 0),
         )
-        hours = [row.duration_hours for row in rows if row.duration_hours is not None]
+        category = func.coalesce(NptRecord.category, "uncategorised")
+        category_rows = self.session.execute(
+            select(
+                category,
+                func.count(NptRecord.id),
+                func.count(NptRecord.duration_hours),
+                func.sum(NptRecord.duration_hours),
+                func.count(func.distinct(NptRecord.well_id)),
+                func.min(NptRecord.started_at),
+                func.max(NptRecord.started_at),
+            )
+            .where(*filters)
+            .group_by(category)
+        ).all()
         by_category: dict[str, dict[str, Any]] = {}
-        by_well: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            for key, bucket, label in (
-                (str(row.category or "uncategorised"), by_category, None),
-                (str(row.well_id), by_well, row.well_id),
-            ):
-                entry = bucket.setdefault(
-                    key,
-                    {
-                        "records": 0,
-                        "hours": 0.0,
-                        "unknown_duration": 0,
-                        "wells": set() if key != label or label is None else None,
-                        "first_seen_at": None,
-                        "last_seen_at": None,
-                    },
+        for name, records, with_duration, total, wells, first, last in category_rows:
+            by_category[str(name)] = {
+                "records": int(records or 0),
+                "hours": round(float(total or 0.0), 4),
+                "unknown_duration": int(records or 0) - int(with_duration or 0),
+                "wells": int(wells or 0),
+                "first_seen_at": _iso(first),
+                "last_seen_at": _iso(last),
+            }
+        well_rows = self.session.execute(
+            select(
+                NptRecord.well_id,
+                func.count(NptRecord.id),
+                func.count(NptRecord.duration_hours),
+                func.sum(NptRecord.duration_hours),
+                func.min(NptRecord.started_at),
+                func.max(NptRecord.started_at),
+            )
+            .where(*filters)
+            .group_by(NptRecord.well_id)
+        ).all()
+        by_well = {
+            str(well): {
+                "records": int(records or 0),
+                "hours": round(float(total or 0.0), 4),
+                "unknown_duration": int(records or 0) - int(with_duration or 0),
+                "first_seen_at": _iso(first),
+                "last_seen_at": _iso(last),
+            }
+            for well, records, with_duration, total, first, last in well_rows
+        }
+        undated = int(
+            self.session.execute(
+                select(func.count(NptRecord.id)).where(
+                    NptRecord.well_id.in_(scope), NptRecord.started_at.is_(None)
                 )
-                entry["records"] += 1
-                if row.duration_hours is None:
-                    entry["unknown_duration"] += 1
-                else:
-                    entry["hours"] = round(float(entry["hours"]) + float(row.duration_hours), 4)
-                if entry["wells"] is not None:
-                    entry["wells"].add(str(row.well_id))
-                stamp = _iso(row.started_at)
-                if stamp is not None:
-                    if entry["first_seen_at"] is None or stamp < entry["first_seen_at"]:
-                        entry["first_seen_at"] = stamp
-                    if entry["last_seen_at"] is None or stamp > entry["last_seen_at"]:
-                        entry["last_seen_at"] = stamp
+            ).scalar_one()
+            or 0
+        )
         return {
             "scope": {
                 "field_id": field_id or None,
@@ -356,37 +387,116 @@ class FieldIntelligence:
                 "since": _iso(since),
                 "until": _iso(until),
             },
-            "rows": len(rows),
-            # ``undated`` is deliberately not windowed: it answers "how many of this scope's rows could not
-            # be placed in time", which is the number a reader needs next to a windowed total - the total
-            # is what fell inside, this is what the window could not see.
-            "total_hours": round(float(sum(hours)), 4),
-            "unknown_duration": len(rows) - len(hours),
-            "undated": self._undated(
-                select(NptRecord).where(
-                    NptRecord.well_id.in_(
-                        self._wells(field_id=field_id, project_id=project_id, well_id=well_id)
-                    )
-                ),
-                NptRecord.started_at,
+            "rows": rows_count,
+            "total_hours": round(float(hours or 0.0), 4),
+            "unknown_duration": rows_count - quantified,
+            # This is intentionally unwindowed: it answers how many scoped rows could not be placed in
+            # time, while ``rows`` and the totals answer what fell inside the requested window.
+            "undated": undated,
+            "by_category": dict(
+                sorted(by_category.items(), key=lambda item: (-item[1]["hours"], item[0]))
             ),
-            "by_category": {
-                key: {
-                    **{name: value for name, value in entry.items() if name != "wells"},
-                    "wells": len(entry["wells"] or ()) if entry["wells"] is not None else None,
-                }
-                for key, entry in sorted(
-                    by_category.items(), key=lambda item: (-item[1]["hours"], item[0])
-                )
+            "by_well": dict(sorted(by_well.items(), key=lambda item: (-item[1]["hours"], item[0]))),
+        }
+
+    def mud(
+        self,
+        *,
+        field_id: str = "",
+        project_id: str = "",
+        well_id: str = "",
+        since: object = None,
+        until: object = None,
+    ) -> dict[str, Any]:
+        """Current mud reports and unit-aware property counts, grouped by SQLite.
+
+        Measurements are never summed across units: cP, lb/100ft2 and mg/l are source units with no
+        certified V3 conversion.  The report is therefore a count/discovery surface, not a hidden
+        engineering calculation.
+        """
+        if not inspect(self.session.get_bind()).has_table(MudReport.__tablename__):
+            return {
+                "scope": {
+                    "field_id": field_id or None,
+                    "project_id": project_id or None,
+                    "well_id": well_id or None,
+                    "since": _iso(since),
+                    "until": _iso(until),
+                },
+                "reports": 0,
+                "measurements": 0,
+                "by_property": {},
+                "by_well": {},
+            }
+        scope = self._wells(field_id=field_id, project_id=project_id, well_id=well_id)
+        report_filters: list[Any] = [
+            MudReport.well_id.in_(scope),
+            MudReport.is_current.is_(True),
+        ]
+        window = self._window(MudReport.report_date, since, until)
+        report_filters.extend(window)
+        report_count = int(
+            self.session.execute(
+                select(func.count()).select_from(MudReport).where(*report_filters)
+            ).scalar_one()
+            or 0
+        )
+        measurement_count = int(
+            self.session.execute(
+                select(func.count())
+                .select_from(MudMeasurement)
+                .join(MudReport, MudReport.id == MudMeasurement.mud_report_id)
+                .where(*report_filters, MudMeasurement.is_current.is_(True))
+            ).scalar_one()
+            or 0
+        )
+        by_property_rows = self.session.execute(
+            select(
+                MudMeasurement.property_name,
+                MudMeasurement.unit,
+                MudMeasurement.quality,
+                func.count(MudMeasurement.id),
+            )
+            .select_from(MudMeasurement)
+            .join(MudReport, MudReport.id == MudMeasurement.mud_report_id)
+            .where(*report_filters, MudMeasurement.is_current.is_(True))
+            .group_by(
+                MudMeasurement.property_name,
+                MudMeasurement.unit,
+                MudMeasurement.quality,
+            )
+            .order_by(MudMeasurement.property_name, MudMeasurement.unit, MudMeasurement.quality)
+        ).all()
+        by_property: dict[str, dict[str, Any]] = {}
+        for property_name, unit, quality, count in by_property_rows:
+            bucket = by_property.setdefault(
+                str(property_name), {"measurements": 0, "units": {}, "qualities": {}}
+            )
+            bucket["measurements"] += int(count or 0)
+            bucket["units"][str(unit or "")] = bucket["units"].get(str(unit or ""), 0) + int(
+                count or 0
+            )
+            bucket["qualities"][str(quality or "")] = bucket["qualities"].get(
+                str(quality or ""), 0
+            ) + int(count or 0)
+        by_well_rows = self.session.execute(
+            select(MudReport.well_id, func.count(MudReport.id))
+            .where(*report_filters)
+            .group_by(MudReport.well_id)
+            .order_by(MudReport.well_id)
+        ).all()
+        return {
+            "scope": {
+                "field_id": field_id or None,
+                "project_id": project_id or None,
+                "well_id": well_id or None,
+                "since": _iso(since),
+                "until": _iso(until),
             },
-            # A per-well breakdown has no "how many wells" answer to give, so it omits the key instead of
-            # carrying a null one that a caller would have to know how to read.
-            "by_well": {
-                key: {name: value for name, value in entry.items() if name != "wells"}
-                for key, entry in sorted(
-                    by_well.items(), key=lambda item: (-item[1]["hours"], item[0])
-                )
-            },
+            "reports": report_count,
+            "measurements": measurement_count,
+            "by_property": dict(sorted(by_property.items())),
+            "by_well": {str(well): int(count or 0) for well, count in by_well_rows},
         }
 
     def problems(
@@ -398,62 +508,80 @@ class FieldIntelligence:
         since: object = None,
         until: object = None,
     ) -> dict[str, Any]:
-        """Problem occurrences by type: how often, on which wells, when first and last."""
-        base = select(ProblemOccurrence).where(
-            ProblemOccurrence.well_id.in_(
-                self._wells(field_id=field_id, project_id=project_id, well_id=well_id)
-            )
-        )
+        """Problem occurrences by type, grouped in SQL without loading occurrence rows."""
+        scope = self._wells(field_id=field_id, project_id=project_id, well_id=well_id)
+        filters: list[Any] = [ProblemOccurrence.well_id.in_(scope)]
         window = self._window(ProblemOccurrence.occurred_at, since, until)
-        if window:
-            base = base.where(*window)
-        rows = list(
-            self.session.execute(
-                base.order_by(
-                    ProblemOccurrence.occurred_at.asc().nulls_last(), ProblemOccurrence.id
-                )
-            ).scalars()
-        )
-        hours = problem_hours()
-        grouped_hours = dict(
-            self.session.execute(
-                select(hours.c.problem_id, func.sum(hours.c.hours)).group_by(hours.c.problem_id)
-            ).all()
-        )
-        by_type: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            key = str(row.problem_type or "uncategorised")
-            entry = by_type.setdefault(
-                key,
-                {
-                    "occurrences": 0,
-                    "wells": set(),
-                    "sections": set(),
-                    # None, not 0.0: "no NPT hours are linked to this type" and "it cost exactly
-                    # zero" are different answers, and the patterns layer keeps the same
-                    # distinction - a type with no linked hours must not read as a free problem.
-                    "npt_hours": None,
-                    "root_cause_known": 0,
-                    "first_seen_at": None,
-                    "last_seen_at": None,
-                },
+        filters.extend(window)
+        total_occurrences, total_wells = self.session.execute(
+            select(
+                func.count(ProblemOccurrence.id),
+                func.count(func.distinct(ProblemOccurrence.well_id)),
+            ).where(*filters)
+        ).one()
+        problem_type_column = func.coalesce(ProblemOccurrence.problem_type, "uncategorised")
+        type_rows = self.session.execute(
+            select(
+                problem_type_column,
+                func.count(ProblemOccurrence.id),
+                func.count(func.distinct(ProblemOccurrence.well_id)),
+                func.count(func.distinct(ProblemOccurrence.section_id)),
+                func.sum(
+                    case(
+                        (
+                            func.upper(func.coalesce(ProblemOccurrence.root_cause_status, ""))
+                            == "KNOWN",
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                func.min(ProblemOccurrence.occurred_at),
+                func.max(ProblemOccurrence.occurred_at),
             )
-            entry["occurrences"] += 1
-            entry["wells"].add(str(row.well_id))
-            if row.section_id:
-                entry["sections"].add(str(row.section_id))
-            if str(row.root_cause_status or "").upper() == "KNOWN":
-                entry["root_cause_known"] += 1
-            stamp = _iso(row.occurred_at)
-            if stamp is not None:
-                if entry["first_seen_at"] is None or stamp < entry["first_seen_at"]:
-                    entry["first_seen_at"] = stamp
-                if entry["last_seen_at"] is None or stamp > entry["last_seen_at"]:
-                    entry["last_seen_at"] = stamp
-            if row.id in grouped_hours:
-                entry["npt_hours"] = round(
-                    (entry["npt_hours"] or 0.0) + float(grouped_hours[row.id]), 4
-                )
+            .where(*filters)
+            .group_by(problem_type_column)
+        ).all()
+        hours = problem_hours()
+        hour_filters: list[Any] = [hours.c.well_id.in_(scope)]
+        if since is not None or until is not None:
+            hour_filters.extend(self._window(hours.c.occurred_at, since, until))
+        hours_rows = self.session.execute(
+            select(hours.c.problem_type, func.sum(hours.c.hours))
+            .where(*hour_filters)
+            .group_by(hours.c.problem_type)
+        ).all()
+        hours_by_type = {
+            str(name or "uncategorised"): round(float(total or 0.0), 4)
+            for name, total in hours_rows
+        }
+        well_ids = self.session.execute(
+            select(problem_type_column, ProblemOccurrence.well_id).where(*filters).distinct()
+        ).all()
+        section_ids = self.session.execute(
+            select(problem_type_column, ProblemOccurrence.section_id)
+            .where(*filters, ProblemOccurrence.section_id.is_not(None))
+            .distinct()
+        ).all()
+        wells_by_type: dict[str, set[str]] = {}
+        sections_by_type: dict[str, set[str]] = {}
+        for name, value in well_ids:
+            wells_by_type.setdefault(str(name), set()).add(str(value))
+        for name, value in section_ids:
+            sections_by_type.setdefault(str(name), set()).add(str(value))
+        by_type: dict[str, dict[str, Any]] = {}
+        for name, occurrences, wells, _sections, known, first, last in type_rows:
+            key = str(name)
+            by_type[key] = {
+                "occurrences": int(occurrences or 0),
+                "wells": int(wells or 0),
+                "well_ids": sorted(wells_by_type.get(key, set())),
+                "sections": sorted(sections_by_type.get(key, set())),
+                "npt_hours": hours_by_type.get(key),
+                "root_cause_known": int(known or 0),
+                "first_seen_at": _iso(first),
+                "last_seen_at": _iso(last),
+            }
         return {
             "scope": {
                 "field_id": field_id or None,
@@ -462,23 +590,11 @@ class FieldIntelligence:
                 "since": _iso(since),
                 "until": _iso(until),
             },
-            "occurrences": len(rows),
-            "wells": len({str(row.well_id) for row in rows}),
-            "by_type": {
-                key: {
-                    **{
-                        name: value
-                        for name, value in entry.items()
-                        if name not in {"wells", "sections"}
-                    },
-                    "wells": len(entry["wells"]),
-                    "well_ids": sorted(entry["wells"]),
-                    "sections": sorted(entry["sections"]),
-                }
-                for key, entry in sorted(
-                    by_type.items(), key=lambda item: (-item[1]["occurrences"], item[0])
-                )
-            },
+            "occurrences": int(total_occurrences or 0),
+            "wells": int(total_wells or 0),
+            "by_type": dict(
+                sorted(by_type.items(), key=lambda item: (-item[1]["occurrences"], item[0]))
+            ),
         }
 
     def events(
@@ -490,48 +606,61 @@ class FieldIntelligence:
         since: object = None,
         until: object = None,
     ) -> dict[str, Any]:
-        """Events by category and type, with the severity split left open where severity is absent."""
-        base = select(WellEvent).where(
-            WellEvent.well_id.in_(
-                self._wells(field_id=field_id, project_id=project_id, well_id=well_id)
-            )
-        )
+        """Events by category/type/severity, grouped in SQL with no full event-row load."""
+        scope = self._wells(field_id=field_id, project_id=project_id, well_id=well_id)
+        filters: list[Any] = [WellEvent.well_id.in_(scope)]
         window = self._window(WellEvent.occurred_at, since, until)
-        if window:
-            base = base.where(*window)
-        rows = list(
-            self.session.execute(
-                base.order_by(WellEvent.occurred_at.asc().nulls_last(), WellEvent.id)
-            ).scalars()
+        filters.extend(window)
+        total = int(
+            self.session.execute(select(func.count(WellEvent.id)).where(*filters)).scalar_one() or 0
         )
-        by_category: dict[str, dict[str, Any]] = {}
-        by_severity: dict[str, int] = {}
-        by_type: dict[str, int] = {}
-        for row in rows:
-            category = str(row.category or "uncategorised")
-            entry = by_category.setdefault(
-                category,
-                {
-                    "events": 0,
-                    "types": {},
-                    "wells": set(),
-                    "first_seen_at": None,
-                    "last_seen_at": None,
-                },
+        category_column = func.coalesce(WellEvent.category, "uncategorised")
+        type_column = func.coalesce(WellEvent.event_type, "unclassified")
+        category_rows = self.session.execute(
+            select(
+                category_column,
+                func.count(WellEvent.id),
+                func.count(func.distinct(WellEvent.well_id)),
+                func.min(WellEvent.occurred_at),
+                func.max(WellEvent.occurred_at),
             )
-            entry["events"] += 1
-            entry["wells"].add(str(row.well_id))
-            event_type = str(row.event_type or "unclassified")
-            entry["types"][event_type] = entry["types"].get(event_type, 0) + 1
-            by_type[event_type] = by_type.get(event_type, 0) + 1
-            severity = str(row.severity or "not_stated")
-            by_severity[severity] = by_severity.get(severity, 0) + 1
-            stamp = _iso(row.occurred_at)
-            if stamp is not None:
-                if entry["first_seen_at"] is None or stamp < entry["first_seen_at"]:
-                    entry["first_seen_at"] = stamp
-                if entry["last_seen_at"] is None or stamp > entry["last_seen_at"]:
-                    entry["last_seen_at"] = stamp
+            .where(*filters)
+            .group_by(category_column)
+        ).all()
+        category_type_rows = self.session.execute(
+            select(category_column, type_column, func.count(WellEvent.id))
+            .where(*filters)
+            .group_by(category_column, type_column)
+        ).all()
+        category_well_rows = self.session.execute(
+            select(category_column, WellEvent.well_id).where(*filters).distinct()
+        ).all()
+        severity_column = func.coalesce(WellEvent.severity, "not_stated")
+        severity_rows = self.session.execute(
+            select(severity_column, func.count(WellEvent.id))
+            .where(*filters)
+            .group_by(severity_column)
+        ).all()
+        type_rows = self.session.execute(
+            select(type_column, func.count(WellEvent.id)).where(*filters).group_by(type_column)
+        ).all()
+        types_by_category: dict[str, dict[str, int]] = {}
+        for category, event_type, count in category_type_rows:
+            types_by_category.setdefault(str(category), {})[str(event_type)] = int(count or 0)
+        wells_by_category: dict[str, set[str]] = {}
+        for category, event_well in category_well_rows:
+            wells_by_category.setdefault(str(category), set()).add(str(event_well))
+        by_category = {
+            str(category): {
+                "events": int(events or 0),
+                "types": types_by_category.get(str(category), {}),
+                "wells": int(wells or 0),
+                "well_ids": sorted(wells_by_category.get(str(category), set())),
+                "first_seen_at": _iso(first),
+                "last_seen_at": _iso(last),
+            }
+            for category, events, wells, first, last in category_rows
+        }
         return {
             "scope": {
                 "field_id": field_id or None,
@@ -540,19 +669,22 @@ class FieldIntelligence:
                 "since": _iso(since),
                 "until": _iso(until),
             },
-            "events": len(rows),
-            "by_category": {
-                key: {
-                    **{name: value for name, value in entry.items() if name != "wells"},
-                    "wells": len(entry["wells"]),
-                    "well_ids": sorted(entry["wells"]),
-                }
-                for key, entry in sorted(
-                    by_category.items(), key=lambda item: (-item[1]["events"], item[0])
+            "events": total,
+            "by_category": dict(
+                sorted(by_category.items(), key=lambda item: (-item[1]["events"], item[0]))
+            ),
+            "by_type": dict(
+                sorted(
+                    ((str(name), int(count or 0)) for name, count in type_rows),
+                    key=lambda item: (-item[1], item[0]),
                 )
-            },
-            "by_type": dict(sorted(by_type.items(), key=lambda item: (-item[1], item[0]))),
-            "by_severity": dict(sorted(by_severity.items(), key=lambda item: (-item[1], item[0]))),
+            ),
+            "by_severity": dict(
+                sorted(
+                    ((str(name), int(count or 0)) for name, count in severity_rows),
+                    key=lambda item: (-item[1], item[0]),
+                )
+            ),
         }
 
     def lessons(
@@ -864,6 +996,7 @@ class FieldIntelligence:
         problems = self.problems(field_id=field_id, project_id=project_id, since=since, until=until)
         events = self.events(field_id=field_id, project_id=project_id, since=since, until=until)
         lessons = self.lessons(field_id=field_id, project_id=project_id, approved_only=False)
+        mud = self.mud(field_id=field_id, project_id=project_id, since=since, until=until)
         field_row: Field | None = None
         if field_id:
             field_row = self.session.get(Field, field_id)
@@ -897,4 +1030,7 @@ class FieldIntelligence:
             },
             "events_by_severity": events["by_severity"],
             "lessons": lessons["count"],
+            "mud_reports": mud["reports"],
+            "mud_measurements": mud["measurements"],
+            "mud_by_property": mud["by_property"],
         }

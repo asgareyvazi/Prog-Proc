@@ -1,11 +1,11 @@
-"""Promotion: the generated corpus becomes operations, events, NPT and problems - and nothing else.
+"""Promotion: the generated corpus becomes governed operational and mud rows, and nothing else.
 
 Every assertion here is about the promise the operational layer makes.  The rows come out of what the
 files actually say, so the same folder produces the same history twice; a value nobody wrote down
 stays missing; and a row belonging to a well this workspace has never heard of is *reported*, not
-filed somewhere plausible.  The corpus is the real generated one - an NPT export a clerk would
-recognise, and a daily report whose time-breakdown table adds up - because a fixture built for the
-feature would only prove the feature works on a corpus it invented.
+filed somewhere plausible.  The corpus is the real generated one - an NPT export, a daily report whose
+time-breakdown table adds up, and a source-shaped mud workbook - because a fixture built for the feature
+would only prove the feature works on a corpus it invented.
 """
 
 from __future__ import annotations
@@ -64,11 +64,13 @@ def test_promotion_writes_the_rows_the_sheet_states(workspace) -> None:
     assert summary["skipped"].get("ZERO_NPT") == 1, summary["skipped"]
     # So is the daily report's 18.5 h total: its own NPT lines add up to exactly that.
     assert summary["skipped"].get("TOTAL_ALREADY_COUNTED") == 1, summary["skipped"]
-    # The drilling program is the third version worth opening: it states a plan rather than a day, so
-    # it adds a programme and its one target and contributes nothing to the operational counts above.
+    # The drilling program is one version, and the mud workbook is another.  The program states a plan
+    # rather than a day; the mud writer retains one parent plus its source-shaped summary/daily rows.
     assert counts["program"]["created"] == 1, summary
     assert counts["target"]["created"] == 1, summary
-    assert summary["versions"] == 3, summary
+    assert counts["mud_report"]["created"] == 1, summary
+    assert counts["mud_measurement"]["created"] == 22, summary
+    assert summary["versions"] == 4, summary
 
 
 def test_each_row_says_which_well_and_which_file_it_came_from(workspace) -> None:
@@ -339,9 +341,11 @@ def test_promoter_reports_a_version_with_nothing_to_promote(workspace) -> None:
     with workspace.database.session() as session:
         outcome = VersionPromoter(session).promote(document_id=document_id, version_id=version_id)
         session.rollback()
-    # A mud report is neither a day's report nor an NPT sheet: nothing is written, and the reason is.
-    assert outcome.counts == {} or set(outcome.counts) <= {"removed"}, outcome.counts
-    assert any(entry["reason"] == "NOT_A_REPORT" for entry in outcome.skipped), outcome.skipped
+    # A mud report is admitted by the V3 contract: the direct promoter writes its parent and all
+    # deterministic source-shaped measurements, without leaking anything into the NPT tables.
+    assert outcome.counts["mud_report"]["created"] == 1, outcome.counts
+    assert outcome.counts["mud_measurement"]["created"] == 22, outcome.counts
+    assert outcome.outcome == "PROMOTED", outcome
     assert all(row.document_id != document_id for row in fetch(workspace, NptRecord))
 
 
@@ -359,9 +363,9 @@ def test_a_field_scope_promotes_the_field_it_names(workspace) -> None:
     with workspace.database.session() as session:
         outcome = service.promote_workspace(session=session, field_id=field_id(workspace))
         session.commit()
-    # Three versions in the field's scope: the NPT export, the daily report and the drilling program.
-    assert outcome["versions"] == 3, outcome
-    assert outcome["totals"]["created"] == 24, outcome["counts"]
+    # Four versions in the field's scope: the NPT export, daily report, program and mud report.
+    assert outcome["versions"] == 4, outcome
+    assert outcome["totals"]["created"] == 47, outcome["counts"]
     assert outcome["totals"]["conflict"] == 0, outcome["counts"]
     assert len(fetch(workspace, NptRecord)) == len(STATED) + len(DDR_NPT_LINES)
 

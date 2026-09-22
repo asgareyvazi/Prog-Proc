@@ -531,10 +531,13 @@ def test_moving_data_stales_a_snapshot_and_reports_the_difference(field_workspac
         # whoever reviewed it.
         assert get_pattern(session, pattern_id).occurrence_count == 2
         service = IntelligenceService.for_workspace(field_workspace)
-        flagged = service.pattern_staleness(pattern_id)
-        assert flagged["stale"] is True
-        # The service owns its own transaction (it is called from a CLI, where nobody is holding a
-        # session), so the caller's read has to expire before it sees the flag the service committed.
+        checked = service.pattern_staleness(pattern_id)
+        assert checked["stale"] is True
+        session.expire_all()
+        assert get_pattern(session, pattern_id).stale_at is None
+        marked = service.mark_pattern_stale(pattern_id)
+        assert marked["stale"] is True
+        # Marking is an explicit write; the pure check above did not mutate the snapshot.
         session.expire_all()
         current = get_pattern(session, pattern_id)
         assert current.stale_at is not None

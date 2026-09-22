@@ -348,6 +348,30 @@ class CitationAuditor:
                 expected_sha256=expected,
                 actual_sha256=actual,
             )
+        if item.source_type == "structured" and not item.verbatim:
+            if not expected:
+                return CitationCheck(
+                    identity=identity,
+                    source_type=source_type,
+                    citation=prov.ref,
+                    status=STATUS_NOT_CHECKABLE,
+                    detail="no recorded source hash to compare; file identity cannot be established",
+                )
+            # Structured rows can cite a whole table or a rendered field.  A matching locator is
+            # still a source-file check for a non-verbatim row; an excerpt mismatch falls through
+            # to the explicit rendering explanation below.
+            rendered = verify_provenance(path, prov, require_hash=False)
+            if rendered.status in (STATUS_MATCH, STATUS_UNREADABLE):
+                return CitationCheck(
+                    identity=identity,
+                    source_type=source_type,
+                    citation=prov.ref,
+                    status=rendered.status,
+                    check="source",
+                    detail="structured view: the source file matches the hash this version was indexed under",
+                    expected_sha256=expected,
+                    actual_sha256=actual,
+                )
         # The file is the file the extraction was made from, and the citation claims to quote its
         # region - so re-read the recorded location and compare with the recorded excerpt.
         outcome = verify_provenance(path, prov, require_hash=False)

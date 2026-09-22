@@ -2,19 +2,19 @@
 
 The search index already projects *documents* (extracted text plus the knowledge facts stored
 about them).  This module is the second source type in that same projection: the authoritative
-structured records - problems, NPT, events, lessons, recommendations - each turned into one
-searchable unit that cites its own row instead of a page of a file.
+structured records - problems, NPT, events, lessons, recommendations and mud reports - each turned
+into one searchable unit that cites its own row instead of a page of a file.
 
 The rules are the same ones the document half obeys, stated once here because they are the
 whole point of the feature:
 
-*   **The database is the authority.**  :func:`structured_records` reads the six model tables and
-    formats rows; it writes nothing.  The projection may be deleted and rebuilt from those rows
-    at any time.
+*   **The database is the authority.**  :func:`structured_records` reads the seven admitted model
+    tables and formats rows; it writes nothing.  The projection may be deleted and rebuilt from those
+    rows at any time.
 *   **Identity is the record's own.**  A structured unit's id is
     ``structured:<record-type>:<row id>``, where ``<row id>`` is the authoritative primary key the
     domain already uses (``pdef-...``, ``prob-...``, ``npt-...``, ``ev-...``, ``les-...``,
-    ``rec-...``).  Re-indexing the same row always produces the same id; no UUID, timestamp or
+    ``rec-...`` and ``mud-...``).  Re-indexing the same row always produces the same id; no UUID, timestamp or
     insertion position is invented here.
 *   **Lifecycle is respected at build time.**  A record that the domain considers superseded or
     rejected is not searchable, exactly as a superseded document version is not (search answers
@@ -40,6 +40,8 @@ from sqlalchemy import select
 from ..core.enums import ConfirmationStatus, RecommendationLifecycle
 from ..database.models import (
     LessonLearned,
+    MudMeasurement,
+    MudReport,
     NptRecord,
     ProblemDefinition,
     ProblemOccurrence,
@@ -73,6 +75,7 @@ STRUCTURED_RECORD_TYPES: tuple[str, ...] = (
     "well_event",
     "lesson_learned",
     "recommendation",
+    "mud_report",
 )
 
 
@@ -104,6 +107,10 @@ def is_searchable(record: Any) -> bool:
         return True
     if isinstance(record, (ProblemOccurrence, NptRecord, WellEvent)):
         return str(getattr(record, "status", "") or "") != ConfirmationStatus.REJECTED.value
+    if isinstance(record, MudReport):
+        return bool(getattr(record, "is_current", True)) and str(
+            getattr(record, "status", "") or ""
+        ) not in {"SUPERSEDED", ConfirmationStatus.REJECTED.value}
     if isinstance(record, LessonLearned):
         return bool(getattr(record, "is_current", True))
     if isinstance(record, Recommendation):
@@ -278,6 +285,21 @@ class _Scope:
         self._wells = {w.id: w for w in session.execute(select(Well)).scalars()}
         self._projects = {p.id: p for p in session.execute(select(Project)).scalars()}
         self._companies = {c.id: c for c in session.execute(select(Company)).scalars()}
+        self._mud_measurements: dict[str, list[MudMeasurement]] = {}
+        for measurement in session.execute(
+            select(MudMeasurement).order_by(
+                MudMeasurement.mud_report_id,
+                MudMeasurement.sample_key,
+                MudMeasurement.property_name,
+                MudMeasurement.id,
+            )
+        ).scalars():
+            self._mud_measurements.setdefault(str(measurement.mud_report_id), []).append(
+                measurement
+            )
+
+    def mud_measurements(self, report_id: Any) -> tuple[MudMeasurement, ...]:
+        return tuple(self._mud_measurements.get(str(report_id), ()))
 
     def resolve(self, well_id: Any) -> tuple[str, str, str, str, str, str]:
         """``(project_id, field_id, company_id, well_name, project_name, company_name)``."""
@@ -506,6 +528,85 @@ def _well_event(row: WellEvent, scope: _Scope) -> StructuredRecord:
     )
 
 
+def _mud_report(row: MudReport, scope: _Scope) -> StructuredRecord:
+    project_id, field_id, company_id, well_name, project_name, company_name = scope.resolve(
+        row.well_id
+    )
+    measurements = scope.mud_measurements(row.id)
+    measurement_lines: list[tuple[str, Any]] = []
+    measurement_evidence: list[Mapping[str, Any]] = []
+    for measurement in measurements:
+        sample = str(measurement.sample_label or measurement.sample_key or "SUMMARY")
+        value = "" if measurement.value is None else str(measurement.value)
+        unit = str(measurement.unit or "")
+        quality = str(measurement.quality or "")
+        measurement_lines.append(
+            (
+                f"{measurement.property_name} {sample}",
+                f"{value}{(' ' + unit) if unit else ''} {quality}".strip(),
+            )
+        )
+        for entry in measurement.provenance or ():
+            if isinstance(entry, Mapping):
+                measurement_evidence.append(dict(entry))
+    text = _emit(
+        [
+            ("mud report", row.id),
+            ("report date", _iso(row.report_date)),
+            ("revision", row.revision),
+            (
+                "measured depth",
+                f"{row.depth_md_value} {row.depth_md_unit}"
+                if row.depth_md_value is not None
+                else "",
+            ),
+            (
+                "true vertical depth",
+                f"{row.depth_tvd_value} {row.depth_tvd_unit}"
+                if row.depth_tvd_value is not None
+                else "",
+            ),
+            ("well", well_name),
+            *measurement_lines,
+        ]
+    )
+    provenance: dict[str, Any] = {
+        "source_type": "structured",
+        "record_type": "mud_report",
+        "record_id": str(row.id),
+        "well_id": str(row.well_id or ""),
+        "project_id": project_id,
+        "field_id": field_id,
+        "section_id": str(row.section_id or ""),
+        "document_id": str(row.document_id or ""),
+        "document_version_id": str(row.document_version_id or ""),
+        "status": str(row.status or ""),
+        "record_state": str(row.record_state or ""),
+        "origin": str(row.origin or ""),
+        "evidence": [dict(entry) for entry in row.provenance or () if isinstance(entry, Mapping)],
+        "measurement_evidence": measurement_evidence,
+    }
+    provenance = {key: value for key, value in provenance.items() if value not in (None, "", [])}
+    return _unit(
+        record_type="mud_report",
+        source_id=row.id,
+        text=text,
+        provenance=provenance,
+        well_id=str(row.well_id or ""),
+        project_id=project_id,
+        field_id=field_id,
+        company_id=company_id,
+        well_name=well_name,
+        project_name=project_name,
+        company_name=company_name,
+        category="mud",
+        status=str(row.status or ""),
+        record_date=_iso(row.report_date),
+        title=f"Mud report {row.revision or row.id}",
+        locator_ref=f"mud report {row.id}",
+    )
+
+
 def _lesson_learned(row: LessonLearned) -> StructuredRecord:
     text = _emit(
         [
@@ -604,6 +705,7 @@ _BUILDERS = {
     "well_event": _well_event,
     "lesson_learned": _lesson_learned,
     "recommendation": _recommendation,
+    "mud_report": _mud_report,
 }
 
 #: The model each record type is read from, and a deterministic order for its rows.
@@ -614,6 +716,7 @@ _RECORD_SOURCES: tuple[tuple[type, str, tuple[str, ...]], ...] = (
     (WellEvent, "well_event", ("occurred_at", "id")),
     (LessonLearned, "lesson_learned", ("revision", "id")),
     (Recommendation, "recommendation", ("created_at", "id")),
+    (MudReport, "mud_report", ("report_date", "id")),
 )
 
 

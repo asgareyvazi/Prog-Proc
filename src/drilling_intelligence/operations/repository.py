@@ -26,7 +26,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, inspect, select
 from sqlalchemy.orm import Session
 
 from ..core.enums import (
@@ -58,6 +58,8 @@ from ..database.models import (
     Document,
     DocumentVersion,
     DrillingProgram,
+    MudMeasurement,
+    MudReport,
     NptRecord,
     ProblemDefinition,
     ProblemOccurrence,
@@ -92,6 +94,8 @@ CONFIRMABLE_MODELS: tuple[type, ...] = (
     WellEvent,
     NptRecord,
     ProblemOccurrence,
+    MudMeasurement,
+    MudReport,
 )
 
 
@@ -344,6 +348,37 @@ class OperationsRepository:
         if status:
             statement = statement.where(DdrReport.status == str(status))
         statement = self._ordered(statement, DdrReport.report_date.desc(), DdrReport.id)
+        return list(self.session.execute(statement.limit(limit)).scalars())
+
+    def list_mud_reports(
+        self,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        since: object = None,
+        until: object = None,
+        status: str = "",
+        current_only: bool = False,
+        limit: int = 200,
+    ) -> list[MudReport]:
+        """Stored mud parents, with source-version history explicit in ``is_current``."""
+        statement: Select = self._scope_statement(
+            select(MudReport),
+            MudReport,
+            well_id=well_id,
+            field_id=field_id,
+            project_id=project_id,
+        )
+        if since is not None:
+            statement = statement.where(MudReport.report_date >= _bound(since, label="since"))
+        if until is not None:
+            statement = statement.where(MudReport.report_date <= _bound(until, label="until"))
+        if status:
+            statement = statement.where(MudReport.status == str(status))
+        if current_only:
+            statement = statement.where(MudReport.is_current.is_(True))
+        statement = self._ordered(statement, MudReport.report_date.desc(), MudReport.id)
         return list(self.session.execute(statement.limit(limit)).scalars())
 
     # -- operations -----------------------------------------------------------
@@ -1081,13 +1116,17 @@ class OperationsRepository:
         duration and another has no date, because those are the gaps that make the total move later.
         """
         payload: dict[str, Any] = {}
-        for label, model in (
+        models: list[tuple[str, type[Any]]] = [
             ("reports", DdrReport),
             ("operations", WellOperation),
             ("events", WellEvent),
             ("npt", NptRecord),
             ("problems", ProblemOccurrence),
-        ):
+        ]
+        mud_available = inspect(self.session.get_bind()).has_table(MudReport.__tablename__)
+        if mud_available:
+            models.append(("mud_reports", MudReport))
+        for label, model in models:
             statement = self._scope_statement(
                 select(func.count()).select_from(model),
                 model,
@@ -1096,6 +1135,27 @@ class OperationsRepository:
                 project_id=project_id,
             )
             payload[label] = int(self.session.execute(statement).scalar_one() or 0)
+
+        if mud_available:
+            mud_measurements = self._scope_statement(
+                select(func.count()).select_from(MudMeasurement),
+                MudMeasurement,
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+            )
+            mud_current = self._scope_statement(
+                select(func.count()).select_from(MudReport).where(MudReport.is_current.is_(True)),
+                MudReport,
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+            )
+            payload["mud"] = {
+                "reports": int(payload.get("mud_reports", 0)),
+                "current_reports": int(self.session.execute(mud_current).scalar_one() or 0),
+                "measurements": int(self.session.execute(mud_measurements).scalar_one() or 0),
+            }
 
         statement = self._scope_statement(
             select(

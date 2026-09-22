@@ -44,6 +44,8 @@ from .models import (
     KnowledgeItem,
     KnowledgeRelation,
     LessonLearned,
+    MudMeasurement,
+    MudReport,
     NptRecord,
     ProblemOccurrence,
     ProcedureRecord,
@@ -274,6 +276,8 @@ RELATION_ENDPOINT_MODELS: dict[str, type] = {
     "well_event": WellEvent,
     "npt_record": NptRecord,
     "problem_occurrence": ProblemOccurrence,
+    "mud_report": MudReport,
+    "mud_measurement": MudMeasurement,
     # engineering records
     "procedure": ProcedureRecord,
     "program": DrillingProgram,
@@ -588,6 +592,7 @@ _SAME_WELL_LINKS: tuple[tuple[type, str, type], ...] = (
     (ProblemOccurrence, "event_id", WellEvent),
     (ProblemOccurrence, "operation_id", WellOperation),
     (CostItem, "npt_id", NptRecord),
+    (MudMeasurement, "mud_report_id", MudReport),
 )
 
 #: Section-scoped rows: the section must be a section *of the well the row is filed under*.
@@ -598,6 +603,8 @@ _SECTION_OWNERS: tuple[type, ...] = (
     ProblemOccurrence,
     RiskRecord,
     LessonLearned,
+    MudReport,
+    MudMeasurement,
 )
 
 #: The tables whose revisions form a chain, and whether "current" is a column they carry.
@@ -620,6 +627,8 @@ _PROMOTED_MODELS: tuple[type, ...] = (
     WellEvent,
     NptRecord,
     ProblemOccurrence,
+    MudReport,
+    MudMeasurement,
     CostItem,
     ProcedureRecord,
     DrillingProgram,
@@ -972,19 +981,25 @@ def check_calculation_dependencies(session: Session) -> list[IntegrityProblem]:
         for row in rows
         if isinstance(row.provenance, dict)
     }
-    current = (
+    version_rows = (
         {
-            str(row_id)
-            for (row_id,) in session.execute(
-                select(DocumentVersion.id).where(
-                    DocumentVersion.id.in_(sorted(value for value in cited if value)),
-                    DocumentVersion.is_current.is_(True),
+            str(version.id): bool(version.is_current)
+            for version in session.execute(
+                select(DocumentVersion).where(
+                    DocumentVersion.id.in_(sorted(value for value in cited if value))
                 )
-            ).all()
+            ).scalars()
         }
         if any(cited)
-        else set()
+        else {}
     )
+    subject_models = {
+        "well": Well,
+        "section": WellSection,
+        "document_version": DocumentVersion,
+        "document": Document,
+        "project": Project,
+    }
     for row in rows:
         if not row.subject_kind or row.subject_kind == LEGACY_KIND or not row.subject_id:
             problems.append(
@@ -1001,12 +1016,42 @@ def check_calculation_dependencies(session: Session) -> list[IntegrityProblem]:
                 )
             )
             continue
+        subject_model = subject_models.get(str(row.subject_kind))
+        if subject_model is None or session.get(subject_model, row.subject_id) is None:
+            problems.append(
+                IntegrityProblem(
+                    "calculation_input",
+                    row.id,
+                    "names a durable subject row that no longer exists",
+                    {
+                        "calculation_id": str(row.calculation_id),
+                        "input": str(row.name),
+                        "subject_key": str(row.subject_key or ""),
+                        "finding": "UNRESOLVED_SUBJECT",
+                    },
+                )
+            )
+            continue
         version = str(
             (row.provenance or {}).get("document_version_id")
             if isinstance(row.provenance, dict)
             else ""
         )
-        if version and version not in current:
+        if version and version not in version_rows:
+            problems.append(
+                IntegrityProblem(
+                    "calculation_input",
+                    row.id,
+                    "cites a document version that does not exist",
+                    {
+                        "calculation_id": str(row.calculation_id),
+                        "input": str(row.name),
+                        "document_version_id": version,
+                        "finding": "UNRESOLVED_SOURCE_VERSION",
+                    },
+                )
+            )
+        elif version and not version_rows[version]:
             problems.append(
                 IntegrityProblem(
                     "calculation_input",

@@ -54,6 +54,8 @@ from ..database.models import (
     Field,
     KnowledgeItem,
     LessonLearned,
+    MudMeasurement,
+    MudReport,
     NptRecord,
     ProblemDefinition,
     ProblemOccurrence,
@@ -83,6 +85,7 @@ _STRUCTURED_MODELS: dict[str, type] = {
     "well_event": WellEvent,
     "lesson_learned": LessonLearned,
     "recommendation": Recommendation,
+    "mud_report": MudReport,
 }
 
 #: The ``kind`` a knowledge-fact chunk carries (a fact is surfaced as a document-shaped chunk).
@@ -396,6 +399,23 @@ class RetrievalService:
             )
             for row in found:
                 rows["structured"][(record_type, str(row.id))] = row
+        mud_report_ids = sorted(set(structured_ids.get("mud_report", ())))
+        rows["mud_measurements"] = {}
+        if mud_report_ids:
+            measurements = active.execute(
+                select(MudMeasurement)
+                .where(MudMeasurement.mud_report_id.in_(mud_report_ids))
+                .order_by(
+                    MudMeasurement.mud_report_id,
+                    MudMeasurement.sample_key,
+                    MudMeasurement.property_name,
+                    MudMeasurement.id,
+                )
+            ).scalars()
+            for measurement in measurements:
+                rows["mud_measurements"].setdefault(str(measurement.mud_report_id), []).append(
+                    measurement
+                )
         if version_ids:
             found = (
                 active.execute(
@@ -477,7 +497,7 @@ class RetrievalService:
             row = rows["structured"].get((record_type, source_id))
             if row is None:
                 return "no longer in the authoritative database"
-            return self._structured_item(req, scope, result, record_type, row, names)
+            return self._structured_item(req, scope, result, record_type, row, names, rows)
         if source == SOURCE_DOCUMENT:
             return self._document_item(req, scope, result, version_id, rows, names)
         if source == SOURCE_KNOWLEDGE:
@@ -492,6 +512,7 @@ class RetrievalService:
         record_type: str,
         row: Any,
         names: _Names,
+        rows: Mapping[str, Any],
     ) -> EvidenceItem | str:
         # Some record types carry only a well (occurrences, NPT, events); the field and project
         # for those come from the well's own scope, read from the authoritative well row.
@@ -504,6 +525,19 @@ class RetrievalService:
         current = self._structured_current(record_type, row, status)
         if req.lifecycle == LIFECYCLE_CURRENT and not current:
             return f"not current (status {status or 'unknown'})"
+        measurements = rows.get("mud_measurements", {}).get(str(row.id), ())
+        provenance_value = _row_provenance(row)
+        provenance = (
+            [provenance_value] if isinstance(provenance_value, Mapping) else list(provenance_value)
+        )
+        if record_type == "mud_report":
+            for measurement in measurements:
+                child_provenance = _row_provenance(measurement)
+                provenance.extend(
+                    [child_provenance]
+                    if isinstance(child_provenance, Mapping)
+                    else list(child_provenance)
+                )
         return EvidenceItem(
             identity=f"structured:{record_type}:{row.id}",
             source_type=SOURCE_STRUCTURED,
@@ -520,9 +554,9 @@ class RetrievalService:
             document_id=str(getattr(row, "document_id", "") or ""),
             document_version_id=str(getattr(row, "document_version_id", "") or ""),
             locator_ref="",
-            provenance=_row_provenance(row),
+            provenance=provenance,
             title=self._structured_title(record_type, row),
-            text=self._structured_text(record_type, row),
+            text=self._structured_text(record_type, row, measurements),
             record_date=self._structured_date(record_type, row),
             score=float(result.score),
             matched_terms=tuple(result.matched_terms),
@@ -540,6 +574,8 @@ class RetrievalService:
             return bool(getattr(row, "is_current", True))
         if record_type == "recommendation":
             return status != RecommendationLifecycle.SUPERSEDED.value
+        if record_type == "mud_report":
+            return bool(getattr(row, "is_current", True))
         return True
 
     @staticmethod
@@ -554,15 +590,33 @@ class RetrievalService:
             return str(row.title or "")
         if record_type == "recommendation":
             return str((row.statement or "").split(".")[0][:120])
+        if record_type == "mud_report":
+            return f"Mud report {row.revision or row.id}"
         return str(getattr(row, "label", "") or f"Event - {getattr(row, 'event_type', '')}")
 
     @staticmethod
-    def _structured_text(record_type: str, row: Any) -> str:
-        """The record's own narrative, read from the authoritative row (never the sidecar's copy)."""
+    def _structured_text(record_type: str, row: Any, measurements: Sequence[Any] = ()) -> str:
+        """The authoritative row text, with mud child values re-read in the same batch."""
         if record_type == "lesson_learned":
             return str(row.lesson or "")
         if record_type == "recommendation":
             return str(row.statement or "")
+        if record_type == "mud_report":
+            lines = [
+                f"mud report {row.id}",
+                f"report date {_iso(row.report_date)}",
+                f"revision {row.revision or ''}",
+                f"measured depth {row.depth_md_value} {row.depth_md_unit}".strip(),
+                f"true vertical depth {row.depth_tvd_value} {row.depth_tvd_unit}".strip(),
+            ]
+            for measurement in measurements:
+                value = "" if measurement.value is None else str(measurement.value)
+                unit = f" {measurement.unit}" if measurement.unit else ""
+                sample = measurement.sample_label or measurement.sample_key or "SUMMARY"
+                lines.append(
+                    f"{measurement.property_name} {sample} {value}{unit} {measurement.quality}".strip()
+                )
+            return "\n".join(lines)
         return str(getattr(row, "description", "") or "")
 
     @staticmethod
@@ -573,6 +627,8 @@ class RetrievalService:
             return _iso(getattr(row, "approved_at", None))
         if record_type == "recommendation":
             return _iso(getattr(row, "decided_at", None))
+        if record_type == "mud_report":
+            return _iso(getattr(row, "report_date", None))
         return _iso(getattr(row, "occurred_at", None))
 
     def _document_item(

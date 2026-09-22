@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -30,6 +29,7 @@ from .patterns import (
     get_pattern,
     link_rows,
     list_patterns,
+    mark_stale,
     propose_recommendation,
     set_pattern_status,
     signature_for,
@@ -119,6 +119,25 @@ class IntelligenceService:
     ) -> dict[str, Any]:
         with self._session(session) as active:
             return FieldIntelligence(active).npt(
+                field_id=field_id,
+                project_id=project_id,
+                well_id=well_id,
+                since=since,
+                until=until,
+            )
+
+    def mud(
+        self,
+        *,
+        field_id: str = "",
+        project_id: str = "",
+        well_id: str = "",
+        since: object = None,
+        until: object = None,
+        session: Session | None = None,
+    ) -> dict[str, Any]:
+        with self._session(session) as active:
+            return FieldIntelligence(active).mud(
                 field_id=field_id,
                 project_id=project_id,
                 well_id=well_id,
@@ -340,18 +359,16 @@ class IntelligenceService:
     def pattern_staleness(
         self, pattern_id: str, *, session: Session | None = None
     ) -> dict[str, Any]:
-        """Re-run one snapshot's own query and report what has moved since it was taken."""
+        """Purely re-run one snapshot's query; this method never writes stale state."""
         with self._session(session) as active:
-            report = staleness(active, pattern_id)
-            row = get_pattern(active, pattern_id)
-            if report["stale"] and row.stale_at is None:
-                # The flag is written once, on the first re-check that finds the numbers have moved: a
-                # pattern that goes stale and is refreshed keeps a traceable date rather than a rolling
-                # one that hides how long it has been out of date.
-                row.stale_at = datetime.now(UTC)
-                row.stale_snapshot = report["differences"]
-                active.flush()
-            return report
+            return staleness(active, pattern_id)
+
+    def mark_pattern_stale(
+        self, pattern_id: str, *, session: Session | None = None
+    ) -> dict[str, Any]:
+        """Explicitly persist the first observed stale state for one pattern."""
+        with self._session(session) as active:
+            return mark_stale(active, pattern_id)
 
     def confirm_pattern(
         self,

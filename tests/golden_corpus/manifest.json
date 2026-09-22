@@ -1,0 +1,119 @@
+{
+  "name": "prog-proc-v3-forensic-corpus",
+  "builder": "tests.fixtures.generate.build_v3_forensic_corpus",
+  "deterministic": true,
+  "case_count": 12,
+  "materialized_under": "pytest tmp_path only",
+  "files": [
+    {
+      "filename": "well_a3_program_rev12.pdf",
+      "classification": "DRILLING_PROGRAM",
+      "contract": "document:DRILLING_PROGRAM:promotion:v2",
+      "expected": "PROMOTED",
+      "domain_models": ["drilling_program", "program_target", "well_section"],
+      "scope": "well A-3",
+      "checks": ["planned-depth-unit", "planned-not-actual", "revision-provenance", "idempotence"]
+    },
+    {
+      "filename": "daily_drilling_report_well-a3.docx",
+      "classification": "DDR",
+      "contract": "document:DDR:promotion:v2",
+      "expected": "PROMOTED",
+      "domain_models": ["ddr_report", "well_operation", "well_event", "npt_record", "problem_occurrence"],
+      "scope": "well A-3",
+      "checks": ["activity-breakdown", "NPT-code-only", "total-not-double-counted", "provenance", "idempotence"]
+    },
+    {
+      "filename": "npt_summary_2025-06.csv",
+      "classification": "NPT",
+      "contract": "document:NPT:promotion:v2",
+      "expected": "PROMOTED",
+      "domain_models": ["ddr_report", "well_operation", "well_event", "npt_record", "problem_occurrence"],
+      "scope": "rows A-3 and B-11",
+      "checks": ["row-well-linkage", "unknown-well-refusal", "duration-unit", "zero-refusal", "idempotence"]
+    },
+    {
+      "filename": "mud_report_well-a3.xlsx",
+      "classification": "MUD_REPORT",
+      "contract": "document:MUD_REPORT:promotion:v3",
+      "expected": "PROMOTED",
+      "domain_models": ["mud_report", "mud_measurement"],
+      "scope": "well A-3",
+      "checks": ["summary-and-daily-rows", "source-unit-preservation", "section-null-semantics", "idempotence", "confirmed-replacement"]
+    },
+    {
+      "filename": "lesson_learned_ll-2025-014.txt",
+      "classification": "LESSON_LEARNED",
+      "contract": null,
+      "expected": "UNSUPPORTED",
+      "domain_models": [],
+      "scope": "well-linked evidence",
+      "checks": ["knowledge-provenance", "human-confirmation-boundary"]
+    },
+    {
+      "filename": "scanned_well_b11_report.pdf",
+      "classification": "OTHER",
+      "contract": null,
+      "expected": "UNSUPPORTED",
+      "domain_models": [],
+      "scope": "unreadable scan",
+      "checks": ["degraded-extraction-visible", "failed-or-missing-text-preserved", "no-fabricated-domain-row"]
+    },
+    {
+      "filename": "bha_report_well-a3.txt",
+      "classification": "BHA_REPORT",
+      "contract": null,
+      "expected": "UNSUPPORTED",
+      "domain_models": [],
+      "scope": "well A-3 evidence",
+      "checks": ["classification-evidence", "stored-extraction", "explicit-denial"]
+    },
+    {
+      "filename": "bit_record_well-a3.txt",
+      "classification": "BIT_RECORD",
+      "contract": null,
+      "expected": "UNSUPPORTED",
+      "domain_models": [],
+      "scope": "well A-3 evidence",
+      "checks": ["classification-evidence", "stored-extraction", "explicit-denial"]
+    },
+    {
+      "filename": "directional_survey_well-a3.csv",
+      "classification": "DIRECTIONAL_SURVEY",
+      "contract": null,
+      "expected": "UNSUPPORTED",
+      "domain_models": [],
+      "scope": "well A-3 evidence",
+      "checks": ["tabular-shape", "stored-extraction", "no-trajectory-writer"]
+    },
+    {
+      "filename": "casing_report_well-a3.txt",
+      "classification": "CASING_REPORT",
+      "contract": null,
+      "expected": "UNSUPPORTED",
+      "domain_models": [],
+      "scope": "well A-3 evidence",
+      "checks": ["classification-evidence", "stored-extraction", "explicit-denial"]
+    },
+    {
+      "filename": "well_control_kill_sheet_well-a3.txt",
+      "classification": "WELL_CONTROL",
+      "contract": null,
+      "expected": "UNSUPPORTED",
+      "domain_models": [],
+      "scope": "well A-3 evidence",
+      "checks": ["classification-evidence", "stored-extraction", "no-event-writer"]
+    },
+    {
+      "filename": "service_report_well-a3.txt",
+      "classification": "SERVICE_REPORT",
+      "contract": null,
+      "expected": "UNSUPPORTED",
+      "domain_models": [],
+      "scope": "well A-3 evidence",
+      "checks": ["classification-evidence", "stored-extraction", "no-service-writer"]
+    }
+  ],
+  "field_ground_truth": "tests.fixtures.generate.GROUND_TRUTH",
+  "negative_ground_truth": "tests.fixtures.generate.NEGATIVE_TRUTH"
+}
