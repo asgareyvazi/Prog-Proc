@@ -8,6 +8,8 @@ quietly dropped by a read path written before the domain existed.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy import select
 from tests.fixtures.fieldops import fetch, register_wells, well_id_for
@@ -532,3 +534,62 @@ def test_the_v4_writers_leave_the_document_registry_intact(workspace) -> None:
     assert len(fetch(workspace, BhaReport)) == 1
     assert len(fetch(workspace, SurveyRun)) == 1
     assert len(fetch(workspace, BitRecord)) == 2
+
+
+def test_doctor_names_the_v4_rows_the_index_has_not_seen(workspace, capsys) -> None:
+    """Promoted V4 rows are structured records, so an unbuilt index is a finding, not a silence.
+
+    The existing doctor test proves the finding fires for a lesson.  V4 added five more tables to
+    ``STRUCTURED_RECORD_TYPES``, and a counter that silently ignored them would report a clean index
+    over a workspace whose assemblies, bit runs and stations no search could reach.  Promotion does
+    not build the index - that is a separate, deliberate act - so this is the expected state of a
+    freshly promoted workspace, and doctor has to say so and exit non-zero.
+    """
+    from drilling_intelligence.cli.app import build_parser
+
+    def doctor() -> tuple[int, dict]:
+        """Run ``doctor --json`` and read its payload.
+
+        ``--json`` writes the document to stdout, but a library may also print a deprecation notice
+        there first.  The payload is parsed from the first brace rather than from the whole buffer,
+        because a warning is not a reason for the command's own contract to look broken.
+        """
+        parsed = parser.parse_args(["doctor", "--workspace", str(workspace.root), "--json"])
+        code = parsed.handler(parsed)
+        text = capsys.readouterr().out
+        payload, _end = json.JSONDecoder().raw_decode(text[text.index("{") :])
+        return code, payload
+
+    _v4_workspace(workspace)
+    parser = build_parser()
+    code, payload = doctor()
+
+    assert code == 1, payload
+    # The promoted corpus holds exactly 18 structured rows: 5 npt_record, 3 problem_occurrence,
+    # 3 well_event, 2 problem_definition, 2 bit_record, and 1 each of bha_report, survey_run and
+    # mud_report.  The exact number is asserted because a V4 *parent* silently dropped from
+    # ``STRUCTURED_RECORD_TYPES`` would still leave this greater than zero, and would read as "the
+    # index is merely behind" rather than as "this domain is unsearchable".
+    #
+    # ``bha_component`` and ``survey_station`` are deliberately absent from that list: children are
+    # reached through their parent, which is the same rule review follows.  If a child table is ever
+    # added to the index, this number moves and the reason has to be stated here.
+    assert payload["index"]["structured_missing"] == 18, payload["index"]
+    finding = [line for line in payload["findings"] if "structured row(s)" in line]
+    assert finding, payload["findings"]
+    assert "index rebuild" in finding[0], finding[0]
+
+    # Rebuilding is what closes *this* finding, so it describes a real gap rather than a counter that
+    # can never be satisfied.  ``doctor`` still exits 1 afterwards - this corpus carries unresolved
+    # knowledge conflicts, which is a different finding about a different layer and is none of the
+    # index's business.  What is asserted is that the structured-index finding specifically is gone.
+    rebuild = parser.parse_args(["index", "rebuild", "--workspace", str(workspace.root)])
+    assert rebuild.handler(rebuild) == 0
+    capsys.readouterr()
+    after_code, after_payload = doctor()
+    assert after_payload["index"]["structured_missing"] == 0, after_payload["index"]
+    assert not [line for line in after_payload["findings"] if "structured row(s)" in line], (
+        after_payload["findings"]
+    )
+    assert after_code == 1, after_payload
+    assert after_payload["knowledge"]["open_conflicts"] > 0, after_payload["knowledge"]

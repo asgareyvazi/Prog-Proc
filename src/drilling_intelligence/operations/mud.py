@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .tableshape import (
+    DEFAULT_UNIT_TOKENS,
     alias_column,
     cell_text,
     header_index,
@@ -48,6 +49,13 @@ _MUD_VALUE_UNITS: tuple[str, ...] = (
 )
 #: The mud label vocabulary, which additionally treats ``ft``/``m`` as decoration on a depth label.
 _MUD_LABEL_UNITS: tuple[str, ...] = ("ft", "m", *_MUD_VALUE_UNITS)
+
+#: The vocabulary a *header* parenthetical is checked against.  This is deliberately wider than the
+#: in-cell value vocabulary: a column labelled ``Hole Size (in)`` or ``Time (h)`` states a unit in its
+#: header, not behind each number, and dropping it would store a real measurement as ``UNVERIFIED``.
+#: It is still a closed, explicit list - the union of two existing vocabularies - so an annotation such
+#: as ``Remarks (optional)`` is rejected rather than mistaken for a unit.
+_MUD_HEADER_UNITS: tuple[str, ...] = (*_MUD_LABEL_UNITS, *DEFAULT_UNIT_TOKENS)
 
 # Canonical names are a deliberately closed vocabulary.  The source label remains on every emitted
 # entry, so a later contract can add a label without rewriting the stored artefact or changing the
@@ -140,7 +148,7 @@ def numeric(value: Any) -> float | None:
 
 
 def header_unit(header: Any, default: str = "") -> str:
-    return _shared_header_unit(header, default, _MUD_VALUE_UNITS)
+    return _shared_header_unit(header, default, _MUD_HEADER_UNITS)
 
 
 @dataclass(frozen=True)

@@ -1,10 +1,10 @@
-# Document/domain coverage matrix (V3 authority)
+# Document/domain coverage matrix (V4 authority)
 
 **Status:** authoritative source-derived registry and certification index
-**As of:** 2026-09-22 (Asia/Tehran)
+**As of:** 2026-09-23 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
-**Branch:** `arena/01a0b7fd-prog-proc`
-**Inspected HEAD before final validation:** `b7703baf35abd84881432a93264a979c33751c6c`
+**Branch:** `arena/01a0c936-prog-proc`
+**Inspected HEAD before final validation:** `f6a997613812d67d54386b6434ce3d8e7bdc1c7a`
 **Contract source:** `src/drilling_intelligence/operations/contracts.py`
 **Forensic corpus:** `tests/golden_corpus/manifest.json`
 
@@ -18,15 +18,16 @@ entity, filename, folder, search hit or approval stamp is not permission to writ
 | --- | ---: | --- |
 | `DocumentClassification` members | **26** | `core/enums.py` |
 | explicit static contracts | **26** | `contract_registry()` import-time completeness guard |
-| domain handlers | **5** | `program`, `report`, `mud_report` (DDR/NPT/TIME_BREAKDOWN share the named `report` handler) |
-| `END_TO_END_CERTIFIED` | **5** | drilling program, DDR, NPT, mud report, time breakdown |
+| domain handlers | **6** | `program`, `report`, `mud_report`, `bha_report`, `bit_record`, `directional_survey` (DDR/NPT/TIME_BREAKDOWN share the named `report` handler) |
+| `END_TO_END_CERTIFIED` | **8** | drilling program, DDR, NPT, mud report, time breakdown, BHA report, bit record, directional survey |
 | `DOMAIN_PROMOTABLE` but not end-to-end certified | **0** | no remaining restricted domain writer |
-| `KNOWLEDGE_SUPPORTED`, no domain writer | **16** | explicit deny-by-no-handler registry entries |
+| `KNOWLEDGE_SUPPORTED`, no domain writer | **13** | explicit deny-by-no-handler registry entries |
 | `EXTRACT_ONLY`, no type-specific knowledge/domain contract | **5** | explicit deny-by-no-handler registry entries |
-| deterministic V3 corpus cases | **12** | `build_v3_forensic_corpus()` and `test_v3_forensic_corpus.py` |
+| deterministic V4 corpus cases | **14** | `build_v4_forensic_corpus()` and `test_v4_forensic_corpus.py` |
 
-The five handler entries preserve the V2 contract IDs for existing writers. `MUD_REPORT` is the only
-new writer and is explicitly revisioned `v3`; no existing contract ID was silently changed.
+The six handler entries preserve the V2 contract IDs for existing writers. `MUD_REPORT` is revisioned
+`v3`; `BHA_REPORT`, `BIT_RECORD` and `DIRECTIONAL_SURVEY` are revisioned `v4`. No existing contract ID
+was silently changed: 22 contracts remain `v2`, 1 is `v3`, 3 are `v4`.
 
 ## Capability meanings
 
@@ -46,14 +47,14 @@ new writer and is explicitly revisioned `v3`; no existing contract ID was silent
 can be stored but the classifier has no dedicated positive signature. **Knowledge-supported** does not
 mean a specialized writer exists. **Target models** are the only tables a contract is allowed to write.
 
-| # | Classification | Classify | Extract | Knowledge | Static level | Handler / target | Review/search | V3 disposition and source decision |
+| # | Classification | Classify | Extract | Knowledge | Static level | Handler / target | Review/search | Disposition and source decision |
 | ---: | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | `DRILLING_PROGRAM` | yes | yes | yes | `END_TO_END_CERTIFIED` | `program` -> `drilling_program`, `program_target`, planned `well_section` | yes | Certified; planned values and actual section values stay distinct. |
 | 2 | `DDR` | yes | yes | yes | `END_TO_END_CERTIFIED` | `report` -> `ddr_report`, `well_operation`, `well_event`, `npt_record`, `problem_occurrence` | yes | Certified; typed/table rows only, not narrative guessing. |
 | 3 | `MUD_REPORT` | yes | yes | yes | `END_TO_END_CERTIFIED` | `mud_report` -> `mud_report`, `mud_measurement` | yes | **Admitted V3.** Summary and repeated daily values retain source units, sample identity and locators. |
-| 4 | `BHA_REPORT` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no BHA authoritative table or deterministic writer is registered. |
-| 5 | `BIT_RECORD` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no bit-run writer is registered. |
-| 6 | `DIRECTIONAL_SURVEY` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no trajectory/survey writer or calculation contract is registered. |
+| 4 | `BHA_REPORT` | yes | yes | yes | `END_TO_END_CERTIFIED` | `bha_report` -> `bha_report`, `bha_component` | yes | **Admitted V4.** A component *tally* is promoted; a prose BHA narrative carries the same classification but is refused by shape. No inferred component type beyond the closed alias set. |
+| 5 | `BIT_RECORD` | yes | yes | yes | `END_TO_END_CERTIFIED` | `bit_record` -> `bit_record` | yes | **Admitted V4.** Source-stated bit runs only; a BHA link is made only on an exact, unambiguous same-well number, else left NULL and reported. No footage/ROP/wear calculation. |
+| 6 | `DIRECTIONAL_SURVEY` | yes | yes | yes | `END_TO_END_CERTIFIED` | `directional_survey` -> `survey_run`, `survey_station` | yes | **Admitted V4.** Stations are stored as reported. TVD/northing/easting/DLS are preserved only when the source states them; no trajectory mathematics or interpolation. |
 | 7 | `CEMENT_REPORT` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no cement-job writer is registered. |
 | 8 | `CASING_REPORT` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no casing-run writer is registered. |
 | 9 | `WELL_CONTROL` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no automatic well-control event writer is registered. |
@@ -78,17 +79,27 @@ mean a specialized writer exists. **Target models** are the only tables a contra
 ### Static contracts and required evidence
 
 ```text
-DRILLING_PROGRAM -> document:DRILLING_PROGRAM:promotion:v2 -> program
-DDR              -> document:DDR:promotion:v2              -> report
-NPT              -> document:NPT:promotion:v2              -> report
-TIME_BREAKDOWN   -> document:TIME_BREAKDOWN:promotion:v2  -> report
-MUD_REPORT       -> document:MUD_REPORT:promotion:v3       -> mud_report
+DRILLING_PROGRAM   -> document:DRILLING_PROGRAM:promotion:v2   -> program
+DDR                -> document:DDR:promotion:v2                -> report
+NPT                -> document:NPT:promotion:v2                -> report
+TIME_BREAKDOWN     -> document:TIME_BREAKDOWN:promotion:v2     -> report
+MUD_REPORT         -> document:MUD_REPORT:promotion:v3         -> mud_report
+BHA_REPORT         -> document:BHA_REPORT:promotion:v4         -> bha_report
+BIT_RECORD         -> document:BIT_RECORD:promotion:v4         -> bit_record
+DIRECTIONAL_SURVEY -> document:DIRECTIONAL_SURVEY:promotion:v4 -> directional_survey
 ```
 
 The mud contract requires a stored extraction, a recognised summary label/value/unit shape, a repeated
 sample-labelled daily table, preserved source units, row/table provenance, a linked well and explicit
 section resolution. A missing or ambiguous section is represented by `section_id = NULL`; it is never
 filled from MD/TVD, row order, filename, nearest depth or a UI selection.
+
+The three V4 contracts add their own required-evidence gate on top of the same rule. `BHA_REPORT`
+requires a component description column plus at least one sizing column; `BIT_RECORD` requires a
+bit-number column plus at least one measurement column; `DIRECTIONAL_SURVEY` requires measured-depth,
+inclination and azimuth columns. Each is a narrow, named contract rather than a general table reader:
+a source that carries the classification but not the shape is refused with `NO_RECOGNISED_TABLE` and
+written nowhere.
 
 ## Outcome taxonomy
 
@@ -109,8 +120,10 @@ contract ID, eligibility, outcome, row-level counts, skip reasons and details.
 - Knowledge extraction reads stored artefacts and cannot become a source writer.
 - Review is read-only until a human action is explicitly submitted; field/project review uses the
   existing review contract, not a second persistence state.
-- The only executable engineering calculation remains the explicit NPT roll-up. Mud values are not
-  converted or recalculated in promotion, indexing, review, search or staleness.
+- The only executable engineering calculation remains the explicit NPT roll-up. Mud, BHA, bit and
+  survey values are not converted or recalculated in promotion, indexing, review, search or
+  staleness: footage, ROP, bit wear, dull grade, TVD, northing, easting, dogleg severity and
+  trajectory are never derived when the source did not state them.
 - Approval/status fields are not confirmation: admitted rows start as `CANDIDATE`. `CONFIRMED` requires
   an actor through the existing confirmation lifecycle.
 

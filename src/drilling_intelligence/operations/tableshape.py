@@ -138,14 +138,25 @@ def alias_column(
 
 
 def numeric(value: Any, units: Sequence[str] = DEFAULT_UNIT_TOKENS) -> float | None:
-    """Parse a numeric source cell without converting units or accepting formulas."""
+    """Parse a numeric source cell without converting units or accepting formulas.
+
+    Commas are accepted only as thousands separators, in a grouping that can only mean that
+    (``"1,234"``, ``"1,234,567.5"``).  A comma anywhere else makes the cell ambiguous rather than
+    numeric - ``"12,5"`` is twelve and a half in much of the world and would otherwise be silently
+    read as 125, a tenfold error with no diagnostic behind it.  An ambiguous cell is left unparsed
+    so the caller records no value, which is the same thing it does for any text it cannot read.
+    """
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
-    text = str(value).strip().replace(",", "")
+    text = str(value).strip()
     if not text or text.startswith("="):
         return None
+    if "," in text:
+        if not re.fullmatch(r"[-+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?", text):
+            return None
+        text = text.replace(",", "")
     unit_pattern = "|".join(re.escape(unit) for unit in units)
     if unit_pattern:
         text_pattern = rf"[-+]?\d+(?:\.\d+)?(?:\s*(?:{unit_pattern}))?"
@@ -163,17 +174,32 @@ def numeric(value: Any, units: Sequence[str] = DEFAULT_UNIT_TOKENS) -> float | N
 def header_unit(header: Any, default: str = "", units: Sequence[str] = DEFAULT_UNIT_TOKENS) -> str:
     """The unit a header states, if it states one.  Never the unit a property usually uses.
 
-    Only a **parenthesised** unit is read, and that restriction is load-bearing rather than
-    conservative: ``"Depth In (ft)"`` contains the word ``in`` as part of the column's *name*, and a
-    header search that accepted a bare token would stamp every depth in a bit record with inches
-    instead of feet.  ``"Depth In ft"`` is worse - there is no way to tell the unit from the name at
-    all - so it reads as no unit, which is what the source actually stated.  A measurement whose unit
-    the header does not delimit is stored ``UNVERIFIED`` rather than given a confident, wrong unit;
-    the value is never converted either way.
+    Two restrictions, both load-bearing rather than conservative:
+
+    *   Only a **parenthesised** unit is read.  ``"Depth In (ft)"`` contains the word ``in`` as part
+        of the column's *name*, and a header search that accepted a bare token would stamp every
+        depth in a bit record with inches instead of feet.  ``"Depth In ft"`` is worse still - there
+        is no way to tell the unit from the name at all - so it reads as no unit.
+    *   The parenthetical must itself be a unit the calling contract declares.  Sources annotate
+        headers with clarifications that are not units (``"Remarks (optional)"``,
+        ``"Qty (approx)"``, ``"Description (from tally sheet)"``, ``"Serial No (S/N)"``), and taking
+        any bracketed text as a unit would store one of those sentences in a 16-character unit
+        column *and* mark the measurement verified, because a measurement's quality is derived from
+        whether its unit is known.  An unrecognised parenthetical is a clarification the source
+        printed, not a unit, so the measurement stays ``UNVERIFIED``.
+
+    The vocabulary is the contract's own ``units`` argument, so this stays generic: no domain's
+    units are special-cased here, and a contract widens its units by declaring them.
     """
     text = str(header or "")
     parenthesised = re.search(r"\(([^)]+)\)", text)
-    return parenthesised.group(1).strip() if parenthesised and parenthesised.group(1).strip() else default
+    if not parenthesised:
+        return default
+    candidate = parenthesised.group(1).strip()
+    if not candidate:
+        return default
+    declared = {normalise_label(unit) for unit in units}
+    return candidate if normalise_label(candidate) in declared else default
 
 
 def table_key(table: Mapping[str, Any]) -> str:

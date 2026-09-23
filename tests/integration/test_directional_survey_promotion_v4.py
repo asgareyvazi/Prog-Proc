@@ -347,3 +347,29 @@ def test_the_workspace_summary_reports_the_survey_domain(workspace) -> None:
     summary = OperationalService.for_workspace(workspace).report()
     assert summary["survey_runs"] == 1
     assert summary["survey"] == {"runs": 1, "stations": 5}
+
+
+def test_one_survey_set_naming_two_sections_attaches_neither(workspace) -> None:
+    """A set that spans two named sections has not told us which section owns it.
+
+    ``_explicit_section`` refuses when explicit attributes match more than one durable section, but
+    that is a different refusal from this one: here the *source* disagrees with itself inside a single
+    run.  Guessing the first, the deepest or the most frequent name would file a station under a hole
+    section the surveying company never said it was in, so the run is promoted with no section and the
+    disagreement is reported.
+    """
+    ingest_v4(workspace)
+    _write(
+        workspace,
+        "Station,Section,MD (ft),Inclination (deg),Azimuth (deg)\n"
+        "1,13 3/8 in,9000,1.2,140.5\n"
+        "2,9 5/8 in,9250,2.4,141.8\n",
+    )
+    reingest(workspace)
+    result = promote_file(workspace, FILE)
+    assert {item["reason"] for item in result.skipped} >= {"AMBIGUOUS_SECTIONS"}, result.to_dict()
+    # Both stations survive; the ambiguity is about scope, not about whether the rows are real.
+    assert result.counts["survey_station"]["created"] == 2, result.to_dict()
+    run = _run(workspace)
+    assert run.section_id is None
+    assert run.section_resolution == "NOT_STATED", run.section_resolution
