@@ -380,6 +380,151 @@ def build_scanned_pdf(path: Path) -> Path:
     return path
 
 
+#: The component tally of BHA run 14, in the order the source lists it.  Position is part of what a
+#: BHA is: the promoter keys a component on its position and its own words, not on the row it sat in.
+BHA_TALLY_ROWS: tuple[tuple[Any, ...], ...] = (
+    (1, "Drill collar 6-1/4 x 2-13/16", "Grant Prideco", "DC-625", "SN-1041", 6.25, 2.8125, 30.0, 8),
+    (2, "Stabilizer 6-1/2 in", "Baker Hughes", "BST-650", "SN-2207", 6.5, None, 8.5, 1),
+    (3, "PDM 5 in", "Schlumberger", "P513", "SN-8890", 5.0, 1.75, 29.0, 1),
+    (4, "MWD tool", "Halliburton", "GeoNavigator", "SN-3312", 4.75, None, 31.0, 1),
+    (5, "Drilling jar", "Bowen", "QJB-675", "SN-5540", 6.75, 2.25, 24.0, 1),
+    (6, "Heavy weight drill pipe 5 in", "TMK", "HW500", None, 5.0, 3.0, 30.0, 15),
+)
+
+#: The bit runs of well A-3.  Bit 13 replaced bit 12: two runs, two rows, and the earlier one is
+#: history rather than an overwritten value.
+BIT_TALLY_ROWS: tuple[tuple[Any, ...], ...] = (
+    (
+        "12", "1", "A-3", "Smith", "PDC", "M1655SS", "SN-4471", 8.5, 3500.0, 9100.0, 5600.0,
+        96.0, 61.0, "TD - casing point", "WT-1-NO-X-I-NO", "3 x 16, 3 x 13", "13",
+    ),
+    (
+        "13", "2", "A-3", "Security DBS", "PDC", "S1533SRS", "SN-9082", 8.5, 9100.0, 10125.0, 1025.0,
+        22.0, 18.5, "Change BHA for MWD", "BT-2-WO-A-CT-NO", "4 x 16", "14",
+    ),
+)
+
+#: The survey stations of one set.  Station numbers are the source's own identity; ``sequence`` in the
+#: promoted row mirrors the order below and is not a re-derivation of it.
+SURVEY_STATION_ROWS: tuple[tuple[Any, ...], ...] = (
+    (1, 9000.0, 8995.4, 1.2, 140.5, 0.0, 0.4, 6712345.1, 432156.2, "2025-06-12"),
+    (2, 9250.0, 9244.1, 2.4, 141.8, 12.0, 0.9, 6712594.6, 432171.4, "2025-06-12"),
+    (3, 9500.0, 9490.9, 4.1, 143.2, 8.5, 1.4, 6712845.3, 432186.9, "2025-06-13"),
+    (4, 9750.0, 9734.6, 6.3, 144.0, 15.0, 2.1, 6713097.8, 432202.7, "2025-06-13"),
+    (5, 10000.0, 9972.5, 8.2, 142.4, 4.0, 1.1, 6713352.9, 432218.8, "2025-06-14"),
+)
+
+
+def build_bha_tally_xlsx(path: Path) -> Path:
+    """A bottom hole assembly report: a header block plus a real component tally.
+
+    The tally is the thing being certified, so it carries the columns a tally actually has - position,
+    the component's own words, who made it, its serial number and its dimensions - and nothing the
+    source could not have printed.  There is no total length row: an assembly length is the driller's
+    arithmetic, not the source's data, and a fixture that supplied one would invite the promoter to
+    read a number nobody measured.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    summary = workbook.active
+    summary.title = "Summary"
+    summary["A1"] = "ACME DRILLING - WELL A-3 BHA REPORT"
+    rows = [
+        ("Well", "A-3", "", ""),
+        ("Field", "North Cormorant", "", ""),
+        ("BHA No", "14", "", ""),
+        ("Report date", "2025-06-14", "", ""),
+        ("Hole size", "8.5", "in", "8 1/2 in intermediate hole"),
+        ("From MD", 9000.0, "ft", "Run start"),
+        ("To MD", 10125.0, "ft", "Run end"),
+        ("Assembly", "8 1/2 in BHA run 14", "", ""),
+    ]
+    for index, row in enumerate(rows, start=3):
+        for column, value in enumerate(row, start=1):
+            summary.cell(row=index, column=column, value=value)
+
+    tally = workbook.create_sheet("BHA Tally")
+    tally.append(
+        [
+            "No",
+            "Description",
+            "Make",
+            "Model",
+            "Serial No",
+            "OD (in)",
+            "ID (in)",
+            "Length (ft)",
+            "Qty",
+        ]
+    )
+    for component in BHA_TALLY_ROWS:
+        tally.append(list(component))
+    tally.append(["", "", "", "", "", "", "", "", ""])
+    tally.append(["", "Assembly sketch filed separately", "", "", "", "", "", "", ""])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(path)
+    return path
+
+
+def build_bit_tally_xlsx(path: Path) -> Path:
+    """A bit record sheet: one row per bit run, in the columns a bit record actually uses.
+
+    ``Footage`` is printed by the source.  It is deliberately *not* the difference of the two depths:
+    a fixture that made it so would hide the difference between "the source stated the footage" and
+    "the platform computed it", which is exactly the distinction the bit contract exists to keep.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Bit Record"
+    sheet["A1"] = "ACME DRILLING - WELL A-3 BIT RECORD"
+    sheet.append(
+        [
+            "Bit No",
+            "Run",
+            "Well",
+            "Make",
+            "Type",
+            "IADC",
+            "Serial No",
+            "Size (in)",
+            "Depth In (ft)",
+            "Depth Out (ft)",
+            "Footage (ft)",
+            "Rotating Hours",
+            "Drilling Hours",
+            "Pull Reason",
+            "Dull Grade",
+            "Nozzle Size",
+            "BHA No",
+        ]
+    )
+    for run in BIT_TALLY_ROWS:
+        sheet.append(list(run))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(path)
+    return path
+
+
+def build_directional_survey_csv(path: Path) -> Path:
+    """A directional survey as a surveying company delivers it: numbered stations with their units.
+
+    TVD, northing, easting and DLS are present because this source states them.  The platform stores
+    them and does not recompute them: there is no trajectory calculation anywhere in the system, so a
+    survey that omits them stores only what the source measured.
+    """
+    header = (
+        "Station,MD (ft),TVD (ft),Inclination (deg),Azimuth (deg),"
+        "Toolface (deg),DLS (deg/100ft),Northing (ft),Easting (ft),Date\n"
+    )
+    body = "".join(",".join(str(value) for value in row) + "\n" for row in SURVEY_STATION_ROWS)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(header + body, encoding="utf-8")
+    return path
+
+
 def build_placeholder_scan() -> bytes:
     """A tiny PNG with dark marks, enough to make a page look scanned."""
     import struct
@@ -423,9 +568,10 @@ BUILDERS = {
     "scanned_well_b11_report.pdf": build_scanned_pdf,
 }
 
-# Six additional source-shaped cases keep the V3 forensic corpus broad without silently adding a
-# domain writer.  They are intentionally text/CSV fixtures: the classifier must recognise the real
-# class evidence, while promotion must report the explicit static denial for each one.
+# Additional source-shaped cases keep the forensic corpus broad.  These five are prose/kill-sheet
+# fixtures: the classifier must recognise the real class evidence, while promotion must report the
+# explicit static denial for each one.  A BHA or bit *narrative* is not a tally, and admitting it
+# would let any document that mentions a stabilizer become a bottom hole assembly.
 V3_FORENSIC_TEXT = {
     "bha_report_well-a3.txt": (
         "BHA report - bottom hole assembly 14.\n"
@@ -434,9 +580,6 @@ V3_FORENSIC_TEXT = {
     "bit_record_well-a3.txt": (
         "Bit record - bit no. 13, IADC 1-1-1.\n"
         "Nozzle sizes, time on bit 22 h, footage drilled 345 ft, bearing seal condition.\n"
-    ),
-    "directional_survey_well-a3.csv": (
-        "MD,TVD,Inclination,Azimuth,DLS\n10000,9720,8.2,142.4,1.1\n"
     ),
     "casing_report_well-a3.txt": (
         "Casing running report and casing tally.\n"
@@ -471,20 +614,63 @@ def build_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Pa
     return written
 
 
-def build_v3_forensic_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Path]:
-    """Write the 12-case V3 corpus: the six operational fixtures plus six explicit denials."""
+#: The three V4 domain sources.  They are separate from :data:`BUILDERS` because the six-file corpus
+#: is the fixed operational baseline half the suite asserts against; these are the corpus the V4
+#: contracts are certified on.
+V4_FORENSIC_BUILDERS = {
+    "bha_tally_well-a3.xlsx": build_bha_tally_xlsx,
+    "bit_tally_well-a3.xlsx": build_bit_tally_xlsx,
+    "directional_survey_well-a3.csv": build_directional_survey_csv,
+}
+
+
+#: The six operational fixtures plus the three V4 domains.  Kept separate from :data:`BUILDERS` so
+#: the operational baseline every other suite asserts on stays exactly six files, while the V4 tests
+#: get a corpus that exercises the new writers alongside the ones they were built next to.
+V4_OPERATIONAL_BUILDERS: dict[str, Any] = {**BUILDERS, **V4_FORENSIC_BUILDERS}
+
+
+def build_v4_operational_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Path]:
+    """Write the nine-file operational corpus: six operational fixtures plus the three V4 sources."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+    for name, builder in V4_OPERATIONAL_BUILDERS.items():
+        if name.startswith("scanned_") and not include_scan:
+            continue
+        written[name] = builder(root / name)
+    return written
+
+
+def build_v4_forensic_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Path]:
+    """Write the 14-case V4 corpus: six operational, three V4 domains, five explicit denials.
+
+    ``bha_report_well-a3.txt`` and ``bit_record_well-a3.txt`` stay in the corpus on purpose.  They are
+    the same *classification* as the structured tallies and not the same *contract*: a prose BHA
+    narrative is retained as evidence and produces no authoritative row, which is the boundary the V4
+    writers must not cross.
+    """
     written = build_corpus(root, include_scan=include_scan)
     for name, text in V3_FORENSIC_TEXT.items():
         written[name] = _write_v3_text(Path(root) / name, text)
+    for name, builder in V4_FORENSIC_BUILDERS.items():
+        written[name] = builder(Path(root) / name)
     return written
 
 
 __all__ = [
+    "BHA_TALLY_ROWS",
+    "BIT_TALLY_ROWS",
     "BUILDERS",
     "GROUND_TRUTH",
+    "SURVEY_STATION_ROWS",
     "V3_FORENSIC_TEXT",
+    "V4_FORENSIC_BUILDERS",
+    "build_bha_tally_xlsx",
+    "build_bit_tally_xlsx",
     "build_corpus",
     "build_ddr_docx",
+    "build_directional_survey_csv",
     "build_lesson_txt",
     "build_mud_report_xlsx",
     "build_npt_csv",
@@ -492,5 +678,5 @@ __all__ = [
     "build_program_pdf",
     "build_scanned_pdf",
     "build_time_breakdown_csv",
-    "build_v3_forensic_corpus",
+    "build_v4_forensic_corpus",
 ]

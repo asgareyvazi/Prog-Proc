@@ -1688,6 +1688,41 @@ _LIST_COLUMNS: dict[str, list[tuple[str, int]]] = {
         ("is_current", 10),
         ("status", 12),
     ],
+    "bha": [
+        ("id", 30),
+        ("bha_number", 12),
+        ("report_date", 12),
+        ("component_count", 10),
+        ("top_depth_value", 12),
+        ("bottom_depth_value", 12),
+        ("section_resolution", 14),
+        ("is_current", 10),
+        ("status", 12),
+    ],
+    "bit": [
+        ("id", 30),
+        ("bit_number", 10),
+        ("run_number", 8),
+        ("iadc_code", 12),
+        ("size_value", 10),
+        ("depth_in_value", 12),
+        ("depth_out_value", 12),
+        ("footage_value", 12),
+        ("pull_reason", 20),
+        ("is_current", 10),
+        ("status", 12),
+    ],
+    "survey": [
+        ("id", 30),
+        ("run_label", 14),
+        ("survey_date", 12),
+        ("station_count", 10),
+        ("min_md_value", 12),
+        ("max_md_value", 12),
+        ("station_identity", 14),
+        ("is_current", 10),
+        ("status", 12),
+    ],
 }
 
 
@@ -1699,6 +1734,21 @@ def _list_records(repository: Any, args: argparse.Namespace, scope: dict[str, st
         return repository.list_reports(since=args.since, until=args.until, **common, **scope)
     if table == "mud":
         return repository.list_mud_reports(
+            since=args.since,
+            until=args.until,
+            current_only=not bool(getattr(args, "include_history", False)),
+            **common,
+            **scope,
+        )
+    # The source-versioned hardware/geometry domains read through the same operational repository the
+    # promotion wrote with, so the CLI cannot disagree with the review surface about what a row says.
+    if table in {"bha", "bit", "survey"}:
+        lister = {
+            "bha": repository.list_bha_reports,
+            "bit": repository.list_bit_records,
+            "survey": repository.list_survey_runs,
+        }[table]
+        return lister(
             since=args.since,
             until=args.until,
             current_only=not bool(getattr(args, "include_history", False)),

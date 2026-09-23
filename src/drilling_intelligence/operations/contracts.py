@@ -86,9 +86,11 @@ class PromotionContract:
 
 
 # These are the only admitted domain writers.  The first four preserve the V2
-# contracts; the narrow mud writer is the explicitly revisioned V3 addition.
-# They correspond to existing tables and repository methods; no
-# cost/invoice/survey/procedure writer is implied by the taxonomy or a knowledge entity.
+# contracts; the narrow mud writer is the explicitly revisioned V3 addition; the
+# BHA, bit-run and directional-survey writers are the explicitly revisioned V4
+# additions.  They correspond to existing tables and repository methods; no
+# cost/invoice/cement/casing/procedure writer is implied by the taxonomy or a
+# knowledge entity, and a classification that has no entry here cannot write one.
 _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
     DocumentClassification.DRILLING_PROGRAM: PromotionContract(
         classification=DocumentClassification.DRILLING_PROGRAM,
@@ -183,6 +185,71 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
         ),
         contract_revision="v3",
     ),
+    DocumentClassification.BHA_REPORT: PromotionContract(
+        classification=DocumentClassification.BHA_REPORT,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
+        handler="bha_report",
+        target_models=("bha_report", "bha_component"),
+        required_evidence=(
+            "stored_extraction",
+            "component_description_column",
+            "component_sizing_column",
+            "source_order_preserved",
+            "row_provenance",
+            "well_linkage",
+            "explicit_section_or_null",
+        ),
+        review_surface="DomainReviewService",
+        notes=(
+            "A component tally with an explicit header row: description plus at least one sizing column. "
+            "Components keep the source's order, words, identifiers and units; no type is inferred from "
+            "prose and no assembly total is computed."
+        ),
+        contract_revision="v4",
+    ),
+    DocumentClassification.BIT_RECORD: PromotionContract(
+        classification=DocumentClassification.BIT_RECORD,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
+        handler="bit_record",
+        target_models=("bit_record",),
+        required_evidence=(
+            "stored_extraction",
+            "bit_number_column",
+            "bit_measurement_column",
+            "row_provenance",
+            "well_linkage",
+        ),
+        review_surface="DomainReviewService",
+        notes=(
+            "A bit tally: a bit number column plus at least one of size/footage/rotating hours/drilling "
+            "hours/IADC code.  A replacement bit is a new run, never an edit of the previous one, and no "
+            "footage, ROP or grade is computed from anything else."
+        ),
+        contract_revision="v4",
+    ),
+    DocumentClassification.DIRECTIONAL_SURVEY: PromotionContract(
+        classification=DocumentClassification.DIRECTIONAL_SURVEY,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
+        handler="directional_survey",
+        target_models=("survey_run", "survey_station"),
+        required_evidence=(
+            "stored_extraction",
+            "measured_depth_column",
+            "inclination_column",
+            "azimuth_column",
+            "source_order_preserved",
+            "row_provenance",
+            "well_linkage",
+            "explicit_section_or_null",
+        ),
+        review_surface="DomainReviewService",
+        notes=(
+            "Stations carrying measured depth, inclination and azimuth in three distinct columns.  TVD, "
+            "northing, easting and dogleg severity are preserved only when the source supplied them; no "
+            "trajectory calculation exists in the platform and none is performed during ingestion."
+        ),
+        contract_revision="v4",
+    ),
 }
 
 
@@ -190,9 +257,6 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
 # contracts.  This is an explicit deny list, not an accidental fall-through.
 _KNOWLEDGE_SUPPORTED = frozenset(
     {
-        DocumentClassification.BHA_REPORT,
-        DocumentClassification.BIT_RECORD,
-        DocumentClassification.DIRECTIONAL_SURVEY,
         DocumentClassification.CEMENT_REPORT,
         DocumentClassification.CASING_REPORT,
         DocumentClassification.WELL_CONTROL,

@@ -36,7 +36,53 @@ def test_only_registered_handlers_are_domain_promotable() -> None:
         DocumentClassification.NPT: "report",
         DocumentClassification.TIME_BREAKDOWN: "report",
         DocumentClassification.MUD_REPORT: "mud_report",
+        DocumentClassification.BHA_REPORT: "bha_report",
+        DocumentClassification.BIT_RECORD: "bit_record",
+        DocumentClassification.DIRECTIONAL_SURVEY: "directional_survey",
     }
+
+
+def test_the_v4_writers_are_versioned_rather_than_silently_reattached() -> None:
+    """A new domain writer gets a new contract revision; an existing one keeps its id.
+
+    ``contract_id`` is what an operator's audit trail cites.  Attaching the V4 writers to the V2 id
+    would make an old certification read as if it had covered them, so each is explicitly revisioned
+    and the four V2 ids are unchanged.
+    """
+    revisions = {
+        contract.classification: contract.contract_revision
+        for contract in contract_registry()
+        if contract.domain_promotable
+    }
+    assert revisions == {
+        DocumentClassification.DRILLING_PROGRAM: "v2",
+        DocumentClassification.DDR: "v2",
+        DocumentClassification.NPT: "v2",
+        DocumentClassification.TIME_BREAKDOWN: "v2",
+        DocumentClassification.MUD_REPORT: "v3",
+        DocumentClassification.BHA_REPORT: "v4",
+        DocumentClassification.BIT_RECORD: "v4",
+        DocumentClassification.DIRECTIONAL_SURVEY: "v4",
+    }
+    assert sum(1 for contract in contract_registry() if contract.domain_promotable) == 8
+    assert (
+        sum(
+            1
+            for contract in contract_registry()
+            if contract.level == CoverageLevel.END_TO_END_CERTIFIED
+        )
+        == 8
+    )
+
+
+def test_a_promoted_domain_names_the_tables_it_is_allowed_to_write() -> None:
+    """Every writer declares its destination tables, so a new table cannot appear by accident."""
+    for contract in contract_registry():
+        if not contract.domain_promotable:
+            assert contract.target_models == (), contract.classification
+            continue
+        assert contract.target_models, contract.classification
+        assert contract.required_evidence, contract.classification
     assert all(
         contract.level in {CoverageLevel.END_TO_END_CERTIFIED, CoverageLevel.DOMAIN_PROMOTABLE}
         for contract in CONTRACTS.values()
@@ -65,9 +111,18 @@ def test_manifest_names_the_same_certified_contracts() -> None:
         expected = entry["contract"]
         assert (
             contract.contract_id if contract is not None and contract.domain_promotable else None
-        ) == expected
-        if entry["expected"] == "UNSUPPORTED":
-            assert contract is not None and not contract.domain_promotable
+        ) == expected, entry["filename"]
+        if entry["expected"] != "UNSUPPORTED":
+            # A promoted case must name the tables its writer is allowed to write.
+            assert contract is not None and contract.domain_promotable, entry["filename"]
+            assert set(entry["domain_models"]) <= set(contract.target_models), entry["filename"]
+        elif entry.get("denied_by") == "source-shape":
+            # The classification *has* a writer; this artefact does not satisfy its source contract.
+            assert contract is not None and contract.domain_promotable, entry["filename"]
+            assert entry["domain_models"] == [], entry["filename"]
+        else:
+            # No writer is registered for the classification at all.
+            assert contract is not None and not contract.domain_promotable, entry["filename"]
 
 
 def test_version_outcome_taxonomy_does_not_collapse_refusals_into_empty_success() -> None:

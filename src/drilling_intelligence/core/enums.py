@@ -231,6 +231,20 @@ class KnowledgeRelationType(StrEnumLike):
     SECTION_HAS_BIT = "SECTION_HAS_BIT"
     SECTION_HAS_MUD = "SECTION_HAS_MUD"
     SECTION_HAS_SURVEY = "SECTION_HAS_SURVEY"
+    # -- the V4 hardware and geometry domains -------------------------------
+    # A BHA, a bit run and a survey set are each one source-version's statement about the well, so
+    # each gets the same well-level edge the mud report has, plus the child edge that makes the
+    # structure queryable.  The section-level edges above stay available for the case where the
+    # source actually named the section; where it did not, the section edge is simply not written.
+    WELL_HAS_BHA = "WELL_HAS_BHA"
+    WELL_HAS_BIT_RUN = "WELL_HAS_BIT_RUN"
+    WELL_HAS_SURVEY = "WELL_HAS_SURVEY"
+    #: One component of one bottom hole assembly, in the assembly's own order.
+    BHA_HAS_COMPONENT = "BHA_HAS_COMPONENT"
+    #: A bit ran in a BHA the source named - asserted only when the source stated the link.
+    BHA_HAS_BIT = "BHA_HAS_BIT"
+    #: One station of one survey set.
+    SURVEY_HAS_STATION = "SURVEY_HAS_STATION"
     EVENT_CAUSES_NPT = "EVENT_CAUSES_NPT"
     NPT_IMPACTS_COST = "NPT_IMPACTS_COST"
     RISK_AFFECTS_ACTIVITY = "RISK_AFFECTS_ACTIVITY"

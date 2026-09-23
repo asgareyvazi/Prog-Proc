@@ -975,6 +975,337 @@ class MudMeasurement(Base, TimestampMixin):
     attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
 
 
+class BhaReport(Base, TimestampMixin):
+    """One source-version bottom hole assembly run: the identity of a tally and the run it describes.
+
+    A BHA report is deliberately *not* the components.  The components are
+    :class:`BhaComponent` rows, ordered exactly as the source listed them, because the position of a
+    stabilizer in the string is part of what the assembly is and a re-ordered tally is a different
+    tally.  The parent carries what the source named about the run itself - its number, its date, the
+    interval it covered - and nothing the components could be added up into: there is no
+    ``total_length`` here, because the platform does not do the engineer's arithmetic for them.
+
+    ``section_id`` is nullable for the same reason it is on :class:`MudReport`: a BHA's measured depth
+    locates it in a well, it does not identify which durable hole section owns it, and an ambiguous or
+    absent match stays explicitly unresolved rather than being filled from depth or row order.
+    """
+
+    __tablename__ = "bha_report"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_bha_report_identity"),
+        Index("ix_bha_report_well", "well_id", "is_current"),
+        Index("ix_bha_report_version", "document_version_id",),
+        Index("ix_bha_report_number", "well_id", "bha_number"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    #: The source's own run/assembly number.  It is the semantic half of the identity, which is why a
+    #: re-tally of run 14 is the same run and run 15 is a new one.
+    bha_number: Mapped[str | None] = mapped_column(String(64))
+    report_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    report_date_text: Mapped[str | None] = mapped_column(String(80))
+    #: The run interval, in the source's own numbers and units.  Never derived from the components.
+    top_depth_value: Mapped[float | None] = mapped_column(Float)
+    top_depth_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    bottom_depth_value: Mapped[float | None] = mapped_column(Float)
+    bottom_depth_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    #: The source's own words for the assembly, kept verbatim.  It is a description, not a parsed
+    #: structure: the structured reading of the assembly is the ordered component rows.
+    assembly_description: Mapped[str | None] = mapped_column(Text)
+    component_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: How the section was decided: ``EXPLICIT``, ``ATTRIBUTE``, ``AMBIGUOUS``, ``UNMATCHED`` or
+    #: ``NOT_STATED``.  Kept so a reviewer can tell "the source named it" from "we left it open".
+    section_resolution: Mapped[str] = mapped_column(String(24), default="NOT_STATED", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    document_status: Mapped[str | None] = mapped_column(String(32))
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
+class BhaComponent(Base, TimestampMixin):
+    """One component of one :class:`BhaReport`, in the source's own order.
+
+    ``sequence`` is the assembly position the source gave the row.  It is part of the component's
+    identity for exactly that reason: swapping two rows in a tally produces a different assembly, and
+    a promoter that keyed components only on their description would happily report the swap as
+    ``UNCHANGED``.
+
+    Every measurement keeps its source text alongside its parsed value, and its unit stays empty when
+    the source did not print one.  Nothing here is computed from anything else: no total length, no
+    derived ID from an OD and a wall thickness, no inferred component type.  ``component_type`` is the
+    canonical name only when the component's own words state it; ``source_label`` always keeps them.
+    """
+
+    __tablename__ = "bha_component"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_bha_component_identity"),
+        Index("ix_bha_component_report", "bha_report_id", "sequence"),
+        Index("ix_bha_component_well", "well_id", "component_type"),
+        Index("ix_bha_component_version", "document_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    bha_report_id: Mapped[str] = mapped_column(
+        ForeignKey("bha_report.id", ondelete="CASCADE"), nullable=False
+    )
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The source's own words for this row, verbatim.  The canonical type below is a convenience;
+    #: this column is the evidence.
+    source_label: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    component_type: Mapped[str] = mapped_column(String(48), default="", nullable=False)
+    #: The source's own "type"/"category" column, when the table had one.  Not reconciled with
+    #: ``component_type``: both are what the source said, in its own words.
+    stated_type: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    manufacturer: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    model: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    serial_number: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    od_value: Mapped[float | None] = mapped_column(Float)
+    od_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    od_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    id_value: Mapped[float | None] = mapped_column(Float)
+    id_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    id_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    length_value: Mapped[float | None] = mapped_column(Float)
+    length_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    length_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    quantity: Mapped[int | None] = mapped_column(Integer)
+    quality: Mapped[str] = mapped_column(String(24), default="VALID", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
+class BitRecord(Base, TimestampMixin):
+    """One bit run: a bit, the hole it made, and the reason it came out.
+
+    A replacement bit is a **new** row, never an update of the previous one.  Identity is the source's
+    own bit/run number (plus the well and the document version), so a tally that grows a row leaves
+    every earlier run in place as history - which is the whole point of a bit record.
+
+    Nothing here is calculated.  ``footage_value`` is the footage the source printed, not
+    ``depth_out - depth_in``; a bit whose depths are stated and whose footage is not keeps a NULL
+    footage, because the difference of two depths is only the footage when the well is vertical and
+    the driller agrees - neither of which a promoter is entitled to assume.
+    """
+
+    __tablename__ = "bit_record"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_bit_record_identity"),
+        Index("ix_bit_record_well", "well_id", "is_current"),
+        Index("ix_bit_record_version", "document_version_id"),
+        Index("ix_bit_record_number", "well_id", "bit_number"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    #: The explicit BHA this bit ran in, when - and only when - the source names one that this
+    #: promotion also promoted.  A number the source printed that matches nothing stays in
+    #: ``attributes["source_bha_number"]`` and leaves this column NULL: a guessed link is worse than
+    #: a stated-but-unmatched one.
+    bha_report_id: Mapped[str | None] = mapped_column(
+        ForeignKey("bha_report.id", ondelete="SET NULL")
+    )
+    bit_number: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_number: Mapped[str | None] = mapped_column(String(64))
+    manufacturer: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    model: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    bit_type: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    iadc_code: Mapped[str] = mapped_column(String(48), default="", nullable=False)
+    serial_number: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    size_value: Mapped[float | None] = mapped_column(Float)
+    size_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    size_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    depth_in_value: Mapped[float | None] = mapped_column(Float)
+    depth_in_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    depth_out_value: Mapped[float | None] = mapped_column(Float)
+    depth_out_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    footage_value: Mapped[float | None] = mapped_column(Float)
+    footage_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    rotating_hours: Mapped[float | None] = mapped_column(Float)
+    drilling_hours: Mapped[float | None] = mapped_column(Float)
+    #: The source's own words for why the bit was pulled and how it graded.  Neither is parsed into a
+    #: problem type or a severity: a pull reason is not a diagnosis.
+    pull_reason: Mapped[str] = mapped_column(String(240), default="", nullable=False)
+    dull_grade: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    nozzle_count: Mapped[int | None] = mapped_column(Integer)
+    nozzle_size_text: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    run_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    run_date_text: Mapped[str | None] = mapped_column(String(80))
+    section_resolution: Mapped[str] = mapped_column(String(24), default="NOT_STATED", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    document_status: Mapped[str | None] = mapped_column(String(32))
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
+class SurveyRun(Base, TimestampMixin):
+    """One survey set: the stations of one well measured on one occasion, as the source grouped them.
+
+    The parent exists so that two surveys of the same well stay two surveys.  Merging every station a
+    document mentions into one run would make "which survey said the well was at 8 degrees" unanswerable
+    and would silently invent a trajectory nobody measured.  When the source labels its sets, the label
+    is the identity; when it does not, the table the stations came from is - which is a weaker identity
+    and is recorded as such in ``attributes["run_identity"]``.
+    """
+
+    __tablename__ = "survey_run"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_survey_run_identity"),
+        Index("ix_survey_run_well", "well_id", "is_current"),
+        Index("ix_survey_run_version", "document_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    #: The source's own run/set label, or ``""`` when it gave none.
+    run_label: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    #: The surveying tool, only when the source named one.  Never inferred from the presence of an
+    #: MWD tool in a BHA.
+    survey_tool: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    survey_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    survey_date_text: Mapped[str | None] = mapped_column(String(80))
+    station_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: The smallest and largest measured depth the source's own stations state.  These are the
+    #: extremes of what was measured, not the well's TD, and they are read from the rows rather than
+    #: assumed from a section.
+    min_md_value: Mapped[float | None] = mapped_column(Float)
+    max_md_value: Mapped[float | None] = mapped_column(Float)
+    md_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    #: Whether the source's own station numbers were unique.  When they were not, station identity
+    #: falls back to source position and the ambiguity is reported - it is never resolved by guessing.
+    station_identity: Mapped[str] = mapped_column(String(24), default="NUMBERED", nullable=False)
+    section_resolution: Mapped[str] = mapped_column(String(24), default="NOT_STATED", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    document_status: Mapped[str | None] = mapped_column(String(32))
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
+class SurveyStation(Base, TimestampMixin):
+    """One survey station: a measured depth and what was measured there.
+
+    Every column keeps its source text, its parsed value and the unit the source's header printed.
+    ``tvd_value``, ``northing_value``, ``easting_value`` and ``dls_value`` are **only** populated when
+    the source supplied them.  There is no trajectory calculation in the platform, so a survey that
+    gives only MD/inclination/azimuth stores only MD/inclination/azimuth: the alternative - computing a
+    TVD during ingestion - would bury an engineering assumption inside a parser where no reviewer
+    would ever see it.
+    """
+
+    __tablename__ = "survey_station"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_survey_station_identity"),
+        Index("ix_survey_station_run", "survey_run_id", "sequence"),
+        Index("ix_survey_station_well", "well_id", "md_value"),
+        Index("ix_survey_station_version", "document_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    survey_run_id: Mapped[str] = mapped_column(
+        ForeignKey("survey_run.id", ondelete="CASCADE"), nullable=False
+    )
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    #: The position of this station in the source's own order, restart per set.
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The source's station number as printed.  Empty when the source numbered nothing.
+    station_number_text: Mapped[str] = mapped_column(String(48), default="", nullable=False)
+    md_value: Mapped[float | None] = mapped_column(Float)
+    md_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    md_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    inclination_value: Mapped[float | None] = mapped_column(Float)
+    inclination_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    inclination_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    azimuth_value: Mapped[float | None] = mapped_column(Float)
+    azimuth_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    azimuth_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    toolface_value: Mapped[float | None] = mapped_column(Float)
+    toolface_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    toolface_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    #: Source-supplied vertical position.  Never recomputed: see the class docstring.
+    tvd_value: Mapped[float | None] = mapped_column(Float)
+    tvd_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    tvd_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    northing_value: Mapped[float | None] = mapped_column(Float)
+    northing_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    northing_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    easting_value: Mapped[float | None] = mapped_column(Float)
+    easting_unit: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    easting_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    #: Source-supplied dogleg severity.  A stated DLS is a measurement the survey company printed; it
+    #: is kept, and it is not recomputed from the stations either side of this one.
+    dls_value: Mapped[float | None] = mapped_column(Float)
+    dls_unit: Mapped[str] = mapped_column(String(24), default="", nullable=False)
+    dls_text: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    #: ``VALID`` when the source printed the station's units, ``UNVERIFIED`` when it did not.  A
+    #: station with an unverified unit is not converted, defaulted or discarded.
+    quality: Mapped[str] = mapped_column(String(24), default="VALID", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
 class WellOperation(Base, TimestampMixin):
     """What was being done: a span of activity, bounded by what the source said and no more.
 

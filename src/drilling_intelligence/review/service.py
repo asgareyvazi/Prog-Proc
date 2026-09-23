@@ -27,6 +27,9 @@ from ..core.hashing import sha256_obj
 from ..core.ids import SubjectKey
 from ..database.models import (
     BestPractice,
+    BhaComponent,
+    BhaReport,
+    BitRecord,
     Calculation,
     CalculationInput,
     Company,
@@ -42,6 +45,8 @@ from ..database.models import (
     ProblemDefinition,
     ProgramTarget,
     Project,
+    SurveyRun,
+    SurveyStation,
     Well,
 )
 from ..database.serialize import record_to_dict
@@ -908,6 +913,62 @@ class DomainReviewService:
             bounded_sizes.append(len(mud_measurements))
             for measurement in mud_measurements:
                 mud_measurements_by_report[str(measurement.mud_report_id)].append(measurement)
+        # The V4 hardware and geometry domains are reviewed by the same contract as the mud report:
+        # the parent row in scope, its ordered children in one bounded batch, and a lifecycle filter
+        # that hides a superseded source version only when the reviewer asked for the current one.
+        bha_statement = (
+            select(BhaReport)
+            .where(BhaReport.well_id == well.id)
+            .order_by(BhaReport.report_date.asc().nulls_last(), BhaReport.id)
+        )
+        bit_statement = (
+            select(BitRecord)
+            .where(BitRecord.well_id == well.id)
+            .order_by(BitRecord.run_date.asc().nulls_last(), BitRecord.id)
+        )
+        survey_statement = (
+            select(SurveyRun)
+            .where(SurveyRun.well_id == well.id)
+            .order_by(SurveyRun.survey_date.asc().nulls_last(), SurveyRun.id)
+        )
+        if request.lifecycle == REVIEW_CURRENT:
+            bha_statement = bha_statement.where(BhaReport.is_current.is_(True))
+            bit_statement = bit_statement.where(BitRecord.is_current.is_(True))
+            survey_statement = survey_statement.where(SurveyRun.is_current.is_(True))
+        bha_reports = list(session.execute(bha_statement.limit(limit)).scalars())
+        add_bounded(bha_reports)
+        bit_records = list(session.execute(bit_statement.limit(limit)).scalars())
+        add_bounded(bit_records)
+        survey_runs = list(session.execute(survey_statement.limit(limit)).scalars())
+        add_bounded(survey_runs)
+        bha_report_ids = [str(row.id) for row in bha_reports]
+        components_by_report: dict[str, list[BhaComponent]] = defaultdict(list)
+        if bha_report_ids:
+            components = list(
+                session.execute(
+                    select(BhaComponent)
+                    .where(BhaComponent.bha_report_id.in_(bha_report_ids))
+                    .order_by(BhaComponent.bha_report_id, BhaComponent.sequence, BhaComponent.id)
+                    .limit(limit * max(1, len(bha_report_ids)))
+                ).scalars()
+            )
+            bounded_sizes.append(len(components))
+            for component in components:
+                components_by_report[str(component.bha_report_id)].append(component)
+        survey_run_ids = [str(row.id) for row in survey_runs]
+        stations_by_run: dict[str, list[SurveyStation]] = defaultdict(list)
+        if survey_run_ids:
+            stations = list(
+                session.execute(
+                    select(SurveyStation)
+                    .where(SurveyStation.survey_run_id.in_(survey_run_ids))
+                    .order_by(SurveyStation.survey_run_id, SurveyStation.sequence, SurveyStation.id)
+                    .limit(limit * max(1, len(survey_run_ids)))
+                ).scalars()
+            )
+            bounded_sizes.append(len(stations))
+            for station in stations:
+                stations_by_run[str(station.survey_run_id)].append(station)
         problems = operational.list_problems(well_id=well.id, limit=limit)
         add_bounded(problems)
         problem_definition_ids = sorted(
@@ -1344,6 +1405,21 @@ class DomainReviewService:
                 ]
                 for measurement in measurement_rows:
                     extra_entries.extend(_mapping_entries(getattr(measurement, "provenance", None)))
+            if table == "bha_report":
+                component_rows = components_by_report.get(str(row.id), [])
+                # The components are shown in the source's own order, which is the assembly's order.
+                data_extra["components"] = [
+                    _plain(record_to_dict(component)) for component in component_rows
+                ]
+                for component in component_rows:
+                    extra_entries.extend(_mapping_entries(getattr(component, "provenance", None)))
+            if table == "survey_run":
+                station_rows = stations_by_run.get(str(row.id), [])
+                data_extra["stations"] = [
+                    _plain(record_to_dict(station)) for station in station_rows
+                ]
+                for station in station_rows:
+                    extra_entries.extend(_mapping_entries(getattr(station, "provenance", None)))
             if table == "document_version":
                 extraction = extraction_by_version.get(str(row.id))
                 if extraction is not None:

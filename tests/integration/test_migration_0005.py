@@ -33,7 +33,12 @@ from sqlalchemy import MetaData, create_engine, func, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
-from drilling_intelligence.database.migrations import heads, schema_diff, upgrade
+from drilling_intelligence.database.migrations import (
+    METADATA_REVISION,
+    heads,
+    schema_diff,
+    upgrade,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -61,7 +66,16 @@ LATER_MIGRATION_COLUMNS = (
     "well_section.document_id",  # 0009
     "well_section.document_version_id",  # 0009
 )
-LATER_MIGRATION_TABLES = ("problem_definition", "mud_report", "mud_measurement")  # 0007, 0010
+LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011
+    "problem_definition",
+    "mud_report",
+    "mud_measurement",
+    "bha_report",
+    "bha_component",
+    "bit_record",
+    "survey_run",
+    "survey_station",
+)
 
 #: The foreign keys ``calculation`` already had; a table rebuild that loses one of these is a data bug.
 PRE_EXISTING_FOREIGN_KEYS = (
@@ -420,7 +434,10 @@ def test_head_still_matches_the_models_and_the_knowledge_layer_is_intact(tmp_pat
             )
         status = upgrade(engine, "head")
         assert status.up_to_date and status.current == heads()[0], status.to_dict()
-        assert heads() == ["0010"], heads()  # a single head; 0010 is the latest link
+        # A single head, and the one the models claim: asserting the literal revision here went stale
+        # the first time a migration was added, which is exactly the failure METADATA_REVISION exists
+        # to make loud (tests/integration/test_migrations.py pins the two together).
+        assert heads() == [METADATA_REVISION], heads()
         assert schema_diff(engine) == {
             "missing_tables": [],
             "extra_tables": [],

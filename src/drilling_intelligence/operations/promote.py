@@ -40,7 +40,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -59,6 +59,9 @@ from ..core.ids import new_id
 from ..core.units import Quantity, parse_decimal
 from ..core.vocabulary import problem_type
 from ..database.models import (
+    BhaComponent,
+    BhaReport,
+    BitRecord,
     DdrReport,
     Document,
     DocumentVersion,
@@ -69,6 +72,8 @@ from ..database.models import (
     MudReport,
     NptRecord,
     ProblemOccurrence,
+    SurveyRun,
+    SurveyStation,
     Well,
     WellEvent,
     WellOperation,
@@ -77,6 +82,13 @@ from ..database.models import (
 from ..database.serialize import record_to_dict
 from ..engineering.repository import EngineeringRepository
 from ..wells.repository import WellRepository
+from .bha import (
+    component_entries as bha_component_entries,
+)
+from .bha import (
+    summary_entries as bha_summary_entries,
+)
+from .bit_record import bit_run_entries
 from .contracts import PromotionOutcome, promotion_contract
 from .mud import (
     SummaryEntry,
@@ -94,6 +106,14 @@ from .mud import (
 )
 from .program import PROGRAM_CLASSIFICATIONS, SectionPlan, find_program_plan
 from .repository import REPORT_CLASSIFICATIONS, OperationsRepository, _stamp
+from .survey import (
+    station_entries as survey_station_entries,
+)
+from .survey import (
+    summary_entries as survey_summary_entries,
+)
+from .tableshape import normalise_label as source_label_key
+from .tableshape import table_key as source_table_key
 
 __all__ = [
     "ACTIVITY_HEADERS",
@@ -101,7 +121,9 @@ __all__ = [
     "DATE_FIELDS",
     "DATE_HEADERS",
     "DESCRIPTION_HEADERS",
+    "DOMAIN_CHILDREN",
     "DURATION_HEADERS",
+    "MUD_SUMMARY_METADATA",
     "REFERENCE_HEADERS",
     "TOTAL_NPT_FIELDS",
     "WELL_HEADERS",
@@ -201,6 +223,24 @@ SHIFT_FIELDS: tuple[str, ...] = ("shift", "shift_name", "tour")
 TOTAL_NPT_FIELDS: tuple[str, ...] = ("npt_hours", "npt", "total_npt")
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+#: The source-versioned domains and the child rows each parent owns, as ``(model, foreign key)``.
+#:
+#: One table rather than four near-identical methods, because supersession and the orphan sweep are
+#: the same operation in every domain: stand the older source version down, keep its history, and
+#: never demote a row a person confirmed.  A domain absent from this map has no children to sweep.
+DOMAIN_CHILDREN: Final[dict[type, tuple[tuple[type, str], ...]]] = {
+    MudReport: ((MudMeasurement, "mud_report_id"),),
+    BhaReport: ((BhaComponent, "bha_report_id"),),
+    BitRecord: (),
+    SurveyRun: ((SurveyStation, "survey_run_id"),),
+}
+
+#: The mud summary labels that describe the *report* rather than a measured property.  They are
+#: read into the parent row's own columns and are deliberately never written as measurements.
+MUD_SUMMARY_METADATA: Final[frozenset[str]] = frozenset(
+    {"well", "field", "report_date", "revision", "section_id", "section", "hole_size_in"}
+)
 
 
 def promotion_identity(
@@ -560,6 +600,24 @@ class VersionPromoter:
             if missing:
                 return "mud table provenance is missing for: " + ", ".join(missing)
             return ""
+        if handler in {"bha_report", "bit_record", "directional_survey"}:
+            # No recognised table is *not* a provenance failure - the writer reports that as an
+            # unsupported source shape.  Only tables the contract will actually read are held to the
+            # promise that they can show where they came from.
+            if handler == "bha_report":
+                relevant = [entry.table for entry in bha_component_entries(payload)]
+            elif handler == "bit_record":
+                relevant = [entry.table for entry in bit_run_entries(payload)]
+            else:
+                relevant = [entry.table for entry in survey_station_entries(payload)]
+            missing = [
+                source_table_key(table) or "table"
+                for table in relevant
+                if not isinstance(table.get("provenance"), Mapping)
+            ]
+            if missing:
+                return f"{handler} table provenance is missing for: " + ", ".join(sorted(set(missing)))
+            return ""
         tables = find_npt_tables(payload) + find_breakdown_tables(payload)
         if tables:
             missing = [
@@ -672,6 +730,24 @@ class VersionPromoter:
             )
             result.finalize()
             return result
+        if contract.handler == "bha_report":
+            self._promote_bha_report(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
+        if contract.handler == "bit_record":
+            self._promote_bit_record(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
+        if contract.handler == "directional_survey":
+            self._promote_directional_survey(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
         if contract.handler != "report":  # pragma: no cover - import-time registry guard
             result.error = "UNKNOWN_HANDLER"
             result.finalize()
@@ -741,7 +817,22 @@ class VersionPromoter:
         keys, and SQLite enforces only what it is given, in the order it is given it.
         """
         removed = 0
-        for model in (ProblemOccurrence, NptRecord, WellEvent, WellOperation, DdrReport):
+        # Children before parents, one flush at a time: the record tables point at each other by
+        # ordinary foreign keys, and SQLite enforces only what it is given, in the order it is given.
+        for model in (
+            ProblemOccurrence,
+            NptRecord,
+            WellEvent,
+            WellOperation,
+            DdrReport,
+            MudMeasurement,
+            MudReport,
+            BhaComponent,
+            BhaReport,
+            SurveyStation,
+            SurveyRun,
+            BitRecord,
+        ):
             statement = (
                 select(model)
                 .where(model.document_version_id == version_id)
@@ -932,7 +1023,7 @@ class VersionPromoter:
 
     # -- mud report -----------------------------------------------------------
     @staticmethod
-    def _mud_provenance(
+    def _table_provenance(
         table: Mapping[str, Any],
         *,
         document: Document,
@@ -985,34 +1076,24 @@ class VersionPromoter:
             return None, wording
         return _stamp(iso), wording
 
-    def _mud_section(
+    def _explicit_section(
         self,
         *,
         well: Well,
-        summary: Sequence[SummaryEntry],
+        explicit_id: str,
+        explicit_name: str,
+        hole_size_text: str,
         result: PromotionResult,
+        domain: str,
     ) -> tuple[str | None, str]:
         """Resolve only explicit section identifiers or exact deterministic attributes.
 
         MD/TVD are intentionally absent from this decision.  A depth locates a sample in a well but
         does not identify which durable section owns it.  Multiple hole-size/name matches remain NULL
-        and are reported rather than selected by order or proximity.
+        and are reported rather than selected by order or proximity.  One well's sections are ordered
+        by their own ``sequence`` so the *diagnostic* is stable, but the order never selects a winner:
+        more than one candidate is always ``AMBIGUOUS``.
         """
-        explicit_id = next(
-            (
-                entry.source_value.strip()
-                for entry in summary
-                if entry.property_name == "section_id"
-            ),
-            "",
-        )
-        explicit_name = next(
-            (entry.source_value.strip() for entry in summary if entry.property_name == "section"),
-            "",
-        )
-        hole_entry = next(
-            (entry for entry in summary if entry.property_name == "hole_size_in"), None
-        )
         sections = list(
             self.session.execute(
                 select(WellSection)
@@ -1020,7 +1101,8 @@ class VersionPromoter:
                 .order_by(WellSection.sequence, WellSection.id)
             ).scalars()
         )
-        if not explicit_id and not explicit_name and hole_entry is None:
+        hole = mud_numeric(hole_size_text) if hole_size_text else None
+        if not explicit_id and not explicit_name and hole is None:
             return None, "NOT_STATED"
         candidates: list[WellSection] = []
         if explicit_id:
@@ -1036,35 +1118,87 @@ class VersionPromoter:
                 for section in sections
                 if str(section.name).strip().casefold() == explicit_name.casefold()
             ]
-        elif hole_entry is not None:
-            hole = mud_numeric(hole_entry.source_value)
-            if hole is not None:
-                candidates = [
-                    section
-                    for section in sections
-                    if section.hole_size_in is not None and float(section.hole_size_in) == hole
-                ]
+        elif hole is not None:
+            candidates = [
+                section
+                for section in sections
+                if section.hole_size_in is not None and float(section.hole_size_in) == hole
+            ]
         if len(candidates) == 1:
-            return str(candidates[0].id), "EXPLICIT" if (
-                explicit_id or explicit_name
-            ) else "ATTRIBUTE"
+            return str(candidates[0].id), "EXPLICIT" if (explicit_id or explicit_name) else "ATTRIBUTE"
         if len(candidates) > 1:
             result.skipped.append(
                 {
                     "reason": "AMBIGUOUS_SECTIONS",
-                    "detail": "explicit mud section attributes match more than one well section",
+                    "detail": f"explicit {domain} section attributes match more than one well section",
                 }
             )
             return None, "AMBIGUOUS"
         result.skipped.append(
             {
                 "reason": "SECTION_NOT_FOUND",
-                "detail": "explicit mud section attributes do not match a durable section of the well",
+                "detail": (
+                    f"explicit {domain} section attributes do not match a durable section of the well"
+                ),
             }
         )
         return None, "UNMATCHED"
 
-    def _mud_confirm(
+    @staticmethod
+    def _report_duplicates(
+        *, summary: Sequence[SummaryEntry], result: PromotionResult
+    ) -> None:
+        """Report a summary label the source states more than once with different values.
+
+        The parent row takes the first stated value in source order, which is deterministic and
+        auditable - but "the first" is only defensible if the reader can see that there was a second.
+        Without this the parent's ``depth_md_value`` could silently be one of two numbers the source
+        disagreed about.
+        """
+        by_property: dict[str, list[str]] = {}
+        for entry in summary:
+            by_property.setdefault(entry.property_name, []).append(entry.source_value.strip())
+        for property_name, values in sorted(by_property.items()):
+            distinct = sorted(set(values))
+            if len(values) > 1 and len(distinct) > 1:
+                result.skipped.append(
+                    {
+                        "reason": "DUPLICATE_PROPERTY",
+                        "detail": (
+                            f"the mud summary states {property_name} {len(values)} times with "
+                            f"different values ({', '.join(distinct)}); the first stated value is "
+                            "used and the disagreement is reported"
+                        ),
+                    }
+                )
+
+    def _mud_section(
+        self,
+        *,
+        well: Well,
+        summary: Sequence[SummaryEntry],
+        result: PromotionResult,
+    ) -> tuple[str | None, str]:
+        """The mud contract's section decision, from its summary label/value rows."""
+        hole_entry = next(
+            (entry for entry in summary if entry.property_name == "hole_size_in"), None
+        )
+        return self._explicit_section(
+            well=well,
+            explicit_id=next(
+                (entry.source_value.strip() for entry in summary if entry.property_name == "section_id"),
+                "",
+            ),
+            explicit_name=next(
+                (entry.source_value.strip() for entry in summary if entry.property_name == "section"),
+                "",
+            ),
+            hole_size_text=hole_entry.source_value if hole_entry else "",
+            result=result,
+            domain="mud",
+        )
+
+    def _confirm_row(
         self,
         model: type,
         identity_key: str,
@@ -1097,46 +1231,54 @@ class VersionPromoter:
             return existing, "conflict"
         return existing, "unchanged"
 
-    def _supersede_mud_sources(
-        self, *, document: Document, version: DocumentVersion, well: Well
+    def _supersede_source_versions(
+        self, *, model: type, document: Document, version: DocumentVersion, well: Well
     ) -> None:
-        """Stand down older derived source versions, retaining every human decision and row."""
+        """Stand down older derived source versions, retaining every human decision and row.
+
+        Generic across the source-versioned domains (mud, BHA, bit, survey) because the rule is one
+        rule: a newer derived version of the same document for the same well becomes the current
+        statement, the older one stays in the database as history, and a row a person confirmed is
+        never demoted by a machine.  A version that is *older* than one already promoted changes
+        nothing - re-processing an archive must not stand down the current record.
+        """
         previous = list(
             self.session.execute(
-                select(MudReport)
+                select(model)
                 .where(
-                    MudReport.document_id == document.id,
-                    MudReport.well_id == well.id,
-                    MudReport.document_version_id != version.id,
-                    MudReport.origin == KnowledgeOrigin.DERIVED.value,
-                    MudReport.is_current.is_(True),
+                    model.document_id == document.id,
+                    model.well_id == well.id,
+                    model.document_version_id != version.id,
+                    model.origin == KnowledgeOrigin.DERIVED.value,
+                    model.is_current.is_(True),
                 )
-                .order_by(MudReport.id)
+                .order_by(model.id)
             ).scalars()
         )
-        for report in previous:
+        for parent in previous:
             old_version = (
-                self.session.get(DocumentVersion, str(report.document_version_id))
-                if report.document_version_id
+                self.session.get(DocumentVersion, str(parent.document_version_id))
+                if parent.document_version_id
                 else None
             )
             if old_version is not None and old_version.version_number >= version.version_number:
                 continue
-            report.is_current = False
-            if str(report.status or "") != ConfirmationStatus.CONFIRMED.value:
-                report.status = "SUPERSEDED"
-            measurements = list(
-                self.session.execute(
-                    select(MudMeasurement).where(
-                        MudMeasurement.mud_report_id == report.id,
-                        MudMeasurement.is_current.is_(True),
-                    )
-                ).scalars()
-            )
-            for measurement in measurements:
-                measurement.is_current = False
-                if str(measurement.status or "") != ConfirmationStatus.CONFIRMED.value:
-                    measurement.status = "SUPERSEDED"
+            parent.is_current = False
+            if str(parent.status or "") != ConfirmationStatus.CONFIRMED.value:
+                parent.status = "SUPERSEDED"
+            for child_model, foreign_key in DOMAIN_CHILDREN.get(model, ()):
+                children = list(
+                    self.session.execute(
+                        select(child_model).where(
+                            getattr(child_model, foreign_key) == parent.id,
+                            child_model.is_current.is_(True),
+                        )
+                    ).scalars()
+                )
+                for child in children:
+                    child.is_current = False
+                    if str(child.status or "") != ConfirmationStatus.CONFIRMED.value:
+                        child.status = "SUPERSEDED"
         if previous:
             self.session.flush()
 
@@ -1158,11 +1300,17 @@ class VersionPromoter:
         row_index: int,
         column_index: int | None,
         result: PromotionResult,
+        quality_override: str = "",
     ) -> None:
         value = mud_numeric(source_value_text)
         if value is None:
             return
-        quality = "VALID" if source_unit else "UNVERIFIED"
+        quality = quality_override or ("VALID" if source_unit else "UNVERIFIED")
+        # A conflicted measurement is stored so the disagreement is auditable, but it is not
+        # presented as the value: marking it current would leave two rows answering "what was the mud
+        # weight" with different numbers, which is the exact failure the duplicate rule exists to
+        # prevent.  It waits for a person instead, and says why in the same field the reader sees.
+        conflicted = quality == "CONFLICT"
         identity = promotion_identity(
             version_id=str(report.document_version_id or ""),
             kind="mud-measurement",
@@ -1184,7 +1332,7 @@ class VersionPromoter:
             "source_remark": source_remark or None,
             "quality": quality,
         }
-        existing, outcome = self._mud_confirm(
+        existing, outcome = self._confirm_row(
             MudMeasurement, identity, content, "mud measurement", result
         )
         if existing is not None:
@@ -1212,24 +1360,42 @@ class VersionPromoter:
                 source_remark=source_remark or None,
                 quality=quality,
                 record_state=RecordState.ACTUAL.value,
+                # ``ConfirmationStatus`` has no "needs review" member and inventing one would put a
+                # value in the column that every other reader has to learn to handle.  The row *is* a
+                # candidate - it just is not the current authority - so it stays CANDIDATE and the
+                # conflict is carried where it is already read from: ``quality`` and ``is_current``.
                 status=ConfirmationStatus.CANDIDATE.value,
                 origin=KnowledgeOrigin.DERIVED.value,
                 created_by="promoter",
                 provenance=provenance,
                 identity_key=identity,
-                is_current=True,
-                attributes={"table_id": table_id, "source_row_index": row_index},
+                is_current=not conflicted,
+                attributes={
+                    "table_id": table_id,
+                    "source_row_index": row_index,
+                    **({"conflict": "the source states this property more than once, disagreeing"}
+                       if conflicted else {}),
+                },
             )
         )
         result.bump("mud_measurement", "created")
 
-    def _delete_mud_orphans(self, *, version_id: str, kept: set[str]) -> int:
-        """Remove only unconfirmed derived child rows no longer stated by this source version."""
+    def _delete_domain_orphans(
+        self, model: type, *, version_id: str, kept: set[str]
+    ) -> int:
+        """Remove only the unconfirmed derived rows this source version no longer states.
+
+        Shared by every domain the promoter writes because the rule is the same everywhere: an
+        identity this pass did not confirm again is a row the artefact stopped stating.  A row a
+        person confirmed is **not** deleted - it is stood down and marked, because the confirmation
+        is the person's statement about the source they read, and a later extraction that happens to
+        omit the line is not evidence the line never existed.
+        """
         rows = list(
             self.session.execute(
-                select(MudMeasurement).where(
-                    MudMeasurement.document_version_id == version_id,
-                    MudMeasurement.origin == KnowledgeOrigin.DERIVED.value,
+                select(model).where(
+                    model.document_version_id == version_id,
+                    model.origin == KnowledgeOrigin.DERIVED.value,
                 )
             ).scalars()
         )
@@ -1304,6 +1470,7 @@ class VersionPromoter:
         section_id, section_resolution = self._mud_section(
             well=well, summary=summary, result=result
         )
+        self._report_duplicates(summary=summary, result=result)
         report_date_entry = next(
             (entry for entry in summary if entry.property_name == "report_date"), None
         )
@@ -1334,7 +1501,9 @@ class VersionPromoter:
                 .limit(1)
             )
         )
-        self._supersede_mud_sources(document=document, version=version, well=well)
+        self._supersede_source_versions(
+            model=MudReport, document=document, version=version, well=well
+        )
         report_identity = promotion_identity(
             version_id=version.id,
             kind="mud-report",
@@ -1344,7 +1513,7 @@ class VersionPromoter:
             extra=section_id or "",
         )
         result.identities.add(report_identity)
-        parent_provenance = self._mud_provenance(summary_table, document=document, version=version)
+        parent_provenance = self._table_provenance(summary_table, document=document, version=version)
         report_content = {
             "well_id": well.id,
             "section_id": section_id,
@@ -1356,7 +1525,7 @@ class VersionPromoter:
             "depth_tvd_value": tvd_value,
             "depth_tvd_unit": tvd_entry.source_unit if tvd_entry else "",
         }
-        existing, outcome = self._mud_confirm(
+        existing, outcome = self._confirm_row(
             MudReport, report_identity, report_content, "mud report", result
         )
         if existing is not None:
@@ -1434,44 +1603,68 @@ class VersionPromoter:
                 provenance=parent_provenance,
                 note="section explicitly matched by stored mud attributes",
             )
+        # A summary table may state one property under two spellings - "Mud weight (ppg)" and "MW" -
+        # and both are genuinely in the source.  Writing both as ACTUAL rows would leave two
+        # competing authorities for the same measurement with no sign that they disagree, so the
+        # duplicate is detected here and handled deterministically instead.
+        summary_measurements: dict[str, list[SummaryEntry]] = {}
         for entry in summary:
-            if entry.property_name in {
-                "well",
-                "field",
-                "report_date",
-                "revision",
-                "section_id",
-                "section",
-                "hole_size_in",
-            }:
+            if entry.property_name in MUD_SUMMARY_METADATA:
                 continue
             if mud_numeric(entry.source_value) is None:
                 continue
-            self._write_mud_measurement(
-                report=report,
-                property_name=entry.property_name,
-                source_label=entry.source_label,
-                source_value_text=entry.source_value,
-                source_unit=entry.source_unit,
-                sample_key="SUMMARY",
-                sample_index=0,
-                sample_label="SUMMARY",
-                measured_at_text=report_date_text,
-                source_remark=entry.remark,
-                provenance=self._mud_provenance(
-                    entry.table,
-                    document=document,
-                    version=version,
-                    row_index=entry.row_index,
+            summary_measurements.setdefault(entry.property_name, []).append(entry)
+        for property_name, group in summary_measurements.items():
+            distinct = {entry.source_value.strip() for entry in group}
+            conflicted = len(group) > 1 and len(distinct) > 1
+            if len(group) > 1:
+                result.skipped.append(
+                    {
+                        "reason": "DUPLICATE_PROPERTY",
+                        "detail": (
+                            f"the mud summary states {property_name} {len(group)} times "
+                            f"({', '.join(sorted(distinct))}); "
+                            + (
+                                "the rows disagree, so every copy is stored as CONFLICT and none is "
+                                "presented as the value"
+                                if conflicted
+                                else "the rows agree, so only the first is stored"
+                            )
+                        ),
+                    }
+                )
+            for position, entry in enumerate(group):
+                if len(group) > 1 and not conflicted and position > 0:
+                    # The same assertion twice is one measurement, not two authorities.
+                    continue
+                self._write_mud_measurement(
+                    report=report,
+                    property_name=entry.property_name,
                     source_label=entry.source_label,
+                    source_value_text=entry.source_value,
                     source_unit=entry.source_unit,
+                    sample_key="SUMMARY",
+                    sample_index=0,
+                    sample_label="SUMMARY",
+                    measured_at_text=report_date_text,
                     source_remark=entry.remark,
-                ),
-                table_id=mud_table_key(entry.table) or summary_id,
-                row_index=entry.row_index,
-                column_index=1,
-                result=result,
-            )
+                    provenance=self._table_provenance(
+                        entry.table,
+                        document=document,
+                        version=version,
+                        row_index=entry.row_index,
+                        source_label=entry.source_label,
+                        source_unit=entry.source_unit,
+                        source_remark=entry.remark,
+                    ),
+                    table_id=mud_table_key(entry.table) or summary_id,
+                    row_index=entry.row_index,
+                    column_index=1,
+                    result=result,
+                    quality_override="CONFLICT" if conflicted else "",
+                )
+                if conflicted:
+                    result.bump("mud_measurement", "conflict")
         for entry in daily:
             self._write_mud_measurement(
                 report=report,
@@ -1484,7 +1677,7 @@ class VersionPromoter:
                 sample_label=entry.sample_label,
                 measured_at_text=entry.sample_time,
                 source_remark=entry.note,
-                provenance=self._mud_provenance(
+                provenance=self._table_provenance(
                     entry.table,
                     document=document,
                     version=version,
@@ -1504,10 +1697,1115 @@ class VersionPromoter:
             and bool(result.identities)
             and result.outcome != PromotionOutcome.UNSUPPORTED.value
         ):
-            removed = self._delete_mud_orphans(version_id=version.id, kept=result.identities)
+            removed = self._delete_domain_orphans(
+                MudMeasurement, version_id=version.id, kept=result.identities
+            )
             if removed:
                 result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
         return report
+
+    # -- shared source-scope guard -------------------------------------------
+    def _source_scope_conflict(
+        self,
+        *,
+        well: Well,
+        source_well: str,
+        source_field: str,
+        result: PromotionResult,
+        domain: str,
+    ) -> bool:
+        """Refuse a whole artefact whose own header names another well or field.
+
+        A document is attached to a well by the workspace; the source it contains may disagree.  The
+        disagreement is never resolved in favour of the link: promoting a report that says ``B-11``
+        into well ``A-3`` because that is where the file happened to be filed would be a silent lie,
+        and "attach it to the plausible one" is exactly the failure this check exists to prevent.
+        Returns ``True`` when the promotion must stop.
+        """
+        known_names = {str(well.name).strip().casefold()}
+        if well.well_identifier:
+            known_names.add(str(well.well_identifier).strip().casefold())
+        if source_well and source_well.strip().casefold() not in known_names:
+            result.skipped.append(
+                {
+                    "reason": "WELL_SCOPE_CONFLICT",
+                    "detail": (
+                        f"the {domain} source names {source_well!r}, not the document's linked "
+                        f"well {well.name!r}"
+                    ),
+                }
+            )
+            return True
+        field = self.session.get(Field, str(well.field_id)) if well.field_id else None
+        known_field_names = {str(field.name).strip().casefold()} if field is not None else set()
+        if source_field and source_field.strip().casefold() not in known_field_names:
+            result.skipped.append(
+                {
+                    "reason": "WELL_SCOPE_CONFLICT",
+                    "detail": (
+                        f"the {domain} source names field {source_field!r}, not the linked field "
+                        f"{getattr(field, 'name', '')!r}"
+                    ),
+                }
+            )
+            return True
+        return False
+
+    @staticmethod
+    def _row_scope_conflict(source_well: str, well: Well) -> bool:
+        """Whether one *row* of a multi-well table names a well this document is not attached to."""
+        if not source_well.strip():
+            return False
+        known = {str(well.name).strip().casefold()}
+        if well.well_identifier:
+            known.add(str(well.well_identifier).strip().casefold())
+        return source_well.strip().casefold() not in known
+
+    def _no_recognised_table(self, result: PromotionResult, detail: str) -> None:
+        """The artefact satisfies the classification but not the contract's source shape.
+
+        Reported as ``UNSUPPORTED`` rather than an error: the stored extraction, its evidence and its
+        knowledge facts all remain available, and no authoritative row is written.  A prose BHA
+        narrative and a component tally are the same classification and not the same contract.
+        """
+        result.outcome = PromotionOutcome.UNSUPPORTED.value
+        result.skipped.append({"reason": "NO_RECOGNISED_TABLE", "detail": detail})
+
+    def _higher_current_exists(
+        self, model: type, *, document: Document, version: DocumentVersion, well: Well
+    ) -> bool:
+        """Whether a newer version of the same document already promoted a current row."""
+        return bool(
+            self.session.scalar(
+                select(model.id)
+                .join(
+                    DocumentVersion,
+                    DocumentVersion.id == model.document_version_id,
+                    isouter=True,
+                )
+                .where(
+                    model.document_id == document.id,
+                    model.well_id == well.id,
+                    model.is_current.is_(True),
+                    DocumentVersion.version_number > version.version_number,
+                )
+                .limit(1)
+            )
+        )
+
+    # -- BHA ------------------------------------------------------------------
+    def _write_bha_component(
+        self,
+        *,
+        report: BhaReport,
+        entry: Any,
+        table_id: str,
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+    ) -> None:
+        identity = promotion_identity(
+            version_id=version.id,
+            kind="bha-component",
+            table_id=table_id,
+            row_index=0,
+            well_id=report.well_id,
+            extra=f"{report.bha_number or ''}|{entry.sequence}|{source_label_key(entry.source_label)}",
+        )
+        result.identities.add(identity)
+        sizing = [
+            (entry.od_text, entry.od_value),
+            (entry.id_text, entry.id_value),
+            (entry.length_text, entry.length_value),
+        ]
+        unparsed = [text for text, value in sizing if text and value is None]
+        parsed_units = [
+            unit
+            for text, value, unit in (
+                (entry.od_text, entry.od_value, entry.od_unit),
+                (entry.id_text, entry.id_value, entry.id_unit),
+                (entry.length_text, entry.length_value, entry.length_unit),
+            )
+            if value is not None and not unit
+        ]
+        # A sizing cell the source printed but this parser could not read is not silently NULL: it is
+        # reported and the row is marked, so a reviewer can see that something was left behind.
+        if unparsed:
+            result.skipped.append(
+                {
+                    "reason": "INVALID_FIELD",
+                    "detail": (
+                        f"component {entry.sequence} ({entry.source_label}) has sizing text this "
+                        f"contract cannot read: {', '.join(unparsed)}"
+                    ),
+                }
+            )
+            quality = "UNPARSEABLE"
+        elif parsed_units:
+            quality = "UNVERIFIED"
+        else:
+            quality = "VALID"
+        content = {
+            "sequence": entry.sequence,
+            "source_label": entry.source_label,
+            "component_type": entry.component_type,
+            "stated_type": entry.stated_type,
+            "manufacturer": entry.manufacturer,
+            "model": entry.model,
+            "serial_number": entry.serial_number,
+            "od_value": entry.od_value,
+            "od_unit": entry.od_unit,
+            "od_text": entry.od_text,
+            "id_value": entry.id_value,
+            "id_unit": entry.id_unit,
+            "id_text": entry.id_text,
+            "length_value": entry.length_value,
+            "length_unit": entry.length_unit,
+            "length_text": entry.length_text,
+            "quantity": entry.quantity,
+            "quality": quality,
+        }
+        existing, outcome = self._confirm_row(
+            BhaComponent, identity, content, "bha component", result
+        )
+        if existing is not None:
+            result.bump("bha_component", outcome)
+            return
+        component_id = new_id("bhac")
+        component_provenance = self._table_provenance(
+            entry.table,
+            document=document,
+            version=version,
+            row_index=entry.source_row_index,
+            source_label=entry.source_label,
+        )
+        self.session.add(
+            BhaComponent(
+                id=component_id,
+                bha_report_id=report.id,
+                well_id=report.well_id,
+                section_id=report.section_id,
+                document_id=report.document_id,
+                document_version_id=report.document_version_id,
+                sequence=entry.sequence,
+                source_label=entry.source_label,
+                component_type=entry.component_type,
+                stated_type=entry.stated_type,
+                manufacturer=entry.manufacturer,
+                model=entry.model,
+                serial_number=entry.serial_number,
+                od_value=entry.od_value,
+                od_unit=entry.od_unit,
+                od_text=entry.od_text,
+                id_value=entry.id_value,
+                id_unit=entry.id_unit,
+                id_text=entry.id_text,
+                length_value=entry.length_value,
+                length_unit=entry.length_unit,
+                length_text=entry.length_text,
+                quantity=entry.quantity,
+                quality=quality,
+                record_state=RecordState.ACTUAL.value,
+                status=ConfirmationStatus.CANDIDATE.value,
+                origin=KnowledgeOrigin.DERIVED.value,
+                created_by="promoter",
+                provenance=component_provenance,
+                identity_key=identity,
+                is_current=True,
+                attributes={
+                    "table_id": table_id,
+                    "source_row_index": entry.source_row_index,
+                },
+            )
+        )
+        self.session.flush()
+        self.records.link(
+            source_type="bha_report",
+            source_id=report.id,
+            relation=KnowledgeRelationType.BHA_HAS_COMPONENT.value,
+            target_type="bha_component",
+            target_id=component_id,
+            provenance=component_provenance,
+            note=f"component {entry.sequence} of the source tally, in the source's own order",
+        )
+        result.bump("bha_component", "created")
+
+    def _promote_bha_report(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> BhaReport | None:
+        """Promote a recognised component tally into one run and its ordered components."""
+        if not document.well_id:
+            result.error = "NO_WELL"
+            result.skipped.append(
+                {"reason": "NO_WELL", "detail": f"{document.filename} is not linked to a well"}
+            )
+            return None
+        well = self.session.get(Well, str(document.well_id))
+        if well is None:
+            result.error = "NO_WELL"
+            result.skipped.append({"reason": "NO_WELL", "detail": "the linked well does not exist"})
+            return None
+        summary = bha_summary_entries(payload)
+        components = bha_component_entries(payload)
+        if not components:
+            self._no_recognised_table(
+                result,
+                "no stored table has a component description column plus a sizing column, so there "
+                "is no bottom hole assembly tally to promote",
+            )
+            return None
+        if self._source_scope_conflict(
+            well=well,
+            source_well=next(
+                (entry.source_value for entry in summary if entry.property_name == "well"), ""
+            ),
+            source_field=next(
+                (entry.source_value for entry in summary if entry.property_name == "field"), ""
+            ),
+            result=result,
+            domain="BHA report",
+        ):
+            result.error = "WELL_SCOPE_CONFLICT"
+            return None
+        table_id = source_table_key(components[0].table) or "bha"
+        bha_number = next(
+            (entry.source_value.strip() for entry in summary if entry.property_name == "bha_number"),
+            "",
+        )
+        hole_entry = next(
+            (entry for entry in summary if entry.property_name == "hole_size_in"), None
+        )
+        section_id, section_resolution = self._explicit_section(
+            well=well,
+            explicit_id=next(
+                (entry.source_value.strip() for entry in summary if entry.property_name == "section_id"),
+                "",
+            ),
+            explicit_name=next(
+                (entry.source_value.strip() for entry in summary if entry.property_name == "section"),
+                "",
+            ),
+            hole_size_text=hole_entry.source_value if hole_entry else "",
+            result=result,
+            domain="BHA",
+        )
+        date_entry = next(
+            (entry for entry in summary if entry.property_name == "report_date"), None
+        )
+        report_date, report_date_text = self._mud_date(date_entry.source_value if date_entry else "")
+        top_entry = next((entry for entry in summary if entry.property_name == "top_depth"), None)
+        bottom_entry = next(
+            (entry for entry in summary if entry.property_name == "bottom_depth"), None
+        )
+        description_entry = next(
+            (entry for entry in summary if entry.property_name == "assembly_description"), None
+        )
+        higher_current = self._higher_current_exists(
+            BhaReport, document=document, version=version, well=well
+        )
+        self._supersede_source_versions(
+            model=BhaReport, document=document, version=version, well=well
+        )
+        identity = promotion_identity(
+            version_id=version.id,
+            kind="bha-report",
+            table_id=table_id,
+            row_index=0,
+            well_id=well.id,
+            extra=bha_number,
+        )
+        result.identities.add(identity)
+        parent_provenance = self._table_provenance(
+            components[0].table, document=document, version=version
+        )
+        content = {
+            "well_id": well.id,
+            "section_id": section_id,
+            "bha_number": bha_number or None,
+            "report_date": report_date,
+            "report_date_text": report_date_text or None,
+            "top_depth_value": mud_numeric(top_entry.source_value) if top_entry else None,
+            "top_depth_unit": top_entry.source_unit if top_entry else "",
+            "bottom_depth_value": mud_numeric(bottom_entry.source_value) if bottom_entry else None,
+            "bottom_depth_unit": bottom_entry.source_unit if bottom_entry else "",
+            "component_count": len(components),
+            "section_resolution": section_resolution,
+        }
+        existing, outcome = self._confirm_row(BhaReport, identity, content, "bha report", result)
+        if existing is not None:
+            report = existing
+            result.bump("bha_report", outcome)
+        else:
+            report = BhaReport(
+                id=new_id("bha"),
+                well_id=well.id,
+                section_id=section_id,
+                document_id=document.id,
+                document_version_id=version.id,
+                bha_number=bha_number or None,
+                report_date=report_date,
+                report_date_text=report_date_text or None,
+                top_depth_value=mud_numeric(top_entry.source_value) if top_entry else None,
+                top_depth_unit=top_entry.source_unit if top_entry else "",
+                bottom_depth_value=mud_numeric(bottom_entry.source_value) if bottom_entry else None,
+                bottom_depth_unit=bottom_entry.source_unit if bottom_entry else "",
+                assembly_description=(
+                    description_entry.source_value if description_entry else None
+                ),
+                component_count=len(components),
+                section_resolution=section_resolution,
+                record_state=RecordState.ACTUAL.value,
+                status=ConfirmationStatus.CANDIDATE.value,
+                document_status=str(version.status or document.status or ""),
+                origin=KnowledgeOrigin.DERIVED.value,
+                created_by="promoter",
+                provenance=parent_provenance,
+                identity_key=identity,
+                is_current=not higher_current,
+                attributes={
+                    "component_table_id": table_id,
+                    "source_well_name": next(
+                        (e.source_value for e in summary if e.property_name == "well"), ""
+                    ),
+                    "source_field_name": next(
+                        (e.source_value for e in summary if e.property_name == "field"), ""
+                    ),
+                    "component_types": sorted(
+                        {entry.component_type for entry in components if entry.component_type}
+                    ),
+                    "unclassified_components": sum(
+                        1 for entry in components if not entry.component_type
+                    ),
+                },
+            )
+            if higher_current:
+                report.status = "SUPERSEDED"
+            self.session.add(report)
+            self.session.flush()
+            result.bump("bha_report", "created")
+        self.records.link(
+            source_type="well",
+            source_id=well.id,
+            relation=KnowledgeRelationType.WELL_HAS_BHA.value,
+            target_type="bha_report",
+            target_id=report.id,
+            provenance=parent_provenance,
+            note="source-version bottom hole assembly promoted from stored extraction",
+        )
+        if section_id:
+            self.records.link(
+                source_type="well_section",
+                source_id=section_id,
+                relation=KnowledgeRelationType.SECTION_HAS_BHA.value,
+                target_type="bha_report",
+                target_id=report.id,
+                provenance=parent_provenance,
+                note="section explicitly matched by stored BHA attributes",
+            )
+        for entry in components:
+            self._write_bha_component(
+                report=report,
+                entry=entry,
+                table_id=source_table_key(entry.table) or table_id,
+                document=document,
+                version=version,
+                result=result,
+            )
+        if replace and bool(result.identities):
+            removed = self._delete_domain_orphans(
+                BhaComponent, version_id=version.id, kept=result.identities
+            )
+            removed += self._delete_domain_orphans(
+                BhaReport, version_id=version.id, kept=result.identities
+            )
+            if removed:
+                result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        return report
+
+    # -- bit record -----------------------------------------------------------
+    def _linked_bha(self, *, well: Well, bha_number: str, result: PromotionResult) -> str | None:
+        """The one current BHA of this well the source's BHA number names, or ``None``.
+
+        Only a promoted, current assembly of the *same well* is ever linked.  A number that matches
+        nothing - or that matches two runs the source numbered identically - leaves the link NULL and
+        is reported, because a guessed link between a bit and the wrong assembly is worse than an
+        honest gap.
+        """
+        if not bha_number.strip():
+            return None
+        matches = list(
+            self.session.execute(
+                select(BhaReport)
+                .where(
+                    BhaReport.well_id == well.id,
+                    BhaReport.is_current.is_(True),
+                    BhaReport.bha_number.is_not(None),
+                )
+                .order_by(BhaReport.bha_number, BhaReport.id)
+            ).scalars()
+        )
+        selected = [
+            row for row in matches if str(row.bha_number or "").strip() == bha_number.strip()
+        ]
+        if len(selected) == 1:
+            return str(selected[0].id)
+        if len(selected) > 1:
+            result.skipped.append(
+                {
+                    "reason": "AMBIGUOUS_BHA_LINK",
+                    "detail": (
+                        f"more than one current BHA of this well is numbered {bha_number!r}; "
+                        "the bit run keeps no BHA link"
+                    ),
+                }
+            )
+        return None
+
+    def _write_bit_record(
+        self,
+        *,
+        entry: Any,
+        well: Well,
+        section_id: str | None,
+        section_resolution: str,
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        higher_current: bool,
+    ) -> BitRecord | None:
+        identity = promotion_identity(
+            version_id=version.id,
+            kind="bit-record",
+            table_id=source_table_key(entry.table),
+            row_index=0,
+            well_id=well.id,
+            extra=f"{entry.bit_number.strip()}|{entry.run_number.strip()}",
+        )
+        result.identities.add(identity)
+        unparsed = [
+            text
+            for text, value in (
+                (entry.size_text, entry.size_value),
+                (entry.depth_in_text, entry.depth_in_value),
+                (entry.depth_out_text, entry.depth_out_value),
+                (entry.footage_text, entry.footage_value),
+            )
+            if text and value is None
+        ]
+        if unparsed:
+            result.skipped.append(
+                {
+                    "reason": "INVALID_FIELD",
+                    "detail": (
+                        f"bit {entry.bit_number} has numbers this contract cannot read: "
+                        f"{', '.join(unparsed)}"
+                    ),
+                }
+            )
+        run_date, run_date_text = self._mud_date(entry.run_date_text)
+        bha_report_id = self._linked_bha(
+            well=well, bha_number=entry.bha_number, result=result
+        )
+        content = {
+            "well_id": well.id,
+            "section_id": section_id,
+            "bha_report_id": bha_report_id,
+            "bit_number": entry.bit_number.strip(),
+            "run_number": entry.run_number.strip() or None,
+            "manufacturer": entry.manufacturer,
+            "model": entry.model,
+            "bit_type": entry.bit_type,
+            "iadc_code": entry.iadc_code,
+            "serial_number": entry.serial_number,
+            "size_value": entry.size_value,
+            "size_unit": entry.size_unit,
+            "size_text": entry.size_text,
+            "depth_in_value": entry.depth_in_value,
+            "depth_in_unit": entry.depth_in_unit,
+            "depth_out_value": entry.depth_out_value,
+            "depth_out_unit": entry.depth_out_unit,
+            "footage_value": entry.footage_value,
+            "footage_unit": entry.footage_unit,
+            "rotating_hours": entry.rotating_hours,
+            "drilling_hours": entry.drilling_hours,
+            "pull_reason": entry.pull_reason,
+            "dull_grade": entry.dull_grade,
+            "nozzle_count": entry.nozzle_count,
+            "nozzle_size_text": entry.nozzle_size_text,
+            "run_date": run_date,
+            "run_date_text": run_date_text or None,
+            "section_resolution": section_resolution,
+        }
+        provenance = self._table_provenance(
+            entry.table,
+            document=document,
+            version=version,
+            row_index=entry.source_row_index,
+            source_label=entry.bit_number,
+        )
+        existing, outcome = self._confirm_row(BitRecord, identity, content, "bit record", result)
+        if existing is not None:
+            result.bump("bit_record", outcome)
+            return existing
+        record = BitRecord(
+            id=new_id("bit"),
+            well_id=well.id,
+            section_id=section_id,
+            document_id=document.id,
+            document_version_id=version.id,
+            bha_report_id=bha_report_id,
+            bit_number=entry.bit_number.strip(),
+            run_number=entry.run_number.strip() or None,
+            manufacturer=entry.manufacturer,
+            model=entry.model,
+            bit_type=entry.bit_type,
+            iadc_code=entry.iadc_code,
+            serial_number=entry.serial_number,
+            size_value=entry.size_value,
+            size_unit=entry.size_unit,
+            size_text=entry.size_text,
+            depth_in_value=entry.depth_in_value,
+            depth_in_unit=entry.depth_in_unit,
+            depth_out_value=entry.depth_out_value,
+            depth_out_unit=entry.depth_out_unit,
+            footage_value=entry.footage_value,
+            footage_unit=entry.footage_unit,
+            rotating_hours=entry.rotating_hours,
+            drilling_hours=entry.drilling_hours,
+            pull_reason=entry.pull_reason,
+            dull_grade=entry.dull_grade,
+            nozzle_count=entry.nozzle_count,
+            nozzle_size_text=entry.nozzle_size_text,
+            run_date=run_date,
+            run_date_text=run_date_text or None,
+            section_resolution=section_resolution,
+            record_state=RecordState.ACTUAL.value,
+            status=ConfirmationStatus.CANDIDATE.value,
+            document_status=str(version.status or document.status or ""),
+            origin=KnowledgeOrigin.DERIVED.value,
+            created_by="promoter",
+            provenance=provenance,
+            identity_key=identity,
+            is_current=not higher_current,
+            attributes={
+                "source_bha_number": entry.bha_number,
+                "source_well_name": entry.well_name,
+                "source_row_index": entry.source_row_index,
+            },
+        )
+        if higher_current:
+            record.status = "SUPERSEDED"
+        self.session.add(record)
+        self.session.flush()
+        result.bump("bit_record", "created")
+        self.records.link(
+            source_type="well",
+            source_id=well.id,
+            relation=KnowledgeRelationType.WELL_HAS_BIT_RUN.value,
+            target_type="bit_record",
+            target_id=record.id,
+            provenance=provenance,
+            note="source-version bit run promoted from stored extraction",
+        )
+        if section_id:
+            self.records.link(
+                source_type="well_section",
+                source_id=section_id,
+                relation=KnowledgeRelationType.SECTION_HAS_BIT.value,
+                target_type="bit_record",
+                target_id=record.id,
+                provenance=provenance,
+                note="section explicitly matched by stored bit-record attributes",
+            )
+        if bha_report_id:
+            self.records.link(
+                source_type="bha_report",
+                source_id=bha_report_id,
+                relation=KnowledgeRelationType.BHA_HAS_BIT.value,
+                target_type="bit_record",
+                target_id=record.id,
+                provenance=provenance,
+                note="the bit record's own BHA number matched one current assembly of this well",
+            )
+        return record
+
+    def _promote_bit_record(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> BitRecord | None:
+        """Promote a recognised bit tally, one run per row, preserving every earlier run."""
+        if not document.well_id:
+            result.error = "NO_WELL"
+            result.skipped.append(
+                {"reason": "NO_WELL", "detail": f"{document.filename} is not linked to a well"}
+            )
+            return None
+        well = self.session.get(Well, str(document.well_id))
+        if well is None:
+            result.error = "NO_WELL"
+            result.skipped.append({"reason": "NO_WELL", "detail": "the linked well does not exist"})
+            return None
+        entries = bit_run_entries(payload)
+        if not entries:
+            self._no_recognised_table(
+                result,
+                "no stored table has a bit number column plus a bit measurement column, so there "
+                "is no bit record to promote",
+            )
+            return None
+        higher_current = self._higher_current_exists(
+            BitRecord, document=document, version=version, well=well
+        )
+        self._supersede_source_versions(
+            model=BitRecord, document=document, version=version, well=well
+        )
+        written: BitRecord | None = None
+        for entry in entries:
+            # A tally may cover several wells.  A row naming another well is skipped and reported; it
+            # is never re-attached to the well this document happens to be filed under.
+            if self._row_scope_conflict(entry.well_name, well):
+                result.skipped.append(
+                    {
+                        "reason": "WELL_SCOPE_CONFLICT",
+                        "detail": (
+                            f"bit {entry.bit_number} names well {entry.well_name!r}, not this "
+                            f"document's well {well.name!r}; row not promoted"
+                        ),
+                    }
+                )
+                continue
+            section_id, section_resolution = self._explicit_section(
+                well=well,
+                explicit_id="",
+                explicit_name=entry.section_text,
+                hole_size_text="",
+                result=result,
+                domain="bit record",
+            )
+            record = self._write_bit_record(
+                entry=entry,
+                well=well,
+                section_id=section_id,
+                section_resolution=section_resolution,
+                document=document,
+                version=version,
+                result=result,
+                higher_current=higher_current,
+            )
+            if record is not None and written is None:
+                written = record
+        if replace and bool(result.identities):
+            removed = self._delete_domain_orphans(
+                BitRecord, version_id=version.id, kept=result.identities
+            )
+            if removed:
+                result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        return written
+
+    # -- directional survey ---------------------------------------------------
+    def _write_survey_station(
+        self,
+        *,
+        run: SurveyRun,
+        entry: Any,
+        table_id: str,
+        station_key: str,
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+    ) -> None:
+        identity = promotion_identity(
+            version_id=version.id,
+            kind="survey-station",
+            table_id=table_id,
+            row_index=0,
+            well_id=run.well_id,
+            extra=f"{run.run_label}|{station_key}",
+        )
+        result.identities.add(identity)
+        unverified = [
+            name
+            for name, value, unit in (
+                ("measured depth", entry.md_value, entry.md_unit),
+                ("inclination", entry.inclination_value, entry.inclination_unit),
+                ("azimuth", entry.azimuth_value, entry.azimuth_unit),
+            )
+            if value is not None and not unit
+        ]
+        content = {
+            "sequence": entry.sequence,
+            "station_number_text": entry.station_number_text,
+            "md_value": entry.md_value,
+            "md_unit": entry.md_unit,
+            "md_text": entry.md_text,
+            "inclination_value": entry.inclination_value,
+            "inclination_unit": entry.inclination_unit,
+            "inclination_text": entry.inclination_text,
+            "azimuth_value": entry.azimuth_value,
+            "azimuth_unit": entry.azimuth_unit,
+            "azimuth_text": entry.azimuth_text,
+            "toolface_value": entry.toolface_value,
+            "toolface_unit": entry.toolface_unit,
+            "toolface_text": entry.toolface_text,
+            "tvd_value": entry.tvd_value,
+            "tvd_unit": entry.tvd_unit,
+            "tvd_text": entry.tvd_text,
+            "northing_value": entry.northing_value,
+            "northing_unit": entry.northing_unit,
+            "northing_text": entry.northing_text,
+            "easting_value": entry.easting_value,
+            "easting_unit": entry.easting_unit,
+            "easting_text": entry.easting_text,
+            "dls_value": entry.dls_value,
+            "dls_unit": entry.dls_unit,
+            "dls_text": entry.dls_text,
+            "quality": "UNVERIFIED" if unverified else "VALID",
+        }
+        if unverified:
+            result.skipped.append(
+                {
+                    "reason": "MISSING_UNIT",
+                    "detail": (
+                        f"survey station {station_key} has no stated unit for "
+                        f"{', '.join(unverified)}; the value is kept unverified and unconverted"
+                    ),
+                }
+            )
+        existing, outcome = self._confirm_row(
+            SurveyStation, identity, content, "survey station", result
+        )
+        if existing is not None:
+            result.bump("survey_station", outcome)
+            return
+        station = SurveyStation(
+            id=new_id("svy"),
+            survey_run_id=run.id,
+            well_id=run.well_id,
+            section_id=run.section_id,
+            document_id=run.document_id,
+            document_version_id=run.document_version_id,
+            sequence=entry.sequence,
+            station_number_text=entry.station_number_text,
+            md_value=entry.md_value,
+            md_unit=entry.md_unit,
+            md_text=entry.md_text,
+            inclination_value=entry.inclination_value,
+            inclination_unit=entry.inclination_unit,
+            inclination_text=entry.inclination_text,
+            azimuth_value=entry.azimuth_value,
+            azimuth_unit=entry.azimuth_unit,
+            azimuth_text=entry.azimuth_text,
+            toolface_value=entry.toolface_value,
+            toolface_unit=entry.toolface_unit,
+            toolface_text=entry.toolface_text,
+            tvd_value=entry.tvd_value,
+            tvd_unit=entry.tvd_unit,
+            tvd_text=entry.tvd_text,
+            northing_value=entry.northing_value,
+            northing_unit=entry.northing_unit,
+            northing_text=entry.northing_text,
+            easting_value=entry.easting_value,
+            easting_unit=entry.easting_unit,
+            easting_text=entry.easting_text,
+            dls_value=entry.dls_value,
+            dls_unit=entry.dls_unit,
+            dls_text=entry.dls_text,
+            quality="UNVERIFIED" if unverified else "VALID",
+            record_state=RecordState.ACTUAL.value,
+            status=ConfirmationStatus.CANDIDATE.value,
+            origin=KnowledgeOrigin.DERIVED.value,
+            created_by="promoter",
+            provenance=self._table_provenance(
+                entry.table,
+                document=document,
+                version=version,
+                row_index=entry.source_row_index,
+                source_label=entry.station_number_text,
+            ),
+            identity_key=identity,
+            is_current=True,
+            attributes={
+                "table_id": table_id,
+                "source_row_index": entry.source_row_index,
+                "station_identity": run.station_identity,
+            },
+        )
+        self.session.add(station)
+        self.session.flush()
+        result.bump("survey_station", "created")
+        self.records.link(
+            source_type="survey_run",
+            source_id=run.id,
+            relation=KnowledgeRelationType.SURVEY_HAS_STATION.value,
+            target_type="survey_station",
+            target_id=station.id,
+            provenance=[],
+        )
+
+    def _promote_directional_survey(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> SurveyRun | None:
+        """Promote recognised survey stations, keeping every source-labelled set separate."""
+        if not document.well_id:
+            result.error = "NO_WELL"
+            result.skipped.append(
+                {"reason": "NO_WELL", "detail": f"{document.filename} is not linked to a well"}
+            )
+            return None
+        well = self.session.get(Well, str(document.well_id))
+        if well is None:
+            result.error = "NO_WELL"
+            result.skipped.append({"reason": "NO_WELL", "detail": "the linked well does not exist"})
+            return None
+        summary = survey_summary_entries(payload)
+        stations = survey_station_entries(payload)
+        if not stations:
+            self._no_recognised_table(
+                result,
+                "no stored table has measured depth, inclination and azimuth in three distinct "
+                "columns, so there is no directional survey to promote",
+            )
+            return None
+        if self._source_scope_conflict(
+            well=well,
+            source_well=next(
+                (entry.source_value for entry in summary if entry.property_name == "well"), ""
+            ),
+            source_field=next(
+                (entry.source_value for entry in summary if entry.property_name == "field"), ""
+            ),
+            result=result,
+            domain="directional survey",
+        ):
+            result.error = "WELL_SCOPE_CONFLICT"
+            return None
+        higher_current = self._higher_current_exists(
+            SurveyRun, document=document, version=version, well=well
+        )
+        self._supersede_source_versions(
+            model=SurveyRun, document=document, version=version, well=well
+        )
+        date_entry = next(
+            (entry for entry in summary if entry.property_name == "survey_date"), None
+        )
+        survey_date, survey_date_text = self._mud_date(
+            date_entry.source_value if date_entry else ""
+        )
+        tool_entry = next(
+            (entry for entry in summary if entry.property_name == "survey_tool"), None
+        )
+        label_entry = next(
+            (entry for entry in summary if entry.property_name == "run_label"), None
+        )
+        # Sets stay separate: the source's own run/set column groups them, and where it is absent the
+        # table is the set.  Two unlabelled sets in one sheet remain one run, exactly as the source
+        # presented them; that is a documented limit of the contract, not a silent merge.
+        groups: dict[tuple[str, str], list[Any]] = {}
+        for entry in stations:
+            table_id = source_table_key(entry.table)
+            key = (table_id, entry.run_label.strip() or (label_entry.source_value.strip() if label_entry else ""))
+            groups.setdefault(key, []).append(entry)
+        first_run: SurveyRun | None = None
+        for (table_id, run_label), group in groups.items():
+            numbers = [entry.station_number_text.strip() for entry in group]
+            if all(numbers) and len(set(numbers)) == len(numbers):
+                station_identity = "NUMBERED"
+            elif all(numbers) or any(numbers):
+                # Repeated numbers, or some rows numbered and some not: the source's numbering does
+                # not identify a station uniquely, so identity falls back to source position and the
+                # ambiguity is reported rather than resolved by choosing one of the candidates.
+                station_identity = "AMBIGUOUS"
+                result.skipped.append(
+                    {
+                        "reason": "AMBIGUOUS_STATIONS",
+                        "detail": (
+                            f"survey set {run_label or table_id} does not number its stations "
+                            "uniquely; station identity falls back to source position"
+                        ),
+                    }
+                )
+            else:
+                station_identity = "UNNUMBERED"
+            section_names = sorted(
+                {entry.section_text.strip() for entry in group if entry.section_text.strip()}
+            )
+            section_name = section_names[0] if len(section_names) == 1 else ""
+            if len(section_names) > 1:
+                result.skipped.append(
+                    {
+                        "reason": "AMBIGUOUS_SECTIONS",
+                        "detail": (
+                            "one survey set names more than one section "
+                            f"({', '.join(section_names)}); no section is attached"
+                        ),
+                    }
+                )
+            hole_entry = next(
+                (entry for entry in summary if entry.property_name == "hole_size_in"), None
+            )
+            section_id, section_resolution = self._explicit_section(
+                well=well,
+                explicit_id=next(
+                    (
+                        entry.source_value.strip()
+                        for entry in summary
+                        if entry.property_name == "section_id"
+                    ),
+                    "",
+                ),
+                explicit_name=(
+                    section_name
+                    or next(
+                        (
+                            entry.source_value.strip()
+                            for entry in summary
+                            if entry.property_name == "section"
+                        ),
+                        "",
+                    )
+                ),
+                hole_size_text=hole_entry.source_value if hole_entry else "",
+                result=result,
+                domain="directional survey",
+            )
+            depths = [entry.md_value for entry in group if entry.md_value is not None]
+            units = sorted({entry.md_unit for entry in group if entry.md_unit})
+            identity = promotion_identity(
+                version_id=version.id,
+                kind="survey-run",
+                table_id=table_id,
+                row_index=0,
+                well_id=well.id,
+                extra=run_label,
+            )
+            result.identities.add(identity)
+            content = {
+                "well_id": well.id,
+                "section_id": section_id,
+                "run_label": run_label,
+                "survey_tool": tool_entry.source_value if tool_entry else "",
+                "survey_date": survey_date,
+                "survey_date_text": survey_date_text or None,
+                "station_count": len(group),
+                "min_md_value": min(depths) if depths else None,
+                "max_md_value": max(depths) if depths else None,
+                "md_unit": units[0] if len(units) == 1 else "",
+                "station_identity": station_identity,
+                "section_resolution": section_resolution,
+            }
+            provenance = self._table_provenance(
+                group[0].table, document=document, version=version
+            )
+            existing, outcome = self._confirm_row(
+                SurveyRun, identity, content, "survey run", result
+            )
+            if existing is not None:
+                run = existing
+                result.bump("survey_run", outcome)
+            else:
+                run = SurveyRun(
+                    id=new_id("sur"),
+                    well_id=well.id,
+                    section_id=section_id,
+                    document_id=document.id,
+                    document_version_id=version.id,
+                    run_label=run_label,
+                    survey_tool=tool_entry.source_value if tool_entry else "",
+                    survey_date=survey_date,
+                    survey_date_text=survey_date_text or None,
+                    station_count=len(group),
+                    min_md_value=min(depths) if depths else None,
+                    max_md_value=max(depths) if depths else None,
+                    md_unit=units[0] if len(units) == 1 else "",
+                    station_identity=station_identity,
+                    section_resolution=section_resolution,
+                    record_state=RecordState.ACTUAL.value,
+                    status=ConfirmationStatus.CANDIDATE.value,
+                    document_status=str(version.status or document.status or ""),
+                    origin=KnowledgeOrigin.DERIVED.value,
+                    created_by="promoter",
+                    provenance=provenance,
+                    identity_key=identity,
+                    is_current=not higher_current,
+                    attributes={
+                        "station_table_id": table_id,
+                        "run_identity": "LABEL" if run_label else "TABLE",
+                        "source_well_name": next(
+                            (e.source_value for e in summary if e.property_name == "well"), ""
+                        ),
+                        "source_field_name": next(
+                            (e.source_value for e in summary if e.property_name == "field"), ""
+                        ),
+                    },
+                )
+                if higher_current:
+                    run.status = "SUPERSEDED"
+                self.session.add(run)
+                self.session.flush()
+                result.bump("survey_run", "created")
+            if first_run is None:
+                first_run = run
+            self.records.link(
+                source_type="well",
+                source_id=well.id,
+                relation=KnowledgeRelationType.WELL_HAS_SURVEY.value,
+                target_type="survey_run",
+                target_id=run.id,
+                provenance=provenance,
+                note="source-version directional survey promoted from stored extraction",
+            )
+            if section_id:
+                self.records.link(
+                    source_type="well_section",
+                    source_id=section_id,
+                    relation=KnowledgeRelationType.SECTION_HAS_SURVEY.value,
+                    target_type="survey_run",
+                    target_id=run.id,
+                    provenance=provenance,
+                    note="section explicitly matched by stored survey attributes",
+                )
+            for entry in group:
+                station_key = (
+                    entry.station_number_text.strip()
+                    if station_identity == "NUMBERED"
+                    else f"row:{entry.sequence}"
+                )
+                self._write_survey_station(
+                    run=run,
+                    entry=entry,
+                    table_id=table_id,
+                    station_key=station_key,
+                    document=document,
+                    version=version,
+                    result=result,
+                )
+        if replace and bool(result.identities):
+            removed = self._delete_domain_orphans(
+                SurveyStation, version_id=version.id, kept=result.identities
+            )
+            removed += self._delete_domain_orphans(
+                SurveyRun, version_id=version.id, kept=result.identities
+            )
+            if removed:
+                result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        return first_run
 
     # -- report ---------------------------------------------------------------
     def _promote_report(
