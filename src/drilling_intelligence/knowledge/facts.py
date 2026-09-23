@@ -127,29 +127,79 @@ PREDICATES: dict[str, PredicateSpec] = {
             "hole_depth", "Hole depth", dimension="LENGTH", fields=("depth", "hole_depth", "td_md")
         ),
         _predicate(
-            "measured_depth", "Measured depth", dimension="LENGTH", fields=("md", "measured_depth")
+            "measured_depth",
+            "Measured depth",
+            dimension="LENGTH",
+            # ``depth_md`` is what the field extractor emits; without it as an explicit alias the
+            # name used to be reduced to the generic ``hole_depth`` by unit-suffix stripping.
+            fields=("md", "measured_depth", "depth_md", "depth_md_ft", "depth_md_m"),
         ),
         _predicate(
             "true_vertical_depth",
             "True vertical depth",
             dimension="LENGTH",
-            fields=("tvd", "true_vertical_depth"),
+            # ``depth_tvd`` is what the field extractor emits.  It must not reduce to ``hole_depth``:
+            # a true vertical depth and a measured depth are different assertions about the same hole.
+            fields=("tvd", "true_vertical_depth", "depth_tvd", "depth_tvd_ft", "depth_tvd_m"),
         ),
         _predicate("casing_size", "Casing size", dimension="LENGTH", fields=("casing_size",)),
+        # A bit is not the hole it drills: it is deliberately smaller, and a washed-out hole can be
+        # larger still.  ``bit_size`` used to be an alias of ``hole_section_size``, so a source that
+        # stated both ("12 1/4 in bit in a 12 1/4 in hole" is normal, and so is a 12 1/4 in bit in a
+        # 12 1/2 in washed hole) had two different assertions merged into one - and where they differed
+        # that produced a conflict between a bit and a hole.  Numerical equality between the two is
+        # common and is not evidence that they are the same quantity.
+        _predicate(
+            "bit_size",
+            "Bit size",
+            dimension="LENGTH",
+            fields=("bit_size", "bit_size_in", "bit_gauge", "bit_diameter"),
+        ),
         _predicate(
             "hole_section_size",
             "Hole section size",
             dimension="LENGTH",
-            fields=("hole_size", "bit_size", "section_size"),
+            fields=("hole_size", "section_size", "hole_size_in"),
         ),
         _predicate("string", "Pipe body", dimension="LENGTH", fields=("string", "pipe_body")),
         _predicate(
             "mud_volume", "Mud volume", dimension="VOLUME", fields=("mud_volume", "pit_volume")
         ),
+        # Three different volumes that all arrive in barrels.  ``mud_volume`` is the circulating
+        # system; a pill is a batch pumped on purpose; a kick volume is what the well gave back.
+        # Sharing a unit made them one property, and 12 bbl of pill beside 1,450 bbl of active
+        # system then read as two sources disagreeing about the mud volume.
+        _predicate(
+            "pill_volume",
+            "Pill volume",
+            dimension="VOLUME",
+            fields=("pill_volume", "pill_volume_bbl"),
+        ),
+        _predicate(
+            "kick_volume",
+            "Kick volume",
+            dimension="VOLUME",
+            fields=("kick_volume", "kick_volume_bbl", "gain_volume"),
+        ),
+        _predicate(
+            "trip_tank_volume",
+            "Trip tank volume",
+            dimension="VOLUME",
+            fields=("trip_tank_volume", "trip_tank_volume_bbl"),
+        ),
         _predicate(
             "flow_rate", "Flow rate", dimension="FLOW_RATE", fields=("flow_rate", "pump_rate")
         ),
         _predicate("rpm", "Rotary speed", dimension="ROTARY_SPEED", fields=("rpm",)),
+        # The speed the string turns at and the speed a rheometer is set to are both quoted in rpm
+        # and mean entirely different things.  A 300 rpm rheometer setting beside a 120 rpm rotary
+        # speed is not a disagreement about the rotary speed.
+        _predicate(
+            "rheometer_speed",
+            "Rheometer speed",
+            dimension="ROTARY_SPEED",
+            fields=("rheometer_speed", "rheometer_rpm", "viscometer_dial_speed"),
+        ),
         _predicate(
             "weight_on_bit", "Weight on bit", dimension="FORCE", fields=("wob", "weight_on_bit")
         ),
@@ -159,6 +209,44 @@ PREDICATES: dict[str, PredicateSpec] = {
             "Standpipe pressure",
             dimension="PRESSURE",
             fields=("spp", "standpipe_pressure"),
+        ),
+        # Four pressures read on the rig floor, all in psi, all historically filed as
+        # ``surface_pressure``.  SIDPP and SICP are shut-in *observations* taken at the same moment
+        # and legitimately differ by the annular friction loss; MAASP is a *limit* the well can
+        # take, not a reading at all.  Comparing a limit against an observation as though they were
+        # the same quantity is the error this separation exists to prevent.
+        _predicate(
+            "sidpp",
+            "Shut-in drillpipe pressure",
+            dimension="PRESSURE",
+            fields=("sidpp", "shut_in_drillpipe_pressure", "shut_in_drill_pipe_pressure"),
+        ),
+        _predicate(
+            "sicp",
+            "Shut-in casing pressure",
+            dimension="PRESSURE",
+            fields=("sicp", "shut_in_casing_pressure", "shut_in_annulus_pressure"),
+        ),
+        _predicate(
+            "maasp",
+            "Maximum allowable annular surface pressure",
+            dimension="PRESSURE",
+            fields=(
+                "maasp",
+                "masp",
+                "maximum_allowable_annular_surface_pressure",
+                "maximum_allowable_surface_pressure",
+                "maximum_allowable_annular_pressure",
+            ),
+        ),
+        # The generic reading, kept deliberately separate: a source that says only "surface
+        # pressure" has not said which of the four it means, and guessing would be worse than
+        # keeping it generic.
+        _predicate(
+            "surface_pressure",
+            "Surface pressure",
+            dimension="PRESSURE",
+            fields=("surface_pressure",),
         ),
         _predicate(
             "temperature",
@@ -228,6 +316,14 @@ PREDICATE_BY_FIELD: dict[str, str] = {
 #: ``Mud weight (ppg)`` and ``Hole size, in`` are the same two properties as ``mud_weight`` and
 #: ``hole_size``; a real corpus writes them this way constantly, and treating them as new
 #: predicates would split one property across three names.
+#:
+#: **Every member must be a unit, not a qualifier of what was measured.**  ``md`` and ``tvd`` used
+#: to be listed here, and that single misregistration silently merged measured depth with true
+#: vertical depth: :func:`_longest_unit_suffixed_prefix` reduced both ``depth_md`` and ``depth_tvd``
+#: to the head ``depth``, so two different engineering assertions - how much hole was drilled, and
+#: how deep that hole actually is - became one predicate and then conflicted with each other.  A
+#: depth role is spelled out in the field's own alias list instead (see
+#: :data:`PREDICATES`), which is where a corpus's spellings belong.
 UNIT_SUFFIX_TOKENS = frozenset(
     {
         "bbl",
@@ -249,8 +345,6 @@ UNIT_SUFFIX_TOKENS = frozenset(
         "psi",
         "rpm",
         "sg",
-        "tvd",
-        "md",
     }
 )
 

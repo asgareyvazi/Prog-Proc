@@ -329,17 +329,68 @@ _RULES: tuple[FieldRule, ...] = (
         plausible_range=(0.0, 60000.0),
         doc="Pressure reading in context (leak-off, BOP test, annular, standpipe).",
     ),
+    # Well-control surface pressures, one rule per quantity.  These used to be a single
+    # ``surface_pressure`` rule whose label alternation covered SIDPP, SICP, casing, standpipe, pump
+    # and choke pressure alike.  They share a unit and a dimension and nothing else: SIDPP is read off
+    # the drill pipe with the well shut in, SICP off the annulus, and a standpipe or choke pressure is
+    # a circulating figure that has no shut-in meaning at all.  Merging them made the knowledge layer
+    # report a conflict between three measurements that were never of the same thing, and hid the one
+    # comparison an engineer does make - SIDPP against SICP.
+    FieldRule(
+        name="sidpp",
+        pattern=re.compile(
+            rf"(?i)\b(?:sidpp|shut[\s-]?in\s+drill[\s-]?pipe\s+pressure)\s*(?:=|:|of|is|at|was)?\s*{_value_re()}\s*(?P<unit>psi|bar|kPa|MPa)?"
+        ),
+        dimension=Dimension.PRESSURE,
+        default_unit="psi",
+        confidence=0.75,
+        range_unit="psi",
+        plausible_range=(0.0, 20000.0),
+        doc="Shut-in drill pipe pressure.  Its own quantity: not SICP, not a circulating pressure.",
+    ),
+    FieldRule(
+        name="sicp",
+        pattern=re.compile(
+            rf"(?i)\b(?:sicp|shut[\s-]?in\s+casing\s+pressure)\s*(?:=|:|of|is|at|was)?\s*{_value_re()}\s*(?P<unit>psi|bar|kPa|MPa)?"
+        ),
+        dimension=Dimension.PRESSURE,
+        default_unit="psi",
+        confidence=0.75,
+        range_unit="psi",
+        plausible_range=(0.0, 20000.0),
+        doc="Shut-in casing pressure.  Distinct from SIDPP by definition, even at an equal value.",
+    ),
+    FieldRule(
+        name="maasp",
+        pattern=re.compile(
+            rf"(?i)\b(?:maasp|masp|maasp\s*pressure|masp\s*pressure|maximum\s+allowable\s+(?:annular\s+)?surface\s+pressure|maximum\s+allowable\s+annular\s+pressure)\s*(?:=|:|of|is|at|was|limited\s+to)?\s*{_value_re()}\s*(?P<unit>psi|bar|kPa|MPa)?"
+        ),
+        dimension=Dimension.PRESSURE,
+        default_unit="psi",
+        confidence=0.75,
+        range_unit="psi",
+        plausible_range=(0.0, 20000.0),
+        doc=(
+            "Maximum allowable annular surface pressure.  A *limit*, not an observation: it is what "
+            "the well can take, and comparing it against a shut-in reading as though they were the "
+            "same quantity is the error this separation exists to prevent."
+        ),
+    ),
     FieldRule(
         name="surface_pressure",
         pattern=re.compile(
-            rf"(?i)\b(?:sidpp|sicp|casing pressure|standpipe pressure|pump pressure|surface pressure|choke pressure)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>psi|bar|kPa|MPa)?"
+            rf"(?i)\b(?:surface pressure|casing pressure|standpipe pressure|pump pressure|choke pressure)\s*(?:=|:|of|is|at|observed|was)?\s*{_value_re()}\s*(?P<unit>psi|bar|kPa|MPa)?"
         ),
         dimension=Dimension.PRESSURE,
         default_unit="psi",
         confidence=0.7,
         range_unit="psi",
         plausible_range=(0.0, 20000.0),
-        doc="Well-control surface pressures (SIDPP/SICP/choke/standpipe).",
+        doc=(
+            "A surface pressure the source did not qualify further.  Deliberately generic: it keeps "
+            "the value and its provenance instead of guessing which specific reading it was, and it "
+            "no longer absorbs the specialised quantities above."
+        ),
     ),
     FieldRule(
         name="torque",
@@ -365,6 +416,36 @@ _RULES: tuple[FieldRule, ...] = (
         plausible_range=(0.0, 200.0),
         doc="Weight on bit (kip default when the report omits the unit).",
     ),
+    # A rheometer speed is not a rotary speed, however identical the unit is.  "Rheometer reading at
+    # 500/300 rpm" states the two speeds a viscometer was run at in order to read a mud's rheology;
+    # "rotary speed 120 rpm" states how fast the string was turning.  Both used to arrive as the
+    # single field ``rpm``, whose predicate is labelled "Rotary speed", so a laboratory test condition
+    # was filed as a drilling parameter and then conflicted with the real one.
+    #
+    # This rule is label-anchored, so it runs in the first pass and *claims* the number before the
+    # unit-only ``rpm`` fallback can re-report it under the rotary name.  Nothing is discarded: the
+    # value keeps its own field, and the fallback still serves an unqualified "300 rpm" elsewhere.
+    FieldRule(
+        name="rheometer_speed",
+        pattern=re.compile(
+            # The unit is *required* here.  That is what makes "500/300 rpm" resolve to the 300: with
+            # the unit optional the engine would happily take the 500 and leave the 300 to the
+            # unit-only fallback, splitting one rheometer reading across two predicates.  A rheometer
+            # speed with no "rpm" stated is not identifiable as a speed anyway - it could be a dial
+            # reading - so requiring the unit loses nothing and prevents that split.
+            rf"(?i)\b(?:rheometer|viscometer|vg[\s-]?meter|fann)\b[^0-9\n]{{0,40}}?(?:\d{{2,4}}\s*/\s*)?{_value_re()}\s*(?P<unit>rpm|rev/min)\b"
+        ),
+        context=("rheometer", "viscometer", "vg", "fann", "rpm", "reading"),
+        dimension=Dimension.ROTARY_SPEED,
+        default_unit="rpm",
+        confidence=0.7,
+        range_unit="rpm",
+        plausible_range=(0.0, 1200.0),
+        doc=(
+            "Rheometer / viscometer test speed (300 or 600 rpm).  A laboratory test condition, kept "
+            "apart from rotary speed so the two are never compared as one property."
+        ),
+    ),
     FieldRule(
         name="rpm",
         pattern=re.compile(
@@ -389,18 +470,70 @@ _RULES: tuple[FieldRule, ...] = (
         plausible_range=(0.0, 100000.0),
         doc="Circulation rate.",
     ),
+    # Volumes, one rule per quantity, ordered so the specific claim is made before the generic one.
+    # A single ``mud_volume_bbl`` rule used to match ``active system``/``total``/``mud``/``trip`` *and*
+    # a bare ``volume``, so a pill, a trip tank and a kick were all filed as the mud system volume.
+    # They share a dimension and nothing else: a 50 bbl pill and a 1,450 bbl active system are not two
+    # readings of one property, and reporting them as a conflict invents a disagreement nobody had.
+    # Because the label-anchored pass claims a number before the generic rule can re-report it, these
+    # rules only have to come first - no value is dropped, each simply keeps its own identity.
     FieldRule(
-        name="mud_volume_bbl",
+        name="pill_volume",
         pattern=re.compile(
-            rf"(?i)\b(?:active (?:system|volume)|total volume|mud volume|trip volume|volume)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>bbl|m3|bbls|stb)?\b"
+            rf"(?i)\b(?:pill|spacer|treatment|sweep)\s+(?:volume|size)\s*(?:=|:|of|is|at|was)?\s*{_value_re()}\s*(?P<unit>bbl|m3|bbls|stb)?\b"
         ),
-        context=("volume", "bbl", "m3", "pits", "active", "trip"),
+        context=("pill", "spacer", "treatment", "sweep", "volume", "bbl", "m3"),
+        dimension=Dimension.VOLUME,
+        default_unit="bbl",
+        confidence=0.6,
+        range_unit="bbl",
+        plausible_range=(0.0, 200000.0),
+        doc="Volume of a pill or treatment pumped.  Not the active system volume.",
+    ),
+    FieldRule(
+        name="kick_volume",
+        pattern=re.compile(
+            rf"(?i)\b(?:kick|influx|gain)\s+(?:volume|size|gain)?\s*(?:=|:|of|is|at|was)?\s*{_value_re()}\s*(?P<unit>bbl|m3|bbls|stb)\b"
+        ),
+        context=("kick", "influx", "gain", "pit"),
+        dimension=Dimension.VOLUME,
+        default_unit="bbl",
+        confidence=0.65,
+        range_unit="bbl",
+        plausible_range=(0.0, 200000.0),
+        doc=(
+            "Well-control influx volume.  Its own quantity, and the one that must never be confused "
+            "with a system volume: a kick gain is what the well gave back, not what the pits hold."
+        ),
+    ),
+    FieldRule(
+        name="trip_tank_volume",
+        pattern=re.compile(
+            rf"(?i)\btrip\s+(?:tank|volume)(?:\s+tank)?(?:\s+volume)?\s*(?:=|:|of|is|at|was)?\s*{_value_re()}\s*(?P<unit>bbl|m3|bbls|stb)?\b"
+        ),
+        context=("trip", "tank", "volume", "bbl", "m3"),
         dimension=Dimension.VOLUME,
         default_unit="bbl",
         confidence=0.55,
         range_unit="bbl",
         plausible_range=(0.0, 200000.0),
-        doc="Mud system / trip volume.",
+        doc="Trip tank reading - a small measuring tank, not the active mud system.",
+    ),
+    FieldRule(
+        name="mud_volume_bbl",
+        pattern=re.compile(
+            rf"(?i)\b(?:active (?:system|volume)|total (?:mud |system )?volume|mud volume|system volume|pit volume|volume)\s*(?:=|:|of|is|at)?\s*{_value_re()}\s*(?P<unit>bbl|m3|bbls|stb)?\b"
+        ),
+        context=("volume", "bbl", "m3", "pits", "active", "system", "total", "mud"),
+        dimension=Dimension.VOLUME,
+        default_unit="bbl",
+        confidence=0.55,
+        range_unit="bbl",
+        plausible_range=(0.0, 200000.0),
+        doc=(
+            "Active / total mud system volume.  Reached only when no more specific volume rule above "
+            "has already claimed the number."
+        ),
     ),
     FieldRule(
         name="rpm",

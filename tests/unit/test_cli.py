@@ -696,22 +696,29 @@ class TestKnowledgeCommands:
         code, out, err = self._run(workspace_root, config, "knowledge", "status", "--json")
         assert code == 0, err
         report = payload(out)
-        assert report["facts"] == 64
-        assert report["by_origin"] == {"EXTRACTED": 64}, "nothing was typed by a hand here"
-        assert report["by_status"] == {"ACTIVE": 55, "UNVERIFIED": 9}
-        assert report["by_value_type"] == {"quantity": 45, "date": 9, "text": 6, "ratio": 4}
-        assert report["by_entity_type"]["well"] == 18
-        assert report["relations"] == 64
+        # 62, not the 64 this asserted before V4.2 - and the two that went are duplicates, not
+        # evidence.  ``md``/``tvd`` used to be listed as units, so the mud report's 10,125 ft MD and
+        # 9,850 ft TVD were both filed as ``hole_depth`` *as well as* under their own predicates.
+        # Each quantity is now recorded once, under the predicate that names it, so the two
+        # shadow rows are gone and the rows they shadowed are corroborated rather than UNVERIFIED
+        # (hence UNVERIFIED 9 -> 7 and quantity 45 -> 43).  Nothing was dropped: see
+        # docs/ARENA_V4_2_SEMANTIC_PREDICATE_HARDENING_LAST_RESULT.md.
+        assert report["facts"] == 62
+        assert report["by_origin"] == {"EXTRACTED": 62}, "nothing was typed by a hand here"
+        assert report["by_status"] == {"ACTIVE": 55, "UNVERIFIED": 7}
+        assert report["by_value_type"] == {"quantity": 43, "date": 9, "text": 6, "ratio": 4}
+        assert report["by_entity_type"]["well"] == 16
+        assert report["relations"] == 62
         assert report["open_conflicts"] == 0
         assert report["versions_with_artefacts"] == 6
         assert report["versions_without_knowledge"] == 0, (
             "ingest derived knowledge for every stored artefact"
         )
         assert report["detached_facts"] == 0
-        assert report["index"]["knowledge_chunks"] == 64, "facts are searchable, not only listable"
+        assert report["index"]["knowledge_chunks"] == 62, "facts are searchable, not only listable"
         assert report["needs_rebuild"] is False
         _code, text, _err = self._run(workspace_root, config, "knowledge", "status")
-        assert "knowledge items: 64" in text
+        assert "knowledge items: 62" in text
         assert "registry vs knowledge: 0 of 6 current version(s) have no facts" in text
         assert "rebuild recommended: no" in text
 
@@ -724,7 +731,8 @@ class TestKnowledgeCommands:
         assert code == 0, err
         report = payload(out)
         assert report["scope"] == "well A-3"
-        assert report["count"] == 18 == len(report["facts"])
+        # 16, not 18 - the same two duplicated depth rows as in the status test above.
+        assert report["count"] == 16 == len(report["facts"])
         for entry in report["facts"]:
             assert entry["citation"], (
                 f"a fact printed without a source is a fact nobody can check: {entry}"
@@ -810,7 +818,7 @@ class TestKnowledgeCommands:
         # The tally counts *writes*, and two documents state some facts identically, so the second
         # write of a key updates the row instead of duplicating it - which is the point of the lookup
         # key, and the reason a rebuild cannot double the corpus.
-        assert rebuilt["facts"]["created"] == 64, rebuilt["facts"]
+        assert rebuilt["facts"]["created"] == 62, rebuilt["facts"]
         assert rebuilt["facts"]["created"] + rebuilt["facts"]["updated"] == 66
         assert rebuilt["facts"]["unchanged"] == 0, (
             "nothing was skipped: the rows had all been removed"
@@ -1018,7 +1026,7 @@ class TestKnowledgeCommands:
         code, out, err = self._run(workspace_root, config, "doctor", "--json")
         assert code == 0, err
         clean = payload(out)
-        assert clean["knowledge"]["facts"] == 64
+        assert clean["knowledge"]["facts"] == 62
         assert clean["knowledge"]["open_conflicts"] == 0
         assert clean["integrity_problems"] == []
 
@@ -1158,3 +1166,4 @@ class TestIngestPromoteFlag:
         # The flag is also scope-aware: asking for one well cannot write another's rows.
         scoped = self._ingest(workspace_root, config, "--promote", "--well", "A-3")
         assert scoped["promotion"]["totals"]["created"] == 0, scoped["promotion"]
+

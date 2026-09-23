@@ -38,14 +38,37 @@ from drilling_intelligence.operations.service import OperationalService
 from drilling_intelligence.search.chunking import KIND_KNOWLEDGE
 from drilling_intelligence.search.service import SearchService
 
-#: The five disagreements the corpus actually produces, by property.  Asserting the names is the
-#: point: it is what makes "a sixth appeared" or "one quietly merged" a test failure.
+#: The disagreements the corpus actually produces, by property.  Asserting the names is the point:
+#: it is what makes "a sixth appeared" or "one quietly merged" a test failure.
+#:
+#: This set used to hold five entries - ``hole_depth``, ``hole_section_size``, ``mud_volume``, ``rpm``
+#: and ``surface_pressure``.  Three of those were not disagreements at all; they were different
+#: engineering quantities sharing one predicate:
+#:
+#: *   ``surface_pressure`` held SIDPP (420 psi), SICP (610 psi) and a MAASP *limit* (1850 psi);
+#: *   ``mud_volume`` held a 1,450 bbl active system beside a 12 bbl kill-sheet pill;
+#: *   ``rpm`` held a 120 rpm rotary speed beside a 300 rpm rheometer test condition;
+#: *   ``hole_depth`` held measured depths beside a 9,850 ft *true vertical* depth.
+#:
+#: They are now separated at the layer that lost the context (see
+#: ``docs/KNOWLEDGE_SEMANTIC_VOCABULARY.md``), and the two entries that remain are genuine: two
+#: different hole sections, and five sources stating five different measured depths.
 EXPECTED_CONFLICTS = {
-    "hole_depth",
     "hole_section_size",
-    "mud_volume",
+    "measured_depth",
+}
+
+#: Predicates that must exist separately after the split.  If a future change folds any of these back
+#: into a shared name, the false conflicts return silently - the values still look perfectly ordinary.
+REQUIRED_DISTINCT_PREDICATES = {
+    "sidpp",
+    "sicp",
+    "maasp",
+    "rheometer_speed",
     "rpm",
-    "surface_pressure",
+    "kick_volume",
+    "measured_depth",
+    "true_vertical_depth",
 }
 
 
@@ -137,11 +160,11 @@ def test_both_sides_of_a_disagreement_remain_searchable(workspace) -> None:
     search = SearchService.for_workspace(workspace)
     search.rebuild()
 
-    conflict = next(row for row in _conflicts(workspace) if row.property_name == "mud_volume")
+    conflict = next(row for row in _conflicts(workspace) if row.property_name == "measured_depth")
     values = {candidate["text"] for candidate in conflict.candidates}
     assert len(values) >= 2, values
 
-    response = search.search("mud volume bbl", kinds=[KIND_KNOWLEDGE], limit=50)
+    response = search.search("measured depth ft", kinds=[KIND_KNOWLEDGE], limit=50)
     found = {result.text for result in response.results}
     for text in values:
         assert any(value in hit for hit in found for value in (text,)), (
@@ -170,7 +193,7 @@ def test_agreement_and_single_source_ambiguity_are_not_counted_as_conflicts(work
     with workspace.database.read_only() as session:
         report = detect_conflicts(KnowledgeRepository(session))
 
-    assert report.conflicts == 5, report.details
+    assert report.conflicts == len(EXPECTED_CONFLICTS), report.details
     assert report.agreements > 0, "corroborated properties should be counted as agreement"
     assert report.keys_examined > report.conflicts + report.agreements or report.ambiguous >= 0
 
@@ -185,7 +208,7 @@ def test_agreement_and_single_source_ambiguity_are_not_counted_as_conflicts(work
     for item in report.details:
         if "same_values_in_every_source" in item:
             assert item["same_values_in_every_source"] >= 2, item
-    assert len(_conflicts(workspace)) == 5
+    assert len(_conflicts(workspace)) == len(EXPECTED_CONFLICTS)
 
 
 def test_resolving_a_conflict_is_a_recorded_decision_and_moves_doctor(workspace, capsys) -> None:
@@ -193,9 +216,9 @@ def test_resolving_a_conflict_is_a_recorded_decision_and_moves_doctor(workspace,
     _corpus(workspace)
     code_before, before = _doctor(workspace, capsys)
     assert code_before == 1, before
-    assert before["knowledge"]["open_conflicts"] == 5, before["knowledge"]
+    assert before["knowledge"]["open_conflicts"] == len(EXPECTED_CONFLICTS), before["knowledge"]
 
-    target = next(row for row in _conflicts(workspace) if row.property_name == "rpm")
+    target = next(row for row in _conflicts(workspace) if row.property_name == "hole_section_size")
     chosen = target.candidates[0]["item_id"]
     with workspace.database.session() as session:
         resolve_conflict(
@@ -204,15 +227,15 @@ def test_resolving_a_conflict_is_a_recorded_decision_and_moves_doctor(workspace,
             chosen_item_id=str(chosen),
             resolution=ConflictResolution.RESOLVED_MANUALLY.value,
             by="toolpusher",
-            note="300 rpm is the rheometer speed, not the rotary speed",
+            note="the 12 1/4 in figure is the 12 1/4 in section, not the 8 1/2 in one",
         )
         session.commit()
 
     code_after, after = _doctor(workspace, capsys)
-    assert after["knowledge"]["open_conflicts"] == 4, after["knowledge"]
-    assert code_after == 1, "four disputes remain; a green doctor here would be the real defect"
+    assert after["knowledge"]["open_conflicts"] == len(EXPECTED_CONFLICTS) - 1, after["knowledge"]
+    assert code_after == 1, "a dispute remains; a green doctor here would be the real defect"
 
-    resolved = next(row for row in _conflicts(workspace) if row.property_name == "rpm")
+    resolved = next(row for row in _conflicts(workspace) if row.property_name == "hole_section_size")
     assert resolved.resolution, "the decision was not recorded on the conflict"
     assert resolved.resolution["by"] == "toolpusher", resolved.resolution
     assert resolved.resolution["chosen_item_id"] == chosen, resolved.resolution
