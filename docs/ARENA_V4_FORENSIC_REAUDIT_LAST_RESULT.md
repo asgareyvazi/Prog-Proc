@@ -3,8 +3,9 @@
 **Audit date:** 2026-09-23 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0c936-prog-proc`
-**Audited HEAD (V4 work as committed):** `f6a997613812d67d54386b6434ce3d8e7bdc1c7a`
-**Baseline:** `b7703baf35abd84881432a93264a979c33751c6c`
+**Audited HEAD (the V4 work as it was committed):** `f6a997613812d67d54386b6434ce3d8e7bdc1c7a`
+**HEAD after this audit's fixes:** `ce7f24f75db5ff9818fad37b8d97bde31bd60cb4`
+**Baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (not an ancestor of HEAD; see §1)
 **Authority:** the checked-out repository. No prior Arena report, commit message, or documentation
 claim was accepted as evidence.
 
