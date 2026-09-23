@@ -117,6 +117,22 @@ contract ID, eligibility, outcome, row-level counts, skip reasons and details.
 
 - Search/index is disposable discovery. Retrieval re-reads authoritative structured rows in bounded
   batches; evidence packages are composed only from retrieval.
+- **The structured index holds top-level records, not child measurements.** Ten record types are
+  projected (`STRUCTURED_RECORD_TYPES`): `problem_definition`, `problem_occurrence`, `npt_record`,
+  `well_event`, `lesson_learned`, `recommendation`, `mud_report`, `bha_report`, `bit_record`,
+  `survey_run`. `bha_component`, `survey_station` and `mud_measurement` are deliberately not indexed
+  as their own units: each is a *measurement inside* a parent's statement rather than an answer to a
+  question about a well. They are not hidden - each parent builder folds its children's values into
+  the searchable text and carries their own provenance as `component_evidence` /
+  `station_evidence` / `measurement_evidence`, so "which component was at sequence 4?" and "what was
+  the inclination at MD 9500?" are answerable from a hit and traceable to the child's own locator.
+  Having a parent foreign key is *not* what excludes a table: `npt_record`, `well_event`,
+  `problem_occurrence` and `bit_record` all have one and are all indexed. The boundary is pinned by
+  `tests/unit/test_structured_index_boundary.py`.
+- `doctor` reports `structured_missing` as the difference between the rows the domain considers
+  searchable and the rows the disposable index holds. Because promotion does not build the index, a
+  freshly promoted workspace legitimately reports every searchable row as missing until
+  `index rebuild` runs; a non-zero `doctor` there is a true statement, not a defect.
 - Knowledge extraction reads stored artefacts and cannot become a source writer.
 - Review is read-only until a human action is explicitly submitted; field/project review uses the
   existing review contract, not a second persistence state.

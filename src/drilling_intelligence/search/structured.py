@@ -2,15 +2,27 @@
 
 The search index already projects *documents* (extracted text plus the knowledge facts stored
 about them).  This module is the second source type in that same projection: the authoritative
-structured records - problems, NPT, events, lessons, recommendations and mud reports - each turned
-into one searchable unit that cites its own row instead of a page of a file.
+structured records - problems, NPT, events, lessons, recommendations, mud reports, BHA reports, bit
+runs and survey runs - each turned into one searchable unit that cites its own row instead of a page
+of a file.
 
 The rules are the same ones the document half obeys, stated once here because they are the
 whole point of the feature:
 
-*   **The database is the authority.**  :func:`structured_records` reads the seven admitted model
-    tables and formats rows; it writes nothing.  The projection may be deleted and rebuilt from those
-    rows at any time.
+*   **The database is the authority.**  :func:`structured_records` reads the admitted model tables
+    named in :data:`_RECORD_SOURCES` and formats rows; it writes nothing.  The projection may be
+    deleted and rebuilt from those rows at any time.
+*   **One searchable unit per *top-level* record, with its children folded in.**  The indexed types
+    are the rows that answer a question about a well on their own: an assembly, a bit run, a survey
+    set, a mud report, an NPT period.  A child row - a BHA component, a survey station, a mud
+    measurement - is a *part* of its parent's statement rather than a separate answer, so it is not
+    indexed as its own unit.  It is not thereby hidden: each parent builder walks its children and
+    emits their values into the searchable text (``component 4: ...``, ``station 3: MD 9500.0 ft
+    inclination 4.1 deg ...``) *and* collects their own provenance into
+    ``component_evidence`` / ``station_evidence`` / ``measurement_evidence``.  "Which component was at
+    sequence 4?" and "what was the inclination at MD 9500?" are therefore answerable from a search
+    hit, and traceable to the child's own locator.  Child rows are read in one preloaded pass per
+    child table (:class:`_Scope`), so folding costs three queries rather than one per parent.
 *   **Identity is the record's own.**  A structured unit's id is
     ``structured:<record-type>:<row id>``, where ``<row id>`` is the authoritative primary key the
     domain already uses (``pdef-...``, ``prob-...``, ``npt-...``, ``ev-...``, ``les-...``,
