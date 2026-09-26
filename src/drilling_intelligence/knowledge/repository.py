@@ -20,7 +20,7 @@ Three rules shape everything here, and each one exists because the alternative w
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from sqlalchemy import Select, and_, delete, func, not_, or_, select
@@ -53,6 +53,47 @@ def fact_id_for(*, version_id: str, lookup_key: str, original_value: str) -> str
 
     digest = sha256_text(f"{version_id}|{lookup_key}|{original_value}")
     return f"ki-{digest[:24]}"
+
+
+@dataclass(frozen=True)
+class KnowledgeScope:
+    """Which documents a knowledge operation covers, in one place.
+
+    ``rebuild`` deletes derived rows and then re-derives them, and ``status`` reports on the result.
+    If those three disagree about the population, the operator gets numbers that contradict each
+    other - which is exactly what happened when ``delete_derived`` was workspace-wide while
+    ``sync_all`` was well-scoped, and 16 rows vanished from a rebuild that claimed success.
+
+    So the population is defined once, here, as a set of document ids, and every scoped query is
+    built from it.  Small and immutable on purpose: this is a filter, not a framework.
+
+    Both fields are optional.  A document belongs to a workspace without belonging to a well, so
+    ``well_id`` narrows and never *is* the scope - and an empty scope means "the whole file",
+    which is a legitimate request rather than an error, because a workspace is a file.
+    """
+
+    workspace_id: str = ""
+    well_id: str = ""
+
+    @classmethod
+    def of(cls, workspace_id: str | None = None, well_id: str | None = None) -> KnowledgeScope:
+        return cls(workspace_id=workspace_id or "", well_id=well_id or "")
+
+    @property
+    def scoped(self) -> bool:
+        """Whether this narrows the population at all."""
+        return bool(self.workspace_id or self.well_id)
+
+    def document_ids(self) -> Any:
+        """The documents in scope as a subquery, or ``None`` when nothing is filtered."""
+        if not self.scoped:
+            return None
+        statement = select(Document.id)
+        if self.workspace_id:
+            statement = statement.where(Document.workspace_id == self.workspace_id)
+        if self.well_id:
+            statement = statement.where(Document.well_id == self.well_id)
+        return statement
 
 
 class KnowledgeRepository:
@@ -326,18 +367,11 @@ class KnowledgeRepository:
         )
         if document_version_id:
             statement = statement.where(KnowledgeItem.document_version_id == document_version_id)
-        if workspace_id:
-            statement = statement.where(
-                KnowledgeItem.document_id.in_(
-                    select(Document.id).where(Document.workspace_id == workspace_id)
-                )
-            )
-        if well_id:
-            statement = statement.where(
-                KnowledgeItem.document_id.in_(
-                    select(Document.id).where(Document.well_id == well_id)
-                )
-            )
+        # Built from ``KnowledgeScope`` so the deletion covers exactly the documents the
+        # re-derivation will cover - the same object ``_current_version_pairs`` filters on.
+        in_scope = KnowledgeScope.of(workspace_id, well_id).document_ids()
+        if in_scope is not None:
+            statement = statement.where(KnowledgeItem.document_id.in_(in_scope))
         ids = [str(row[0]) for row in self.session.execute(statement).all()]
         if not ids:
             return 0
@@ -523,7 +557,9 @@ class KnowledgeRepository:
                     break
         return found
 
-    def counts(self, *, workspace_id: str | None = None) -> dict[str, Any]:
+    def counts(
+        self, *, workspace_id: str | None = None, well_id: str | None = None
+    ) -> dict[str, Any]:
         """How much knowledge there is, by origin and status, plus the edges and conflicts.
 
         ``knowledge_item`` holds two populations, and adding them together would make the headline
@@ -537,12 +573,9 @@ class KnowledgeRepository:
             KnowledgeItem.lookup_key.is_not(None), KnowledgeItem.lookup_key != ""
         )
         scoped = select(KnowledgeItem.id).where(asserts_something)
-        if workspace_id:
-            scoped = scoped.where(
-                KnowledgeItem.document_id.in_(
-                    select(Document.id).where(Document.workspace_id == workspace_id)
-                )
-            )
+        in_scope = KnowledgeScope.of(workspace_id, well_id).document_ids()
+        if in_scope is not None:
+            scoped = scoped.where(KnowledgeItem.document_id.in_(in_scope))
 
         def tally(column: Any) -> dict[str, int]:
             statement = (
@@ -565,6 +598,13 @@ class KnowledgeRepository:
             .select_from(KnowledgeConflict)
             .where(KnowledgeConflict.status == ConflictResolution.OPEN.value)
         )
+        # ``knowledge_conflict`` carries a well but no workspace column, and ``knowledge_relation``
+        # carries neither - edges connect ids, not scopes.  So a well narrows the conflict count and
+        # relations stay file-global by construction, which is consistent with the entity-record
+        # count above: a workspace is a file, and these two structures are the part of it that has
+        # no per-well identity to filter on.
+        if well_id:
+            conflicts = conflicts.where(KnowledgeConflict.well_id == well_id)
 
         return {
             "facts": count(facts),

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -76,6 +77,40 @@ class WellRepository:
         return self.session.execute(
             select(Workspace).where(Workspace.root_path == root_path)
         ).scalar_one_or_none()
+
+    def resolve_workspace_id(self, root: Path | str, *, name: str = "", data_dir: str = "") -> str:
+        """The registry row that owns a folder on disk, created when it does not exist yet.
+
+        This is the one authoritative answer to "which workspace is this folder?", and it lives in
+        the repository rather than in a caller because every path that persists a document needs the
+        same answer.  It used to live only in the CLI, which is how ingestion outside the CLI -
+        the desktop UI, the API, a test fixture - filed documents under ``workspace_id IS NULL``
+        while a workspace row for that exact folder was sitting in the table.  Every workspace-
+        scoped query filters on that column, so the documents existed and were invisible.
+
+        Two details are deliberate:
+
+        *   an existing row is matched by *resolved* path first, so a workspace registered through
+            the API with a differently spelled path is reused rather than duplicated;
+        *   ``get_or_create_workspace`` is then called with the **stored** path, so the tolerant
+            match can never register the same folder twice - ``workspace.root_path`` is unique.
+
+        ``Document.workspace_id`` is nullable because the foreign key is ``ondelete="SET NULL"``:
+        a NULL means "the owning workspace row was deleted", which is a real state with a meaning.
+        It does not mean "nobody asked", and this method is what makes sure nobody has to ask.
+        """
+        target = Path(root).expanduser().resolve()
+        stored = ""
+        for row in self.list_workspaces():
+            try:
+                if Path(row.root_path).expanduser().resolve() == target:
+                    stored = str(row.root_path)
+                    break
+            except OSError:  # pragma: no cover - a stored path that cannot be resolved
+                continue
+        return str(
+            self.get_or_create_workspace(stored or str(target), name=name, data_dir=data_dir).id
+        )
 
     def mark_scanned(self, workspace: Workspace, at: datetime | None = None) -> None:
         workspace.last_scan_at = at or datetime.now(UTC)

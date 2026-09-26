@@ -290,30 +290,21 @@ def _workspace_row_id(workspace: Workspace) -> str:
     the first ingest files everything under ``workspace_id IS NULL`` and the moment a well is
     created a second, disconnected set of rows appears for the same files; per-workspace queries
     and "no longer on disk" detection both read through that id and would quietly miss half the
-    folder.  An existing row is matched by resolved path first, so a workspace registered by the
-    API with a differently spelled path is reused instead of duplicated.
+    folder.
+
+    The resolution itself is ``WellRepository.resolve_workspace_id`` - the same call ingestion
+    makes - so the CLI and the pipeline cannot disagree about which row owns a folder.  This
+    wrapper only adds what the CLI uniquely knows: the configured name and data directory.
     """
     with workspace.database.session() as session:
         repository = WellRepository(session)
-        known = ""
-        for row in repository.list_workspaces():
-            try:
-                if Path(row.root_path).expanduser().resolve() == workspace.root:
-                    known = str(row.root_path)
-                    break
-            except OSError:  # pragma: no cover - a stored path that cannot be resolved
-                continue
-        # Going through ``get_or_create_workspace`` even for a row that exists is deliberate: it
-        # is the one place that fills in a name or a data directory left empty by whoever created
-        # the row, and it is keyed on the *stored* path so the tolerant match above can never end
-        # up registering the same folder twice.
-        row = repository.get_or_create_workspace(
-            known or str(workspace.root),
+        row_id = repository.resolve_workspace_id(
+            workspace.root,
             name=workspace.config.name,
             data_dir=str(workspace.data_dir),
         )
         session.commit()
-        return str(row.id)
+        return row_id
 
 
 # --------------------------------------------------------------------------- commands
@@ -819,6 +810,23 @@ def command_doctor(args: argparse.Namespace) -> int:
                 f"lessons    {records['lessons']} recorded, none approved: "
                 "`drillintel lessons list --unapproved`"
             )
+        # Workspace identity, as its own line and deliberately *not* a finding.  A document with no
+        # ``workspace_id`` is invisible to every workspace-scoped query, which is worth saying out
+        # loud - but the column is nullable by design (``ondelete="SET NULL"``), so an orphan whose
+        # workspace row was deleted is a legitimate state and not corruption.  Findings change the
+        # exit code, and a doctor that fails on a state the schema permits is a doctor nobody runs.
+        # Ingestion resolves identity itself now, so a fresh workspace reports healthy here.
+        unscoped = int(counts.get("unscoped_documents") or 0)
+        notes.append(
+            "identity   "
+            + (
+                "healthy - every document names its workspace"
+                if not unscoped
+                else f"{unscoped} document(s) with no workspace id: invisible to every "
+                "workspace-scoped query; either orphans of a deleted workspace row or ingested "
+                "before identity was resolved at the pipeline"
+            )
+        )
         if open_conflicts:
             # A workspace where two sources disagree and nobody has decided is not corrupt, but it is
             # not sound either, and `doctor` is what a person runs before trusting an answer.  A

@@ -730,25 +730,33 @@ def test_planning_costs_about_what_execution_costs(cli_workspace) -> None:
 def test_a_scope_that_matches_nothing_says_so(workspace) -> None:
     """A preview of zeros is as easy to misread as the command it previews.
 
-    ``IngestionPipeline.run`` without a workspace id files documents under
-    ``workspace_id IS NULL``, so the CLI's workspace-scoped rebuild matches no version, re-derives
-    nothing and exits 0 - which the real command has always done.  The dry run has to name that
-    mismatch instead of quietly printing a plan of zeros.
+    This used to be triggered by the identity defect V4.5 fixed: ingestion filed documents under
+    ``workspace_id IS NULL``, so a workspace-scoped rebuild matched no version and exited 0.  That
+    route is closed - the first assertion below is the guard that it stays closed - but a scope can
+    still legitimately match nothing, and the dry run has to name that rather than print a plan of
+    zeros that reads like a clean bill of health.
     """
     from drilling_intelligence.database.models import Document
 
     ingest_v4(workspace)
     with workspace.database.read_only() as session:
-        assert {str(row.workspace_id) for row in session.execute(select(Document)).scalars()} == {
-            "None"
-        }, "this test depends on the corpus being filed without a workspace id"
+        identities = {str(row.workspace_id) for row in session.execute(select(Document)).scalars()}
+    assert "None" not in identities, (
+        "ingestion filed a document with no workspace identity; it would be invisible to every "
+        "workspace-scoped query"
+    )
+    assert len(identities) == 1, f"one corpus split across workspaces: {identities}"
 
     service = KnowledgeExtractionService.for_workspace(workspace)
-    unscoped = service.plan_rebuild(workspace_id="", well_id="")
-    assert unscoped["plan"]["versions"] > 0, "with no filter the whole corpus is in scope"
+    real = next(iter(identities))
+    scoped = service.plan_rebuild(workspace_id=real, well_id="")
+    assert scoped["plan"]["versions"] > 0, "the real workspace id must find its own documents"
+    assert not any("matched no document" in item for item in scoped["warnings"])
 
-    scoped = service.plan_rebuild(workspace_id="ws-does-not-match", well_id="")
-    assert scoped["plan"]["versions"] == 0
-    assert any("matched no current document version" in item for item in scoped["warnings"]), (
-        scoped["warnings"]
-    )
+    bogus = service.plan_rebuild(workspace_id="ws-does-not-match", well_id="")
+    assert bogus["plan"]["versions"] == 0
+    # The warning names the cause from registry rows, not from a scoped counter: a workspace id
+    # that matches nothing while the table holds documents is either a wrong id or an identity gap.
+    assert any(
+        "matched no document while the registry holds" in item for item in bogus["warnings"]
+    ), bogus["warnings"]

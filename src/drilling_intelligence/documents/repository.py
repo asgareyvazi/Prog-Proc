@@ -181,6 +181,19 @@ class DocumentRepository:
             ),
             "by_classification": tally(Document, Document.classification),
             "by_processing_status": tally(Document, Document.processing_status),
+            # Documents with no workspace identity.  A NULL is a legitimate state - the foreign key
+            # is ``ondelete="SET NULL"``, so deleting a workspace row orphans its documents on
+            # purpose - but it is also the exact state that makes a document invisible to every
+            # workspace-scoped query, which is why it is counted rather than left implicit.
+            # Ingestion no longer produces these; see ``IngestionPipeline.workspace_identity``.
+            "unscoped_documents": int(
+                self.session.execute(
+                    select(func.count())
+                    .select_from(Document)
+                    .where(Document.workspace_id.is_(None))
+                ).scalar_one()
+                or 0
+            ),
         }
 
     # -- registration -------------------------------------------------------

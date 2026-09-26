@@ -141,6 +141,33 @@ class IngestionPipeline:
         self._knowledge_arg = knowledge
         self.derive_knowledge_enabled = bool(derive_knowledge)
         self.knowledge = knowledge
+        #: Resolved on first use by :meth:`workspace_identity`; ``None`` means "not asked yet",
+        #: never "this folder has no workspace".
+        self._workspace_identity: str | None = None
+
+    def workspace_identity(self) -> str:
+        """The registry row id this pipeline's workspace root belongs to, resolved once.
+
+        Ingestion is the boundary where a file on disk becomes a ``Document`` row, so it is the
+        boundary that has to attach the workspace identity - not the CLI, which is only one of
+        several callers.  Leaving it to the caller meant that every non-CLI ingest (the desktop UI,
+        the API, a fixture) filed documents under ``workspace_id IS NULL`` while a workspace row for
+        that exact folder already existed, and every workspace-scoped query then reported zero.
+
+        Cached per pipeline: one folder, one answer, one query.  Re-resolving on every file would
+        turn ingestion into a stream of identical registry lookups.
+        """
+        if self._workspace_identity is None:
+            from ..wells.repository import WellRepository
+
+            with self.database.session() as session:
+                repository = WellRepository(session)
+                self._workspace_identity = repository.resolve_workspace_id(
+                    self.workspace_root,
+                    name=str(getattr(getattr(self.settings, "workspace", None), "name", "") or ""),
+                )
+                session.commit()
+        return self._workspace_identity
 
     # -- scanner ------------------------------------------------------------
     def build_scanner(
@@ -300,6 +327,13 @@ class IngestionPipeline:
         from ..database.models import IngestionRun
 
         scan_root = Path(root).expanduser().resolve() if root else self.workspace_root
+        # An explicit ``workspace_id`` is an override and wins.  When there is none the identity is
+        # resolved from this pipeline's own workspace root rather than left NULL: a document with no
+        # workspace is invisible to every workspace-scoped query, and "the caller did not say" is
+        # not a reason to file it nowhere.  Resolution is by the folder's resolved path, which is
+        # unique in the registry, so this cannot attach the wrong workspace.
+        if not workspace_id:
+            workspace_id = self.workspace_identity()
         result = PipelineResult(root=str(scan_root), workspace_id=workspace_id)
         knowledge = self.knowledge_service()
         if not scan_root.exists():

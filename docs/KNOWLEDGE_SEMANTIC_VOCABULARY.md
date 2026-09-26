@@ -611,3 +611,75 @@ removed 61`, identical on every run.  `sync_all`, which does not delete first, r
 writes as `unchanged 50 / updated 16`, and that split is stable rather than oscillating.  The
 invariant that actually matters is that the resulting fact set is identical, which is what the
 idempotency test pins — not that `created` reads zero.
+
+## 23. Workspace identity, and why a document can be invisible
+
+Everything above assumes a question that V4.5 had to answer first: **which documents does this
+workspace contain?** A workspace-scoped command is only meaningful if every subsystem answers that
+the same way, and until V4.5 they did not.
+
+### The chain
+
+```
+folder on disk
+  └─> workspace registry row          (Workspace.root_path, unique)
+        └─> document.workspace_id ────┐   this is the join
+              └─> document_version    │   every scoped query filters here
+                    └─> extraction    │
+                          └─> knowledge_item.document_id
+```
+
+`document.workspace_id` is the only link between "a folder was ingested" and "these rows belong to
+it". It is **nullable**, deliberately: the foreign key is `ondelete="SET NULL"`, so deleting a
+workspace row orphans its documents rather than deleting them, and a NULL means *the owning row is
+gone* — not *nobody owns this*.
+
+### The defect that made it matter
+
+Workspace resolution used to live in the CLI alone. Every other caller of `IngestionPipeline` — the
+UI, the API, a test fixture — passed no `workspace_id`, so documents were written with NULL while a
+workspace row for that exact folder sat in the table. The documents existed; the join was empty; and
+a workspace-scoped rebuild matched nothing, re-derived nothing, and **exited 0**.
+
+Resolution now happens at the persistence boundary. `WellRepository.resolve_workspace_id(root, …)`
+is the single authoritative answer to "which row owns this folder" — it compares resolved paths
+against the unique `Workspace.root_path` and creates the row only if none matches.
+`IngestionPipeline.run()` calls it when the caller supplies no id, and the CLI delegates to the same
+function instead of keeping its own copy. An explicit `workspace_id` argument still overrides.
+
+Nothing converts an existing NULL into an id. The cause was removed; the state was not redefined.
+
+### One scope object, three operations
+
+`rebuild` deletes derived rows and then re-derives them; `status` reports on the result. Each of
+those used to carry its own copy of the population predicate, and they drifted: V4.4 found
+`delete_derived` operating workspace-wide while `sync_all` was well-scoped, so `rebuild --well A-3`
+destroyed 16 rows it never re-created.
+
+`KnowledgeScope(workspace_id, well_id)` defines the population once, as a subquery over
+`Document.id`. `delete_derived`, `counts`, `_current_version_pairs` and `_staleness` all build from
+it. Both fields are optional: a document belongs to a workspace without belonging to a well, and an
+empty scope means "the whole file", because a workspace is a file.
+
+Two structures are global **by construction**, and saying so is part of the contract:
+
+| structure | scope columns | behaviour |
+| --- | --- | --- |
+| `knowledge_item` | via `document_id` → `Document.workspace_id` / `well_id` | fully scopeable |
+| `knowledge_conflict` | `well_id`, no workspace | a well narrows it; a workspace does not |
+| `knowledge_relation` | none | file-global — edges connect ids, not scopes |
+
+### Zero is three different answers
+
+A scope that matches nothing is not one situation. The distinction is made from rows in the document
+table, never from a threshold:
+
+| evidence | meaning | what the operator sees |
+| --- | --- | --- |
+| `documents_total == 0` | the registry is empty | nothing — a legitimate zero |
+| `documents_in_workspace > 0` | documents exist, nothing derivable yet | a processing gap, not an identity one |
+| `documents_total > 0`, scope matched nothing | wrong id, or pre-fix rows with no `workspace_id` | the mismatch, named |
+
+`doctor` reports identity as its own note (`identity   healthy …` / `identity   N document(s) with
+no workspace id …`) and never as a finding, because a nullable-by-design column must not be able to
+fail an exit code.

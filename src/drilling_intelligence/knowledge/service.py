@@ -78,7 +78,7 @@ from .recovery import (
     plan_recovery,
     recover_field_name,
 )
-from .repository import KnowledgeRepository
+from .repository import KnowledgeRepository, KnowledgeScope
 
 __all__ = ["KnowledgeExtractionService", "SyncResult"]
 
@@ -675,7 +675,9 @@ class KnowledgeExtractionService:
 
         # Everything the operator sees about the workspace *now* comes from ``status()``, so the
         # dry run and ``knowledge status`` cannot give two answers to the same question.
-        before = self.status(workspace_id=workspace_id)
+        # Scoped exactly as the rebuild below is.  A plan that describes the whole workspace while
+        # executing on one well would tell the operator the wrong thing about the wrong rows.
+        before = self.status(workspace_id=workspace_id, well_id=well_id)
 
         session = self.database.session()
         try:
@@ -726,6 +728,24 @@ class KnowledgeExtractionService:
                 workspace_id=workspace_id, well_id=well_id, session=session
             )
             manual_after = manual_notes(session)
+
+            # Registry evidence for the "matched nothing" case below.  It has to come from the
+            # document table rather than from ``before``: once ``_staleness`` was scoped properly
+            # its counters go to zero in exactly the situation that needs explaining.
+            documents_total = int(
+                session.execute(select(func.count()).select_from(Document)).scalar_one()
+            )
+            documents_in_workspace = (
+                int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(Document)
+                        .where(Document.workspace_id == workspace_id)
+                    ).scalar_one()
+                )
+                if workspace_id
+                else documents_total
+            )
         finally:
             # The whole point.  Nothing this method touched survives it - rows, edges, conflicts,
             # statuses or timestamps.
@@ -767,19 +787,26 @@ class KnowledgeExtractionService:
             )
         )
         warnings = list(predicted.get("warnings") or [])
-        detached = int(before.get("detached_facts") or 0)
-        if not pairs and (detached or int(before.get("facts") or 0)):
-            # Found by running the dry run rather than by reading the code: a corpus ingested
-            # without a workspace id has ``document.workspace_id IS NULL``, so a workspace-scoped
-            # rebuild matches no version, re-derives nothing and exits 0 - which the real command
-            # has always done, printing "re-derived knowledge for 0 version(s)".  A preview that
-            # showed only zeros would be as easy to misread as the command it previews, so the
-            # mismatch between "nothing in scope" and "rows exist" is named.
-            warnings.append(
-                "this scope matched no current document version, so nothing would be re-derived, "
-                f"yet {detached} derived row(s) are reported as detached; a corpus ingested "
-                "without a workspace id is invisible to a workspace-scoped rebuild"
-            )
+        if not pairs:
+            # A plan of zeros has three possible causes and only one of them is a defect, so they
+            # are named separately instead of being flattened into one message or into silence.
+            # The distinction is made from rows in the document table, not from a threshold.
+            if documents_in_workspace:
+                warnings.append(
+                    "this scope matched no current document version, yet the workspace owns "
+                    f"{documents_in_workspace} document(s); nothing is derivable from them yet - "
+                    "the artefacts have not been produced, so this is a processing gap rather than "
+                    "an identity one"
+                )
+            elif documents_total:
+                warnings.append(
+                    "this scope matched no document while the registry holds "
+                    f"{documents_total}; the workspace id is wrong, or documents were ingested "
+                    "before identity was resolved at the pipeline and carry no workspace_id, which "
+                    "makes them invisible to every workspace-scoped query"
+                )
+            # else: the registry is empty.  A legitimate zero, and inventing a warning here would
+            # be crying wolf at every fresh workspace.
         needs_context = [row for row in repair["rows"] if row["category"] in (AMBIGUOUS, REEXTRACT)]
         if needs_context:
             warnings.append(
@@ -848,7 +875,13 @@ class KnowledgeExtractionService:
         }
 
     # -- reporting ----------------------------------------------------------
-    def status(self, *, workspace_id: str | None = None, session: Any = None) -> dict[str, Any]:
+    def status(
+        self,
+        *,
+        workspace_id: str | None = None,
+        well_id: str | None = None,
+        session: Any = None,
+    ) -> dict[str, Any]:
         """What knowledge exists, and whether it is behind the registry.
 
         Reads only.  ``session`` is accepted so a caller can ask about rows it has written but not
@@ -857,8 +890,8 @@ class KnowledgeExtractionService:
         """
         with self._write_session(session) as scoped:
             repository = KnowledgeRepository(scoped)
-            counts = repository.counts(workspace_id=workspace_id)
-            counts.update(self._staleness(scoped, workspace_id=workspace_id))
+            counts = repository.counts(workspace_id=workspace_id, well_id=well_id)
+            counts.update(self._staleness(scoped, workspace_id=workspace_id, well_id=well_id))
             # The recommendation has to be actionable, so it fires on the two cases a rebuild
             # actually fixes: nothing was ever derived, or derived rows point at versions the
             # registry no longer considers current.  A version with *no* facts is not on that list
@@ -1040,10 +1073,14 @@ class KnowledgeExtractionService:
             .where(DocumentVersion.is_current.is_(True))
             .order_by(Document.identity_path, DocumentVersion.version_number)
         )
-        if workspace_id:
-            statement = statement.where(Document.workspace_id == workspace_id)
-        if well_id:
-            statement = statement.where(Document.well_id == well_id)
+        # The same ``KnowledgeScope`` ``delete_derived`` and ``counts`` filter on, so "what a
+        # rebuild re-derives", "what it deletes first" and "what status reports" are one population
+        # rather than three filters that happen to agree.
+        scope = KnowledgeScope.of(workspace_id, well_id)
+        if scope.workspace_id:
+            statement = statement.where(Document.workspace_id == scope.workspace_id)
+        if scope.well_id:
+            statement = statement.where(Document.well_id == scope.well_id)
         if limit:
             statement = statement.limit(max(1, int(limit)))
         return [
@@ -1063,7 +1100,9 @@ class KnowledgeExtractionService:
             statement = statement.where(KnowledgeItem.status != KnowledgeStatus.SUPERSEDED.value)
         return list(session.execute(statement.limit(max(1, int(limit)))).scalars())
 
-    def _staleness(self, session: Any, workspace_id: str | None) -> dict[str, Any]:
+    def _staleness(
+        self, session: Any, workspace_id: str | None, well_id: str | None = None
+    ) -> dict[str, Any]:
         """Two counts that answer "is the knowledge behind the documents?", without a stamp table.
 
         ``versions_without_knowledge`` is a current version that has an artefact but no derived
@@ -1073,8 +1112,8 @@ class KnowledgeExtractionService:
         over indexed columns, because ``status`` has to stay cheap on a large workspace.
         """
         current = select(DocumentVersion.id).where(DocumentVersion.is_current.is_(True))
-        if workspace_id:
-            scoped_documents = select(Document.id).where(Document.workspace_id == workspace_id)
+        scoped_documents = KnowledgeScope.of(workspace_id, well_id).document_ids()
+        if scoped_documents is not None:
             current = current.where(DocumentVersion.document_id.in_(scoped_documents))
         derived = (
             select(KnowledgeItem.document_version_id)
@@ -1098,17 +1137,23 @@ class KnowledgeExtractionService:
                 .where(DocumentVersion.id.in_(with_artefact), DocumentVersion.id.notin_(derived))
             ).scalar_one()
         )
-        detached = int(
-            session.execute(
-                select(func.count())
-                .select_from(KnowledgeItem)
-                .where(
-                    KnowledgeItem.origin == KnowledgeOrigin.EXTRACTED.value,
-                    KnowledgeItem.status != KnowledgeStatus.SUPERSEDED.value,
-                    KnowledgeItem.document_version_id.notin_(current),
-                )
-            ).scalar_one()
+        detached_statement = (
+            select(func.count())
+            .select_from(KnowledgeItem)
+            .where(
+                KnowledgeItem.origin == KnowledgeOrigin.EXTRACTED.value,
+                KnowledgeItem.status != KnowledgeStatus.SUPERSEDED.value,
+                KnowledgeItem.document_version_id.notin_(current),
+            )
         )
+        # Scoped through the documents rather than left file-wide, so a well-scoped status answers
+        # about that well's rows.  Without this the planner could report a workspace as stale on the
+        # strength of another well's rows while the rebuild it recommends touches none of them.
+        if scoped_documents is not None:
+            detached_statement = detached_statement.where(
+                KnowledgeItem.document_id.in_(scoped_documents)
+            )
+        detached = int(session.execute(detached_statement).scalar_one())
         return {
             "versions_with_artefacts": artefacts,
             "versions_without_knowledge": missing,
