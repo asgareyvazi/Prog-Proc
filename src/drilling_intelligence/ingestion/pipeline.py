@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.enums import FileChangeKind, ProcessingStatus
-from ..core.errors import DrillingIntelligenceError
+from ..core.errors import DrillingIntelligenceError, ValidationError
 from ..core.logging import get_logger
 from ..database.session import Database
 from ..documents.registry import DocumentRegistry, RegistrationResult
@@ -168,6 +168,26 @@ class IngestionPipeline:
                 )
                 session.commit()
         return self._workspace_identity
+
+    def _assert_workspace_belongs_here(self, workspace_id: str) -> None:
+        """An explicit workspace id must be a row *this* database owns.
+
+        A UUID is not a credential.  Passing one that belongs to another workspace's database used
+        to be accepted on faith, which files a corpus under a workspace the caller cannot even see
+        from here - and, because ``Document.workspace_id`` has no cross-database meaning, produces
+        rows that no query in either workspace will ever return coherently.  Refusing is cheaper
+        than explaining that later.
+        """
+        from ..database.models import Workspace as WorkspaceRow
+
+        with self.database.session() as session:
+            exists = session.get(WorkspaceRow, workspace_id) is not None
+        if not exists:
+            raise ValidationError(
+                f"workspace {workspace_id} does not exist in this workspace's registry "
+                f"({self.workspace_root}); refusing to file documents under a workspace this "
+                "database does not own. Omit workspace_id to resolve the folder's own row."
+            )
 
     # -- scanner ------------------------------------------------------------
     def build_scanner(
@@ -334,6 +354,8 @@ class IngestionPipeline:
         # unique in the registry, so this cannot attach the wrong workspace.
         if not workspace_id:
             workspace_id = self.workspace_identity()
+        else:
+            self._assert_workspace_belongs_here(workspace_id)
         result = PipelineResult(root=str(scan_root), workspace_id=workspace_id)
         knowledge = self.knowledge_service()
         if not scan_root.exists():

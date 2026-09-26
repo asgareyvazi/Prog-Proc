@@ -40,6 +40,7 @@ from ..database.integrity import (
     check_extraction_cache,
     check_knowledge_relations,
     check_operational_integrity,
+    check_workspace_identity,
 )
 from ..database.models import Document, DocumentVersion
 from ..documents.repository import DocumentRepository
@@ -785,6 +786,11 @@ def command_doctor(args: argparse.Namespace) -> int:
             # schema - which is precisely why it needs a checker, and why `doctor` is where a person finds
             # it before quoting the number it produced.
             problems += [problem.to_dict() for problem in check_operational_integrity(session)]
+            # Identity first among equals: every other counter on this page is workspace-scoped, so a
+            # database holding two workspace populations makes all of them quietly wrong at once.
+            problems = [
+                problem.to_dict() for problem in check_workspace_identity(session)
+            ] + problems
             records = _record_counts(session)
             from ..knowledge.repository import KnowledgeRepository
 

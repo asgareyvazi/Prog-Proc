@@ -106,10 +106,15 @@ def register_artefact(
     """
     documents = DocumentRepository(session)
     digest = sha or f"{version_number}" * 64
-    document = documents.by_identity(None, identity_path)
+    # This fixture builds knowledge-layer rows without a workspace, which is a deliberate
+    # exception rather than the normal path: ``by_identity`` now refuses an unscoped lookup and
+    # ``create_document`` refuses an unscoped row unless the caller says so out loud.
+    matches = documents.any_by_identity(identity_path)
+    document = matches[0] if matches else None
     if document is None:
         document = documents.create_document(
             workspace_id=None,
+            unscoped=True,
             identity_path=identity_path,
             filename=filename,
             extension=".xlsx" if filename.endswith(".xlsx") else ".txt",

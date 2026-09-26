@@ -23,11 +23,15 @@ from ..core.enums import (
 )
 from ..core.errors import ValidationError
 from ..core.ids import new_id
+from ..core.logging import get_logger
 from ..database.models import Company, Document, Field, Project, Well, WellSection, Workspace
 
 #: The section attributes that describe the hole as it was drilled, and so may only be written
 #: ``ACTUAL``.  A section's *planned* interval belongs to the program target that governs it.
 DEPTH_KEYS: frozenset[str] = frozenset({"top_depth", "bottom_depth"})
+
+
+log = get_logger("wells.repository")
 
 
 class WellRepository:
@@ -100,17 +104,63 @@ class WellRepository:
         It does not mean "nobody asked", and this method is what makes sure nobody has to ask.
         """
         target = Path(root).expanduser().resolve()
-        stored = ""
-        for row in self.list_workspaces():
+        rows = self.list_workspaces()
+        for row in rows:
             try:
                 if Path(row.root_path).expanduser().resolve() == target:
-                    stored = str(row.root_path)
-                    break
+                    # Refresh rather than merely return.  Several callers resolve the same folder
+                    # and not all of them know everything about it: the pipeline resolves during
+                    # ingestion and has no data_dir, the CLI resolves with one.  Whichever arrives
+                    # first creates the row, so a caller that knows more has to be allowed to fill
+                    # the gap - otherwise the row silently keeps whatever the first caller happened
+                    # to know, which is how ``data_dir`` ended up empty.
+                    changed = False
+                    if name and row.name != name:
+                        row.name = name
+                        changed = True
+                    if data_dir and row.data_dir != data_dir:
+                        row.data_dir = data_dir
+                        changed = True
+                    if changed:
+                        self.session.flush()
+                    return str(row.id)
             except OSError:  # pragma: no cover - a stored path that cannot be resolved
                 continue
-        return str(
-            self.get_or_create_workspace(stored or str(target), name=name, data_dir=data_dir).id
-        )
+
+        # No row matches this path.  ADR-0003 makes one SQLite file per workspace the system of
+        # record, and a workspace is a folder you can pick up and move - so a registry holding
+        # exactly one row, none of whose path matches, is that same workspace after a move, not a
+        # second workspace appearing inside the first one's database.  Reuse the row and refresh
+        # the path.  Reproduced before this rule existed: moving the folder produced two rows for
+        # one database, and every workspace-scoped query then answered about the wrong half.
+        if len(rows) == 1:
+            row = rows[0]
+            moved_from = str(row.root_path)
+            row.root_path = str(target)
+            if name:
+                row.name = name
+            if data_dir:
+                row.data_dir = data_dir
+            self.session.flush()
+            log.event(
+                "workspace.relocated",
+                workspace_id=str(row.id),
+                moved_from=moved_from,
+                moved_to=str(target),
+            )
+            return str(row.id)
+
+        if len(rows) > 1:
+            # More than one workspace row and none of them is this folder.  Attribution is a guess
+            # at this point, and a guess here silently files a corpus under the wrong workspace.
+            raise ValidationError(
+                f"this database holds {len(rows)} workspace rows "
+                f"({', '.join(sorted(r.root_path for r in rows))}) and none matches {target}; "
+                "ADR-0003 makes one SQLite file per workspace the system of record, so this state "
+                "needs a human decision rather than an automatic one"
+            )
+
+        return str(self.get_or_create_workspace(str(target), name=name, data_dir=data_dir).id)
 
     def mark_scanned(self, workspace: Workspace, at: datetime | None = None) -> None:
         workspace.last_scan_at = at or datetime.now(UTC)

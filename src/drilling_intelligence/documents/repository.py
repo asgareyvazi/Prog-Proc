@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.enums import DocumentClassification, FileChangeKind, ProcessingStatus
-from ..core.errors import DrillingIntelligenceError
+from ..core.errors import DrillingIntelligenceError, ValidationError
 from ..core.filesystem import candidate_source_paths, first_existing
 from ..core.hashing import filename_identity
 from ..core.ids import new_id
@@ -96,10 +96,45 @@ class DocumentRepository:
         return self.session.get(Document, document_id)
 
     def by_identity(self, workspace_id: str | None, identity_path: str) -> Document | None:
-        stmt = select(Document).where(Document.identity_path == identity_path)
-        if workspace_id:
-            stmt = stmt.where(Document.workspace_id == workspace_id)
-        return self.session.execute(stmt).scalar_one_or_none()
+        """The document with this identity **in this workspace**.
+
+        Document identity is ``(workspace_id, identity_path)`` - that pair is what the schema's
+        ``uq_document_workspace_identity`` constraint enforces - so a lookup without a workspace is
+        not a narrower question, it is a different one.  Until V4.6 a falsey ``workspace_id``
+        silently dropped the filter and searched every workspace in the file, which meant an
+        apparently scoped call could return another workspace's document.  Reproduced before the
+        change: ``by_identity(None, p)`` and ``by_identity("", p)`` both returned the row.
+
+        A missing scope is therefore an error rather than a global search.  The genuinely global
+        question is a real one - diagnostics and fixtures ask it - so it has its own name,
+        :meth:`any_by_identity`, and cannot be reached by accident.
+        """
+        if not workspace_id:
+            raise ValidationError(
+                "by_identity requires a workspace_id: document identity is "
+                "(workspace_id, identity_path), so an unscoped lookup would match another "
+                "workspace's document. Use any_by_identity() to search every workspace on purpose."
+            )
+        return self.session.execute(
+            select(Document).where(
+                Document.workspace_id == workspace_id,
+                Document.identity_path == identity_path,
+            )
+        ).scalar_one_or_none()
+
+    def any_by_identity(self, identity_path: str) -> list[Document]:
+        """Every document with this identity path, in **any** workspace.  Deliberately global.
+
+        Named so that the intent is unmistakable at the call site, and returning a list because the
+        honest answer to "which workspace owns this path?" can be more than one.
+        """
+        return list(
+            self.session.execute(
+                select(Document)
+                .where(Document.identity_path == identity_path)
+                .order_by(Document.workspace_id, Document.identity_path)
+            ).scalars()
+        )
 
     def version(self, version_id: str) -> DocumentVersion | None:
         return self.session.get(DocumentVersion, version_id)
@@ -219,7 +254,27 @@ class DocumentRepository:
         revision_key: int = 0,
         document_date: datetime | None = None,
         notes: str | None = None,
+        unscoped: bool = False,
     ) -> Document:
+        """Register a document.
+
+        ``workspace_id`` is required.  The column stays nullable in the schema because the foreign
+        key is ``ondelete="SET NULL"`` - deleting a workspace row orphans its documents on purpose,
+        and that NULL has a meaning - but *creating* a document with no workspace is the bug this
+        repository spent a mission chasing: an unscoped document is invisible to every
+        workspace-scoped query while looking perfectly healthy everywhere else.
+
+        So the production path cannot produce one by forgetting an argument.  Callers that
+        genuinely want an unscoped row - a diagnostic tool, or a test fixture that builds knowledge
+        rows without a workspace - say so with ``unscoped=True``, which makes the intent visible at
+        the call site instead of implicit in a ``None``.
+        """
+        if not workspace_id and not unscoped:
+            raise ValidationError(
+                "create_document requires a workspace_id: a document with no workspace is "
+                "invisible to every workspace-scoped query. Pass unscoped=True only for "
+                "diagnostics or fixtures that deliberately build an unscoped row."
+            )
         document = Document(
             id=new_id("doc"),
             workspace_id=workspace_id,

@@ -670,6 +670,7 @@ class TestServicePresentation:
             repository = DocumentRepository(session)
             document = repository.create_document(
                 workspace_id=None,
+                unscoped=True,  # a deliberate test row, not a production one
                 identity_path="corpus/report.txt",
                 filename="report.txt",
                 extension="txt",

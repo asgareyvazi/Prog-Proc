@@ -1181,9 +1181,7 @@ def check_domain_identities(session: Session) -> list[IntegrityProblem]:
         if child_model is not None:
             for child in session.execute(
                 select(child_model)
-                .where(
-                    getattr(child_model, foreign_key).notin_(select(parent_model.id))
-                )
+                .where(getattr(child_model, foreign_key).notin_(select(parent_model.id)))
                 .order_by(child_model.id)
             ).scalars():
                 problems.append(
@@ -1236,3 +1234,77 @@ def check_operational_integrity(session: Session) -> list[IntegrityProblem]:
         + check_calculation_dependencies(session)
         + check_domain_identities(session)
     )
+
+
+def check_workspace_identity(session: Session) -> list[IntegrityProblem]:
+    """The one-database-per-workspace contract, and the rows that fall outside it.
+
+    ADR-0003 makes a single SQLite file the system of record for a single workspace.  Nothing in the
+    schema enforces that - ``workspace`` is an ordinary table and ``document.workspace_id`` is
+    nullable - so the assumption is load-bearing and invisible until something answers a
+    workspace-scoped question with rows from two workspaces merged together.  That is the failure
+    this checks for, and it is a finding rather than a note because a counter that silently sums two
+    workspaces is worse than a counter that is obviously wrong.
+
+    A NULL ``workspace_id`` is *not* reported here.  The foreign key is ``ondelete="SET NULL"``, so
+    an orphan whose workspace row was deleted is a legitimate state with a meaning, and doctor
+    counts those separately as a note.  What is checked instead is the state with no legitimate
+    reading: a pointer at a workspace row that is not there.
+    """
+    from .models import Workspace
+
+    problems: list[IntegrityProblem] = []
+    rows = list(session.execute(select(Workspace).order_by(Workspace.root_path)).scalars())
+    if len(rows) > 1:
+        problems.append(
+            IntegrityProblem(
+                "workspace",
+                str(len(rows)),
+                "this database holds more than one workspace row, but ADR-0003 makes one SQLite "
+                "file the system of record for one workspace; workspace-scoped counts here merge "
+                "populations that were never meant to share a file",
+                {"root_paths": [str(row.root_path) for row in rows]},
+            )
+        )
+
+    known = {str(row.id) for row in rows}
+    if known:
+        dangling = list(
+            session.execute(
+                select(Document.id, Document.workspace_id).where(
+                    Document.workspace_id.is_not(None),
+                    Document.workspace_id.notin_(known),
+                )
+            ).all()
+        )
+        if dangling:
+            problems.append(
+                IntegrityProblem(
+                    "document",
+                    str(dangling[0][0]),
+                    f"{len(dangling)} document(s) point at a workspace row that does not exist; "
+                    "they are invisible to every workspace-scoped query and cannot be attributed "
+                    "without a decision about which workspace they belong to",
+                    {
+                        "count": len(dangling),
+                        "missing_workspace_ids": sorted({str(row[1]) for row in dangling}),
+                    },
+                )
+            )
+
+    # A well is local to the workspace database and carries no workspace_id of its own, which is
+    # fine while the file holds one workspace - and incoherent the moment it holds two.  Naming the
+    # wells whose project is unknown is what makes that second case diagnosable.
+    if len(rows) > 1:
+        for well in session.execute(select(Well).order_by(Well.name, Well.id)).scalars():
+            if well.project_id and session.get(Project, str(well.project_id)) is None:
+                problems.append(
+                    IntegrityProblem(
+                        "well",
+                        well.id,
+                        "cites a project that does not exist, so it cannot be attributed to a "
+                        "workspace in a database that holds more than one",
+                        {"project_id": str(well.project_id)},
+                    )
+                )
+    return problems

@@ -1327,3 +1327,73 @@ are not populated from them. Search is never authoritative.
 run an explicit unsupported audit, and a new taxonomy enum member fails at import until a contract is
 chosen. Some classes remain evidence-only by design. This is preferable to a generic writer whose
 output looks complete but cannot be defended.
+
+## ADR-0025 — Workspace identity is attached at the persistence boundary, and scoped means scoped
+
+**Status:** accepted (2026-09-26)
+
+**Context.** A workspace-scoped `knowledge rebuild` exited 0 while reporting zero work over a
+workspace that held fourteen documents. Every one of those documents had
+`document.workspace_id IS NULL`. The documents existed; the column that joins them to the workspace
+was empty; and every scoped query filters on that column.
+
+The cause was that workspace resolution lived in the CLI, in a helper called `_workspace_row_id`.
+The CLI was correct. Every other caller of `IngestionPipeline` — the desktop UI, the API, a test
+fixture — passed no `workspace_id`, and the pipeline forwarded the `None` straight into
+`IngestionRun` and `Document`. One caller out of several owned the only safety mechanism.
+
+Three further defects were in the same family, each a scoped-looking call that quietly acted on a
+wider population than its caller believed:
+
+*   `DocumentRepository.by_identity(workspace_id, path)` dropped the workspace filter whenever
+    `workspace_id` was falsey, turning a scoped lookup into a search of every workspace in the file.
+*   Moving a workspace folder created a *second* `workspace` row, because `root_path` is the
+    identity and the path changed — while ADR-0003 makes one SQLite file the system of record for
+    one workspace.
+*   A caller could pass a `well_id` and a `project_id` that contradict each other, and the mismatch
+    was written through into the document and everything derived from it.
+
+**Decision.**
+
+*Identity is attached where documents are written, not where commands are parsed.*
+`WellRepository.resolve_workspace_id(root)` is the single authoritative answer to "which registry row
+owns this folder". `IngestionPipeline` calls it when the caller supplies no id, and the CLI delegates
+to it instead of keeping its own copy. An explicit `workspace_id` still overrides — but it is
+verified against this database's registry first, because a UUID that merely exists somewhere is not
+permission to file under it.
+
+*Document identity is `(workspace_id, identity_path)`*, which is what
+`uq_document_workspace_identity` already enforced. `by_identity` therefore requires a workspace and
+raises without one; the genuinely global question is real, so it has its own name,
+`any_by_identity`, and returns a list because the honest answer can be more than one.
+
+*Creating a document requires a workspace.* `create_document` raises on a missing one unless the
+caller passes `unscoped=True`, which is what the knowledge fixtures do. The column stays nullable in
+the schema: the foreign key is `ondelete="SET NULL"`, so deleting a workspace row orphans its
+documents on purpose, and that NULL has a meaning. What changed is that no production path can
+*produce* one by forgetting an argument.
+
+*A moved workspace is the same workspace.* ADR-0003 makes one SQLite file per workspace the system
+of record, and a workspace is a folder you can pick up and carry. So a registry holding exactly one
+row whose path no longer matches is that workspace after a move: the row is reused and `root_path`
+refreshed. A registry holding *several* rows, none matching, is ambiguous and is refused rather than
+guessed — a guess there files a corpus under the wrong workspace.
+
+*Contradictory hierarchy is rejected.* A well belongs to one project; passing a well and a project
+that disagree is an error, not something to repair, because repairing means choosing which of the
+two the caller meant.
+
+*Doctor is the authority for the contract.* Nothing in the schema can state "one workspace per
+file", so `check_workspace_identity` does: two workspace populations in one database is a finding
+(not a note, because every counter on the page is workspace-scoped and all of them become wrong at
+once), and a document pointing at a workspace row that does not exist is a finding too. A NULL is
+*not* a finding — it is counted as a note, because the cascade produces it legitimately.
+
+**Consequences.** Ingestion resolves identity once per run, not per document. Relocation preserves
+the row id and therefore every document's attachment. `""` in the search index means *unknown*, not
+*all*: a document with no known workspace satisfies no workspace filter, and an unscoped query is the
+caller asking a different question.
+
+No migration. The column was already there and already nullable for a reason; the fix is that the
+application stopped leaving it empty. Adding `NOT NULL` would be wrong while the schema's own
+cascade produces NULLs on purpose.

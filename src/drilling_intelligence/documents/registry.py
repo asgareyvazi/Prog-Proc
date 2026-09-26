@@ -22,12 +22,12 @@ from typing import Any
 from ..__init__ import CLASSIFIER_VERSION, EXTRACTION_ENGINE_VERSION
 from ..classification.rules import DeterministicClassifier
 from ..core.enums import DataQuality, DocumentClassification, FileChangeKind, ProcessingStatus
-from ..core.errors import DrillingIntelligenceError, ExtractionError
+from ..core.errors import DrillingIntelligenceError, ExtractionError, ValidationError
 from ..core.filesystem import file_timestamps, posix_relative
 from ..core.hashing import sha256_obj
 from ..core.logging import get_logger
 from ..core.units import format_number
-from ..database.models import Document, DocumentVersion, Extraction
+from ..database.models import Document, DocumentVersion, Extraction, Well
 from ..extraction.fields import FieldExtractor, merge_field_sets
 from ..extraction.interfaces import ExtractionContext
 from ..extraction.normalized import NormalizedDocument, structure_digest
@@ -145,6 +145,21 @@ class DocumentRegistry:
     ) -> RegistrationResult:
         """Register one file (creating a version and, optionally, extracting it)."""
         import time
+
+        # The schema expresses workspace -> project -> well -> document, and a well belongs to
+        # exactly one project.  A caller may pass both, and until now an inconsistent pair was
+        # written straight through: a document filed under project P2 while pointing at a well
+        # that belongs to P1.  Nothing downstream re-checks it, so the mismatch survives into
+        # every derived row.  Rejecting beats silently repairing, because "repair" here would mean
+        # choosing which of the two the caller actually meant.
+        if well_id and project_id:
+            well = self.repository.session.get(Well, well_id)
+            if well is not None and well.project_id and str(well.project_id) != str(project_id):
+                raise ValidationError(
+                    f"well {well.name or well_id} belongs to project {well.project_id}, not "
+                    f"{project_id}; refusing to file a document under a project its well does "
+                    "not belong to. Pass one of them and let the other follow."
+                )
 
         started = time.perf_counter()
         source = Path(path)
