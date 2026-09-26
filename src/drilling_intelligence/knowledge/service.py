@@ -34,7 +34,7 @@ a field whose provenance was lost
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -68,6 +68,7 @@ from .entities import (
     subject_type_for_classification,
 )
 from .facts import KnowledgeFact, predicate_for_field
+from .recovery import recover_field_name
 from .repository import KnowledgeRepository
 
 __all__ = ["KnowledgeExtractionService", "SyncResult"]
@@ -216,10 +217,33 @@ class KnowledgeExtractionService:
         planned = str(document.classification) in _PLANNED_CLASSIFICATIONS
         record_state = RecordState.PLANNED.value if planned else RecordState.ACTUAL.value
         facts: list[KnowledgeFact] = []
-        for entry in entries:
-            name = str(entry.get("name") or "").strip()
+        for stored_entry in entries:
+            name = str(stored_entry.get("name") or "").strip()
             if not name:
                 continue
+            entry = stored_entry
+            # Recover the field name from the excerpt recorded beside the value before anything is
+            # derived from it.  An artefact stored before a vocabulary fix keeps the name the
+            # extractor gave it at the time; the source span stored alongside still says which
+            # quantity it was, so a rebuild can be correct without re-reading the document and
+            # without rewriting the artefact.  Ambiguous entries keep their stored name - see
+            # :mod:`drilling_intelligence.knowledge.recovery`.
+            provenance_for_recovery = entry.get("provenance")
+            recovered, _category = recover_field_name(
+                name,
+                str(
+                    (provenance_for_recovery or {}).get("excerpt")
+                    if isinstance(provenance_for_recovery, Mapping)
+                    else ""
+                )
+                or "",
+                entry.get("value"),
+            )
+            if recovered != name:
+                # A copy: the artefact's own ``extracted_fields`` is a record of what the extractor
+                # produced at ingest time and is not rewritten by a rebuild.
+                entry = {**entry, "name": recovered, "recovered_from": name}
+                name = recovered
             if not str(entry.get("value") or "").strip() and str(
                 entry.get("quality") or ""
             ).upper() in {"MISSING", ""}:

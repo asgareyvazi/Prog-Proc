@@ -25,6 +25,7 @@ from typing import Any
 
 __all__ = [
     "DEFAULT_UNIT_TOKENS",
+    "SEMANTIC_QUALIFIERS",
     "alias_column",
     "cell_text",
     "header_index",
@@ -59,6 +60,22 @@ DEFAULT_UNIT_TOKENS: tuple[str, ...] = (
     "%",
 )
 
+#: Parenthesised header text that is a **semantic qualifier**, not a unit.
+#:
+#: ``"Depth (ft)"`` and ``"Depth (ft MD)"`` are different columns, and so are ``"Depth (ft MD)"`` and
+#: ``"Depth (ft TVD)"``: a measured depth and a true vertical depth are different assertions about
+#: the same hole, and in a deviated well they differ by design.  :func:`without_units` used to delete
+#: every parenthetical outright, so all three collapsed to ``"depth"`` and the qualifier that told
+#: them apart was gone before any contract could read it - the extraction-boundary half of the
+#: MD/TVD merge that V4.2 could only fix downstream.
+#:
+#: Only tokens listed here survive.  That is deliberate: a parenthetical is usually an author's
+#: clarification (``"Remarks (optional)"``, ``"Qty (approx)"``, ``"Serial No (S/N)"``), and keeping
+#: those would change what a column is called.  This mirrors the rule :func:`header_unit` already
+#: applies to units - an unrecognised parenthetical is not a unit - extended to the qualifiers that
+#: are not units either.  A contract widens it by declaring its own qualifiers.
+SEMANTIC_QUALIFIERS: tuple[str, ...] = ("md", "tvd")
+
 
 def normalise_label(value: Any) -> str:
     """Lowercase a source label without erasing meaningful slash/unit text."""
@@ -69,15 +86,41 @@ def normalise_label(value: Any) -> str:
     return text.strip()
 
 
-def without_units(text: str, units: Sequence[str] = DEFAULT_UNIT_TOKENS) -> str:
-    """``"OD (in)"`` / ``"OD in"`` -> ``"od"``.
+def _drop_parentheticals(
+    label: str, qualifiers: Sequence[str] = SEMANTIC_QUALIFIERS
+) -> str:
+    """Remove parenthesised header text, keeping any semantic qualifier it carried.
+
+    A parenthetical whose contents include a declared qualifier is *unwrapped* - the qualifier joins
+    the label, because it says what the column measures rather than how it is written.  Anything else
+    is discarded, exactly as before, so ``"Remarks (optional)"`` still indexes as ``"remarks"``.
+    """
+    wanted = {qualifier.lower() for qualifier in qualifiers}
+
+    def replace(match: re.Match[str]) -> str:
+        kept = [tok for tok in re.split(r"[\s/]+", match.group(1)) if tok in wanted]
+        return f" {' '.join(kept)} " if kept else " "
+
+    return re.sub(r"\(([^)]*)\)", replace, label)
+
+
+def without_units(
+    text: str,
+    units: Sequence[str] = DEFAULT_UNIT_TOKENS,
+    qualifiers: Sequence[str] = SEMANTIC_QUALIFIERS,
+) -> str:
+    """``"OD (in)"`` / ``"OD in"`` -> ``"od"``; ``"Depth (ft MD)"`` -> ``"depth md"``.
 
     A unit printed in a header is decoration the source's author added for the reader.  Stripping it
     is what lets one contract recognise ``"Length"``, ``"Length (ft)"`` and ``"Length ft"`` as the
     same column without listing every spelling the world uses.
+
+    A **qualifier** is the opposite: it is meaning, and dropping it merges columns that are not the
+    same measurement.  ``"Depth (ft MD)"`` keeps ``md``; ``"Depth (ft)"`` and ``"Depth (m)"`` keep
+    nothing, because a bare depth is ambiguous and inventing ``md`` for it would be a guess.
     """
     label = normalise_label(text)
-    label = re.sub(r"\([^)]*\)", "", label)
+    label = _drop_parentheticals(label, qualifiers)
     pattern = "|".join(re.escape(unit) for unit in units)
     if pattern:
         label = re.sub(rf"\b(?:{pattern})\b", "", label)

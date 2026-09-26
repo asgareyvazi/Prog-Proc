@@ -163,7 +163,19 @@ PREDICATES: dict[str, PredicateSpec] = {
         ),
         _predicate("string", "Pipe body", dimension="LENGTH", fields=("string", "pipe_body")),
         _predicate(
-            "mud_volume", "Mud volume", dimension="VOLUME", fields=("mud_volume", "pit_volume")
+            "mud_volume",
+            "Mud volume",
+            dimension="VOLUME",
+            # ``total_mud_volume`` is the same assertion reached by a different extraction path: the
+            # mud workbook's summary block calls the property ``total_mud_volume`` (its own
+            # SUMMARY_ALIASES already treats "total mud volume", "mud volume" and "active system
+            # volume" as one label), while the prose extractor calls it ``mud_volume_bbl``.  The
+            # golden corpus states the same figure both ways in the same report - "Total mud volume
+            # (bbl) 1450 bbl" beside a 1450 summary cell, and "1,450 bbl total system volume" in the
+            # daily report.  Left separate, one engineering quantity had two identities and the two
+            # could never be compared, so a real disagreement between them would have been invisible.
+            # This unifies them on that evidence, not on the fact that both are volumes.
+            fields=("mud_volume", "pit_volume", "total_mud_volume", "total_mud_volume_bbl"),
         ),
         # Three different volumes that all arrive in barrels.  ``mud_volume`` is the circulating
         # system; a pill is a batch pumped on purpose; a kick volume is what the well gave back.

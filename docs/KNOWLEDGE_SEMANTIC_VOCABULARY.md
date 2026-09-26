@@ -267,35 +267,165 @@ remain findable.
 
 ---
 
-## 13. Backward compatibility
+## 13. Backward compatibility and retroactive repair
 
-The change is vocabulary-only. **No column, table or index changed, so no migration is required.**
+The vocabulary change itself needs **no migration**: no column, table or index changed, and new
+predicate *names* are data rather than schema.
 
-But the repair is **not retroactive**, and this is a real limitation rather than a detail:
+V4.2 reported the repair as **not retroactive**, reasoning that `KnowledgeFact.from_field` derives
+the predicate from the stored field name, so a rebuild reproduces whatever the extractor emitted at
+ingest time. **That conclusion was wrong, and V4.3 corrects it.**
 
-`KnowledgeFact.from_field` derives the predicate from the *stored* field name, not from the source
-text — deliberately, so a rebuild reads what was recorded and gets the same answer years later.
-Documents ingested before this change stored the collapsed name (`surface_pressure` for a SIDPP
-line). The discriminating label is still present in `provenance.excerpt`, but `from_field` does not
-re-read it.
+A stored entry is not only a name and a number. It also carries `provenance.excerpt` — the span of
+source text the value was read from:
 
-So:
+```
+name="hole_depth"        value=10125  unit=ft   excerpt="MD 10125 ft"
+name="surface_pressure"  value=420    unit=psi  excerpt="SIDPP 420 psi"
+```
 
-* **A `knowledge rebuild` will not repair pre-existing rows.** It will faithfully reproduce the old
-  predicate.
-* **Re-ingesting the source documents will.** The extractor now emits the separated names.
-* Existing rows do not break: old predicate names remain valid strings, and conflict detection over
-  them is unchanged. They are simply less precise than newly ingested rows.
+The context was therefore **recorded, not lost**; it was simply never consulted. Re-running the same
+deterministic extractor over that recorded span recovers the field name an entry would have today —
+without re-reading the source document and without inventing anything, because the excerpt is the
+source's own words and the extractor is the same pure function that ran at ingest.
 
-A schema migration would be the wrong instrument — there is no schema change to express, and
-rewriting stored predicates without re-reading the sources would be inventing distinctions the
-stored data does not carry.
+`knowledge rebuild` is therefore genuinely retroactive:
+
+* the **artefact is never rewritten** — `document_json` stays a record of what the extractor produced
+  at the time, so "a rebuild reads what was recorded and gets the same answer years later" still
+  holds, and the evidence of what the old extractor did is preserved;
+* recovery happens on the way **out**, in the derivation, which makes it **idempotent by
+  construction** rather than by bookkeeping;
+* it is **selective** — see §16. A row whose excerpt carries no label keeps the generic name it has,
+  and a row with no excerpt is reported as needing re-extraction rather than silently kept or
+  silently guessed at.
 
 ---
 
-## 14. The current vocabulary
+## 14. The extraction / vocabulary boundary
 
-34 predicates, 89 registered field aliases (verified: `len(PREDICATES)`, `len(PREDICATE_BY_FIELD)`). The separations introduced by V4.2:
+Two rules, and the difference between them is the whole architecture:
+
+> **If semantic information exists in the source, the extraction layer must preserve it.**
+>
+> **The vocabulary layer must not reconstruct source context that extraction discarded.**
+
+The converse also holds: the vocabulary layer *may* normalise known aliases, once semantic identity
+is already established.
+
+`"Depth (ft MD)"` is the case that draws the line. `tableshape.without_units` used to delete every
+parenthetical, so `"Depth (ft MD)"` and `"Depth (ft TVD)"` both became `"depth"` — the qualifier was
+gone before any contract could read it, and no downstream layer could recover it. That is an
+extraction-boundary defect and it was fixed there: a parenthetical is now dropped only when it
+carries no declared **semantic qualifier**.
+
+```python
+SEMANTIC_QUALIFIERS = ("md", "tvd")
+```
+
+`"Depth (ft MD)"` → `"depth md"` → `depth_md` → `measured_depth`.
+`"Depth (ft)"`, `"Depth"`, `"Depth (m)"` → `"depth"` — and stay there. A bare depth is ambiguous and
+manufacturing `md` for it would be inventing a measurement.
+
+The qualifier list is deliberately tiny and declared. `header_unit` already applied exactly this rule
+to units — "an unrecognised parenthetical is a clarification, not a unit" — and `"Remarks
+(optional)"`, `"Qty (approx)"` and `"Serial No (S/N)"` are still discarded rather than folded into a
+column's name. The new part is only that a *qualifier* is meaning and survives.
+
+### Canonical field vs canonical predicate
+
+```
+field      how the source measurement was extracted     "depth_md"
+predicate  what engineering assertion it represents     "measured_depth"
+```
+
+The field name is not the final semantic identity. `"Depth (ft MD)"` and `"MD"` are different fields
+in different sources and the same assertion; `"bit_size"` and `"hole_size"` may hold the same number
+and are different assertions.
+
+---
+
+## 15. Adding to the vocabulary — governance
+
+**Add an alias** only when all three hold:
+
+* the same engineering quantity;
+* the same semantic role;
+* a different source expression.
+
+`total_mud_volume` became an alias of `mud_volume` on that basis: the mud contract's own
+`SUMMARY_ALIASES` already maps "total mud volume", "mud volume" and "active system volume" to one
+property, and the golden report states the same 1,450 bbl three ways. Sharing the unit `bbl` is not
+evidence and was not the reason.
+
+**Add a predicate** when the engineering assertion is different. SIDPP, SICP and MAASP are three.
+
+**Preserve ambiguity** when source context is insufficient. An unqualified `RPM = 300` stays the
+generic `rpm`, marked as inferred from the unit alone.
+
+**Change the extraction layer** when semantic context exists in the source but is lost before the
+canonical field is created. Never patch that downstream: the vocabulary layer cannot recover what
+extraction threw away, and pretending otherwise produces plausible answers with no trace in the
+data.
+
+**Never** add an alias merely because two labels denote volumes, or pressures, or depths.
+
+---
+
+## 16. The semantic repair contract
+
+`knowledge/recovery.py` recovers the canonical field name of an already-stored entry. It is a
+closed, auditable table — not a heuristic.
+
+```python
+SPLIT_PREDICATES = {
+    "surface_pressure":  ("sidpp", "sicp", "maasp"),
+    "mud_volume":        ("pill_volume", "kick_volume", "trip_tank_volume"),
+    "rpm":               ("rheometer_speed",),
+    "hole_depth":        ("measured_depth", "true_vertical_depth"),
+    "hole_section_size": ("bit_size",),
+}
+```
+
+| Stored field | Old predicate | New predicate | Deterministic? | Action |
+|---|---|---|---|---|
+| `hole_depth` + `"MD 10125 ft"` | `hole_depth` | `measured_depth` | yes | recover |
+| `hole_depth` + `"TVD (ft) 9850 ft"` | `hole_depth` | `true_vertical_depth` | yes | recover |
+| `hole_depth` + `"9,000 ft"` | `hole_depth` | — | **no** | ambiguous, reported |
+| `hole_depth` + *(no excerpt)* | `hole_depth` | — | **no** | requires re-extraction |
+| `surface_pressure` + `"SIDPP 420 psi"` | `surface_pressure` | `sidpp` | yes | recover |
+| `surface_pressure` + `"SICP 610 psi"` | `surface_pressure` | `sicp` | yes | recover |
+| `surface_pressure` + `"MAASP 1850 psi"` | `surface_pressure` | `maasp` | yes | recover |
+| `surface_pressure` + `"1850 psi"` | `surface_pressure` | — | **no** | ambiguous, reported |
+| `rpm` + `"Rheometer reading at 500/300 rpm"` | `rpm` | `rheometer_speed` | yes | recover |
+| `rpm` + `"with 120 rpm"` | `rpm` | `rpm` | n/a | unchanged — stays generic |
+| `mud_volume` + `"kick volume 12 bbl"` | `mud_volume` | `kick_volume` | yes | recover |
+| `mud_volume` + `"1,450 bbl total system volume"` | `mud_volume` | `mud_volume` | n/a | unchanged — confirmed |
+| `hole_section_size` + `"12 1/4 in bit"` | `hole_section_size` | — | **no** | ambiguous, reported |
+| `bit_size` + any | `bit_size` | `bit_size` | n/a | unchanged — already specific |
+| `mud_balance` + `"2025-05-30"` | `mud_balance` | `mud_balance` | n/a | unchanged — **never demoted** |
+| `depth` + any | `hole_depth` | — | **no** | ambiguous; a bare depth is not an MD |
+
+Three invariants, each pinned by a test:
+
+1.  **Refine, never demote.** Recovery is keyed to the predicates a fix actually split, so a name
+    that was never collapsed is never a candidate. An early version matched *any* label in the
+    excerpt and "recovered" a `mud_balance` calibration date stored beside `"2025-05-30"` into the
+    generic `date_iso`, because a date pattern matched the bare span — trading a correct specific
+    name for a worse one. That is the failure this rule exists to prevent.
+2.  **The value locates the reading; the label decides the predicate.** In
+    `"SIDPP 420 psi and SICP 610 psi"` the value selects which occurrence the stored row came from.
+    It is never used to choose a quantity — no rule anywhere maps `300` to "rheometer".
+3.  **Ambiguity is a result, not a failure.** A row that cannot be settled is reported with its
+    reason and left alone. Nothing is silently skipped and nothing is silently guessed.
+
+On a corpus ingested by the current extractor the repair is a **no-op** — zero deterministic rows —
+which is itself asserted, because a non-zero count would mean either the matrix is too eager or the
+extractor has started emitting collapsed names again.
+
+## 17. The current vocabulary
+
+34 predicates, 91 registered field aliases (verified: `len(PREDICATES)`, `len(PREDICATE_BY_FIELD)`). The separations introduced by V4.2, plus the V4.3 cross-source unification of `total_mud_volume` into `mud_volume`:
 
 | Quantity group | Predicates |
 |---|---|
@@ -311,7 +441,7 @@ And a suffix that is itself a predicate still does not: `mw_in` → `mud_weight_
 
 ---
 
-## 15. Repairing a semantic collapse
+## 18. Repairing a semantic collapse
 
 When two quantities are found sharing a predicate, fix the **earliest responsible layer**:
 

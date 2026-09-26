@@ -481,6 +481,12 @@ def test_every_predicate_is_reachable_from_at_least_one_alias() -> None:
 
 # ------------------------------------------------------------------- unknown-field safety
 #: Field names the vocabulary has never seen.  None of them may be forced onto a nearby predicate.
+#:
+#: ``total_mud_volume_bbl`` used to be in this list and is not any more.  V4.3 registered it as an
+#: alias of ``mud_volume`` on corpus evidence - the mud workbook's own ``SUMMARY_ALIASES`` already
+#: treats "total mud volume", "mud volume" and "active system volume" as one property, and the
+#: golden report states the same 1,450 bbl both ways.  It was a genuine cross-source split, not an
+#: unknown field; see ``test_knowledge_semantic_repair_v43.py``.
 UNREGISTERED_FIELDS = (
     "torque_on_bit",
     "bit_ny",
@@ -489,7 +495,6 @@ UNREGISTERED_FIELDS = (
     "yield_point",
     "plastic_viscosity",
     "gel_strength_10s",
-    "total_mud_volume_bbl",
     "bit_size_nominal",
     "surface_pressure_reading",
     "pill_volume_remaining",

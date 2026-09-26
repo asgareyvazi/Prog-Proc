@@ -66,7 +66,11 @@ SUMMARY_ALIASES: dict[str, tuple[str, ...]] = {
     "report_date": ("report date", "date", "reporting date"),
     "revision": ("revision", "rev", "report revision"),
     "depth_md": ("md", "measured depth", "depth md", "md depth"),
-    "depth_tvd": ("tvd", "true vertical depth", "tvdss"),
+    # ``"depth tvd"`` is here for the same reason ``"depth md"`` is above: a header written
+    # ``"Depth (ft TVD)"`` normalises to it, and without the alias the qualifier survives extraction
+    # only to be dropped at the contract.  A measured depth and a true vertical depth are different
+    # assertions, so the asymmetry the mud vocabulary used to have was a latent MD/TVD merge.
+    "depth_tvd": ("tvd", "true vertical depth", "tvdss", "depth tvd"),
     "mud_weight": ("mud weight", "mw", "active system mw"),
     "plastic_viscosity": ("plastic viscosity", "pv"),
     "yield_point": ("yield point", "yp"),

@@ -100,7 +100,7 @@ SUMMARY_ALIASES: dict[str, tuple[str, ...]] = {
 STATION_ALIASES: dict[str, tuple[str, ...]] = {
     "station": ("station", "sta", "stn", "station no", "station no.", "station #", "stn no"),
     "md": ("md", "measured depth", "depth md", "md depth"),
-    "tvd": ("tvd", "true vertical depth", "tvdss", "tvd ss"),
+    "tvd": ("tvd", "true vertical depth", "tvdss", "tvd ss", "depth tvd"),
     "inclination": ("inclination", "incl", "inc", "hole angle", "inclination deg"),
     "azimuth": ("azimuth", "azim", "az", "azi", "hole direction"),
     "toolface": ("toolface", "tf", "tool face", "gravity toolface"),
