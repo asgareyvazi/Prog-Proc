@@ -191,12 +191,49 @@ well A 2, well B 2, no-well 2 — additive and non-overlapping. `scope(delete_de
 with `workspace_id IS NULL`. It was testing the defect. It now asserts the opposite as a guard and
 triggers the warning through a genuinely non-matching workspace id.
 
+### Index identity, measured
+
+`search_document` carries both `workspace_id` and `well_id`
+(`search/index.py:117` and `:122`), and `:474` stamps them from the document:
+`workspace_id=str(document.workspace_id or "")`. That last `or ""` is why the defect reached the
+index too — with `document.workspace_id` NULL, every indexed row was written with an **empty**
+workspace id, so the index's own workspace predicate was silently matching nothing.
+
+Measured on the V4 forensic corpus after a rebuild:
+
+| check | result |
+| --- | --- |
+| indexed rows | 14 |
+| rows with the real workspace id | **14** |
+| rows with an empty `workspace_id` | **0** |
+| indexed `workspace_id` vs `Document.workspace_id` | 14 checked, **0 mismatched** |
+
+### Retrieval scope, measured
+
+`SearchService.search()` takes `workspace_id` and `well_id`. On the three-well fixture
+(two documents per scope), querying "mud weight drilling report":
+
+| scope | results |
+| --- | --- |
+| unscoped | 3 |
+| well A-3 | 1 |
+| well B-11 | 2 |
+| workspace | 3 |
+| bogus workspace id | 0 |
+
+The two well-scoped result sets share **no document ids**, and their union equals the unscoped set.
+Retrieval narrows; it does not leak.
+
 ## 8. What is still open
 
-- **Search-index scope** is documented but not re-derived. Index chunks carry a document id, so they
-  inherit identity transitively; there is no separate test that retrieval is scoped per well, because
-  retrieval is deliberately workspace-wide in this product. That is a documentation fact, not a
-  proof of isolation.
+- **Structured searchable rows carry no workspace id.** `search_structured` has a `well_id` column
+  but not a `workspace_id` one, and `search/index.py:295` says so explicitly; a workspace filter is
+  therefore not applied to structured retrieval, only a well filter. That is intentional and
+  documented in the source, but it does mean structured rows are the one population that cannot be
+  workspace-isolated by predicate.
+- **Cross-workspace retrieval isolation** is proven at the document level (W2's rebuild leaves W1's
+  rows untouched, and a bogus workspace id returns zero results) but not exercised as an end-to-end
+  two-workspace search in one process, because each workspace owns its own index file.
 - **`W1 → W2` reassignment** is not supported and is not rejected by a dedicated error either: there
   is no move operation to reject. Re-ingesting a corpus under a different workspace creates new
   document rows in the new workspace and leaves the old ones in place, because
