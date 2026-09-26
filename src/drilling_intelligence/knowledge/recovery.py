@@ -41,11 +41,21 @@ from drilling_intelligence.knowledge.facts import predicate_for_field
 
 __all__ = [
     "AMBIGUOUS",
+    "CLEAN",
+    "CONFLICTS_PRESENT",
+    "DERIVED_DRIFT_STATES",
     "DETERMINISTIC",
+    "INDEX_STALE",
+    "KNOWLEDGE_AND_INDEX_STALE",
+    "KNOWLEDGE_STALE",
     "REEXTRACT",
+    "SCHEMA_OUT_OF_DATE",
     "SPLIT_PREDICATES",
+    "STRUCTURED_INDEX_STALE",
     "UNCHANGED",
+    "UNRECOVERABLE",
     "Recovery",
+    "assess_recovery",
     "classify_entries",
     "plan_recovery",
     "recover_field_name",
@@ -190,9 +200,7 @@ def classify_entries(
         provenance = entry.get("provenance")
         provenance = provenance if isinstance(provenance, Mapping) else {}
         excerpt = str(provenance.get("excerpt") or "")
-        field, category = recover_field_name(
-            name, excerpt, entry.get("value"), extractor=extractor
-        )
+        field, category = recover_field_name(name, excerpt, entry.get("value"), extractor=extractor)
         out.append(
             {
                 "stored_field": name,
@@ -221,13 +229,251 @@ def plan_recovery(payloads: Iterable[Mapping[str, Any] | None]) -> dict[str, Any
     rows: list[dict[str, Any]] = []
     for payload in payloads:
         rows.extend(classify_entries((payload or {}).get("extracted_fields") or ()))
-    counts: dict[str, int] = dict.fromkeys(
-        (UNCHANGED, DETERMINISTIC, AMBIGUOUS, REEXTRACT), 0
-    )
+    counts: dict[str, int] = dict.fromkeys((UNCHANGED, DETERMINISTIC, AMBIGUOUS, REEXTRACT), 0)
     for row in rows:
         counts[row["category"]] = counts.get(row["category"], 0) + 1
     return {
         "scanned": len(rows),
         "counts": counts,
         "rows": rows,
+    }
+
+
+# --------------------------------------------------------------------------- workspace recovery
+#
+# The categories above classify one *stored field*.  What an operator actually asks is a different
+# question - "is this workspace sound, and if not what is the smallest safe sequence of commands
+# that makes it sound?" - and the signals for that answer already exist: ``doctor`` runs the
+# registry invariants, ``KnowledgeExtractionService.status`` reports ``needs_rebuild`` and
+# ``detached_facts``, and ``SearchService.stats`` reports the index drift.  Nothing below re-derives
+# any of it; :func:`assess_recovery` is a pure function over those numbers so that the planner, the
+# CLI and a test all read the same state the same way.
+
+#: Nothing derived is behind the registry.
+CLEAN = "clean"
+#: Derived knowledge is behind the registry: facts point at versions that are no longer current, or
+#: an artefact exists that was never derived.  This is ``status()``'s own ``needs_rebuild``.
+KNOWLEDGE_STALE = "knowledge_stale"
+#: The search index disagrees with the registry about documents and chunks.
+INDEX_STALE = "index_stale"
+#: Promoted structured rows (a lesson, a problem, an NPT record) the index has not seen.
+STRUCTURED_INDEX_STALE = "structured_index_stale"
+#: Both halves of the derived state are behind, so one command will not finish the job.
+KNOWLEDGE_AND_INDEX_STALE = "knowledge_and_index_stale"
+#: Two sources disagree and nobody has decided.  Evidence, not damage - see the module note.
+CONFLICTS_PRESENT = "conflicts_present"
+#: The schema is behind the migration head.
+SCHEMA_OUT_OF_DATE = "schema_out_of_date"
+#: A registry invariant is actually broken.  The only state that means corruption.
+UNRECOVERABLE = "unrecoverable"
+
+#: The states that mean "derived state has drifted", as opposed to "something is broken" or
+#: "two people disagree".  ``RECOVERY_REQUIRED`` from the design vocabulary is the union of these
+#: and is exposed as the ``recovery_required`` flag rather than as a separate state, because a
+#: planner that says only "recovery required" has thrown away the one thing that decides which
+#: command to run.
+DERIVED_DRIFT_STATES: tuple[str, ...] = (
+    KNOWLEDGE_STALE,
+    INDEX_STALE,
+    STRUCTURED_INDEX_STALE,
+    KNOWLEDGE_AND_INDEX_STALE,
+)
+
+
+def _count(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def assess_recovery(signals: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Name the workspace's recovery state and the minimum safe sequence that fixes it.
+
+    ``signals`` is the numbers the existing surfaces already produce - ``integrity_problems`` from
+    :func:`~drilling_intelligence.database.integrity.check_current_version_invariants` and friends,
+    ``schema`` from the migration state, ``knowledge`` from
+    :meth:`KnowledgeExtractionService.status`, ``index`` from ``SearchService.stats`` and
+    ``conflicts`` from the conflict report.  Passing them in rather than reading the database here
+    is what keeps this deterministic and testable: the same numbers always give the same state.
+
+    The severity order is the important part.  Four conditions are kept apart because they have
+    four different remedies, and collapsing them is how a repair tool ends up "fixing" things that
+    were never broken:
+
+    1.  :data:`UNRECOVERABLE` - a registry invariant is broken.  Nothing may be rebuilt on top of
+        it, because a rebuild derives from a registry that is currently lying.
+    2.  :data:`SCHEMA_OUT_OF_DATE` - the schema is behind head.  Same reason: migrate first.
+    3.  the derived-drift states - the data is fine, the *projections* of it are behind.
+    4.  :data:`CONFLICTS_PRESENT` - two sources disagree.  This is the state that must never be
+        reported as corruption and never "recovered" automatically, so it is listed under
+        ``not_performed`` with the command a person uses to review it, and on its own it leaves the
+        workspace :data:`CLEAN` as far as recovery is concerned.
+    """
+    signals = signals or {}
+
+    def section(name: str) -> Mapping[str, Any]:
+        value = signals.get(name)
+        return value if isinstance(value, Mapping) else {}
+
+    integrity = list(signals.get("integrity_problems") or [])
+    schema = section("schema")
+    knowledge = section("knowledge")
+    index = section("index")
+    conflicts = section("conflicts")
+
+    # ``status()`` already decides this, and re-deciding it differently here would give the operator
+    # two answers to the same question.  The fallback recomputes the same rule from raw counts for
+    # callers that hand over the pieces instead of the verdict.
+    knowledge_stale = bool(knowledge.get("needs_rebuild")) or (
+        "needs_rebuild" not in knowledge
+        and (
+            _count(knowledge.get("detached_facts")) > 0
+            or (
+                _count(knowledge.get("facts")) == 0
+                and _count(knowledge.get("versions_with_artefacts")) > 0
+            )
+        )
+    )
+    index_broken = bool(index.get("error"))
+    index_stale = index_broken or any(
+        _count(index.get(key)) > 0 for key in ("stale_versions", "orphaned", "missing_versions")
+    )
+    structured_stale = any(
+        _count(index.get(key)) > 0
+        for key in ("structured_missing", "structured_stale", "structured_orphaned")
+    )
+    open_conflicts = _count(conflicts.get("open"))
+    ambiguous = _count(conflicts.get("ambiguous"))
+    schema_behind = bool(schema) and schema.get("up_to_date") is False
+
+    conditions: list[str] = []
+    explanation: list[str] = []
+    if integrity:
+        conditions.append(UNRECOVERABLE)
+        explanation.append(
+            f"{len(integrity)} registry invariant(s) are violated; a rebuild derives from the "
+            "registry, so it cannot be trusted until these are fixed"
+        )
+    if schema_behind:
+        conditions.append(SCHEMA_OUT_OF_DATE)
+        explanation.append(
+            f"schema is at {schema.get('current')!r} while head is {schema.get('head')!r}"
+        )
+    if knowledge_stale:
+        conditions.append(KNOWLEDGE_STALE)
+        explanation.append(
+            f"{_count(knowledge.get('detached_facts'))} fact(s) point at versions the registry no "
+            f"longer considers current; {_count(knowledge.get('versions_without_knowledge'))} "
+            "current version(s) with an artefact have no derived facts"
+        )
+    if index_stale:
+        conditions.append(INDEX_STALE)
+        explanation.append(
+            "the search index disagrees with the registry"
+            + (f" (index reported an error: {index.get('error')})" if index_broken else "")
+        )
+    if structured_stale:
+        conditions.append(STRUCTURED_INDEX_STALE)
+        explanation.append(
+            f"{_count(index.get('structured_missing'))} structured row(s) are not in the index, "
+            f"{_count(index.get('structured_stale'))} are no longer searchable, "
+            f"{_count(index.get('structured_orphaned'))} are orphaned"
+        )
+    if open_conflicts:
+        conditions.append(CONFLICTS_PRESENT)
+        explanation.append(
+            f"{open_conflicts} unresolved engineering conflict(s): two sources state different "
+            "values for the same quantity, which is a disagreement to review, not a defect"
+        )
+    if ambiguous:
+        explanation.append(
+            f"{ambiguous} key(s) are ambiguous within one source; extraction, not recovery, decides "
+            "those"
+        )
+
+    if UNRECOVERABLE in conditions:
+        state = UNRECOVERABLE
+    elif schema_behind:
+        state = SCHEMA_OUT_OF_DATE
+    elif knowledge_stale and (index_stale or structured_stale):
+        state = KNOWLEDGE_AND_INDEX_STALE
+    elif knowledge_stale:
+        state = KNOWLEDGE_STALE
+    elif structured_stale and not index_stale:
+        state = STRUCTURED_INDEX_STALE
+    elif index_stale:
+        state = INDEX_STALE
+    elif open_conflicts:
+        state = CONFLICTS_PRESENT
+    else:
+        state = CLEAN
+
+    recommended: list[dict[str, Any]] = []
+    not_performed: list[dict[str, Any]] = []
+    if state is UNRECOVERABLE:
+        not_performed.append(
+            {
+                "item": "knowledge rebuild",
+                "reason": "the registry's own invariants are violated; fix those first, because a "
+                "rebuild takes the registry's word for what is current",
+                "command": "drillintel doctor",
+            }
+        )
+    elif state is SCHEMA_OUT_OF_DATE:
+        recommended.append(
+            {
+                "step": 1,
+                "operation": "schema upgrade",
+                "command": "alembic upgrade head",
+                "reason": "derived state must not be rebuilt onto a schema behind head",
+            }
+        )
+    else:
+        step = 0
+        if knowledge_stale:
+            step += 1
+            recommended.append(
+                {
+                    "step": step,
+                    "operation": "knowledge rebuild",
+                    "command": "drillintel knowledge rebuild",
+                    "reason": "re-derives facts from the stored artefacts; manual notes survive",
+                }
+            )
+        if index_stale or structured_stale:
+            step += 1
+            recommended.append(
+                {
+                    "step": step,
+                    "operation": "index rebuild",
+                    "command": "drillintel index rebuild",
+                    "reason": (
+                        "re-projects documents, knowledge chunks and structured rows into the "
+                        "search sidecar"
+                        if step == 1
+                        else "a knowledge rebuild rewrites knowledge chunks but not the structured "
+                        "rows, so the sidecar still needs its own pass"
+                    ),
+                }
+            )
+        if open_conflicts:
+            not_performed.append(
+                {
+                    "item": f"{open_conflicts} unresolved engineering conflict(s)",
+                    "reason": "a disagreement between two sources is evidence; no rebuild may "
+                    "settle it, and none does",
+                    "command": "drillintel knowledge conflicts",
+                }
+            )
+
+    return {
+        "state": state,
+        "conditions": conditions,
+        "corrupt": state is UNRECOVERABLE,
+        "recovery_required": state in DERIVED_DRIFT_STATES
+        or state in (UNRECOVERABLE, SCHEMA_OUT_OF_DATE),
+        "recommended": recommended,
+        "not_performed": not_performed,
+        "explanation": explanation,
     }

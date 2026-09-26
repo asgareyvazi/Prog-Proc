@@ -303,13 +303,23 @@ class KnowledgeRepository:
         return int(result.rowcount or 0)
 
     def delete_derived(
-        self, *, document_version_id: str | None = None, workspace_id: str | None = None
+        self,
+        *,
+        document_version_id: str | None = None,
+        workspace_id: str | None = None,
+        well_id: str | None = None,
     ) -> int:
         """Drop what extraction produced, and only that.
 
         Edges whose endpoints go away with them are deleted in the same call: a relation pointing
         at a removed fact is a dangling reference the integrity checker would rightly report, and
         leaving it behind would make every rebuild look like a data-integrity incident.
+
+        ``well_id`` narrows the deletion to one well's documents.  It has to exist because a caller
+        that asks for a scoped rebuild gets a scoped re-derivation, and deleting workspace-wide
+        while re-deriving one well silently destroys every other well's derived rows - measured on
+        the generated corpus as 61 rows removed, 45 re-derived, 16 gone with exit status 0.  A
+        scoped repair command must not be a data-loss command.
         """
         statement = select(KnowledgeItem.id).where(
             KnowledgeItem.origin == KnowledgeOrigin.EXTRACTED.value
@@ -320,6 +330,12 @@ class KnowledgeRepository:
             statement = statement.where(
                 KnowledgeItem.document_id.in_(
                     select(Document.id).where(Document.workspace_id == workspace_id)
+                )
+            )
+        if well_id:
+            statement = statement.where(
+                KnowledgeItem.document_id.in_(
+                    select(Document.id).where(Document.well_id == well_id)
                 )
             )
         ids = [str(row[0]) for row in self.session.execute(statement).all()]

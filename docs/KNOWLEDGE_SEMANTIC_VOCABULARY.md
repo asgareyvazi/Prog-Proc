@@ -455,3 +455,159 @@ When two quantities are found sharing a predicate, fix the **earliest responsibl
 What is never an acceptable repair: renaming the conflicting rows, deleting them, weakening
 detection, choosing a winner by counting, making `doctor` green, or inferring the quantity from the
 numeric value.
+
+## 19. Recovery states: what "needs fixing" means
+
+Sections 13–18 are about *one stored field*.  What an operator asks is a different question — "is
+this workspace sound, and what is the smallest safe sequence of commands that makes it sound?" —
+and the signals for that answer already existed: `doctor` runs the registry invariants,
+`KnowledgeExtractionService.status()` reports `needs_rebuild` and `detached_facts`, and
+`SearchService.stats()` reports index drift.
+
+`knowledge.recovery.assess_recovery(signals)` is a pure function over those numbers.  It derives
+nothing of its own and opens no database, so the planner, the CLI and a test all read the same
+state the same way.
+
+| State | Trigger (from existing counters) | Meaning |
+| --- | --- | --- |
+| `unrecoverable` | any registry invariant violated | **The only state that means corruption.** A rebuild derives from the registry, so it must not run on one that is lying. |
+| `schema_out_of_date` | `migration.up_to_date is False` | Migrate before deriving anything. |
+| `knowledge_stale` | `status()["needs_rebuild"]` — detached facts, or artefacts never derived | Derived knowledge is behind the registry. |
+| `index_stale` | `stale_versions`, `orphaned`, `missing_versions`, or an index error | The document side of the sidecar disagrees. |
+| `structured_index_stale` | `structured_missing`, `structured_stale`, `structured_orphaned` | Promoted rows the index has not seen. Named apart from the above because the diagnosis differs. |
+| `knowledge_and_index_stale` | both halves | One command will not finish the job. |
+| `conflicts_present` | open conflicts > 0 | **Not corruption.** Two sources disagree. |
+| `clean` | none of the above | Nothing derived is behind anything. |
+
+The severity order is the load-bearing part, and it exists to keep four different conditions from
+being collapsed into one another:
+
+> **A valid unresolved engineering conflict is not database corruption.**
+
+A workspace with two genuine measured-depth disagreements is `conflicts_present`, is *not*
+`recovery_required`, and gets **no** recommended operation — the disagreement goes under
+`not_performed` with `drillintel knowledge conflicts`, because no rebuild may settle it and none
+does.  `doctor` exits 1 on that workspace and is right to; the recovery planner reads the same two
+numbers as evidence rather than damage.
+
+`RECOVERY_REQUIRED` from the design vocabulary is exposed as the `recovery_required` flag rather
+than as a state, because a planner that says only "recovery required" has discarded the one thing
+that decides which command to run.
+
+## 20. `knowledge rebuild --dry-run`
+
+```bash
+drillintel knowledge rebuild --dry-run
+drillintel knowledge rebuild --dry-run --json
+drillintel knowledge rebuild --dry-run --well A-3
+```
+
+**There is one planning path, not two.**  `KnowledgeExtractionService.plan_rebuild()` calls the same
+`rebuild()` the real command calls, inside a transaction that is rolled back, and reports what it
+actually did.  A dry run that counts rows its own way and an executor that writes them its own way
+are two programs that agree today and disagree after the next change — and the disagreement
+surfaces only after an operator has trusted the preview.
+
+Three things make the rollback sufficient rather than merely hopeful:
+
+*   a `session` is passed all the way down, so every writer in the path uses that transaction;
+    `_write_session` commits only when it opened the session itself, and `sync_version` refreshes
+    the search index only when it owns the session;
+*   the planning service is built with `refresh_index=False` as a second line of defence, because
+    the index is a **separate SQLite file** that no registry rollback can undo;
+*   `detect_conflicts` writes — it marks `CONFLICTED` and clears stale rows — so the "before"
+    numbers are read first and its own writes are rolled back before the rebuild runs.
+
+The dry-run contract, pinned by fingerprinting every row of `knowledge_item`,
+`knowledge_relation`, `knowledge_conflict`, `document_version`, `extraction` and `document`
+(timestamps included) plus the SHA-256 of both SQLite files:
+
+*   deletes, inserts and updates nothing;
+*   changes no conflict status and no resolution;
+*   does not rewrite provenance, artefacts or the document registry;
+*   does not touch the search index;
+*   creates no migration, no hidden file, no cache entry.
+
+Counting rows would pass a command that merely bumped `updated_at`, which is why the proof is a
+byte-level fingerprint and not a tally.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The dry run planned successfully, or the real rebuild executed. **A dry run that predicts two genuine conflicts still exits 0** — predicting an argument is not failing. |
+| `2` | Usage: `argparse` rejected the command, or `--well` named a well that is not registered. The message lists the wells that are. |
+| `3` | The planner classified the workspace `unrecoverable`: registry invariants are violated, so a rebuild would derive from a registry that is lying. |
+| `1` | Any other domain error (the existing convention). |
+
+The real `rebuild` deliberately keeps its existing behaviour — it does not refuse on an
+`unrecoverable` state — because `doctor` already owns integrity reporting and exit codes there.
+The asymmetry is stated rather than hidden.
+
+## 21. What a rebuild does and does not refresh
+
+Measured on the promoted V4 forensic corpus, `doctor` before anything runs:
+
+```text
+exit 1
+  - 2 unresolved knowledge conflict(s): `drillintel knowledge conflicts`
+  - the search index disagrees with the registry: `drillintel index rebuild`
+  - 18 structured row(s) not yet indexed, 0 no longer searchable, 0 orphaned: `drillintel index rebuild`
+```
+
+After `knowledge rebuild` alone: `missing_versions` 14 → 0, `knowledge_chunks` 0 → 80, and
+`structured_missing` **still 18**.  After `index rebuild` as well: `structured_missing` 0,
+`structured_records` 18.  The exit code stays 1 throughout, because the one remaining finding is
+the two genuine engineering conflicts — which is correct and must not be "fixed".
+
+So:
+
+*   **A knowledge rebuild refreshes document chunks and knowledge chunks for the versions it
+    derives.** It does not invalidate the index; it improves it.
+*   **It never refreshes the promoted structured rows.** Those are another subsystem's projection.
+*   The 18 rows were genuinely missing, not a deliberate exclusion: `structured_searchable_ids`
+    returned 18 and the index held 0.  Child tables (`BhaComponent`, `MudMeasurement`,
+    `SurveyStation`, …) *are* deliberately excluded from the vocabulary and folded into their
+    parent's search unit — see `tests/unit/test_structured_index_boundary.py` — but none of them
+    are counted in `structured_missing`, so the counter measures real drift.
+*   The doctor wording is accurate, and the index is disposable by design: losing it costs nothing
+    a rebuild cannot restore.
+
+This is why the planner recommends a **sequence** rather than a single command, and why
+`index.structured_rows_refreshed` is `false` in the JSON contract:
+
+```text
+recommended, in order
+  1. drillintel knowledge rebuild  - re-derives facts from the stored artefacts; manual notes survive
+  2. drillintel index rebuild      - a knowledge rebuild rewrites knowledge chunks but not the
+                                     structured rows, so the sidecar still needs its own pass
+not performed automatically
+  - 2 unresolved engineering conflict(s): a disagreement between two sources is evidence;
+    no rebuild may settle it, and none does (drillintel knowledge conflicts)
+```
+
+## 22. The four things a recovery command may mean
+
+These are different operations with different authorities, and the vocabulary keeps them apart:
+
+| | Authority | Performed by |
+| --- | --- | --- |
+| **Knowledge rebuild** | the stored artefact | `knowledge rebuild` |
+| **Semantic repair** | the excerpt recorded beside the value, when it names the quantity | the same rebuild, via `recover_field_name` |
+| **Source re-extraction** | the source document itself | `ingest` / reprocess — **never** implied by a rebuild |
+| **Human context** | a person | nobody, automatically |
+
+`knowledge rebuild` must never silently mean "read the source files again", and a deterministic
+repair must never silently become an inference.  The dry run reports all four counts separately
+(`deterministic`, `requires_context`, `requires_source_reextraction`, `no_change`) so that
+`deterministic = 0` on an already-correct corpus is legible as a *result* rather than as a test
+that did not run.
+
+### Write accounting, stated precisely
+
+`rebuild` deletes derived rows and derives them again, so its `created` counts re-derivation, not
+new information — measured on the generated corpus as `created 61 / updated 5 / unchanged 0 /
+removed 61`, identical on every run.  `sync_all`, which does not delete first, reports the same 66
+writes as `unchanged 50 / updated 16`, and that split is stable rather than oscillating.  The
+invariant that actually matters is that the resulting fact set is identical, which is what the
+idempotency test pins — not that `created` reads zero.

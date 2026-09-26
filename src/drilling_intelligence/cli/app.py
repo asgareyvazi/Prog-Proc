@@ -906,9 +906,90 @@ def command_knowledge(args: argparse.Namespace) -> int:
 
         service = KnowledgeExtractionService.for_workspace(workspace)
         if args.action == "rebuild":
+            try:
+                well_id = _resolve_well_id(workspace, args.well)
+            except DrillingIntelligenceError as exc:
+                # Naming a well that is not there is a mistake in the command line, not something
+                # wrong with the workspace, so it gets the usage exit code ``argparse`` uses rather
+                # than the generic failure one.  The message still lists what does exist.
+                print(f"error: {exc}", file=sys.stderr)
+                if exc.hint:
+                    print(f"hint: {exc.hint}", file=sys.stderr)
+                return 2
+            if args.dry_run:
+                payload = service.plan_rebuild(
+                    workspace_id=_workspace_row_id(workspace),
+                    well_id=well_id,
+                    workspace_label=str(workspace.root),
+                    well_label=args.well or "",
+                )
+                plan = payload["plan"]
+                facts = plan["facts"]
+                repair = payload["semantic_repair"]
+                conflicts = payload["conflicts"]
+                recovery = payload["recovery"]
+                index = payload["index"]
+                lines = [
+                    "knowledge rebuild dry-run - nothing below was written",
+                    "scope",
+                    f"  workspace {payload['scope']['workspace'] or '(all)'}",
+                    f"  well      {payload['scope']['well'] or '(all)'}",
+                    "plan",
+                    f"  versions  {plan['versions']} ({plan['documents']} document(s))",
+                    f"  facts     create {facts['create']}, update {facts['update']}, "
+                    f"unchanged {facts['unchanged']}, remove {facts['remove']}",
+                    f"  relations {plan['relations']}, fields skipped {plan['skipped_fields']}",
+                    "semantic repair",
+                    f"  deterministic {repair['deterministic']}, "
+                    f"requires context {repair['requires_context']}, "
+                    f"requires source re-extraction {repair['requires_source_reextraction']}, "
+                    f"no change {repair['no_change']} (of {repair['scanned']} stored field(s))",
+                    "conflicts",
+                    f"  before {conflicts['before']}, predicted {conflicts['predicted']}",
+                ]
+                if conflicts["ambiguous_predicted"]:
+                    lines.append(
+                        f"  ambiguous within one source: {conflicts['ambiguous_predicted']} "
+                        "(extraction decides those, not a rebuild)"
+                    )
+                lines.extend(
+                    [
+                        "index",
+                        f"  {index['state']}" + (f": {index['action']}" if index["action"] else ""),
+                        "  a knowledge rebuild refreshes "
+                        f"{index['refreshed_by_knowledge_rebuild']}; structured rows: "
+                        f"{'yes' if index['structured_rows_refreshed'] else 'no'}",
+                        f"manual facts  preserved: "
+                        f"{'yes' if payload['manual_facts']['preserved'] else 'NO'} "
+                        f"({payload['manual_facts']['count']})",
+                        f"recovery state  {recovery['state']}",
+                    ]
+                )
+                lines.extend(f"  because {reason}" for reason in recovery["explanation"])
+                if recovery["recommended"]:
+                    lines.append("recommended, in order")
+                    lines.extend(
+                        f"  {step['step']}. {step['command']}  - {step['reason']}"
+                        for step in recovery["recommended"]
+                    )
+                if recovery["not_performed"]:
+                    lines.append("not performed automatically")
+                    lines.extend(
+                        f"  - {item['item']}: {item['reason']} ({item['command']})"
+                        for item in recovery["not_performed"]
+                    )
+                for warning in payload["warnings"][:10]:
+                    lines.append(f"  warning: {warning}")
+                lines.append("mutations  none - dry-run")
+                lines.append(f"result     {payload['result']}")
+                _emit(payload, as_json=args.json, lines=lines)
+                # A dry run that predicts two genuine engineering conflicts is a successful dry
+                # run.  Only a workspace whose registry is actually broken fails here, and it gets
+                # its own code because the remedy is not "run it anyway".
+                return 3 if recovery["corrupt"] else 0
             payload = service.rebuild(
                 workspace_id=_workspace_row_id(workspace),
-                well_id=_resolve_well_id(workspace, args.well),
+                well_id=well_id,
             )
             facts = payload["facts"]
             lines = [
@@ -2427,6 +2508,11 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     rebuild.add_argument("--well", help="limit the rebuild to documents of this well (id or name)")
+    rebuild.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="plan the rebuild and change nothing: what it would write, repair and leave disputed",
+    )
     rebuild.set_defaults(handler=command_knowledge)
     conflicts = knowledge_sub.add_parser(
         "conflicts",
