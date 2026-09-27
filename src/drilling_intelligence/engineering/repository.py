@@ -1241,7 +1241,7 @@ class EngineeringRepository:
         npt_hours = self._npt_hours_by_section([section.id for section in sections])
         payload: list[dict[str, Any]] = []
         for section in sections:
-            match = self._match_target(section, targets)
+            match, matched_by = self._match_target(section, targets)
             actuals = self._section_actuals(section, npt_hours=npt_hours.get(section.id))
             for metric in PLAN_ACTUAL_METRICS:
                 planned = None if match is None else getattr(match, metric.planned_column, None)
@@ -1266,6 +1266,9 @@ class EngineeringRepository:
                         "status": self._plan_actual_status(match, planned, actual),
                         "program_id": None if match is None else match.program_id,
                         "target_id": None if match is None else match.id,
+                        # How the plan was found.  A name match is a guess and more than one name
+                        # match is a disagreement; neither should be readable as an exact join.
+                        "matched_by": matched_by,
                     }
                 )
         return payload
@@ -1273,23 +1276,28 @@ class EngineeringRepository:
     @staticmethod
     def _match_target(
         section: WellSection, targets: Sequence[ProgramTarget]
-    ) -> ProgramTarget | None:
+    ) -> tuple[ProgramTarget | None, str]:
         """The target that describes this section, by id first and by name only as a fallback.
 
-        Matching on the section id is exact; matching on the name is what a program written before the
-        well was spudded has to fall back to.  A name match is still reported without its id, so a
-        reader can tell the two apart rather than trusting a join that was really a guess.
+        Returns the target *and* how it was found, because the two are not equally trustworthy and a
+        reader has to be able to tell them apart.  ``SECTION_ID`` is an exact join.  ``NAME`` is the
+        fallback a programme written before the well was spudded has to use - a guess that the
+        section named "12 1/4 in" is the one the plan meant.  ``NAME_AMBIGUOUS`` is that guess with
+        more than one candidate: two governing programmes both carrying a target of the same name is
+        two plans claiming the same section, and the precedence order picks one of them without the
+        source ever having said which.  Reporting the chosen number as though it were *the* plan
+        would hide a disagreement the reviewer needs to see.
         """
         for target in targets:
             if target.section_id and str(target.section_id) == str(section.id):
-                return target
+                return target, "SECTION_ID"
         wanted = str(section.name or "").strip().lower()
         if not wanted:
-            return None
-        for target in targets:
-            if str(target.name or "").strip().lower() == wanted:
-                return target
-        return None
+            return None, ""
+        by_name = [target for target in targets if str(target.name or "").strip().lower() == wanted]
+        if not by_name:
+            return None, ""
+        return by_name[0], "NAME_AMBIGUOUS" if len(by_name) > 1 else "NAME"
 
     @staticmethod
     def _plan_actual_status(target: ProgramTarget | None, planned: Any, actual: Any) -> str:

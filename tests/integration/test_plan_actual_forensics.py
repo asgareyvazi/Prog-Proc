@@ -580,3 +580,107 @@ class TestCombinedScopeIsAnIntersection:
             )
             == []
         )
+
+
+class TestMatchProvenance:
+    """A plan matched by *name* is a guess, and a reader must be able to see that.
+
+    ``_match_target`` always matched on the section id first and fell back to the section name, and
+    its docstring said a name match "is still reported without its id" so the two could be told
+    apart.  That was not true - the row carried ``target_id`` either way, so an exact join and a
+    name-based guess were indistinguishable in the output.  Worse, when two governing programmes
+    both carried a target of the same name the precedence order silently picked one, and two plans
+    disagreeing about the same section read as one plan.
+    """
+
+    def test_an_exact_section_id_match_says_so(self, lineage) -> None:
+        session = lineage["session"]
+        engineering = EngineeringRepository(session)
+        session.add(_section(lineage["well_a"], sid="prov-exact", sequence=1, name="12 1/4 in"))
+        session.flush()
+        program = engineering.create_program(title="Exact", well_id=lineage["well_a"].id)
+        engineering.add_target(
+            program.id,
+            name="12 1/4 in",
+            section_id="prov-exact",
+            planned_depth_md_value=1000.0,
+            planned_depth_md_unit="m",
+        )
+        session.flush()
+        rows = engineering.plan_actual_summary(well_id=lineage["well_a"].id)
+        (depth,) = _depth_rows(rows)
+        assert depth["matched_by"] == "SECTION_ID"
+
+    def test_a_name_fallback_is_reported_as_a_guess(self, lineage) -> None:
+        """The template contract still works - it just has to say what it did."""
+        session = lineage["session"]
+        engineering = EngineeringRepository(session)
+        session.add(_section(lineage["well_a"], sid="prov-name", sequence=1, name="12 1/4 in"))
+        session.flush()
+        # A field-level programme with an unbound target: the pre-spud template case.
+        template = engineering.create_program(
+            title="Field Template", well_id=None, field_id=lineage["field"].id
+        )
+        engineering.add_target(
+            template.id,
+            name="12 1/4 in",
+            section_id=None,
+            planned_depth_md_value=5000.0,
+            planned_depth_md_unit="m",
+        )
+        session.flush()
+        rows = engineering.plan_actual_summary(well_id=lineage["well_a"].id)
+        (depth,) = _depth_rows(rows)
+        assert depth["planned"] == 5000.0, "the template match stopped working"
+        assert depth["matched_by"] == "NAME", "a name-based guess read as an exact join"
+
+    def test_two_governing_plans_claiming_one_section_name_are_flagged(self, lineage) -> None:
+        """Precedence picks one; it must not pretend the other does not exist."""
+        session = lineage["session"]
+        engineering = EngineeringRepository(session)
+        session.add(_section(lineage["well_a"], sid="prov-amb", sequence=1, name="12 1/4 in"))
+        session.flush()
+        for title, value in (("Template One", 1111.0), ("Template Two", 2222.0)):
+            program = engineering.create_program(
+                title=title, well_id=None, field_id=lineage["field"].id
+            )
+            engineering.add_target(
+                program.id,
+                name="12 1/4 in",
+                section_id=None,
+                planned_depth_md_value=value,
+                planned_depth_md_unit="m",
+            )
+        session.flush()
+        rows = engineering.plan_actual_summary(well_id=lineage["well_a"].id)
+        (depth,) = _depth_rows(rows)
+        assert depth["matched_by"] == "NAME_AMBIGUOUS", (
+            "two plans disagreed about this section and the row did not say so"
+        )
+        assert depth["planned"] in (1111.0, 2222.0)
+
+    def test_a_foreign_wells_program_still_cannot_supply_the_plan(self, lineage) -> None:
+        """The name fallback is confined to programmes that govern this well."""
+        session = lineage["session"]
+        engineering = EngineeringRepository(session)
+        session.add_all(
+            [
+                _section(lineage["well_a"], sid="prov-a", sequence=1, name="12 1/4 in"),
+                _section(lineage["well_b"], sid="prov-b", sequence=1, name="12 1/4 in"),
+            ]
+        )
+        session.flush()
+        foreign = engineering.create_program(title="Well B", well_id=lineage["well_b"].id)
+        engineering.add_target(
+            foreign.id,
+            name="12 1/4 in",
+            section_id=None,
+            planned_depth_md_value=4321.0,
+            planned_depth_md_unit="m",
+        )
+        session.flush()
+        rows = engineering.plan_actual_summary(well_id=lineage["well_a"].id)
+        (depth,) = _depth_rows(rows)
+        assert depth["planned"] is None, "another well's plan was applied to this well's section"
+        assert depth["matched_by"] == "", "a match was claimed where none was made"
+        assert depth["status"] == "NO_TARGET"
