@@ -89,6 +89,23 @@ def problem_hours() -> Any:
         .group_by(NptRecord.event_id)
         .subquery("event_hours")
     )
+    # The event link is weaker evidence than the direct one, and it has to be treated as such.  A
+    # direct ``npt_id`` is the source stating "this problem caused that NPT record".  A shared
+    # ``event_id`` only says the problem and the NPT belong to the same *incident* - it never says
+    # which problem on that incident caused which record.  With one problem on the event there is no
+    # ambiguity to resolve, so the incident's hours belong to it.  With several problems on one
+    # event, handing the same hours to each of them multiplied an incident-level quantity across
+    # problem-level rows: two problems on a six-hour incident summed to twelve hours of NPT, and
+    # every consumer here sums this subquery.  Splitting the hours between them would invent a
+    # proportion the source never stated, so the honest answer is that the attribution is ambiguous
+    # and the hours are left unattributed - see :func:`ambiguous_event_attribution`.
+    sole_problem = (
+        select(ProblemOccurrence.event_id.label("event_id"))
+        .where(ProblemOccurrence.event_id.is_not(None))
+        .group_by(ProblemOccurrence.event_id)
+        .having(func.count(ProblemOccurrence.id) == 1)
+        .subquery("sole_problem_on_event")
+    )
     by_event = (
         select(
             ProblemOccurrence.id,
@@ -99,12 +116,49 @@ def problem_hours() -> Any:
             event_hours.c.hours,
         )
         .join(event_hours, event_hours.c.event_id == ProblemOccurrence.event_id)
+        .join(sole_problem, sole_problem.c.event_id == ProblemOccurrence.event_id)
         .where(
             ProblemOccurrence.npt_id.is_(None),
             ProblemOccurrence.event_id.is_not(None),
         )
     )
     return union_all(by_npt, by_event).subquery("problem_hours")
+
+
+def ambiguous_event_attribution() -> Any:
+    """The problems whose lost time cannot be attributed, and why.
+
+    The complement of :func:`problem_hours`'s event path: problems that share an event carrying NPT
+    with at least one other problem.  Their hours exist and are reported by the event- and
+    NPT-scoped aggregations; what cannot be said is *which* of the problems on that incident they
+    belong to.  Leaving them out of :func:`problem_hours` without naming them would trade one
+    silent answer for another, so the set is queryable and the aggregations count it.
+    """
+    shared_event = (
+        select(ProblemOccurrence.event_id.label("event_id"))
+        .where(ProblemOccurrence.event_id.is_not(None))
+        .group_by(ProblemOccurrence.event_id)
+        .having(func.count(ProblemOccurrence.id) > 1)
+        .subquery("shared_event")
+    )
+    timed_event = (
+        select(NptRecord.event_id.label("event_id"))
+        .where(NptRecord.event_id.is_not(None), NptRecord.duration_hours.is_not(None))
+        .group_by(NptRecord.event_id)
+        .subquery("timed_event")
+    )
+    return (
+        select(
+            ProblemOccurrence.id.label("problem_id"),
+            ProblemOccurrence.well_id.label("well_id"),
+            ProblemOccurrence.problem_type.label("problem_type"),
+            ProblemOccurrence.event_id.label("event_id"),
+        )
+        .join(shared_event, shared_event.c.event_id == ProblemOccurrence.event_id)
+        .join(timed_event, timed_event.c.event_id == ProblemOccurrence.event_id)
+        .where(ProblemOccurrence.npt_id.is_(None), ProblemOccurrence.event_id.is_not(None))
+        .subquery("ambiguous_event_attribution")
+    )
 
 
 def _stamp(value: object) -> datetime | None:
@@ -572,6 +626,20 @@ class FieldIntelligence:
             str(name or "uncategorised"): round(float(total or 0.0), 4)
             for name, total in hours_rows
         }
+        # Problems whose lost time is deliberately *not* in ``hours_by_type``: they share an event
+        # carrying NPT with at least one other problem, and the source never says which of them the
+        # hours belong to.  The hours are not lost - the event and NPT aggregations still report
+        # them - but attributing them here would multiply one incident across every problem on it.
+        # Naming the count is what keeps that a stated limitation instead of a silent gap.
+        ambiguous = ambiguous_event_attribution()
+        ambiguous_rows = self.session.execute(
+            select(ambiguous.c.problem_type, func.count(func.distinct(ambiguous.c.problem_id)))
+            .where(ambiguous.c.well_id.in_(scope))
+            .group_by(ambiguous.c.problem_type)
+        ).all()
+        ambiguous_by_type = {
+            str(name or "uncategorised"): int(count or 0) for name, count in ambiguous_rows
+        }
         well_ids = self.session.execute(
             select(problem_type_column, ProblemOccurrence.well_id).where(*filters).distinct()
         ).all()
@@ -595,6 +663,7 @@ class FieldIntelligence:
                 "well_ids": sorted(wells_by_type.get(key, set())),
                 "sections": sorted(sections_by_type.get(key, set())),
                 "npt_hours": hours_by_type.get(key),
+                "unattributed_npt_problems": ambiguous_by_type.get(key, 0),
                 "root_cause_known": int(known or 0),
                 "first_seen_at": _iso(first),
                 "last_seen_at": _iso(last),
@@ -609,6 +678,7 @@ class FieldIntelligence:
             },
             "occurrences": int(total_occurrences or 0),
             "wells": int(total_wells or 0),
+            "unattributed_npt_problems": sum(ambiguous_by_type.values()),
             "by_type": dict(
                 sorted(by_type.items(), key=lambda item: (-item[1]["occurrences"], item[0]))
             ),

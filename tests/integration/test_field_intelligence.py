@@ -48,7 +48,11 @@ from drilling_intelligence.database.models import (
     WellSection,
 )
 from drilling_intelligence.engineering.repository import EngineeringRepository
-from drilling_intelligence.intelligence.field import FieldIntelligence, problem_hours
+from drilling_intelligence.intelligence.field import (
+    FieldIntelligence,
+    ambiguous_event_attribution,
+    problem_hours,
+)
 from drilling_intelligence.intelligence.patterns import (
     find_recurring,
     get_pattern,
@@ -803,3 +807,147 @@ def test_an_npt_record_with_no_duration_is_counted_as_unknown_not_as_zero(
     assert entry["records"] == 3, "the undurationed record was dropped from the count"
     assert entry["hours"] == 6.0, "a missing duration was treated as a number"
     assert entry["unknown_duration"] == 1, "nothing reported the record whose duration is unknown"
+
+
+def test_two_problems_on_one_incident_do_not_each_receive_its_npt_hours(
+    field_workspace,
+) -> None:
+    """A shared ``event_id`` says "same incident", not "this problem caused this NPT".
+
+    With one problem on an event the attribution is unambiguous and the incident's hours belong to
+    it.  With several, handing the same hours to each of them multiplied an incident-level quantity
+    across problem-level rows - two problems on a six-hour incident summed to twelve hours, and
+    every consumer of this subquery sums it.  Splitting the hours would invent a proportion the
+    source never stated, so the hours are left unattributed *and the omission is named*: the
+    problems still count, and the ambiguity is reported rather than disappearing.
+    """
+    with field_workspace.database.session() as session:
+        field = field_id(field_workspace)
+        well = session.execute(select(Well.id).order_by(Well.id).limit(1)).scalar_one()
+        pdef = session.execute(
+            select(ProblemDefinition.id).order_by(ProblemDefinition.id).limit(1)
+        ).scalar_one_or_none()
+        if pdef is None:
+            session.add(ProblemDefinition(id="pdef-shared", name="shared", category="stuck_pipe"))
+            session.flush()
+            pdef = "pdef-shared"
+        session.add(
+            WellEvent(
+                id="evt-shared",
+                well_id=well,
+                category="operational",
+                event_type="stuck_pipe",
+                label="one incident, two problems recorded",
+                occurred_at=datetime(2025, 6, 22, 8, 0),
+            )
+        )
+        session.flush()
+        for index in (1, 2):
+            session.add(
+                ProblemOccurrence(
+                    id=f"prob-shared-{index}",
+                    well_id=well,
+                    problem_definition_id=pdef,
+                    problem_type="shared_incident",
+                    hole_size_in=12.25,
+                    occurred_at=datetime(2025, 6, 22, 8, 0),
+                    npt_id=None,
+                    event_id="evt-shared",
+                )
+            )
+        for index, hours in enumerate((2.0, 4.0), start=1):
+            session.add(
+                NptRecord(
+                    id=f"npt-shared-{index}",
+                    well_id=well,
+                    category="waiting_on_weather",
+                    started_at=datetime(2025, 6, 22, 8, 0),
+                    duration_hours=hours,
+                    event_id="evt-shared",
+                )
+            )
+        session.commit()
+
+        hours_view = problem_hours()
+        attributed = session.execute(
+            select(hours_view).where(hours_view.c.problem_type == "shared_incident")
+        ).all()
+        ambiguous_view = ambiguous_event_attribution()
+        ambiguous = session.execute(
+            select(ambiguous_view).where(ambiguous_view.c.problem_type == "shared_incident")
+        ).all()
+        problems = FieldIntelligence(session).problems(field_id=field)
+
+    assert attributed == [], "the incident's hours were handed to each problem on it"
+    assert {row.problem_id for row in ambiguous} == {"prob-shared-1", "prob-shared-2"}, (
+        "the unattributable problems were not named"
+    )
+    entry = problems["by_type"]["shared_incident"]
+    assert entry["occurrences"] == 2, "the problems themselves must still be counted"
+    assert entry["npt_hours"] is None, f"an ambiguous attribution produced a number: {entry}"
+    assert entry["unattributed_npt_problems"] == 2, "the omission was silent"
+    assert problems["unattributed_npt_problems"] >= 2
+
+
+def test_a_pattern_is_not_inflated_by_several_problems_sharing_one_incident(
+    field_workspace,
+) -> None:
+    """The grouping must not grow because an incident happens to carry two problem rows.
+
+    This is the same join seen from the pattern side: the count of problems is a fact about the
+    problems, while the hours are a fact about the incident, and a relational path that happens to
+    exist between them must not turn six hours into twelve.
+    """
+    with field_workspace.database.session() as session:
+        well = session.execute(select(Well.id).order_by(Well.id).limit(1)).scalar_one()
+        pdef = session.execute(
+            select(ProblemDefinition.id).order_by(ProblemDefinition.id).limit(1)
+        ).scalar_one_or_none()
+        if pdef is None:
+            session.add(ProblemDefinition(id="pdef-pat", name="pat", category="stuck_pipe"))
+            session.flush()
+            pdef = "pdef-pat"
+        session.add(
+            WellEvent(
+                id="evt-pat",
+                well_id=well,
+                category="operational",
+                event_type="stuck_pipe",
+                label="one incident, two problems recorded",
+                occurred_at=datetime(2025, 6, 23, 8, 0),
+            )
+        )
+        session.flush()
+        for index in (1, 2):
+            session.add(
+                ProblemOccurrence(
+                    id=f"prob-pat-{index}",
+                    well_id=well,
+                    problem_definition_id=pdef,
+                    problem_type="pattern_incident",
+                    hole_size_in=12.25,
+                    occurred_at=datetime(2025, 6, 23, 8, 0),
+                    npt_id=None,
+                    event_id="evt-pat",
+                )
+            )
+        session.add(
+            NptRecord(
+                id="npt-pat-1",
+                well_id=well,
+                category="waiting_on_weather",
+                started_at=datetime(2025, 6, 23, 8, 0),
+                duration_hours=6.0,
+                event_id="evt-pat",
+            )
+        )
+        session.commit()
+        candidates = find_recurring(
+            session, field_id=field_id(field_workspace), min_occurrences=1, min_wells=1, limit=0
+        )
+    grouping = next(c for c in candidates if c["problem_type"] == "pattern_incident")
+    assert grouping["occurrence_count"] == 2, "both problems are real and must be counted"
+    assert grouping["event_count"] == 1, "they are one incident, not two"
+    assert grouping["total_npt_hours"] is None, (
+        f"six hours of one incident became {grouping['total_npt_hours']}"
+    )
