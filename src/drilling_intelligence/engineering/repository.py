@@ -1160,10 +1160,20 @@ class EngineeringRepository:
                 # self-contradicting scope, and the one thing that must never happen is answering
                 # with one well's actuals beside another well's plan.
                 section_statement = section_statement.where(WellSection.well_id == program.well_id)
+            elif well_id or section_id:
+                # The caller has already anchored the section side to a well or to one section, so
+                # that anchor *is* the boundary and the programme's own targets must not narrow it
+                # again.  Without this, naming a field template explicitly returned nothing while
+                # not naming it returned the template's plan - the same documented template found
+                # in one call mode and invisible in another, which reads as "this plan does not
+                # apply" when it does.  The unbound targets stay eligible to match by name exactly
+                # as they are when no programme is named.
+                pass
             else:
-                # A programme filed against a field or a template names no well, so "its" sections
-                # are only the ones its targets point at explicitly.  Falling back to every section
-                # in the workspace is what produced the cross-well match in the first place.
+                # A programme filed against a field or a template names no well, and the caller
+                # named no well or section either, so "its" sections are only the ones its targets
+                # point at explicitly.  Falling back to every section in the workspace is what
+                # produced the cross-well match in the first place.
                 section_statement = section_statement.where(
                     WellSection.id.in_(
                         select(ProgramTarget.section_id).where(
@@ -1280,7 +1290,10 @@ class EngineeringRepository:
         """The target that describes this section, by id first and by name only as a fallback.
 
         Returns the target *and* how it was found, because the two are not equally trustworthy and a
-        reader has to be able to tell them apart.  ``SECTION_ID`` is an exact join.  ``NAME`` is the
+        reader has to be able to tell them apart.  ``SECTION_ID`` is an exact join to one target.
+        ``SECTION_ID_AMBIGUOUS`` is an exact join that several governing programmes made to the same
+        section with different numbers - the strongest kind of disagreement, because neither side is
+        guessing.  ``NAME`` is the
         fallback a programme written before the well was spudded has to use - a guess that the
         section named "12 1/4 in" is the one the plan meant.  ``NAME_AMBIGUOUS`` is that guess with
         more than one candidate: two governing programmes both carrying a target of the same name is
@@ -1288,9 +1301,19 @@ class EngineeringRepository:
         source ever having said which.  Reporting the chosen number as though it were *the* plan
         would hide a disagreement the reviewer needs to see.
         """
-        for target in targets:
-            if target.section_id and str(target.section_id) == str(section.id):
-                return target, "SECTION_ID"
+        by_id = [
+            target
+            for target in targets
+            if target.section_id and str(target.section_id) == str(section.id)
+        ]
+        if by_id:
+            # An exact id match is exact about *which section* the target names, not about how many
+            # programmes named it.  Two current governing programmes can both carry a target on the
+            # same section with different planned values, and that is a disagreement between two
+            # plans - a stronger one than a name collision, because neither side is guessing.  The
+            # precedence order still picks one so the answer stays deterministic, but it has to say
+            # that it picked.
+            return by_id[0], "SECTION_ID_AMBIGUOUS" if len(by_id) > 1 else "SECTION_ID"
         wanted = str(section.name or "").strip().lower()
         if not wanted:
             return None, ""

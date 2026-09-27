@@ -684,3 +684,110 @@ class TestMatchProvenance:
         assert depth["planned"] is None, "another well's plan was applied to this well's section"
         assert depth["matched_by"] == "", "a match was claimed where none was made"
         assert depth["status"] == "NO_TARGET"
+
+
+class TestExactIdCollision:
+    """An exact section id says which section a target names, not how many programmes named it.
+
+    Two current governing programmes can both carry a target on the same section with different
+    planned values.  V5.1 flagged that disagreement only for name matches, on the reasoning that an
+    id join is exact - which is true of the *section* and says nothing about the number of plans
+    claiming it.  The precedence order picked one of the two and reported ``SECTION_ID``, so a
+    reviewer saw a single authoritative planned depth where two programmes disagreed.
+    """
+
+    def test_two_governing_programmes_targeting_one_section_are_flagged(self, lineage) -> None:
+        session = lineage["session"]
+        engineering = EngineeringRepository(session)
+        session.add(_section(lineage["well_a"], sid="collide-x", sequence=1, name="12 1/4 in"))
+        session.flush()
+        values = []
+        for title, value in (("Programme A", 1000.0), ("Programme B", 2000.0)):
+            program = engineering.create_program(title=title, well_id=lineage["well_a"].id)
+            engineering.add_target(
+                program.id,
+                name="12 1/4 in",
+                section_id="collide-x",
+                planned_depth_md_value=value,
+                planned_depth_md_unit="m",
+            )
+            values.append(value)
+        session.flush()
+        rows = engineering.plan_actual_summary(well_id=lineage["well_a"].id)
+        (depth,) = _depth_rows(rows)
+        assert depth["matched_by"] == "SECTION_ID_AMBIGUOUS", (
+            "two programmes disagreed about this section and the row claimed an exact match"
+        )
+        assert depth["planned"] in values, "the chosen plan is not one of the two on record"
+
+    def test_one_programme_targeting_a_section_still_reads_as_exact(self, lineage) -> None:
+        session = lineage["session"]
+        engineering = EngineeringRepository(session)
+        session.add(_section(lineage["well_a"], sid="exact-x", sequence=1, name="12 1/4 in"))
+        session.flush()
+        program = engineering.create_program(title="Only One", well_id=lineage["well_a"].id)
+        engineering.add_target(
+            program.id,
+            section_id="exact-x",
+            planned_depth_md_value=1000.0,
+            planned_depth_md_unit="m",
+        )
+        session.flush()
+        (depth,) = _depth_rows(engineering.plan_actual_summary(well_id=lineage["well_a"].id))
+        assert depth["matched_by"] == "SECTION_ID"
+
+
+class TestExplicitTemplateScope:
+    """Naming a programme must not make its own plan harder to find than not naming it.
+
+    A field-level template with unbound targets matched by name when only a well was named, but
+    returned *nothing* when the caller named the template as well - because the section side was
+    then narrowed to the targets that point at a section explicitly, and an unbound target points at
+    none.  The same documented plan was therefore visible in one call mode and invisible in another,
+    which reads as "this plan does not apply here" when it does.
+    """
+
+    @staticmethod
+    def _template(lineage):
+        session = lineage["session"]
+        engineering = EngineeringRepository(session)
+        session.add(_section(lineage["well_a"], sid="tmpl-x", sequence=1, name="12 1/4 in"))
+        session.flush()
+        template = engineering.create_program(
+            title="Field Template", well_id=None, field_id=lineage["field"].id
+        )
+        engineering.add_target(
+            template.id,
+            name="12 1/4 in",
+            section_id=None,
+            planned_depth_md_value=5000.0,
+            planned_depth_md_unit="m",
+        )
+        session.flush()
+        return engineering, template
+
+    def test_a_named_well_finds_the_template_without_naming_the_programme(self, lineage) -> None:
+        engineering, _template = self._template(lineage)
+        (depth,) = _depth_rows(engineering.plan_actual_summary(well_id=lineage["well_a"].id))
+        assert depth["planned"] == 5000.0 and depth["matched_by"] == "NAME"
+
+    def test_naming_the_well_and_the_programme_finds_the_same_plan(self, lineage) -> None:
+        engineering, template = self._template(lineage)
+        (depth,) = _depth_rows(
+            engineering.plan_actual_summary(well_id=lineage["well_a"].id, program_id=template.id)
+        )
+        assert depth["planned"] == 5000.0, "naming the programme hid the programme's own plan"
+        assert depth["matched_by"] == "NAME"
+
+    def test_naming_a_section_and_the_programme_finds_the_same_plan(self, lineage) -> None:
+        engineering, template = self._template(lineage)
+        (depth,) = _depth_rows(
+            engineering.plan_actual_summary(section_id="tmpl-x", program_id=template.id)
+        )
+        assert depth["planned"] == 5000.0
+
+    def test_a_programme_alone_with_no_anchor_compares_nothing(self, lineage) -> None:
+        """Deliberate: a field template with unbound targets and no well named has no actuals to
+        compare against, so the honest answer is empty rather than every well in the workspace."""
+        engineering, template = self._template(lineage)
+        assert engineering.plan_actual_summary(program_id=template.id) == []

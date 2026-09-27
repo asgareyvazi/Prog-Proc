@@ -74,6 +74,54 @@ exactly why the deterministic direct test exists alongside it.
 **10 tests, exit 0**, including the head-constant assertion and the wheel-without-scripts stamping
 path (both initially failed until `METADATA_REVISION` was bumped, then passed).
 
+### 4.2 `PLAN_EXACT_ID_COLLISION` — confirmed, fixed
+
+**Symptom.** Two current governing programmes both carried a target on the same `section_id` with
+different planned depths. The summary silently reported one of them, labelled `matched_by=SECTION_ID`.
+
+**Reproduction.** Programmes A and B, both well-owned (therefore both governing), both targeting
+section `coll-x`, planned 1000.0 and 2000.0. Measured:
+
+```
+PROBE exact-ID collision -> planned=2000.0 matched_by=SECTION_ID
+```
+
+**Root cause.** V5.1's ambiguity flag covered only *name* matches, on the reasoning that an id join
+is exact. That is true of the section and says nothing about how many plans claim it — an exact-id
+collision is the stronger disagreement, because neither side is guessing.
+
+**Fix.** `_match_target` collects every target whose `section_id` matches and reports
+`SECTION_ID_AMBIGUOUS` when there is more than one. The precedence order still picks one, so the
+answer stays deterministic; it just says that it picked. **Regression tests:** 2.
+**Mutation** (never report the ambiguous label): **killed**, 1 failure.
+
+### 4.3 `PLAN_EXPLICIT_TEMPLATE_BY_NAME` — confirmed, fixed
+
+**Symptom.** Naming a field template explicitly returned *nothing*, while not naming it returned the
+template's plan.
+
+**Reproduction.** Field-level programme, unbound target (`section_id=None`), section named to match:
+
+```
+PROBE [well_id only]      -> planned=[5000.0] matched_by=['NAME']
+PROBE [program_id only]   -> rows=0
+PROBE [well + program]    -> rows=0
+PROBE [section + program] -> rows=0
+```
+
+**Root cause.** When `program_id` is supplied and the programme has no well, the section side was
+narrowed to the sections its targets point at *explicitly*. An unbound target points at none, so the
+intersection was empty. The caller's own well/section anchor was discarded in favour of a narrower
+one.
+
+**Fix.** When the caller has already anchored the section side with `well_id` or `section_id`, that
+anchor is the boundary and the programme's targets no longer narrow it; unbound targets stay
+eligible to match by name exactly as when no programme is named. With `program_id` **alone** and no
+anchor, the answer is still empty — a field template with unbound targets has no actuals to compare
+against, and widening to every well in the workspace is the cross-well bug this code exists to
+prevent. **Regression tests:** 4. **Mutation** (restore the unconditional narrowing): **killed**, 2
+failures. The existing cross-well protection tests still pass.
+
 ## 5. Hypotheses disproved
 
 None newly this checkpoint. V5.2's `DATE_SCOPE_UNDATED_SEARCH_RETRIEVAL` remains disproved with its
@@ -95,6 +143,8 @@ contract documented.
 |---|---|---|---|---|
 | remove calc scope enforcement (V5.2 M3) | calculation | scope tests | 4 failures | **KILLED** |
 | drop `uq_calculation_one_superseding_revision` | calculation | constraint test | 1 failure | **KILLED** |
+| never report `SECTION_ID_AMBIGUOUS` | plan | collision test | 1 failure | **KILLED** |
+| restore unconditional section narrowing | plan | template-scope tests | 2 failures | **KILLED** |
 
 ## 20. Full test gates
 
@@ -111,6 +161,13 @@ contract documented.
 ## 21. Git publication checkpoints
 
 ```
+CHECKPOINT B — PLAN-VS-ACTUAL
+status: COMPLETE
+attacks_closed: PLAN_EXACT_ID_COLLISION (fixed), PLAN_EXPLICIT_TEMPLATE_BY_NAME (fixed)
+targeted_tests: test_plan_actual_forensics 38, exit 0; plus engineering_lessons + cli_domain = 100, exit 0
+mutations: 2 attempted, 2 killed
+remaining_open: none for plan-vs-actual
+
 CHECKPOINT A — CALCULATION
 status: COMPLETE
 targeted_tests: test_calculation_forensics + test_change_impact_forensics + test_migrations = 83, exit 0
@@ -123,7 +180,6 @@ remaining_open: numeric safety, identity-key semantics, actor/trigger attacks
 Carried-forward mandatory attacks still open after Checkpoint A:
 
 ```
-PLAN_EXPLICIT_TEMPLATE_BY_NAME      PLAN_EXACT_ID_COLLISION
 REVIEW_NULL_WELL_LEAK               TIMELINE_INTERVAL_WINDOW
 RETRIEVAL_ZERO_LIMIT_HARD_CAP       LIMIT_TRUNCATION_SIGNAL
 EVIDENCE_IDENTITY_ORDER_INDEPENDENCE  EVIDENCE_FRESHNESS_DELTA
