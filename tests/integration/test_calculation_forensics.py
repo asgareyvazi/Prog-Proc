@@ -27,7 +27,8 @@ from __future__ import annotations
 import hashlib
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
+from sqlalchemy.exc import IntegrityError
 
 from drilling_intelligence.core.enums import CalculationStatus, KnowledgeOrigin
 from drilling_intelligence.core.errors import ValidationError
@@ -448,3 +449,126 @@ class TestCalculationScopeIntegrity:
         )
         session.commit()
         assert row.section_id == "scope-sec-a" and row.well_id == well_a.id
+
+
+class TestOneSupersedingRevision:
+    """A calculation chain has exactly one leaf, and the database is what says so.
+
+    ``record_calculation`` checks for an existing child before inserting one.  That is correct for
+    the single writer ADR-0003 describes and useless for two: both look, both see nothing, both
+    write.  Measured with two independent sessions on the same SQLite file, 7 of 8 attempts left the
+    parent with two children, each with a different ``identity_key`` so the existing unique index
+    did not catch it, and both reporting themselves current - with nothing on either row to say
+    which revision to follow.  No application-level check can close that gap, so the invariant is a
+    partial unique index on ``supersedes_id`` (migration 0012).
+    """
+
+    @staticmethod
+    def _well(db, root, name: str) -> str:
+        with db.unit_of_work() as session:
+            repository = WellRepository(session)
+            repository.get_or_create_workspace(str(root), name="Supersession Test")
+            project = repository.get_or_create_project("Supersession Block")
+            field = repository.get_or_create_field("Supersession Field", project=project)
+            well = repository.create_well(name, project_id=project.id, field_id=field.id)
+            session.commit()
+            return well.id
+
+    @staticmethod
+    def _record(db, well_id: str, ecd: float, supersedes: str = "") -> str:
+        with db.unit_of_work() as session:
+            row, _ = EngineeringRepository(session).record_calculation(
+                method_id="hydraulics.ecd",
+                method_version="1.0",
+                well_id=well_id,
+                inputs={"mw": {"value": f"{ecd} ppg"}},
+                outputs={"ecd_ppg": ecd},
+                supersedes_id=supersedes,
+            )
+            session.commit()
+            return row.id
+
+    def test_two_sessions_cannot_both_supersede_the_same_parent(self, db, tmp_path) -> None:
+        """The actual race, with real independent sessions - not two calls in one."""
+        import threading
+
+        well = self._well(db, tmp_path, "RACE-1")
+        parent = self._record(db, well, 11.4)
+        barrier = threading.Barrier(2)
+        outcomes: dict[str, str] = {}
+
+        def worker(tag: str, ecd: float) -> None:
+            try:
+                barrier.wait(timeout=10)
+                self._record(db, well, ecd, parent)
+                outcomes[tag] = "COMMITTED"
+            except Exception as error:  # noqa: BLE001 - the loser's error type is the assertion
+                outcomes[tag] = type(error).__name__
+
+        threads = [
+            threading.Thread(target=worker, args=(tag, ecd))
+            for tag, ecd in (("w1", 11.5), ("w2", 12.5))
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        with db.unit_of_work() as session:
+            children = (
+                session.execute(select(Calculation.id).where(Calculation.supersedes_id == parent))
+                .scalars()
+                .all()
+            )
+        assert len(children) == 1, f"the chain forked into {len(children)} leaves: {outcomes}"
+        # Which guard catches the loser depends on timing - the pre-check when the winner has
+        # already committed, the index when both inserts are in flight.  Either is correct; what
+        # is not negotiable is that exactly one child survives.
+        assert sorted(outcomes.values()) in (
+            ["COMMITTED", "IntegrityError"],
+            ["COMMITTED", "ValidationError"],
+        ), f"expected one winner and one refusal, got {outcomes}"
+
+    def test_the_database_refuses_a_second_child_even_with_no_application_check(
+        self, db, tmp_path
+    ) -> None:
+        """Sequential writers are stopped by the pre-check; this proves the index behind it.
+
+        A second child inserted with the application layer entirely out of the way - raw SQL, no
+        repository, no pre-check - is what the race actually produces, and it is what the partial
+        unique index exists to refuse.
+        """
+        well = self._well(db, tmp_path, "DIRECT-1")
+        parent = self._record(db, well, 11.4)
+        first = self._record(db, well, 11.5, parent)
+        with db.unit_of_work() as session:
+            columns = ", ".join(
+                column.name
+                for column in Calculation.__table__.columns
+                if column.name not in ("id", "identity_key")
+            )
+            statement = text(
+                f"INSERT INTO calculation (id, identity_key, {columns}) "  # noqa: S608
+                f"SELECT 'calc-forked-twin', 'calc:deliberate-fork', {columns} FROM calculation "
+                "WHERE id = :first"
+            )
+            with pytest.raises(IntegrityError):
+                session.execute(statement, {"first": first})
+                session.commit()
+
+    def test_a_chain_still_extends_one_revision_at_a_time(self, db, tmp_path) -> None:
+        """The constraint must not break the ordinary v1 -> v2 -> v3 walk."""
+        well = self._well(db, tmp_path, "CHAIN-1")
+        v1 = self._record(db, well, 11.4)
+        v2 = self._record(db, well, 11.5, v1)
+        v3 = self._record(db, well, 11.6, v2)
+        with db.unit_of_work() as session:
+            repository = EngineeringRepository(session)
+            current = repository.calculations_for(well_id=well, current_only=True)
+            history = (
+                session.execute(select(Calculation.id).where(Calculation.well_id == well))
+                .scalars()
+                .all()
+            )
+        assert [row.id for row in current] == [v3], "more than one row claims to be current"
+        assert len(history) == 3, "a superseded revision was not retained"

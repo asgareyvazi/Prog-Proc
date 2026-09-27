@@ -685,6 +685,20 @@ class Calculation(Base, TimestampMixin):
         # rather than a table constraint because NULLs stay distinct on both servers, and a record with
         # no identity key (a hand-typed one-off) must not block the next one.
         Index("uq_calculation_identity", "identity_key", unique=True),
+        # One superseding revision per parent, enforced here rather than in the writer.  The
+        # pre-check in ``record_calculation`` cannot close the gap between reading "no child yet"
+        # and inserting one: two sessions on the same file both looked, both saw nothing and both
+        # wrote, leaving a chain with two current leaves and nothing on either row to say which
+        # revision to follow.  Only the database sees both writes, so only the database can refuse
+        # the second - the same partial-unique-index mechanism ``uq_document_version_one_current``
+        # uses, and NULL parents stay unconstrained because a first revision supersedes nothing.
+        Index(
+            "uq_calculation_one_superseding_revision",
+            "supersedes_id",
+            unique=True,
+            sqlite_where=text("supersedes_id IS NOT NULL"),
+            postgresql_where=text("supersedes_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
