@@ -289,6 +289,16 @@ class SearchFilters:
         filters (``record_types``, ``field_id``, ``category``) apply only here; and the document-only
         filters (type, revision, parser, sheet, page) exclude a structured record, because a
         structured row has none of those to satisfy them with.
+
+        **Undated rows survive a date window, on purpose.**  Both date tests are guarded by the row
+        actually carrying a date, so a row with none is never compared and is therefore never
+        excluded.  That is the platform's standing rule that an empty date means *unknown* rather
+        than "outside every range": dropping an undated problem record from "June 2025" would assert
+        something the source does not support - that the record is known not to belong to June - and
+        would silently hide real evidence from the only question being asked.  The row is returned
+        with ``record_date == ""`` so the caller can see it was never proven in range, and a caller
+        who wants only dated rows filters on that.  What would be unacceptable is returning it while
+        claiming the window was applied to it.
         """
         if self.record_types and record.record_type not in set(self.record_types):
             return False

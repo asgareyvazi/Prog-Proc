@@ -80,6 +80,10 @@ class RetrievalRequest:
     source_types: tuple[str, ...] = ()
     lifecycle: str = LIFECYCLE_CURRENT
     limit: int = 20
+    #: ISO date bounds, inclusive.  A record whose own date falls outside them is excluded.  A
+    #: record with *no* date is not - it is returned with ``record_date == ""``, because an empty
+    #: date means unknown rather than "outside every window", and hiding an undated record would
+    #: claim a fact the source never stated.  Callers who need only dated rows test that field.
     date_from: str | None = None
     date_to: str | None = None
 

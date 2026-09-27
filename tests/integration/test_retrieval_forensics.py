@@ -1136,3 +1136,75 @@ def _fact_query_for(world: World, item_id: str) -> str:
 def document_any(world: World) -> str:
     with world.ws.database.read_only() as session:
         return str(session.scalar(select(Document.id).order_by(Document.id)))
+
+
+class TestDateWindowSemantics:
+    """A date window excludes what it can disprove and keeps what it cannot.
+
+    The window tests are guarded by the row actually carrying a date, so an undated record is never
+    compared and is therefore never excluded.  That is deliberate - an empty date means *unknown*,
+    not "outside every range" - but it is a semantic at a correctness boundary, so it is pinned here
+    rather than left implicit: an out-of-range row must be gone, and an undated row must come back
+    visibly undated rather than looking as though the window had been applied to it.
+    """
+
+    @staticmethod
+    def _problems(world) -> None:
+        from datetime import datetime
+
+        from drilling_intelligence.database.models import ProblemDefinition, ProblemOccurrence
+
+        with world.ws.database.session() as session:
+            session.add(
+                ProblemDefinition(
+                    id="pdef-window",
+                    canonical_key="zeolite",
+                    problem_type="zeolite",
+                    name="zeolite issue",
+                )
+            )
+            session.flush()
+            for pid, when in (
+                ("pz-in", datetime(2025, 6, 10, 8, 0)),
+                ("pz-out", datetime(2024, 1, 15, 8, 0)),
+                ("pz-undated", None),
+            ):
+                session.add(
+                    ProblemOccurrence(
+                        id=pid,
+                        well_id=world.ids["A1"],
+                        problem_definition_id="pdef-window",
+                        problem_type="zeolite",
+                        description="zeolite observed in the returns",
+                        occurred_at=when,
+                    )
+                )
+            session.commit()
+        world.search.rebuild()
+
+    def test_an_out_of_range_record_is_excluded_but_an_undated_one_is_returned_undated(
+        self, world
+    ) -> None:
+        self._problems(world)
+        result = world.retrieve(
+            query="zeolite",
+            well_id=world.ids["A1"],
+            limit=0,
+            date_from="2025-06-01",
+            date_to="2025-06-30",
+        )
+        dates = sorted(str(item.record_date) for item in result.items)
+        assert dates == ["", "2025-06-10T08:00:00"], (
+            f"expected the in-range row and the undated row, got {dates}"
+        )
+        assert not any(d.startswith("2024") for d in dates), (
+            "a record provably outside the window was returned"
+        )
+        undated = [item for item in result.items if not item.record_date]
+        assert len(undated) == 1, "the undated row was not identifiable as undated"
+
+    def test_without_a_window_all_three_are_returned(self, world) -> None:
+        """The window is what excludes; nothing else may quietly narrow the set."""
+        self._problems(world)
+        result = world.retrieve(query="zeolite", well_id=world.ids["A1"], limit=0)
+        assert len(result.items) == 3
