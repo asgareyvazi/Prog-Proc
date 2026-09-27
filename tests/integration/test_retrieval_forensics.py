@@ -1208,3 +1208,61 @@ class TestDateWindowSemantics:
         self._problems(world)
         result = world.retrieve(query="zeolite", well_id=world.ids["A1"], limit=0)
         assert len(result.items) == 3
+
+
+class TestZeroLimitIsNotASmallerCap:
+    """``limit=0`` must not return fewer rows than a large explicit limit on the same corpus.
+
+    Retrieval substituted a private discovery cap of 200 when the caller asked for no cap, so a
+    260-record corpus answered ``limit=0`` with 200 items and ``limit=1000`` with all 260: asking
+    for everything got less than asking for a lot, and nothing in the bundle said a bound had been
+    applied.  Discovery now inherits the search layer's own ``MAX_CANDIDATES`` - the platform's real
+    bound rather than a private one - and ``discovery_capped`` says when it was reached.
+    """
+
+    @staticmethod
+    def _corpus(world, count: int) -> None:
+        from datetime import datetime
+
+        from drilling_intelligence.database.models import ProblemDefinition, ProblemOccurrence
+
+        with world.ws.database.session() as session:
+            session.add(
+                ProblemDefinition(
+                    id="pdef-cap",
+                    canonical_key="kryptonite",
+                    problem_type="kryptonite",
+                    name="kryptonite issue",
+                )
+            )
+            session.flush()
+            for index in range(count):
+                session.add(
+                    ProblemOccurrence(
+                        id=f"pk-{index}",
+                        well_id=world.ids["A1"],
+                        problem_definition_id="pdef-cap",
+                        problem_type="kryptonite",
+                        description=f"kryptonite observed entry {index}",
+                        occurred_at=datetime(2025, 6, 1, 8, 0),
+                    )
+                )
+            session.commit()
+        world.search.rebuild()
+
+    def test_an_uncapped_request_sees_the_whole_corpus(self, world) -> None:
+        self._corpus(world, 260)
+        uncapped = world.retrieve(query="kryptonite", well_id=world.ids["A1"], limit=0)
+        explicit = world.retrieve(query="kryptonite", well_id=world.ids["A1"], limit=1000)
+        assert uncapped.count == 260, f"an uncapped request returned {uncapped.count} of 260"
+        assert uncapped.count == explicit.count, (
+            "limit=0 returned a different population than a limit larger than the corpus"
+        )
+        assert uncapped.discovery_capped is False, "the discovery bound was reported as reached"
+
+    def test_the_bundle_exposes_whether_discovery_was_capped(self, world) -> None:
+        """A short answer and a short answer that ran out of room must be distinguishable."""
+        self._corpus(world, 5)
+        result = world.retrieve(query="kryptonite", well_id=world.ids["A1"], limit=0)
+        assert result.count == 5
+        assert "discovery_capped" in result.to_dict(), "the cap signal is not in the public shape"

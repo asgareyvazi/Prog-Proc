@@ -122,6 +122,31 @@ against, and widening to every well in the workspace is the cross-well bug this 
 prevent. **Regression tests:** 4. **Mutation** (restore the unconditional narrowing): **killed**, 2
 failures. The existing cross-well protection tests still pass.
 
+### 4.4 `RETRIEVAL_ZERO_LIMIT_HARD_CAP` — confirmed, fixed
+
+**Symptom.** `limit=0` is documented as "no cap" but returned *fewer* rows than a large explicit
+limit on the same corpus.
+
+**Reproduction.** 260 matching authoritative records in one well:
+
+```
+PROBE RETRIEVAL limit=   0 -> items=200
+PROBE RETRIEVAL limit= 200 -> items=200
+PROBE RETRIEVAL limit=1000 -> items=260
+```
+
+**Root cause.** `cap = req.limit if req.limit > 0 else _DISCOVERY_CAP`, with a private
+`_DISCOVERY_CAP = 200`. The output list was correctly uncapped, but discovery had already thrown the
+rest away, and nothing in the bundle said a bound had been applied. Asking for everything got less
+than asking for a lot.
+
+**Fix.** Discovery now inherits the search layer's own `MAX_CANDIDATES` (4000) — the platform's
+real, already-documented bound, with its own `truncated` signal — instead of a private number, and
+`EvidenceBundle` gains `discovery_capped` so a short answer is distinguishable from a short answer
+that ran out of room. After the fix `limit=0` returns **260**, equal to `limit=1000`. The
+`limit=0` docstring now says precisely what is and is not bounded. **Regression tests:** 2.
+**Mutation** (restore the 200 cap): **killed**, 1 failure.
+
 ## 5. Hypotheses disproved
 
 None newly this checkpoint. V5.2's `DATE_SCOPE_UNDATED_SEARCH_RETRIEVAL` remains disproved with its
@@ -145,6 +170,7 @@ contract documented.
 | drop `uq_calculation_one_superseding_revision` | calculation | constraint test | 1 failure | **KILLED** |
 | never report `SECTION_ID_AMBIGUOUS` | plan | collision test | 1 failure | **KILLED** |
 | restore unconditional section narrowing | plan | template-scope tests | 2 failures | **KILLED** |
+| restore the private 200 discovery cap | retrieval | zero-limit test | 1 failure | **KILLED** |
 
 ## 20. Full test gates
 
@@ -161,6 +187,13 @@ contract documented.
 ## 21. Git publication checkpoints
 
 ```
+CHECKPOINT D — RETRIEVAL LIMITS
+status: COMPLETE
+attacks_closed: RETRIEVAL_ZERO_LIMIT_HARD_CAP (fixed)
+targeted_tests: retrieval + evidence_package + evidence_citation = 98, exit 0; plus 2 new zero-limit tests
+mutations: 1 attempted, 1 killed
+remaining_open: LIMIT_TRUNCATION_SIGNAL (search candidate-cap semantics)
+
 CHECKPOINT B — PLAN-VS-ACTUAL
 status: COMPLETE
 attacks_closed: PLAN_EXACT_ID_COLLISION (fixed), PLAN_EXPLICIT_TEMPLATE_BY_NAME (fixed)
@@ -181,7 +214,7 @@ Carried-forward mandatory attacks still open after Checkpoint A:
 
 ```
 REVIEW_NULL_WELL_LEAK               TIMELINE_INTERVAL_WINDOW
-RETRIEVAL_ZERO_LIMIT_HARD_CAP       LIMIT_TRUNCATION_SIGNAL
+LIMIT_TRUNCATION_SIGNAL
 EVIDENCE_IDENTITY_ORDER_INDEPENDENCE  EVIDENCE_FRESHNESS_DELTA
 CITATION_NOT_CHECKABLE_SEMANTICS    PROMOTION_ATOMIC_LATE_FAILURE
 CHILD_ROW_IDENTITY_DUPLICATION      SCOPE_NULL_HIERARCHY

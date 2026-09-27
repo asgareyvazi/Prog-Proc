@@ -69,6 +69,7 @@ from ..database.models import (
     Well,
     WellEvent,
 )
+from ..search.index import MAX_CANDIDATES
 from .contract import (
     LIFECYCLE_CURRENT,
     LIFECYCLE_HISTORY,
@@ -100,7 +101,12 @@ _STRUCTURED_MODELS: dict[str, type] = {
 _KIND_KNOWLEDGE = "knowledge_fact"
 
 #: The search candidate cap retrieval asks for when the caller wants no cap of its own.
-_DISCOVERY_CAP = 200
+#: How far an uncapped (``limit=0``) request looks.  This is the search layer's own candidate bound
+#: rather than a private one: a private 200 made ``limit=0`` return *fewer* rows than ``limit=1000``
+#: on the same corpus, so asking for everything got less than asking for a lot, and nothing in the
+#: answer said a bound had been applied.  The platform's bound is the honest one to inherit, and
+#: ``EvidenceBundle.discovery_capped`` says when it was reached.
+_DISCOVERY_CAP = MAX_CANDIDATES
 
 
 def _iso(value: Any) -> str:
@@ -223,11 +229,12 @@ class RetrievalService:
         )
         with self._authority(session) as active:
             scope = self._resolve_scope(active, req)
-            candidates, broadened = self._discover(req)
-            return self._verify(active, req, scope, candidates, broadened)
+            candidates, broadened, discovered = self._discover(req)
+            capped = req.limit <= 0 and discovered >= _DISCOVERY_CAP
+            return self._verify(active, req, scope, candidates, broadened, capped)
 
     # -- discovery: search is the only candidate source ------------------------
-    def _discover(self, req: RetrievalRequest) -> tuple[list[Any], bool]:
+    def _discover(self, req: RetrievalRequest) -> tuple[list[Any], bool, int]:
         """The ranked candidates from the search layer, plus whether discovery was broadened.
 
         An empty query has no terms to match, so there is nothing to verify and the answer is
@@ -239,7 +246,7 @@ class RetrievalService:
         any-of-the-terms, and the bundle must say so - broadened discovery is not an exact match.
         """
         if not str(req.query or "").strip():
-            return [], False
+            return [], False, 0
         if self._search is None:
             raise ValidationError(
                 "no search service is bound; retrieval discovers candidates through search",
@@ -271,7 +278,7 @@ class RetrievalService:
             include_superseded=req.lifecycle == LIFECYCLE_HISTORY,
             **scope_kwargs,
         )
-        return list(response.results), response.broadened
+        return list(response.results), response.broadened, len(response.results)
 
     # -- scope ----------------------------------------------------------------
     def _resolve_scope(self, active: Any, req: RetrievalRequest) -> _Scope:
@@ -321,6 +328,7 @@ class RetrievalService:
         scope: _Scope,
         candidates: Sequence[Any],
         broadened: bool,
+        capped: bool = False,
     ) -> EvidenceBundle:
         wanted = set(req.source_types) or {SOURCE_STRUCTURED, SOURCE_DOCUMENT, SOURCE_KNOWLEDGE}
         # Partition the candidates by what must be re-read, so each authoritative table is queried
@@ -369,6 +377,7 @@ class RetrievalService:
             policy=req.lifecycle,
             scope=scope_dict,
             discovery_broadened=broadened,
+            discovery_capped=capped,
         )
 
     def _candidate_key(self, result: Any) -> tuple[str, str, str, str]:

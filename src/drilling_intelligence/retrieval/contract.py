@@ -68,8 +68,13 @@ class RetrievalRequest:
 
     The scope follows the platform's one precedence rule (a named well is the whole scope, never a
     union with a field or project); ``source_types`` narrows which source kinds are verified; and
-    ``lifecycle`` decides whether superseded state is returned at all.  ``limit`` of zero means
-    "no cap", the same convention the search and intelligence layers use.
+    ``lifecycle`` decides whether superseded state is returned at all.
+
+    ``limit`` of zero means the caller imposes no cap on the *returned* list.  Discovery is still
+    bounded, by the search layer's own ``MAX_CANDIDATES`` rather than by a private number, and
+    :attr:`EvidenceBundle.discovery_capped` says when that bound was reached - so an uncapped request
+    never silently returns fewer rows than a large explicit one on the same corpus, and a short
+    answer is distinguishable from a short answer that ran out of room.
     """
 
     query: str
@@ -232,6 +237,10 @@ class EvidenceBundle:
     #: search layer fell back to any-of-the-terms.  Retrieval never broadens on its own, but it
     #: refuses to let a reader mistake broadened discovery for an exact match either.
     discovery_broadened: bool = False
+    #: True when an uncapped request (``limit=0``) looked as far as the platform will look.  Without
+    #: it, a short answer and a short answer that hit the discovery bound were indistinguishable -
+    #: and "we examined everything and found 200" is a different claim from "we examined 200".
+    discovery_capped: bool = False
 
     @property
     def count(self) -> int:
@@ -244,6 +253,7 @@ class EvidenceBundle:
             "scope": dict(self.scope),
             "count": len(self.items),
             "discovery_broadened": self.discovery_broadened,
+            "discovery_capped": self.discovery_capped,
             "items": [item.to_dict() for item in self.items],
             "dropped": [dict(entry) for entry in self.dropped],
         }
