@@ -1,5 +1,13 @@
 # Arena V4.3 retroactive semantic repair — last result
 
+> **Correction to the ancestry claim.** Earlier revisions of this document said the V3 baseline
+> was *not* an ancestor of HEAD. That was never verified — it was inferred from the commit being
+> absent from a shallow clone, which cannot distinguish "before the fetch boundary" from "not on
+> this branch". With a deeper fetch the commit is present, and
+> `git merge-base --is-ancestor b7703baf HEAD` exits 0: it **is** an ancestor, four commits back,
+> immediately before the V4 work began. It is a legitimate historical baseline; what it is not is a
+> commit this branch's work touched.
+
 > **Note on commit references.** This checkout is a shallow clone whose history was
 > collapsed to a single grafted commit, so the commits this document describes are not in
 > the local object database and their full hashes cannot be verified here. They are cited
@@ -12,7 +20,7 @@
 **HEAD before this mission (remote):** `c279d1c`
 **V4.3 work commit:** the commit carrying this file —
 `git log -1 -- docs/ARENA_V4_3_RETROACTIVE_SEMANTIC_REPAIR_LAST_RESULT.md`
-**V3 baseline:** `b7703baf35abd84881432a93264a979c33751c6c` — **not** an ancestor of HEAD, and not
+**V3 baseline:** `b7703baf35abd84881432a93264a979c33751c6c` — an ancestor of HEAD (four commits back), and not
 present in this shallow clone's object database (see §9).
 **Authority:** the checked-out repository. Every figure below comes from a command run during this
 mission.

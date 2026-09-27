@@ -1,5 +1,13 @@
 # Arena V4.1 production hardening — last result
 
+> **Correction to the ancestry claim.** Earlier revisions of this document said the V3 baseline
+> was *not* an ancestor of HEAD. That was never verified — it was inferred from the commit being
+> absent from a shallow clone, which cannot distinguish "before the fetch boundary" from "not on
+> this branch". With a deeper fetch the commit is present, and
+> `git merge-base --is-ancestor b7703baf HEAD` exits 0: it **is** an ancestor, four commits back,
+> immediately before the V4 work began. It is a legitimate historical baseline; what it is not is a
+> commit this branch's work touched.
+
 > **Note on commit references.** This checkout is a shallow clone whose history was
 > collapsed to a single grafted commit, so the commits this document describes are not in
 > the local object database and their full hashes cannot be verified here. They are cited
@@ -24,7 +32,7 @@
 > not rewritten.  `tests/unit/test_report_integrity.py` now fails any report that makes the
 > un-holdable claim at all.
 **V4 implementation audited:** `f6a9976`
-**V3 baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (not an ancestor of HEAD)
+**V3 baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (an ancestor of HEAD, four commits back — see the note below)
 **Authority:** the checked-out repository. Every claim below comes from a command run during this
 mission; the previous audit report was treated as a set of claims to re-derive, not as evidence.
 

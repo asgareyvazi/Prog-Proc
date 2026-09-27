@@ -1,5 +1,13 @@
 # Arena V4 forensic re-audit — last result
 
+> **Correction to the ancestry claim.** Earlier revisions of this document said the V3 baseline
+> was *not* an ancestor of HEAD. That was never verified — it was inferred from the commit being
+> absent from a shallow clone, which cannot distinguish "before the fetch boundary" from "not on
+> this branch". With a deeper fetch the commit is present, and
+> `git merge-base --is-ancestor b7703baf HEAD` exits 0: it **is** an ancestor, four commits back,
+> immediately before the V4 work began. It is a legitimate historical baseline; what it is not is a
+> commit this branch's work touched.
+
 > **Note on commit references.** This checkout is a shallow clone whose history was
 > collapsed to a single grafted commit, so the commits this document describes are not in
 > the local object database and their full hashes cannot be verified here. They are cited
@@ -11,7 +19,7 @@
 **Branch:** `arena/01a0c936-prog-proc`
 **Audited HEAD (the V4 work as it was committed):** `f6a9976`
 **HEAD after this audit's fixes:** `ce7f24f`
-**Baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (not an ancestor of HEAD; see §1)
+**Baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (an ancestor of HEAD, four commits back; see the note below)
 **Authority:** the checked-out repository. No prior Arena report, commit message, or documentation
 claim was accepted as evidence.
 
@@ -30,7 +38,10 @@ defects was introduced by fixing another, which is recorded plainly in §6 rathe
 because the string is well-formed hex; `git cat-file -t b7703baf…` failed. It was recovered with
 `git fetch --depth=50 origin b7703baf35abd84881432a93264a979c33751c6c`.
 
-The baseline is **not an ancestor of HEAD** — the two are divergent lines. `git diff b7703baf..e862113`
+The baseline **is an ancestor of HEAD**, four commits back, immediately before the V4 work.
+(An earlier revision called the two divergent lines; that was inferred from the commit being
+absent in a shallow clone, and `git merge-base --is-ancestor` now contradicts it.)
+`git diff b7703baf..e862113`
 touches only 3 documentation files, so `b7703baf..HEAD` is, to within those documents, the V4 diff:
 
 | Range | Files | Insertions | Deletions |

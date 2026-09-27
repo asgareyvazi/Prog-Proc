@@ -136,18 +136,38 @@ def test_an_absent_sha_that_is_not_pre_boundary_fails_even_in_a_shallow_clone() 
     )
 
 
-def test_the_v3_baseline_is_recorded_as_not_an_ancestor() -> None:
-    """Reports compare against ``b7703baf``; none of them may imply it is on this branch."""
+def test_the_v3_baseline_ancestry_is_stated_accurately() -> None:
+    """The V3 baseline's relationship to HEAD, asserted rather than assumed.
+
+    This test used to assert the baseline was *not* an ancestor of HEAD. That was never a verified
+    fact: it was inferred from the commit being absent in a shallow clone, and absence cannot
+    distinguish "predates the fetch boundary" from "not on this branch" - the exact ambiguity the
+    sibling test in this file was written to police. With a deeper fetch the commit is present and
+    ``merge-base --is-ancestor`` exits 0, so it **is** an ancestor, four commits back, immediately
+    before the V4 work. Four reports repeated the false claim and were corrected alongside this.
+
+    What is worth asserting is the relationship reports actually rely on: the baseline is real, it is
+    behind HEAD rather than equal to it, and it predates the V4 boundary commit - so a report may
+    cite it as a historical baseline without implying the branch's work touched it.
+    """
     code, head = _git("rev-parse", "HEAD")
     assert code == 0 and head, "HEAD could not be resolved"
 
     baseline = "b7703baf35abd84881432a93264a979c33751c6c"
     code, _out = _git("cat-file", "-e", f"{baseline}^{{commit}}")
     if code != 0:
-        # Not a defect in the report: a shallow clone never fetched it, so "not an ancestor" can be
-        # neither confirmed nor denied here.  Skipping says so; passing would be a lie.
+        # Still honest to skip: a shallow clone that has not fetched it can confirm neither the
+        # ancestry nor its absence, and guessing is what produced the false claim in the first place.
         pytest.skip("shallow clone: the V3 baseline predates the fetch boundary")
 
-    # ``merge-base --is-ancestor`` prints nothing and exits 0 when the first argument is an ancestor.
+    # ``merge-base --is-ancestor`` exits 0 when the first argument is an ancestor of the second.
     code, _out = _git("merge-base", "--is-ancestor", baseline, head)
-    assert code != 0, "the V3 baseline is documented as *not* an ancestor of HEAD"
+    assert code == 0, "the V3 baseline is an ancestor of HEAD; a report saying otherwise is wrong"
+    assert baseline != head, "the baseline cannot also be HEAD"
+
+    v4_boundary = "e8621136ca73108ae7b590e6baa72fedc1f00835"
+    code, _out = _git("cat-file", "-e", f"{v4_boundary}^{{commit}}")
+    if code == 0:
+        code, _out = _git("merge-base", "--is-ancestor", baseline, v4_boundary)
+        assert code == 0, "the baseline predates the V4 boundary commit"
+        assert baseline != v4_boundary

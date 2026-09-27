@@ -11,8 +11,9 @@
 **Branch:** `arena/01a0c936-prog-proc`
 **HEAD before this mission:** `ddfe093`
 **V4.2 work commit:** the commit carrying this file — `git log -1 -- docs/ARENA_V4_2_SEMANTIC_PREDICATE_HARDENING_LAST_RESULT.md`
-**V3 baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (verified present in the object database,
-and verified **not** an ancestor of HEAD)
+**V3 baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (present in the object database; it **is** an ancestor of HEAD,
+four commits back — an earlier revision of this line claimed otherwise, inferred from the
+commit being absent in a shallow clone, which cannot support that inference)
 **Authority:** the checked-out repository. Every figure below comes from a command run during this
 mission. The "before" figures were re-derived from a `git worktree` at `ddfe093`, not quoted from any
 prior report.
@@ -194,7 +195,9 @@ than corrected — the work commit (a static fact) is kept, and the carrying com
 **Regression check added:** `tests/unit/test_report_integrity.py` (4 tests) fails any report that
 makes the claim at all, fails any 40-hex SHA a report names that is not in the object database
 (`git cat-file -e`, not `rev-parse --verify`, which succeeds for absent objects), and verifies the
-V3 baseline really is not an ancestor of HEAD.
+V3 baseline's relationship to HEAD is stated accurately - it is an ancestor four commits
+back, which a shallow clone cannot see and an earlier revision of this suite asserted
+backwards.
 
 Mutation-verified: re-introducing the bad header line and a zeroed SHA produced **2 failures**;
 restoring the file returned **4 passed**.
