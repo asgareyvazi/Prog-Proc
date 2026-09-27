@@ -16,9 +16,10 @@ code:
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
+from sqlalchemy import select
 from tests.fixtures.fieldops import (
     TOTAL_NPT_HOURS,
     add_casing_program,
@@ -38,11 +39,16 @@ from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.database.models import (
     FieldPattern,
     KnowledgeRelation,
+    NptRecord,
+    ProblemDefinition,
+    ProblemOccurrence,
     Recommendation,
+    Well,
+    WellEvent,
     WellSection,
 )
 from drilling_intelligence.engineering.repository import EngineeringRepository
-from drilling_intelligence.intelligence.field import FieldIntelligence
+from drilling_intelligence.intelligence.field import FieldIntelligence, problem_hours
 from drilling_intelligence.intelligence.patterns import (
     find_recurring,
     get_pattern,
@@ -692,3 +698,108 @@ def test_the_service_snapshots_the_field_and_counts_what_it_touched(field_worksp
         service.pattern_staleness("pat-nope")
     linked = service.relink_patterns(listed[0].id)
     assert linked == {"wells": 2, "evidence": 2}, linked
+
+
+def test_one_problem_over_an_event_with_several_npt_records_is_still_one_problem(
+    field_workspace,
+) -> None:
+    """The event path must not multiply a problem by the NPT records hanging off its event.
+
+    Joining ``problem_occurrence`` straight onto ``npt_record`` by ``event_id`` returned one row per
+    NPT record, so a single occurrence reached from an event with three waiting-on-weather entries
+    came back three times.  The hours summed to the same figure either way, which is exactly why it
+    survived: everything that *counted* rows in that subquery was counting the same problem more than
+    once.
+    """
+    with field_workspace.database.session() as session:
+        field = field_id(field_workspace)
+        well = session.execute(select(Well.id).order_by(Well.id).limit(1)).scalar_one()
+        pdef = session.execute(
+            select(ProblemDefinition.id).order_by(ProblemDefinition.id).limit(1)
+        ).scalar_one_or_none()
+        if pdef is None:
+            session.add(
+                ProblemDefinition(id="pdef-fanout", name="stuck pipe", category="stuck_pipe")
+            )
+            session.flush()
+            pdef = "pdef-fanout"
+        session.add(
+            WellEvent(
+                id="evt-fanout",
+                well_id=well,
+                category="operational",
+                event_type="stuck_pipe",
+                label="one incident, several npt entries",
+                occurred_at=datetime(2025, 6, 20, 8, 0),
+            )
+        )
+        session.flush()
+        session.add(
+            ProblemOccurrence(
+                id="prob-fanout",
+                well_id=well,
+                problem_definition_id=pdef,
+                problem_type="stuck_pipe",
+                hole_size_in=12.25,
+                occurred_at=datetime(2025, 6, 20, 8, 0),
+                npt_id=None,
+                event_id="evt-fanout",
+            )
+        )
+        for index, hours in enumerate((2.0, 4.0, 5.5), start=1):
+            session.add(
+                NptRecord(
+                    id=f"npt-fanout-{index}",
+                    well_id=well,
+                    category="waiting_on_weather",
+                    started_at=datetime(2025, 6, 20, 8, 0),
+                    duration_hours=hours,
+                    event_id="evt-fanout",
+                )
+            )
+        session.commit()
+
+        hours_view = problem_hours()
+        rows = session.execute(
+            select(hours_view).where(hours_view.c.problem_id == "prob-fanout")
+        ).all()
+        assert len(rows) == 1, f"one problem came back as {len(rows)} rows"
+        assert float(rows[0].hours) == 11.5, "the incident's hours should still be the full sum"
+
+        # ...and the field aggregation over the same subquery reports the incident's hours once.
+        numbers = FieldIntelligence(session).problems(field_id=field)
+    stuck = numbers["by_type"]["stuck_pipe"]
+    assert stuck["occurrences"] >= 1, "the grouping disappeared"
+    assert stuck["npt_hours"] is not None and stuck["npt_hours"] >= 11.5, (
+        f"the event path lost hours: {stuck['npt_hours']}"
+    )
+
+
+def test_an_npt_record_with_no_duration_is_counted_as_unknown_not_as_zero(
+    field_workspace,
+) -> None:
+    """Three records, two durations: ``records=3``, the two real hours, and one explicitly unknown.
+
+    The failure mode is a record with no duration being read as ``0.0``.  The row count would be
+    right, the total would be right, and nothing would say that a third of the records never stated
+    how long they lasted - which reads as a complete answer when it is not.
+    """
+    with field_workspace.database.session() as session:
+        field = field_id(field_workspace)
+        well = session.execute(select(Well.id).order_by(Well.id).limit(1)).scalar_one()
+        for index, hours in enumerate((2.0, 4.0, None), start=1):
+            session.add(
+                NptRecord(
+                    id=f"npt-unknown-{index}",
+                    well_id=well,
+                    category="unknown_probe",
+                    started_at=datetime(2025, 6, 21, 8, 0),
+                    duration_hours=hours,
+                )
+            )
+        session.commit()
+        numbers = FieldIntelligence(session).npt(field_id=field)
+    entry = numbers["by_category"]["unknown_probe"]
+    assert entry["records"] == 3, "the undurationed record was dropped from the count"
+    assert entry["hours"] == 6.0, "a missing duration was treated as a number"
+    assert entry["unknown_duration"] == 1, "nothing reported the record whose duration is unknown"

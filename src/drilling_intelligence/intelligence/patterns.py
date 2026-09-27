@@ -60,6 +60,12 @@ DEFAULT_MIN_WELLS = 2
 #: a pattern over nine hundred rows does not carry nine hundred of them in a JSON column.
 MAX_LINKED_EVIDENCE = 20
 
+#: Distinguishes "do not constrain hole size" from "the grouping whose hole size *is* NULL".  A bare
+#: ``None`` cannot carry both meanings, and a snapshot of the undiametered group has to be re-runnable
+#: exactly - otherwise a staleness check cannot tell "nothing changed" from "I looked in the wrong
+#: place".
+ANY_HOLE_SIZE: object = object()
+
 #: The fields that define a pattern's identity.  Everything else is measurement.
 _PATTERN_KEYS: tuple[str, ...] = (
     "field_id",
@@ -96,6 +102,7 @@ def find_recurring(
     field_id: str = "",
     project_id: str = "",
     problem_type: str = "",
+    hole_size_in: object = ANY_HOLE_SIZE,
     min_occurrences: int = DEFAULT_MIN_OCCURRENCES,
     min_wells: int = DEFAULT_MIN_WELLS,
     since: object = None,
@@ -138,6 +145,14 @@ def find_recurring(
     )
     if problem_type:
         statement = statement.where(ProblemOccurrence.problem_type == problem_type)
+    # Constraining the diameter in the database rather than in Python is what lets a caller ask for
+    # exactly one grouping.  Without it the only way to reach a specific group is to list them all
+    # and search, which puts a presentation limit in the middle of a correctness check.
+    if hole_size_in is not ANY_HOLE_SIZE:
+        if hole_size_in is None:
+            statement = statement.where(ProblemOccurrence.hole_size_in.is_(None))
+        else:
+            statement = statement.where(ProblemOccurrence.hole_size_in == float(hole_size_in))
     if since is not None or until is not None:
         window: list[Any] = []
         if since is not None:
@@ -382,6 +397,17 @@ def snapshot(
     numbers somebody accepted, and the parameters that produced them are on the same row, so
     :func:`staleness` can re-run them instead of trusting that nothing has changed.
 
+    Updating depends on whether anybody has vouched for the row, and the two cases are deliberately
+    different:
+
+    *   **CANDIDATE** - nobody has decided anything yet, so the row is a live answer to its own
+        query and the columns are refreshed in place.
+    *   **CONFIRMED or REJECTED** - the columns are frozen. Rewriting a measurement a person already
+        vouched for would leave the row claiming a decision about numbers nobody saw, and would wipe
+        the drift report beside it. Instead the recomputation is recorded in ``attributes`` and the
+        drift is marked, so the accepted figure stays readable and the change stays visible. Moving
+        a reviewed snapshot forward is an explicit act, not a side effect of re-running a query.
+
     ``link_evidence=False`` skips the graph edges; it never skips storing which wells and which rows the
     count came from, because that is the measurement's own content.
     """
@@ -437,19 +463,57 @@ def snapshot(
         session.add(row)
         session.flush()
     else:
-        # Only the measurement is refreshed; a status a person set is theirs until they change it.
-        row.occurrence_count = int(candidate.get("occurrence_count") or row.occurrence_count)
-        row.well_count = int(candidate.get("well_count") or row.well_count)
-        row.total_npt_hours = candidate.get("total_npt_hours", row.total_npt_hours)
-        row.first_seen_at = _parse(candidate.get("first_seen_at")) or row.first_seen_at
-        row.last_seen_at = _parse(candidate.get("last_seen_at")) or row.last_seen_at
-        row.event_count = int(candidate.get("event_count") or row.event_count or 0)
-        row.computed_at = datetime.now(UTC)
-        row.stale_at = None
-        row.stale_snapshot = {}
-        row.evidence = entries
-        row.well_ids = well_ids
-        session.flush()
+        recomputed = {
+            "occurrence_count": int(candidate.get("occurrence_count") or row.occurrence_count),
+            "well_count": int(candidate.get("well_count") or row.well_count),
+            "event_count": int(candidate.get("event_count") or row.event_count or 0),
+            "total_npt_hours": candidate.get("total_npt_hours", row.total_npt_hours),
+            "first_seen_at": _parse(candidate.get("first_seen_at")) or row.first_seen_at,
+            "last_seen_at": _parse(candidate.get("last_seen_at")) or row.last_seen_at,
+            "evidence": entries,
+            "well_ids": well_ids,
+        }
+        vouched = str(row.status or "") != str(CONFIRMATION.initial)
+        if not vouched:
+            # Nobody has vouched for this row yet, so it is still a live candidate: the columns
+            # are the current answer to the stored query, and refreshing them is the point.
+            for key, value in recomputed.items():
+                setattr(row, key, value)
+            row.computed_at = datetime.now(UTC)
+            row.stale_at = None
+            row.stale_snapshot = {}
+            session.flush()
+        else:
+            # Somebody has vouched for these numbers. Rewriting them in place would leave the row
+            # asserting a decision about a measurement nobody made - "CONFIRMED, 5 occurrences"
+            # when the person confirmed 3 - and it would also clear the drift report that
+            # :func:`staleness` exists to surface, so the change would leave no trace at all.
+            # The accepted figure stays frozen and auditable; the recomputation is recorded beside
+            # it and the drift is marked, which is the same distinction ``mark_stale`` draws.
+            drift = {
+                key: {"stored": _number(getattr(row, key)), "now": _number(value)}
+                for key, value in recomputed.items()
+                if key in ("occurrence_count", "well_count", "event_count", "total_npt_hours")
+                and _number(getattr(row, key)) != _number(value)
+            }
+            attributes = dict(row.attributes or {})
+            attributes["recomputed_at"] = _iso(datetime.now(UTC))
+            attributes["recomputed"] = {
+                "occurrence_count": recomputed["occurrence_count"],
+                "well_count": recomputed["well_count"],
+                "event_count": recomputed["event_count"],
+                "total_npt_hours": _number(recomputed["total_npt_hours"]),
+                "well_ids": list(recomputed["well_ids"] or []),
+            }
+            if drift:
+                attributes["recomputed_differences"] = drift
+                if row.stale_at is None:
+                    row.stale_at = datetime.now(UTC)
+                    row.stale_snapshot = drift
+            else:
+                attributes.pop("recomputed_differences", None)
+            row.attributes = attributes
+            session.flush()
     if link_evidence:
         link_rows(session, row)
     return row
@@ -547,21 +611,32 @@ def staleness(session: Session, pattern_id: str) -> dict[str, Any]:
     The stored numbers are not touched.  A pattern that quietly updated itself overnight would be
     indistinguishable from one that had been reviewed, and the whole value of the reviewed figure is
     that it is frozen - with a difference report beside it.
+
+    The comparison covers every stored measurement: the counts, the hours, both boundary dates and
+    the well membership.  A grouping can move without its totals moving - the same five occurrences
+    spread over a different set of wells is a different finding with the same number attached - so a
+    check that only reads totals would report a changed pattern as unchanged.
     """
     row = get_pattern(session, pattern_id)
     parameters = dict(row.query or {})
+    hole = parameters.get("hole_size_in")
+    # The re-run asks the database for *this* grouping rather than listing groupings and searching
+    # them.  That used to be ``limit=500`` plus a linear scan, which made a correctness check depend
+    # on a presentation cap: past five hundred groups the stored one fell off the end of the list,
+    # and the report said "not found, therefore stale" when nothing had actually moved.  With the
+    # diameter constrained in the query the grouping is unique, so no cap is in the path at all.
     live = find_recurring(
         session,
         field_id=str(parameters.get("field_id") or ""),
         project_id=str(parameters.get("project_id") or ""),
         problem_type=str(parameters.get("problem_type") or ""),
+        hole_size_in=hole,
         min_occurrences=1,
         min_wells=1,
         since=parameters.get("since") or None,
         until=parameters.get("until") or None,
-        limit=500,
+        limit=0,
     )
-    hole = parameters.get("hole_size_in")
     match = next(
         (
             candidate
@@ -575,6 +650,9 @@ def staleness(session: Session, pattern_id: str) -> dict[str, Any]:
         None,
     )
     differences: dict[str, Any] = {}
+    # Every stored measurement is compared, not just the three that are easy.  A pattern whose wells
+    # changed but whose counts did not is a different pattern - the number is the same, the fact is
+    # not - and a staleness check that only reads the totals would wave it through.
     for key, stored, current in (
         (
             "occurrence_count",
@@ -582,6 +660,7 @@ def staleness(session: Session, pattern_id: str) -> dict[str, Any]:
             None if match is None else match["occurrence_count"],
         ),
         ("well_count", row.well_count, None if match is None else match["well_count"]),
+        ("event_count", row.event_count, None if match is None else match["event_count"]),
         (
             "total_npt_hours",
             row.total_npt_hours,
@@ -590,6 +669,21 @@ def staleness(session: Session, pattern_id: str) -> dict[str, Any]:
     ):
         if _number(stored) != _number(current):
             differences[key] = {"stored": _number(stored), "now": _number(current)}
+    for key, stored, current in (
+        (
+            "first_seen_at",
+            _iso(row.first_seen_at),
+            None if match is None else match["first_seen_at"],
+        ),
+        ("last_seen_at", _iso(row.last_seen_at), None if match is None else match["last_seen_at"]),
+    ):
+        if (stored or None) != (current or None):
+            differences[key] = {"stored": stored, "now": current}
+    if match is not None:
+        stored_wells = sorted(str(w) for w in (row.well_ids or []))
+        live_wells = sorted(_grouping_well_ids(session, parameters))
+        if stored_wells != live_wells:
+            differences["well_ids"] = {"stored": stored_wells, "now": live_wells}
     return {
         "pattern_id": row.id,
         "signature": row.signature,

@@ -858,6 +858,101 @@ def test_a_snapshot_is_created_once_and_refreshed_not_duplicated(world, service)
         assert refreshed.status == "CONFIRMED"
 
 
+def test_a_reviewed_snapshot_is_not_rewritten_by_a_later_recomputation(world, service) -> None:
+    """A vouched-for measurement is frozen; the recomputation is recorded beside it, not over it.
+
+    Re-running ``snapshot`` used to overwrite the columns of a CONFIRMED pattern and clear its drift
+    report at the same time, so a nightly job could turn "somebody confirmed 3 occurrences" into
+    "somebody confirmed 5" with nothing anywhere recording that the number had moved.  The accepted
+    figure now stays readable and the change stays visible - which is the whole reason a snapshot is
+    worth storing separately from the live query.
+    """
+    with workspace_session(service) as session:
+        row = snapshot(session, find_recurring(session, field_id="fld-a")[0])
+        session.commit()
+        pattern_id = row.id
+        accepted = (row.occurrence_count, row.well_count, row.event_count, row.total_npt_hours)
+        set_pattern_status(session, pattern_id, "CONFIRMED", by="k.adeyemi")
+        session.commit()
+
+    with workspace_session(service) as session:
+        for index, (well, day) in enumerate((("well-a2", 14), ("well-a1", 15)), start=1):
+            session.add(
+                ProblemOccurrence(
+                    id=f"prob-review-{index}",
+                    well_id=well,
+                    problem_definition_id="pdef-stuck_pipe",
+                    problem_type="stuck_pipe",
+                    hole_size_in=8.5,
+                    occurred_at=datetime(2025, 1, day, 8, 0),
+                )
+            )
+        session.commit()
+
+    # The drift is real and visible before anything is re-run.
+    with workspace_session(service) as session:
+        assert staleness(session, pattern_id)["stale"] is True
+
+    with workspace_session(service) as session:
+        again = snapshot(session, find_recurring(session, field_id="fld-a")[0])
+        session.commit()
+        assert again.status == "CONFIRMED", "a recomputation must not change a human decision"
+        assert (
+            again.occurrence_count,
+            again.well_count,
+            again.event_count,
+            again.total_npt_hours,
+        ) == accepted, "a confirmed measurement was rewritten by a recomputation"
+        # ...and the change is not hidden: the drift is marked and the new numbers are recorded.
+        assert again.stale_at is not None, "a frozen snapshot did not record that it drifted"
+        assert again.stale_snapshot.get("occurrence_count") == {"stored": 3.0, "now": 5.0}
+        recomputed = (again.attributes or {}).get("recomputed") or {}
+        assert recomputed.get("occurrence_count") == 5, "the recomputation was not recorded"
+        assert (again.attributes or {}).get("recomputed_differences"), "no difference was recorded"
+
+    # The drift is still reported afterwards, not swallowed by the refresh.
+    with workspace_session(service) as session:
+        report = staleness(session, pattern_id)
+    assert report["stale"] is True, "re-snapshotting cleared the evidence that the source moved"
+    assert report["differences"]["occurrence_count"] == {"stored": 3.0, "now": 5.0}
+
+
+def test_an_unreviewed_candidate_still_refreshes_in_place(world, service) -> None:
+    """Freezing applies to decisions, not to candidates - recomputation must not be blocked.
+
+    A CANDIDATE row is a live answer to its own query, so nobody loses anything when the columns
+    move with the data. Blocking that would just make the candidate view wrong.
+    """
+    with workspace_session(service) as session:
+        row = snapshot(session, find_recurring(session, field_id="fld-a")[0])
+        session.commit()
+        pattern_id = row.id
+        assert row.status == "CANDIDATE"
+        assert row.occurrence_count == 3
+
+    with workspace_session(service) as session:
+        session.add(
+            ProblemOccurrence(
+                id="prob-cand-1",
+                well_id="well-a2",
+                problem_definition_id="pdef-stuck_pipe",
+                problem_type="stuck_pipe",
+                hole_size_in=8.5,
+                occurred_at=datetime(2025, 1, 14, 8, 0),
+            )
+        )
+        session.commit()
+
+    with workspace_session(service) as session:
+        again = snapshot(session, find_recurring(session, field_id="fld-a")[0])
+        session.commit()
+        assert again.id == pattern_id
+        assert again.status == "CANDIDATE"
+        assert again.occurrence_count == 4, "a candidate was frozen instead of refreshed"
+        assert again.stale_at is None, "a refreshed candidate should not be marked stale"
+        assert not (again.attributes or {}).get("recomputed"), "no freeze record was expected"
+
+
 def test_snapshot_numbers_are_frozen_when_the_source_moves(world, service) -> None:
     with workspace_session(service) as session:
         row = snapshot(session, find_recurring(session, field_id="fld-a")[0])
@@ -876,11 +971,21 @@ def test_snapshot_numbers_are_frozen_when_the_source_moves(world, service) -> No
         session.commit()
     with workspace_session(service) as session:
         stored = get_pattern(session, pattern_id)
+        seen_before = stored.last_seen_at
     assert stored.occurrence_count == 3, "a snapshot does not rewrite itself when the data moves"
     with workspace_session(service) as session:
         report = staleness(session, pattern_id)
     assert report["stale"] is True and report["found"] is True
-    assert report["differences"] == {"occurrence_count": {"stored": 3, "now": 4}}
+    # Both of the things that actually moved are reported.  The new occurrence is later than the
+    # previous last one, so the boundary date moved too - and a staleness check that only compared
+    # totals would have reported a pattern whose window had shifted as merely bigger.
+    assert report["differences"]["occurrence_count"] == {"stored": 3, "now": 4}
+    assert report["differences"]["last_seen_at"]["now"] == "2025-01-14T08:00:00"
+    assert (
+        report["differences"]["last_seen_at"]["stored"]
+        != report["differences"]["last_seen_at"]["now"]
+    ), "the boundary date did not actually move"
+    assert seen_before is not None
 
 
 def test_a_windowed_snapshot_is_judged_against_its_window(world, service) -> None:
@@ -1437,3 +1542,94 @@ def test_kinds_filter_narrows_the_tables_visited(world, service) -> None:
         "problem",
         "lesson",
     }
+
+
+def test_staleness_detects_a_change_the_totals_do_not_show(world, service) -> None:
+    """Same occurrence count, same wells, same hours - and still a different pattern.
+
+    ``event_count`` counts the distinct events behind the occurrences, so detaching one occurrence
+    from its event changes what the pattern is made of without changing a single total.  A staleness check that only compared counts reported this as unchanged, which is the
+    quietest way a reviewed figure can stop meaning what it says.
+    """
+    with workspace_session(service) as session:
+        row = snapshot(session, find_recurring(session, field_id="fld-a")[0])
+        session.commit()
+        pattern_id = row.id
+        before_events = row.event_count
+        assert before_events >= 1
+
+    # Detach every occurrence in the grouping from its event.  Doing only one would not move the
+    # count if the three shared a single event, and a test that quietly changed nothing proves
+    # nothing - so this changes the whole event population and leaves every total alone.
+    with workspace_session(service) as session:
+        moved = session.execute(
+            ProblemOccurrence.__table__.update()
+            .where(
+                ProblemOccurrence.problem_type == "stuck_pipe",
+                ProblemOccurrence.hole_size_in == 8.5,
+            )
+            .values(event_id=None)
+        )
+        session.commit()
+        assert moved.rowcount >= 2, (
+            f"the fixture did not supply a group to change ({moved.rowcount})"
+        )
+
+    with workspace_session(service) as session:
+        report = staleness(session, pattern_id)
+        unchanged = get_pattern(session, pattern_id)
+    assert unchanged.occurrence_count == 3, "the totals did move, so this proves nothing"
+    assert report["stale"] is True, "a changed event population was reported as unchanged"
+    assert "event_count" in report["differences"], report["differences"]
+
+
+def test_staleness_is_not_fooled_by_how_many_groups_exist(world, service) -> None:
+    """A staleness check must not depend on a presentation limit.
+
+    The re-run used to list up to 500 groupings and search them for the stored one, so a field with
+    more groups than that could push the snapshot's own grouping off the end of the list and report
+    ``found=False, stale=True`` when nothing had moved.  In practice a snapshot always stores its own
+    ``problem_type``, which narrows the re-run to a handful of groups, so that cap was not reachable
+    through the normal path - the exposure was a design one: a correctness check reading its answer
+    out of a presentation limit.  The lookup is exact now, so the number of unrelated groupings is
+    irrelevant, and this test pins that property rather than a bug that could be provoked.
+    """
+    with workspace_session(service) as session:
+        row = snapshot(session, find_recurring(session, field_id="fld-a")[0])
+        session.commit()
+        pattern_id = row.id
+
+    # More unrelated groupings than the old cap, each its own (type, diameter) group - and each with
+    # *more* occurrences than the snapshot's own grouping, so a capped scan sorts every one of them
+    # ahead of the grouping being checked.  That is the condition under which the old code lost it.
+    with workspace_session(service) as session:
+        for index in range(520):
+            for slot in range(4):
+                session.add(
+                    ProblemOccurrence(
+                        id=f"prob-noise-{index}-{slot}",
+                        well_id="well-a1" if slot % 2 else "well-a2",
+                        problem_definition_id="pdef-stuck_pipe",
+                        problem_type=f"noise_type_{index}",
+                        hole_size_in=round(6.0 + index / 1000, 4),
+                        occurred_at=datetime(2025, 1, 10, 8, 0),
+                    )
+                )
+        session.commit()
+
+    with workspace_session(service) as session:
+        live = find_recurring(session, field_id="fld-a", min_occurrences=1, min_wells=1, limit=0)
+    total_groups = len(live)
+    assert total_groups > 500, f"the corpus did not exceed the old cap ({total_groups})"
+    assert all(
+        candidate["occurrence_count"] > 3
+        for candidate in live
+        if candidate["problem_type"] != "stuck_pipe"
+    ), "the noise groupings must outrank the stored one, or the cap is never reached"
+
+    with workspace_session(service) as session:
+        report = staleness(session, pattern_id)
+    assert report["found"] is True, "the stored grouping was not found among the others"
+    assert report["stale"] is False, (
+        f"nothing moved but staleness said otherwise: {report['differences']}"
+    )

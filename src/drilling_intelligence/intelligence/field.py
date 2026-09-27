@@ -58,6 +58,10 @@ def problem_hours() -> Any:
     It is a subquery rather than a helper method because two callers need the same arithmetic (the field
     aggregation and the pattern grouping), and because grouping in SQL is what keeps a hundred thousand
     problems from becoming a hundred thousand queries.
+
+    Either way the result holds **at most one row per problem**.  That is the contract the callers rely
+    on: counting rows in this subquery counts problems, so a problem whose event carries four NPT
+    records is still one problem with four records' worth of hours beside it.
     """
     by_npt = (
         select(
@@ -71,6 +75,20 @@ def problem_hours() -> Any:
         .join(NptRecord, NptRecord.id == ProblemOccurrence.npt_id)
         .where(NptRecord.duration_hours.is_not(None))
     )
+    # The event path is collapsed to one row per problem *before* it is joined.  An event can carry
+    # several NPT records - one incident, three separate waiting-on-weather entries - and joining
+    # straight onto ``npt_record`` returned one row per record, so a single problem occurrence came
+    # back two or three times.  The hours were right in total but the row count was not, and every
+    # caller that counts rows rather than summing them would have seen one problem as two.
+    event_hours = (
+        select(
+            NptRecord.event_id.label("event_id"),
+            func.sum(NptRecord.duration_hours).label("hours"),
+        )
+        .where(NptRecord.event_id.is_not(None), NptRecord.duration_hours.is_not(None))
+        .group_by(NptRecord.event_id)
+        .subquery("event_hours")
+    )
     by_event = (
         select(
             ProblemOccurrence.id,
@@ -78,13 +96,12 @@ def problem_hours() -> Any:
             ProblemOccurrence.problem_type,
             ProblemOccurrence.hole_size_in,
             ProblemOccurrence.occurred_at,
-            NptRecord.duration_hours,
+            event_hours.c.hours,
         )
-        .join(NptRecord, NptRecord.event_id == ProblemOccurrence.event_id)
+        .join(event_hours, event_hours.c.event_id == ProblemOccurrence.event_id)
         .where(
             ProblemOccurrence.npt_id.is_(None),
             ProblemOccurrence.event_id.is_not(None),
-            NptRecord.duration_hours.is_not(None),
         )
     )
     return union_all(by_npt, by_event).subquery("problem_hours")
