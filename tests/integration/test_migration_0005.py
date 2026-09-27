@@ -233,7 +233,11 @@ def test_the_migrated_calculation_table_is_the_one_the_models_describe(tmp_path)
     migrated = create_engine(f"sqlite:///{tmp_path / 'parity-migrated.db'}")
     try:
         build_legacy_database(migrated)
-        upgrade(migrated, "0005")
+        # Parity is claimed for a *workspace*, and a workspace is upgraded to the head of the chain -
+        # not to the revision that happened to create this table.  Checking against "0005" would pass
+        # even if a later migration and the models disagreed about this table, which is exactly the
+        # drift this test exists to catch.
+        upgrade(migrated, "head")
     finally:
         migrated.dispose()
     from_models = create_engine(f"sqlite:///{tmp_path / 'parity-models.db'}")

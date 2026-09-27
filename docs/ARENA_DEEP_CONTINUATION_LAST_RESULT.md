@@ -162,6 +162,43 @@ contract documented.
 | provenance / identity / input indexing / `calculations_using` / `calculation_impact` | **PASS** via existing suite (74 tests) — **not newly attacked this checkpoint** |
 | numeric safety, actor/trigger and identity-key semantics | **OPEN_NOT_EXERCISED** for new attacks |
 
+## 18. Section-by-section audit (§48 form)
+
+Verdicts use the six labels only. A label is never `PASS` merely because a suite stayed green.
+
+| # | Area | Verdict | Evidence |
+| --- | --- | --- | --- |
+| 1 | Calculation scope enforcement | `PASS_WITH_BEHAVIOURAL_PROOF` | V5.2 `_check_scope` on the recording path re-proved; 5 tests green |
+| 2 | Calculation supersession, sequential | `PASS_WITH_BEHAVIOURAL_PROOF` | 59 pre-existing tests green before and after migration 0012 |
+| 3 | Calculation supersession, concurrent | `DEFECT_FOUND_AND_FIXED` | 7/8 double leaves → 0/8; 3 tests; mutation killed |
+| 4 | Revision matrix: scope/method mutated mid-revision | `OPEN_NOT_EXERCISED` | no fixture varies scope or method across revisions |
+| 5 | Provenance, `calculations_using`, `calculation_impact` | `OPEN_NOT_EXERCISED` | read paths exist, not audited |
+| 6 | Calculation identity key | `PASS_WITH_BEHAVIOURAL_PROOF` | distinct `identity_key` on the competing v2 is what let two leaves through |
+| 7 | Numeric safety | `OPEN_NOT_EXERCISED` | outside the attacks closed here |
+| 8 | Plan-vs-actual matching | `DEFECT_FOUND_AND_FIXED` | 2 attacks, 6 tests, 2 mutations killed |
+| 9 | Plan-vs-actual scope hierarchy | `DEFECT_FOUND_AND_FIXED` | `program_id` alone still deliberately returns nothing |
+| 10 | NPT attribution, field intelligence | `PASS_WITH_BEHAVIOURAL_PROOF` | V5.1 sole-problem rule green |
+| 11 | Timeline: point events vs intervals | `OPEN_NOT_EXERCISED` | 10 interval cases still unrun |
+| 12 | Timeline: malformed interval bound | `OPEN_NOT_EXERCISED` | not probed |
+| 13 | Timeline: record-date provenance | `PASS_WITH_BEHAVIOURAL_PROOF` (bounded) | V5.2 date-window suite green |
+| 14 | Timeline: determinism on identical timestamps | `OPEN_NOT_EXERCISED` | the test does not exist |
+| 15 | Review null-well semantics | `OPEN_NOT_EXERCISED` | not probed |
+| 16 | Review truncation / sub-repository completeness | `OPEN_NOT_EXERCISED` | not probed |
+| 17 | Review current-vs-history matrix | `OPEN_NOT_EXERCISED` | not probed |
+| 18 | Retrieval `limit=0` | `DEFECT_FOUND_AND_FIXED` | 200 vs 260, now equal; 2 tests; mutation killed |
+| 19 | Search `limit=0` | `HYPOTHESIS_DISPROVED` | `int(limit or default_limit)` makes 0 mean "use the default", not "cap at 200" |
+| 20 | Retrieval truncation signal | `DEFECT_FOUND_AND_FIXED` | `discovery_capped` reports the only remaining bound |
+| 21 | Search candidate-cap semantics | `OPEN_NOT_EXERCISED` | `truncated = len(hits) > MAX_CANDIDATES` is a corpus-size statement, not a per-query one |
+| 22 | Evidence identity / freshness / citation semantics | `OPEN_NOT_EXERCISED` | not probed |
+| 23 | Promotion atomicity on late failure | `OPEN_NOT_EXERCISED` | not probed |
+| 24 | Child-row identity | `OPEN_NOT_EXERCISED` | not probed |
+| 25 | Scope null hierarchy | `OPEN_NOT_EXERCISED` | not probed |
+| 26 | Corruption / defensive reads | `OPEN_NOT_EXERCISED` | not probed |
+| 27 | Performance at 10k | `OPEN_NOT_EXERCISED` | not run |
+| 28 | System-wide limit audit | `OPEN_DEFECT` | retrieval now coherent; search, review and CLI limits not yet reconciled |
+| 29 | Migration/ORM alignment | `PASS_WITH_BEHAVIOURAL_PROOF` | 0012 head, `METADATA_REVISION` bumped, 10 migration tests green |
+| 30 | Gates after the last change | `PASS_WITH_BEHAVIOURAL_PROOF` | ruff 0, format 0, compileall 0, `git diff --check` 0 |
+
 ## 19. Mutation matrix (running)
 
 | mutation | target | expected to fail | actual | status |

@@ -64,9 +64,15 @@ def snapshot(engine: Engine) -> dict[str, list[tuple]]:
         }
 
 
-def test_the_revision_is_a_real_head_of_a_single_headed_chain() -> None:
-    assert METADATA_REVISION == "0011"
+def test_the_revision_is_a_real_revision_of_a_single_headed_chain() -> None:
+    # 0011 *was* the head when it was authored; 0012 has since superseded it.  The invariant worth
+    # keeping is not "0011 is the head" - that is true of exactly one revision at a time - but that
+    # the chain stays single-headed, that ``METADATA_REVISION`` tracks the real head, and that 0011
+    # is still an addressable revision in it.  Asserting the literal head instead would make every
+    # future migration break this file for no gain.
     assert heads() == [METADATA_REVISION], heads()
+    assert METADATA_REVISION > "0011", METADATA_REVISION
+    assert len(list((ROOT / "migrations" / "versions").glob("*_0011_*.py"))) == 1
 
 
 def test_the_upgrade_creates_the_five_tables_with_the_columns_the_models_declare(tmp_path) -> None:
@@ -256,7 +262,17 @@ def test_the_upgrade_is_replayable(tmp_path) -> None:
     try:
         build_legacy_database(engine)
         assert upgrade(engine, "0011").mode == "migrated"
-        assert upgrade(engine, "0011").up_to_date is True
+        rows = snapshot(engine)
+        again = upgrade(engine, "0011")
+        # Replaying an already-applied revision must not disturb a single row.
+        assert snapshot(engine) == rows
+        # ``up_to_date`` means "at the head of the chain", not "at the revision I asked for" - it is
+        # literally ``current == head``.  So sitting at 0011 is now a revision *behind*, and saying
+        # so is the point of the field: a workspace must be able to report that it is stale.  The
+        # old assertion pinned "0011 is the head", which silently conflated the two.
+        assert again.current == "0011"
+        assert again.head == heads()[0]
+        assert again.up_to_date is (again.current == again.head)
         assert upgrade(engine, heads()[0]).up_to_date is True
     finally:
         engine.dispose()
