@@ -242,7 +242,13 @@ def test_a_registered_field_name_maps_onto_its_predicate() -> None:
     assert predicate_for_field("mud_weight")[0] == "mud_weight"
     assert predicate_for_field("MW")[0] == "mud_weight"
     assert predicate_for_field("hole size")[0] == "hole_section_size"
-    assert predicate_for_field("Bit Size (in)")[0] == "hole_section_size"
+    # A bit is not the hole it drills, so "bit size" is its own assertion rather than an alias of the
+    # hole section.  The two usually carry the same number, and that numerical agreement is exactly
+    # why merging them is tempting and wrong: a washed-out hole and an under-gauge bit are different
+    # statements, and merging them turns that difference into a conflict nobody had.
+    assert predicate_for_field("Bit Size (in)")[0] == "bit_size"
+    assert predicate_for_field("bit_gauge")[0] == "bit_size"
+    assert predicate_for_field("casing size")[0] == "casing_size"
     for field_name, predicate in PREDICATE_BY_FIELD.items():
         assert predicate_for_field(field_name)[0] == predicate, field_name
 

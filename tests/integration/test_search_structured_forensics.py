@@ -73,6 +73,7 @@ from drilling_intelligence.search.index import (
 )
 from drilling_intelligence.search.service import SearchService
 from drilling_intelligence.search.structured import (
+    _RECORD_SOURCES,
     STRUCTURED_RECORD_TYPES,
     StructuredRecord,
     is_searchable,
@@ -710,7 +711,13 @@ class TestProjectionCost:
             return count["value"]
 
         baseline = count_selects()
-        assert 0 < baseline <= 12, baseline
+        # The bound is a function of the projection's own shape, not a number somebody typed: one
+        # query per admitted record source, plus the four ``_Scope`` preloads (wells, projects,
+        # companies and the three ordered child tables read in one pass each).  Asserting a literal
+        # went stale the first time a domain was added, which is a change to the shape, not a
+        # regression - and a shape change is what the second half of this test is actually guarding.
+        expected = len(_RECORD_SOURCES) + 6
+        assert 0 < baseline <= expected, (baseline, expected)
         with promoted.database.session() as session:
             well_id = well_id_for(promoted, "A-3")
             for index in range(30):

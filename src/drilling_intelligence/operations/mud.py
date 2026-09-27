@@ -14,10 +14,48 @@ but do not become mud measurements.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from .tableshape import (
+    DEFAULT_UNIT_TOKENS,
+    alias_column,
+    cell_text,
+    header_index,
+    normalise_label,
+    table_key,
+    tables,
+    without_units,
+)
+from .tableshape import (
+    header_unit as _shared_header_unit,
+)
+from .tableshape import (
+    numeric as _shared_numeric,
+)
+
+#: The mud numeric vocabulary: a source cell may carry one of these behind the number.
+_MUD_VALUE_UNITS: tuple[str, ...] = (
+    "ppg",
+    "cP",
+    "cp",
+    "mg/l",
+    "lb/100ft2",
+    "psi/ft",
+    "bbl",
+    "pct",
+    "%",
+)
+#: The mud label vocabulary, which additionally treats ``ft``/``m`` as decoration on a depth label.
+_MUD_LABEL_UNITS: tuple[str, ...] = ("ft", "m", *_MUD_VALUE_UNITS)
+
+#: The vocabulary a *header* parenthetical is checked against.  This is deliberately wider than the
+#: in-cell value vocabulary: a column labelled ``Hole Size (in)`` or ``Time (h)`` states a unit in its
+#: header, not behind each number, and dropping it would store a real measurement as ``UNVERIFIED``.
+#: It is still a closed, explicit list - the union of two existing vocabularies - so an annotation such
+#: as ``Remarks (optional)`` is rejected rather than mistaken for a unit.
+_MUD_HEADER_UNITS: tuple[str, ...] = (*_MUD_LABEL_UNITS, *DEFAULT_UNIT_TOKENS)
 
 # Canonical names are a deliberately closed vocabulary.  The source label remains on every emitted
 # entry, so a later contract can add a label without rewriting the stored artefact or changing the
@@ -28,7 +66,11 @@ SUMMARY_ALIASES: dict[str, tuple[str, ...]] = {
     "report_date": ("report date", "date", "reporting date"),
     "revision": ("revision", "rev", "report revision"),
     "depth_md": ("md", "measured depth", "depth md", "md depth"),
-    "depth_tvd": ("tvd", "true vertical depth", "tvdss"),
+    # ``"depth tvd"`` is here for the same reason ``"depth md"`` is above: a header written
+    # ``"Depth (ft TVD)"`` normalises to it, and without the alias the qualifier survives extraction
+    # only to be dropped at the contract.  A measured depth and a true vertical depth are different
+    # assertions, so the asymmetry the mud vocabulary used to have was a latent MD/TVD merge.
+    "depth_tvd": ("tvd", "true vertical depth", "tvdss", "depth tvd"),
     "mud_weight": ("mud weight", "mw", "active system mw"),
     "plastic_viscosity": ("plastic viscosity", "pv"),
     "yield_point": ("yield point", "yp"),
@@ -72,20 +114,8 @@ PROPERTY_UNITS: dict[str, str] = {
 }
 
 
-def normalise_label(value: Any) -> str:
-    """Lowercase a source label without erasing meaningful slash/unit text."""
-    text = str(value or "").strip().lower()
-    text = text.replace("²", "2").replace("³", "3")
-    text = re.sub(r"[,:;]+", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
 def _without_units(text: str) -> str:
-    text = normalise_label(text)
-    text = re.sub(r"\([^)]*\)", "", text)
-    text = re.sub(r"\b(?:ft|m|ppg|cp|mg/l|lb/100ft2|psi/ft|bbl|pct|%)\b", "", text)
-    return re.sub(r"\s+", " ", text).strip()
+    return without_units(text, _MUD_LABEL_UNITS)
 
 
 def canonical_summary_label(value: Any) -> str:
@@ -102,68 +132,27 @@ def canonical_summary_label(value: Any) -> str:
 
 
 def _headers(row: Sequence[Any]) -> dict[str, int]:
-    result: dict[str, int] = {}
-    for index, cell in enumerate(row):
-        label = normalise_label(cell)
-        if label and label not in result:
-            result[label] = index
-    return result
+    return header_index(row)
 
 
 def _alias_column(headers: Mapping[str, int], aliases: Sequence[str]) -> int:
-    for alias in aliases:
-        key = normalise_label(alias)
-        if key in headers:
-            return int(headers[key])
-    # Header units and punctuation are source decoration, not a new column vocabulary.
-    for key, index in headers.items():
-        if any(key.startswith(normalise_label(alias) + " ") for alias in aliases):
-            return int(index)
-    return -1
+    # ``prefix`` is the documented mud behaviour (a header may read ``"MW in (ppg)"``); ``strip_units``
+    # stays off so this contract's own alias list - not the shared unit vocabulary - decides what a
+    # mud column may be called.
+    return alias_column(headers, aliases, prefix=True, strip_units=False)
 
 
 def _cell(row: Sequence[Any], index: int) -> str:
-    if index < 0 or index >= len(row):
-        return ""
-    value = row[index]
-    return "" if value is None else str(value).strip()
+    return cell_text(row, index)
 
 
 def numeric(value: Any) -> float | None:
     """Parse a numeric source cell without converting units or accepting formulas."""
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    text = str(value).strip().replace(",", "")
-    if not text or text.startswith("="):
-        return None
-    match = re.fullmatch(
-        r"[-+]?\d+(?:\.\d+)?(?:\s*(?:ppg|cP|cp|mg/l|lb/100ft2|psi/ft|bbl|pct|%|ft|m))?",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return None
-    number = re.match(r"[-+]?\d+(?:\.\d+)?", text)
-    try:
-        return float(number.group(0)) if number else None
-    except (TypeError, ValueError):
-        return None
+    return _shared_numeric(value, _MUD_VALUE_UNITS)
 
 
 def header_unit(header: Any, default: str = "") -> str:
-    text = str(header or "")
-    match = re.search(r"\(([^)]+)\)|\b(ppg|cP|mg/l|lb/100ft2|psi/ft|bbl|pct|%)\b", text, re.I)
-    return (match.group(1) or match.group(2)).strip() if match else default
-
-
-def table_key(table: Mapping[str, Any]) -> str:
-    return "|".join(str(table.get(key) or "") for key in ("table_id", "sheet", "anchor", "page"))
-
-
-def tables(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
-    return [dict(table) for table in (payload.get("tables") or []) if isinstance(table, Mapping)]
+    return _shared_header_unit(header, default, _MUD_HEADER_UNITS)
 
 
 @dataclass(frozen=True)

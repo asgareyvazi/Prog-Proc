@@ -40,6 +40,7 @@ from ..database.integrity import (
     check_extraction_cache,
     check_knowledge_relations,
     check_operational_integrity,
+    check_workspace_identity,
 )
 from ..database.models import Document, DocumentVersion
 from ..documents.repository import DocumentRepository
@@ -290,30 +291,22 @@ def _workspace_row_id(workspace: Workspace) -> str:
     the first ingest files everything under ``workspace_id IS NULL`` and the moment a well is
     created a second, disconnected set of rows appears for the same files; per-workspace queries
     and "no longer on disk" detection both read through that id and would quietly miss half the
-    folder.  An existing row is matched by resolved path first, so a workspace registered by the
-    API with a differently spelled path is reused instead of duplicated.
+    folder.
+
+    The resolution itself is ``WellRepository.resolve_workspace_id`` - the same call ingestion
+    makes - so the CLI and the pipeline cannot disagree about which row owns a folder.  This
+    wrapper only adds what the CLI uniquely knows: the configured name and data directory.
     """
     with workspace.database.session() as session:
         repository = WellRepository(session)
-        known = ""
-        for row in repository.list_workspaces():
-            try:
-                if Path(row.root_path).expanduser().resolve() == workspace.root:
-                    known = str(row.root_path)
-                    break
-            except OSError:  # pragma: no cover - a stored path that cannot be resolved
-                continue
-        # Going through ``get_or_create_workspace`` even for a row that exists is deliberate: it
-        # is the one place that fills in a name or a data directory left empty by whoever created
-        # the row, and it is keyed on the *stored* path so the tolerant match above can never end
-        # up registering the same folder twice.
-        row = repository.get_or_create_workspace(
-            known or str(workspace.root),
+        row_id = repository.resolve_workspace_id(
+            workspace.root,
             name=workspace.config.name,
             data_dir=str(workspace.data_dir),
+            database_path=str(workspace.database_path),
         )
         session.commit()
-        return str(row.id)
+        return row_id
 
 
 # --------------------------------------------------------------------------- commands
@@ -794,6 +787,11 @@ def command_doctor(args: argparse.Namespace) -> int:
             # schema - which is precisely why it needs a checker, and why `doctor` is where a person finds
             # it before quoting the number it produced.
             problems += [problem.to_dict() for problem in check_operational_integrity(session)]
+            # Identity first among equals: every other counter on this page is workspace-scoped, so a
+            # database holding two workspace populations makes all of them quietly wrong at once.
+            problems = [
+                problem.to_dict() for problem in check_workspace_identity(session)
+            ] + problems
             records = _record_counts(session)
             from ..knowledge.repository import KnowledgeRepository
 
@@ -819,6 +817,23 @@ def command_doctor(args: argparse.Namespace) -> int:
                 f"lessons    {records['lessons']} recorded, none approved: "
                 "`drillintel lessons list --unapproved`"
             )
+        # Workspace identity, as its own line and deliberately *not* a finding.  A document with no
+        # ``workspace_id`` is invisible to every workspace-scoped query, which is worth saying out
+        # loud - but the column is nullable by design (``ondelete="SET NULL"``), so an orphan whose
+        # workspace row was deleted is a legitimate state and not corruption.  Findings change the
+        # exit code, and a doctor that fails on a state the schema permits is a doctor nobody runs.
+        # Ingestion resolves identity itself now, so a fresh workspace reports healthy here.
+        unscoped = int(counts.get("unscoped_documents") or 0)
+        notes.append(
+            "identity   "
+            + (
+                "healthy - every document names its workspace"
+                if not unscoped
+                else f"{unscoped} document(s) with no workspace id: invisible to every "
+                "workspace-scoped query; either orphans of a deleted workspace row or ingested "
+                "before identity was resolved at the pipeline"
+            )
+        )
         if open_conflicts:
             # A workspace where two sources disagree and nobody has decided is not corrupt, but it is
             # not sound either, and `doctor` is what a person runs before trusting an answer.  A
@@ -906,9 +921,90 @@ def command_knowledge(args: argparse.Namespace) -> int:
 
         service = KnowledgeExtractionService.for_workspace(workspace)
         if args.action == "rebuild":
+            try:
+                well_id = _resolve_well_id(workspace, args.well)
+            except DrillingIntelligenceError as exc:
+                # Naming a well that is not there is a mistake in the command line, not something
+                # wrong with the workspace, so it gets the usage exit code ``argparse`` uses rather
+                # than the generic failure one.  The message still lists what does exist.
+                print(f"error: {exc}", file=sys.stderr)
+                if exc.hint:
+                    print(f"hint: {exc.hint}", file=sys.stderr)
+                return 2
+            if args.dry_run:
+                payload = service.plan_rebuild(
+                    workspace_id=_workspace_row_id(workspace),
+                    well_id=well_id,
+                    workspace_label=str(workspace.root),
+                    well_label=args.well or "",
+                )
+                plan = payload["plan"]
+                facts = plan["facts"]
+                repair = payload["semantic_repair"]
+                conflicts = payload["conflicts"]
+                recovery = payload["recovery"]
+                index = payload["index"]
+                lines = [
+                    "knowledge rebuild dry-run - nothing below was written",
+                    "scope",
+                    f"  workspace {payload['scope']['workspace'] or '(all)'}",
+                    f"  well      {payload['scope']['well'] or '(all)'}",
+                    "plan",
+                    f"  versions  {plan['versions']} ({plan['documents']} document(s))",
+                    f"  facts     create {facts['create']}, update {facts['update']}, "
+                    f"unchanged {facts['unchanged']}, remove {facts['remove']}",
+                    f"  relations {plan['relations']}, fields skipped {plan['skipped_fields']}",
+                    "semantic repair",
+                    f"  deterministic {repair['deterministic']}, "
+                    f"requires context {repair['requires_context']}, "
+                    f"requires source re-extraction {repair['requires_source_reextraction']}, "
+                    f"no change {repair['no_change']} (of {repair['scanned']} stored field(s))",
+                    "conflicts",
+                    f"  before {conflicts['before']}, predicted {conflicts['predicted']}",
+                ]
+                if conflicts["ambiguous_predicted"]:
+                    lines.append(
+                        f"  ambiguous within one source: {conflicts['ambiguous_predicted']} "
+                        "(extraction decides those, not a rebuild)"
+                    )
+                lines.extend(
+                    [
+                        "index",
+                        f"  {index['state']}" + (f": {index['action']}" if index["action"] else ""),
+                        "  a knowledge rebuild refreshes "
+                        f"{index['refreshed_by_knowledge_rebuild']}; structured rows: "
+                        f"{'yes' if index['structured_rows_refreshed'] else 'no'}",
+                        f"manual facts  preserved: "
+                        f"{'yes' if payload['manual_facts']['preserved'] else 'NO'} "
+                        f"({payload['manual_facts']['count']})",
+                        f"recovery state  {recovery['state']}",
+                    ]
+                )
+                lines.extend(f"  because {reason}" for reason in recovery["explanation"])
+                if recovery["recommended"]:
+                    lines.append("recommended, in order")
+                    lines.extend(
+                        f"  {step['step']}. {step['command']}  - {step['reason']}"
+                        for step in recovery["recommended"]
+                    )
+                if recovery["not_performed"]:
+                    lines.append("not performed automatically")
+                    lines.extend(
+                        f"  - {item['item']}: {item['reason']} ({item['command']})"
+                        for item in recovery["not_performed"]
+                    )
+                for warning in payload["warnings"][:10]:
+                    lines.append(f"  warning: {warning}")
+                lines.append("mutations  none - dry-run")
+                lines.append(f"result     {payload['result']}")
+                _emit(payload, as_json=args.json, lines=lines)
+                # A dry run that predicts two genuine engineering conflicts is a successful dry
+                # run.  Only a workspace whose registry is actually broken fails here, and it gets
+                # its own code because the remedy is not "run it anyway".
+                return 3 if recovery["corrupt"] else 0
             payload = service.rebuild(
                 workspace_id=_workspace_row_id(workspace),
-                well_id=_resolve_well_id(workspace, args.well),
+                well_id=well_id,
             )
             facts = payload["facts"]
             lines = [
@@ -1688,6 +1784,41 @@ _LIST_COLUMNS: dict[str, list[tuple[str, int]]] = {
         ("is_current", 10),
         ("status", 12),
     ],
+    "bha": [
+        ("id", 30),
+        ("bha_number", 12),
+        ("report_date", 12),
+        ("component_count", 10),
+        ("top_depth_value", 12),
+        ("bottom_depth_value", 12),
+        ("section_resolution", 14),
+        ("is_current", 10),
+        ("status", 12),
+    ],
+    "bit": [
+        ("id", 30),
+        ("bit_number", 10),
+        ("run_number", 8),
+        ("iadc_code", 12),
+        ("size_value", 10),
+        ("depth_in_value", 12),
+        ("depth_out_value", 12),
+        ("footage_value", 12),
+        ("pull_reason", 20),
+        ("is_current", 10),
+        ("status", 12),
+    ],
+    "survey": [
+        ("id", 30),
+        ("run_label", 14),
+        ("survey_date", 12),
+        ("station_count", 10),
+        ("min_md_value", 12),
+        ("max_md_value", 12),
+        ("station_identity", 14),
+        ("is_current", 10),
+        ("status", 12),
+    ],
 }
 
 
@@ -1699,6 +1830,21 @@ def _list_records(repository: Any, args: argparse.Namespace, scope: dict[str, st
         return repository.list_reports(since=args.since, until=args.until, **common, **scope)
     if table == "mud":
         return repository.list_mud_reports(
+            since=args.since,
+            until=args.until,
+            current_only=not bool(getattr(args, "include_history", False)),
+            **common,
+            **scope,
+        )
+    # The source-versioned hardware/geometry domains read through the same operational repository the
+    # promotion wrote with, so the CLI cannot disagree with the review surface about what a row says.
+    if table in {"bha", "bit", "survey"}:
+        lister = {
+            "bha": repository.list_bha_reports,
+            "bit": repository.list_bit_records,
+            "survey": repository.list_survey_runs,
+        }[table]
+        return lister(
             since=args.since,
             until=args.until,
             current_only=not bool(getattr(args, "include_history", False)),
@@ -2377,6 +2523,11 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     rebuild.add_argument("--well", help="limit the rebuild to documents of this well (id or name)")
+    rebuild.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="plan the rebuild and change nothing: what it would write, repair and leave disputed",
+    )
     rebuild.set_defaults(handler=command_knowledge)
     conflicts = knowledge_sub.add_parser(
         "conflicts",

@@ -2,15 +2,27 @@
 
 The search index already projects *documents* (extracted text plus the knowledge facts stored
 about them).  This module is the second source type in that same projection: the authoritative
-structured records - problems, NPT, events, lessons, recommendations and mud reports - each turned
-into one searchable unit that cites its own row instead of a page of a file.
+structured records - problems, NPT, events, lessons, recommendations, mud reports, BHA reports, bit
+runs and survey runs - each turned into one searchable unit that cites its own row instead of a page
+of a file.
 
 The rules are the same ones the document half obeys, stated once here because they are the
 whole point of the feature:
 
-*   **The database is the authority.**  :func:`structured_records` reads the seven admitted model
-    tables and formats rows; it writes nothing.  The projection may be deleted and rebuilt from those
-    rows at any time.
+*   **The database is the authority.**  :func:`structured_records` reads the admitted model tables
+    named in :data:`_RECORD_SOURCES` and formats rows; it writes nothing.  The projection may be
+    deleted and rebuilt from those rows at any time.
+*   **One searchable unit per *top-level* record, with its children folded in.**  The indexed types
+    are the rows that answer a question about a well on their own: an assembly, a bit run, a survey
+    set, a mud report, an NPT period.  A child row - a BHA component, a survey station, a mud
+    measurement - is a *part* of its parent's statement rather than a separate answer, so it is not
+    indexed as its own unit.  It is not thereby hidden: each parent builder walks its children and
+    emits their values into the searchable text (``component 4: ...``, ``station 3: MD 9500.0 ft
+    inclination 4.1 deg ...``) *and* collects their own provenance into
+    ``component_evidence`` / ``station_evidence`` / ``measurement_evidence``.  "Which component was at
+    sequence 4?" and "what was the inclination at MD 9500?" are therefore answerable from a search
+    hit, and traceable to the child's own locator.  Child rows are read in one preloaded pass per
+    child table (:class:`_Scope`), so folding costs three queries rather than one per parent.
 *   **Identity is the record's own.**  A structured unit's id is
     ``structured:<record-type>:<row id>``, where ``<row id>`` is the authoritative primary key the
     domain already uses (``pdef-...``, ``prob-...``, ``npt-...``, ``ev-...``, ``les-...``,
@@ -39,6 +51,9 @@ from sqlalchemy import select
 
 from ..core.enums import ConfirmationStatus, RecommendationLifecycle
 from ..database.models import (
+    BhaComponent,
+    BhaReport,
+    BitRecord,
     LessonLearned,
     MudMeasurement,
     MudReport,
@@ -46,6 +61,8 @@ from ..database.models import (
     ProblemDefinition,
     ProblemOccurrence,
     Recommendation,
+    SurveyRun,
+    SurveyStation,
     WellEvent,
 )
 from .tokenize import term_counts
@@ -76,6 +93,9 @@ STRUCTURED_RECORD_TYPES: tuple[str, ...] = (
     "lesson_learned",
     "recommendation",
     "mud_report",
+    "bha_report",
+    "bit_record",
+    "survey_run",
 )
 
 
@@ -107,7 +127,10 @@ def is_searchable(record: Any) -> bool:
         return True
     if isinstance(record, (ProblemOccurrence, NptRecord, WellEvent)):
         return str(getattr(record, "status", "") or "") != ConfirmationStatus.REJECTED.value
-    if isinstance(record, MudReport):
+    if isinstance(record, (MudReport, BhaReport, BitRecord, SurveyRun)):
+        # The source-versioned domains share one rule: an assembly, a bit run or a survey set that a
+        # newer version of the same document replaced is history, not the answer to "what is in the
+        # hole now" - exactly as a superseded document version is not indexed.
         return bool(getattr(record, "is_current", True)) and str(
             getattr(record, "status", "") or ""
         ) not in {"SUPERSEDED", ConfirmationStatus.REJECTED.value}
@@ -286,6 +309,8 @@ class _Scope:
         self._projects = {p.id: p for p in session.execute(select(Project)).scalars()}
         self._companies = {c.id: c for c in session.execute(select(Company)).scalars()}
         self._mud_measurements: dict[str, list[MudMeasurement]] = {}
+        self._bha_components: dict[str, list[BhaComponent]] = {}
+        self._survey_stations: dict[str, list[SurveyStation]] = {}
         for measurement in session.execute(
             select(MudMeasurement).order_by(
                 MudMeasurement.mud_report_id,
@@ -298,8 +323,29 @@ class _Scope:
                 measurement
             )
 
+        for component in session.execute(
+            select(BhaComponent).order_by(
+                BhaComponent.bha_report_id, BhaComponent.sequence, BhaComponent.id
+            )
+        ).scalars():
+            self._bha_components.setdefault(str(component.bha_report_id), []).append(component)
+        for station in session.execute(
+            select(SurveyStation).order_by(
+                SurveyStation.survey_run_id, SurveyStation.sequence, SurveyStation.id
+            )
+        ).scalars():
+            self._survey_stations.setdefault(str(station.survey_run_id), []).append(station)
+
     def mud_measurements(self, report_id: Any) -> tuple[MudMeasurement, ...]:
         return tuple(self._mud_measurements.get(str(report_id), ()))
+
+    def bha_components(self, report_id: Any) -> tuple[BhaComponent, ...]:
+        """The assembly's components, in the source's own order - never re-sorted."""
+        return tuple(self._bha_components.get(str(report_id), ()))
+
+    def survey_stations(self, run_id: Any) -> tuple[SurveyStation, ...]:
+        """The set's stations, in the source's own order - never re-sorted."""
+        return tuple(self._survey_stations.get(str(run_id), ()))
 
     def resolve(self, well_id: Any) -> tuple[str, str, str, str, str, str]:
         """``(project_id, field_id, company_id, well_name, project_name, company_name)``."""
@@ -698,6 +744,248 @@ def _recommendation(row: Recommendation) -> StructuredRecord:
     )
 
 
+def _bha_report(row: BhaReport, scope: _Scope) -> StructuredRecord:
+    project_id, field_id, company_id, well_name, project_name, company_name = scope.resolve(
+        row.well_id
+    )
+    component_lines: list[tuple[str, Any]] = []
+    component_evidence: list[Mapping[str, Any]] = []
+    for component in scope.bha_components(row.id):
+        dimensions = " x ".join(
+            part
+            for part in (
+                f"OD {component.od_value} {component.od_unit}".strip()
+                if component.od_value is not None
+                else "",
+                f"ID {component.id_value} {component.id_unit}".strip()
+                if component.id_value is not None
+                else "",
+                f"length {component.length_value} {component.length_unit}".strip()
+                if component.length_value is not None
+                else "",
+            )
+            if part
+        )
+        component_lines.append(
+            (
+                f"component {component.sequence}",
+                " ".join(
+                    part
+                    for part in (
+                        component.source_label,
+                        component.component_type,
+                        component.manufacturer,
+                        component.model,
+                        component.serial_number,
+                        dimensions,
+                        f"qty {component.quantity}" if component.quantity else "",
+                    )
+                    if part
+                ).strip(),
+            )
+        )
+        for entry in component.provenance or ():
+            if isinstance(entry, Mapping):
+                component_evidence.append(dict(entry))
+    text = _emit(
+        [
+            ("bottom hole assembly", row.bha_number or row.id),
+            ("run interval", (
+                f"{row.top_depth_value} {row.top_depth_unit} to "
+                f"{row.bottom_depth_value} {row.bottom_depth_unit}".strip()
+                if row.top_depth_value is not None and row.bottom_depth_value is not None
+                else ""
+            )),
+            ("report date", _iso(row.report_date)),
+            ("assembly description", row.assembly_description),
+            ("well", well_name),
+            *component_lines,
+        ]
+    )
+    provenance: dict[str, Any] = {
+        "source_type": "structured",
+        "record_type": "bha_report",
+        "record_id": str(row.id),
+        "well_id": str(row.well_id or ""),
+        "project_id": project_id,
+        "field_id": field_id,
+        "section_id": str(row.section_id or ""),
+        "document_id": str(row.document_id or ""),
+        "document_version_id": str(row.document_version_id or ""),
+        "status": str(row.status or ""),
+        "record_state": str(row.record_state or ""),
+        "origin": str(row.origin or ""),
+        "section_resolution": str(row.section_resolution or ""),
+        "evidence": [dict(entry) for entry in row.provenance or () if isinstance(entry, Mapping)],
+        "component_evidence": component_evidence,
+    }
+    provenance = {key: value for key, value in provenance.items() if value not in (None, "", [])}
+    return _unit(
+        record_type="bha_report",
+        source_id=row.id,
+        text=text,
+        provenance=provenance,
+        well_id=str(row.well_id or ""),
+        project_id=project_id,
+        field_id=field_id,
+        company_id=company_id,
+        well_name=well_name,
+        project_name=project_name,
+        company_name=company_name,
+        category="bha",
+        status=str(row.status or ""),
+        record_date=_iso(row.report_date),
+        title=f"BHA {row.bha_number or row.id}",
+        locator_ref=f"bottom hole assembly {row.bha_number or row.id}",
+    )
+
+
+def _bit_record(row: BitRecord, scope: _Scope) -> StructuredRecord:
+    project_id, field_id, company_id, well_name, project_name, company_name = scope.resolve(
+        row.well_id
+    )
+    text = _emit(
+        [
+            ("bit number", row.bit_number),
+            ("run number", row.run_number),
+            ("manufacturer", row.manufacturer),
+            ("model", row.model),
+            ("bit type", row.bit_type),
+            ("iadc code", row.iadc_code),
+            ("serial number", row.serial_number),
+            ("size", f"{row.size_value} {row.size_unit}".strip() if row.size_value is not None else ""),
+            ("depth in", f"{row.depth_in_value} {row.depth_in_unit}".strip() if row.depth_in_value is not None else ""),
+            ("depth out", f"{row.depth_out_value} {row.depth_out_unit}".strip() if row.depth_out_value is not None else ""),
+            ("footage", f"{row.footage_value} {row.footage_unit}".strip() if row.footage_value is not None else ""),
+            ("rotating hours", row.rotating_hours),
+            ("drilling hours", row.drilling_hours),
+            ("pull reason", row.pull_reason),
+            ("dull grade", row.dull_grade),
+            ("nozzles", row.nozzle_size_text),
+            ("well", well_name),
+        ]
+    )
+    provenance: dict[str, Any] = {
+        "source_type": "structured",
+        "record_type": "bit_record",
+        "record_id": str(row.id),
+        "well_id": str(row.well_id or ""),
+        "project_id": project_id,
+        "field_id": field_id,
+        "section_id": str(row.section_id or ""),
+        "bha_report_id": str(row.bha_report_id or ""),
+        "document_id": str(row.document_id or ""),
+        "document_version_id": str(row.document_version_id or ""),
+        "status": str(row.status or ""),
+        "record_state": str(row.record_state or ""),
+        "origin": str(row.origin or ""),
+        "evidence": [dict(entry) for entry in row.provenance or () if isinstance(entry, Mapping)],
+    }
+    provenance = {key: value for key, value in provenance.items() if value not in (None, "", [])}
+    return _unit(
+        record_type="bit_record",
+        source_id=row.id,
+        text=text,
+        provenance=provenance,
+        well_id=str(row.well_id or ""),
+        project_id=project_id,
+        field_id=field_id,
+        company_id=company_id,
+        well_name=well_name,
+        project_name=project_name,
+        company_name=company_name,
+        category="bit",
+        status=str(row.status or ""),
+        record_date=_iso(row.run_date),
+        title=f"Bit {row.bit_number}" + (f" run {row.run_number}" if row.run_number else ""),
+        locator_ref=f"bit record {row.id}",
+    )
+
+
+def _survey_run(row: SurveyRun, scope: _Scope) -> StructuredRecord:
+    project_id, field_id, company_id, well_name, project_name, company_name = scope.resolve(
+        row.well_id
+    )
+    station_lines: list[tuple[str, Any]] = []
+    station_evidence: list[Mapping[str, Any]] = []
+    for station in scope.survey_stations(row.id):
+        station_lines.append(
+            (
+                f"station {station.station_number_text or station.sequence}",
+                " ".join(
+                    part
+                    for part in (
+                        f"MD {station.md_value} {station.md_unit}".strip(),
+                        f"TVD {station.tvd_value} {station.tvd_unit}".strip()
+                        if station.tvd_value is not None
+                        else "",
+                        f"inclination {station.inclination_value} {station.inclination_unit}".strip(),
+                        f"azimuth {station.azimuth_value} {station.azimuth_unit}".strip(),
+                        f"toolface {station.toolface_value}".strip()
+                        if station.toolface_value is not None
+                        else "",
+                        f"DLS {station.dls_value}".strip() if station.dls_value is not None else "",
+                    )
+                    if part
+                ).strip(),
+            )
+        )
+        for entry in station.provenance or ():
+            if isinstance(entry, Mapping):
+                station_evidence.append(dict(entry))
+    text = _emit(
+        [
+            ("survey run", row.run_label or row.id),
+            ("survey tool", row.survey_tool),
+            ("survey date", _iso(row.survey_date)),
+            ("station count", row.station_count),
+            ("measured depth range", (
+                f"{row.min_md_value} to {row.max_md_value} {row.md_unit}".strip()
+                if row.min_md_value is not None
+                else ""
+            )),
+            ("well", well_name),
+            *station_lines,
+        ]
+    )
+    provenance: dict[str, Any] = {
+        "source_type": "structured",
+        "record_type": "survey_run",
+        "record_id": str(row.id),
+        "well_id": str(row.well_id or ""),
+        "project_id": project_id,
+        "field_id": field_id,
+        "section_id": str(row.section_id or ""),
+        "document_id": str(row.document_id or ""),
+        "document_version_id": str(row.document_version_id or ""),
+        "status": str(row.status or ""),
+        "record_state": str(row.record_state or ""),
+        "origin": str(row.origin or ""),
+        "station_identity": str(row.station_identity or ""),
+        "evidence": [dict(entry) for entry in row.provenance or () if isinstance(entry, Mapping)],
+        "station_evidence": station_evidence,
+    }
+    provenance = {key: value for key, value in provenance.items() if value not in (None, "", [])}
+    return _unit(
+        record_type="survey_run",
+        source_id=row.id,
+        text=text,
+        provenance=provenance,
+        well_id=str(row.well_id or ""),
+        project_id=project_id,
+        field_id=field_id,
+        company_id=company_id,
+        well_name=well_name,
+        project_name=project_name,
+        company_name=company_name,
+        category="survey",
+        status=str(row.status or ""),
+        record_date=_iso(row.survey_date),
+        title=f"Directional survey {row.run_label or row.id}",
+        locator_ref=f"survey run {row.id}",
+    )
+
+
 _BUILDERS = {
     "problem_definition": _problem_definition,
     "problem_occurrence": _problem_occurrence,
@@ -706,6 +994,9 @@ _BUILDERS = {
     "lesson_learned": _lesson_learned,
     "recommendation": _recommendation,
     "mud_report": _mud_report,
+    "bha_report": _bha_report,
+    "bit_record": _bit_record,
+    "survey_run": _survey_run,
 }
 
 #: The model each record type is read from, and a deterministic order for its rows.
@@ -717,6 +1008,9 @@ _RECORD_SOURCES: tuple[tuple[type, str, tuple[str, ...]], ...] = (
     (LessonLearned, "lesson_learned", ("revision", "id")),
     (Recommendation, "recommendation", ("created_at", "id")),
     (MudReport, "mud_report", ("report_date", "id")),
+    (BhaReport, "bha_report", ("report_date", "id")),
+    (BitRecord, "bit_record", ("run_date", "id")),
+    (SurveyRun, "survey_run", ("survey_date", "id")),
 )
 
 

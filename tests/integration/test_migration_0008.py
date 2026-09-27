@@ -30,7 +30,12 @@ from pathlib import Path
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
-from drilling_intelligence.database.migrations import heads, schema_diff, upgrade
+from drilling_intelligence.database.migrations import (
+    METADATA_REVISION,
+    heads,
+    schema_diff,
+    upgrade,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -150,9 +155,20 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
         assert identity_keys(engine) == identities_before, (
             "0008 must not touch calculation identity - a historical record stays identifiable"
         )
-        assert heads() == ["0010"], heads()  # a single head; 0010 is the latest link
+        assert heads() == [METADATA_REVISION], heads()  # one head, and the one the models claim
         assert schema_diff(engine) == {
-            "missing_tables": sorted(("mud_report", "mud_measurement")),
+            "missing_tables": sorted(
+                (
+                    "mud_report",
+                    "mud_measurement",
+                    # 0011: the V4 hardware and geometry domains.
+                    "bha_report",
+                    "bha_component",
+                    "bit_record",
+                    "survey_run",
+                    "survey_station",
+                )
+            ),
             "extra_tables": [],
             "missing_columns": sorted(LATER_MIGRATION_COLUMNS),
             "extra_columns": [],

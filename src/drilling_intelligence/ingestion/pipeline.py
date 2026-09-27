@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..core.enums import FileChangeKind, ProcessingStatus
-from ..core.errors import DrillingIntelligenceError
+from ..core.errors import DrillingIntelligenceError, ValidationError
 from ..core.logging import get_logger
 from ..database.session import Database
 from ..documents.registry import DocumentRegistry, RegistrationResult
@@ -141,6 +141,69 @@ class IngestionPipeline:
         self._knowledge_arg = knowledge
         self.derive_knowledge_enabled = bool(derive_knowledge)
         self.knowledge = knowledge
+        #: Resolved on first use by :meth:`workspace_identity`; ``None`` means "not asked yet",
+        #: never "this folder has no workspace".
+        self._workspace_identity: str | None = None
+
+    def workspace_identity(self) -> str:
+        """The registry row id this pipeline's workspace root belongs to, resolved once.
+
+        Ingestion is the boundary where a file on disk becomes a ``Document`` row, so it is the
+        boundary that has to attach the workspace identity - not the CLI, which is only one of
+        several callers.  Leaving it to the caller meant that every non-CLI ingest (the desktop UI,
+        the API, a fixture) filed documents under ``workspace_id IS NULL`` while a workspace row for
+        that exact folder already existed, and every workspace-scoped query then reported zero.
+
+        Cached per pipeline: one folder, one answer, one query.  Re-resolving on every file would
+        turn ingestion into a stream of identical registry lookups.
+        """
+        if self._workspace_identity is None:
+            from ..wells.repository import WellRepository
+
+            with self.database.session() as session:
+                repository = WellRepository(session)
+                self._workspace_identity = repository.resolve_workspace_id(
+                    self.workspace_root,
+                    name=str(getattr(getattr(self.settings, "workspace", None), "name", "") or ""),
+                    database_path=self.database_path(),
+                )
+                session.commit()
+        return self._workspace_identity
+
+    def database_path(self) -> str:
+        """The file this pipeline is connected to, as a plain path ("" when it is not a file).
+
+        Only SQLite gives a workspace a file to point at, and only a file can prove that a folder
+        really is the home of the database being written to.  Anything else returns "" and the
+        containment check is skipped rather than guessed.
+        """
+        url = str(getattr(self.database, "url", "") or "")
+        if not url.startswith("sqlite:///"):
+            return ""
+        return url[len("sqlite:///") :]
+
+    def _assert_workspace_belongs_here(self, workspace_id: str) -> None:
+        """An explicit workspace id must *be* this pipeline's workspace, not merely exist.
+
+        The earlier version of this check only asked whether the id was a row in this database.
+        That is not enough: a caller could take workspace A's root, A's database, and an id for a
+        different row that happened to live in the same file, and the persistence layer would
+        happily file A's corpus under B.  Physical source location and persistent ownership would
+        disagree, which is exactly the contradiction the whole identity model exists to prevent.
+
+        So the explicit id is compared against the identity this root and database resolve to.  It
+        is an assertion the caller can make, not an override the caller can exercise - if you know
+        which workspace you mean, this proves you were right, and if you were wrong it says so
+        instead of writing the wrong rows.
+        """
+        resolved = self.workspace_identity()
+        if str(workspace_id) != resolved:
+            raise ValidationError(
+                f"workspace_id {workspace_id} does not match the workspace this pipeline is bound "
+                f"to ({resolved}, root {self.workspace_root}). Refusing to file documents from "
+                "this folder under a different workspace identity. Omit workspace_id to use the "
+                "resolved one."
+            )
 
     # -- scanner ------------------------------------------------------------
     def build_scanner(
@@ -300,6 +363,15 @@ class IngestionPipeline:
         from ..database.models import IngestionRun
 
         scan_root = Path(root).expanduser().resolve() if root else self.workspace_root
+        # An explicit ``workspace_id`` is an override and wins.  When there is none the identity is
+        # resolved from this pipeline's own workspace root rather than left NULL: a document with no
+        # workspace is invisible to every workspace-scoped query, and "the caller did not say" is
+        # not a reason to file it nowhere.  Resolution is by the folder's resolved path, which is
+        # unique in the registry, so this cannot attach the wrong workspace.
+        if not workspace_id:
+            workspace_id = self.workspace_identity()
+        else:
+            self._assert_workspace_belongs_here(workspace_id)
         result = PipelineResult(root=str(scan_root), workspace_id=workspace_id)
         knowledge = self.knowledge_service()
         if not scan_root.exists():

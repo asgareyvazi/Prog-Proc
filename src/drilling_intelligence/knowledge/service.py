@@ -34,7 +34,7 @@ a field whose provenance was lost
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -48,6 +48,7 @@ from ..core.enums import (
     KnowledgeStatus,
     RecordState,
 )
+from ..database.integrity import check_current_version_invariants, check_knowledge_relations
 from ..database.models import (
     Document,
     DocumentVersion,
@@ -68,7 +69,16 @@ from .entities import (
     subject_type_for_classification,
 )
 from .facts import KnowledgeFact, predicate_for_field
-from .repository import KnowledgeRepository
+from .recovery import (
+    AMBIGUOUS,
+    DETERMINISTIC,
+    REEXTRACT,
+    UNCHANGED,
+    assess_recovery,
+    plan_recovery,
+    recover_field_name,
+)
+from .repository import KnowledgeRepository, KnowledgeScope
 
 __all__ = ["KnowledgeExtractionService", "SyncResult"]
 
@@ -216,10 +226,33 @@ class KnowledgeExtractionService:
         planned = str(document.classification) in _PLANNED_CLASSIFICATIONS
         record_state = RecordState.PLANNED.value if planned else RecordState.ACTUAL.value
         facts: list[KnowledgeFact] = []
-        for entry in entries:
-            name = str(entry.get("name") or "").strip()
+        for stored_entry in entries:
+            name = str(stored_entry.get("name") or "").strip()
             if not name:
                 continue
+            entry = stored_entry
+            # Recover the field name from the excerpt recorded beside the value before anything is
+            # derived from it.  An artefact stored before a vocabulary fix keeps the name the
+            # extractor gave it at the time; the source span stored alongside still says which
+            # quantity it was, so a rebuild can be correct without re-reading the document and
+            # without rewriting the artefact.  Ambiguous entries keep their stored name - see
+            # :mod:`drilling_intelligence.knowledge.recovery`.
+            provenance_for_recovery = entry.get("provenance")
+            recovered, _category = recover_field_name(
+                name,
+                str(
+                    (provenance_for_recovery or {}).get("excerpt")
+                    if isinstance(provenance_for_recovery, Mapping)
+                    else ""
+                )
+                or "",
+                entry.get("value"),
+            )
+            if recovered != name:
+                # A copy: the artefact's own ``extracted_fields`` is a record of what the extractor
+                # produced at ingest time and is not rewritten by a rebuild.
+                entry = {**entry, "name": recovered, "recovered_from": name}
+                name = recovered
             if not str(entry.get("value") or "").strip() and str(
                 entry.get("quality") or ""
             ).upper() in {"MISSING", ""}:
@@ -587,15 +620,268 @@ class KnowledgeExtractionService:
         difference between a repair command and a data-loss command.  Facts whose document is gone
         disappear here rather than lingering as orphans, and the search index is rewritten from the
         same authoritative data.
+
+        The deletion is scoped exactly as the re-derivation is.  Passing ``well_id`` used to narrow
+        only the second half, so a rebuild of one well removed the whole workspace's derived rows
+        and put back just that well's - a scoped command behaving like an unscoped one, with the
+        loss reported as a successful run.
         """
         with self._write_session(session) as scoped:
-            removed = KnowledgeRepository(scoped).delete_derived(workspace_id=workspace_id)
+            removed = KnowledgeRepository(scoped).delete_derived(
+                workspace_id=workspace_id, well_id=well_id
+            )
         summary = self.sync_all(workspace_id=workspace_id, well_id=well_id, session=session)
         summary["removed"] = removed
         return summary
 
+    def plan_rebuild(
+        self,
+        *,
+        workspace_id: str | None = None,
+        well_id: str | None = None,
+        workspace_label: str = "",
+        well_label: str = "",
+    ) -> dict[str, Any]:
+        """What a rebuild would do, computed by running one and throwing the writes away.
+
+        There is deliberately no second implementation here.  A dry run that counts rows its own
+        way and an executor that writes them its own way are two programs that agree today and
+        disagree after the next change, and the disagreement surfaces only when an operator has
+        already trusted the preview.  So this calls :meth:`rebuild` - the same method the real
+        command calls - inside a transaction that is rolled back, and reports what it actually did.
+
+        Three things make that safe rather than merely clever:
+
+        *   ``session`` is passed all the way down, so every writer in the path uses this
+            transaction.  ``_write_session`` commits only when it opened the session itself, and
+            ``sync_version`` refreshes the search index only when it owns the session, so neither
+            happens here.  The rollback at the end discards the rest.
+        *   the planning service is built with ``refresh_index=False`` as a second line of defence,
+            because the index is a *separate SQLite file* that no registry rollback can undo.
+        *   ``detect_conflicts`` writes - it marks and clears rows - so the "before" numbers are
+            read first and its own writes are rolled back before the rebuild runs.
+
+        What comes back is the plan: the same ``facts``/``relations``/``conflicts`` accounting the
+        executor returns, plus the semantic-repair classification of the artefacts in scope and the
+        recovery state the workspace is in.  ``mutations`` is ``False`` and stays that way; the
+        caller decides whether to execute.
+        """
+        planning = KnowledgeExtractionService(
+            database=self.database,
+            index=self.index,
+            settings=self.settings,
+            refresh_index=False,
+        )
+
+        # Everything the operator sees about the workspace *now* comes from ``status()``, so the
+        # dry run and ``knowledge status`` cannot give two answers to the same question.
+        # Scoped exactly as the rebuild below is.  A plan that describes the whole workspace while
+        # executing on one well would tell the operator the wrong thing about the wrong rows.
+        before = self.status(workspace_id=workspace_id, well_id=well_id)
+
+        session = self.database.session()
+        try:
+            repository = KnowledgeRepository(session)
+
+            # Counted over the whole file rather than through ``status()``: a note a person typed
+            # cites no document, and ``counts(workspace_id=...)`` filters on the document's
+            # workspace, so a workspace-scoped tally would report zero manual facts while the note
+            # was still sitting there.  ``counts()`` makes the same argument for entity records - a
+            # workspace *is* a file - and "did the rebuild keep my note" deserves the same treatment.
+            def manual_notes(active) -> int:
+                return int(
+                    KnowledgeRepository(active)
+                    .counts()
+                    .get("by_origin", {})
+                    .get(KnowledgeOrigin.MANUAL.value, 0)
+                )
+
+            manual_before = manual_notes(session)
+            # The two checkers a rebuild actually depends on: what the registry claims is current,
+            # and whether the knowledge edges still point at rows that exist.  Both are read-only,
+            # and a violation here is the one condition under which planning must say "stop" rather
+            # than produce a confident-looking plan built on a registry that is lying.
+            integrity_problems = [
+                problem.to_dict()
+                for problem in (
+                    *check_current_version_invariants(session),
+                    *check_knowledge_relations(session),
+                )
+            ]
+            session.rollback()
+            # ``detect_conflicts`` marks CONFLICTED and clears stale rows, so it is run for its
+            # answer and then discarded.  The open-conflict count above is read before it, from the
+            # stored rows, which is the number ``doctor`` reports too.
+            conflict_before = detect_conflicts(repository).to_dict()
+            session.rollback()
+
+            pairs = self._current_version_pairs(
+                session, workspace_id=workspace_id, well_id=well_id, limit=None
+            )
+            payloads = []
+            for _document_id, version_id in pairs:
+                extraction = DocumentRepository(session).extraction_for_version(version_id)
+                payloads.append(dict(extraction.document_json) if extraction else None)
+            session.rollback()
+
+            predicted = planning.rebuild(
+                workspace_id=workspace_id, well_id=well_id, session=session
+            )
+            manual_after = manual_notes(session)
+
+            # Registry evidence for the "matched nothing" case below.  It has to come from the
+            # document table rather than from ``before``: once ``_staleness`` was scoped properly
+            # its counters go to zero in exactly the situation that needs explaining.
+            documents_total = int(
+                session.execute(select(func.count()).select_from(Document)).scalar_one()
+            )
+            documents_in_workspace = (
+                int(
+                    session.execute(
+                        select(func.count())
+                        .select_from(Document)
+                        .where(Document.workspace_id == workspace_id)
+                    ).scalar_one()
+                )
+                if workspace_id
+                else documents_total
+            )
+        finally:
+            # The whole point.  Nothing this method touched survives it - rows, edges, conflicts,
+            # statuses or timestamps.
+            session.rollback()
+            session.close()
+
+        repair = plan_recovery(payloads)
+        counts = repair["counts"]
+        facts = predicted["facts"]
+        index_stats = before.get("index") or {}
+        assessment = assess_recovery(
+            {
+                "integrity_problems": integrity_problems,
+                "knowledge": {
+                    "needs_rebuild": bool(before.get("needs_rebuild")),
+                    "facts": int(before.get("facts") or 0),
+                    "detached_facts": int(before.get("detached_facts") or 0),
+                    "versions_with_artefacts": int(before.get("versions_with_artefacts") or 0),
+                    "versions_without_knowledge": int(
+                        before.get("versions_without_knowledge") or 0
+                    ),
+                },
+                "index": index_stats,
+                "conflicts": {
+                    "open": int(before.get("open_conflicts") or 0),
+                    "ambiguous": int(conflict_before.get("ambiguous_within_source") or 0),
+                },
+            }
+        )
+        index_drifted = bool(index_stats.get("error")) or any(
+            int(index_stats.get(key) or 0) > 0
+            for key in (
+                "stale_versions",
+                "orphaned",
+                "missing_versions",
+                "structured_missing",
+                "structured_stale",
+                "structured_orphaned",
+            )
+        )
+        warnings = list(predicted.get("warnings") or [])
+        if not pairs:
+            # A plan of zeros has three possible causes and only one of them is a defect, so they
+            # are named separately instead of being flattened into one message or into silence.
+            # The distinction is made from rows in the document table, not from a threshold.
+            if documents_in_workspace:
+                warnings.append(
+                    "this scope matched no current document version, yet the workspace owns "
+                    f"{documents_in_workspace} document(s); nothing is derivable from them yet - "
+                    "the artefacts have not been produced, so this is a processing gap rather than "
+                    "an identity one"
+                )
+            elif documents_total:
+                warnings.append(
+                    "this scope matched no document while the registry holds "
+                    f"{documents_total}; the workspace id is wrong, or documents were ingested "
+                    "before identity was resolved at the pipeline and carry no workspace_id, which "
+                    "makes them invisible to every workspace-scoped query"
+                )
+            # else: the registry is empty.  A legitimate zero, and inventing a warning here would
+            # be crying wolf at every fresh workspace.
+        needs_context = [row for row in repair["rows"] if row["category"] in (AMBIGUOUS, REEXTRACT)]
+        if needs_context:
+            warnings.append(
+                f"{len(needs_context)} stored field(s) cannot be repaired from what the artefact "
+                "records; they keep their stored name and are listed under semantic_repair.rows"
+            )
+        return {
+            "action": "rebuild",
+            "dry_run": True,
+            "scope": {
+                "workspace": workspace_label or (workspace_id or ""),
+                "workspace_id": workspace_id or "",
+                "well": well_label or "",
+                "well_id": well_id or "",
+                "scoped_to_well": bool(well_id),
+            },
+            "plan": {
+                "versions": int(predicted.get("versions") or 0),
+                "documents": len({document_id for document_id, _ in pairs}),
+                "facts": {
+                    "create": int(facts.get("created") or 0),
+                    "update": int(facts.get("updated") or 0),
+                    "unchanged": int(facts.get("unchanged") or 0),
+                    "remove": int(predicted.get("removed") or 0),
+                },
+                "relations": int(predicted.get("relations") or 0),
+                "skipped_fields": int(predicted.get("skipped_fields") or 0),
+            },
+            "semantic_repair": {
+                "scanned": int(repair["scanned"]),
+                # The module's own category names, mapped to what an operator has to decide.
+                # ``ambiguous`` is "requires context" and ``requires_reextraction`` is "the source
+                # has to be read again"; neither is a repair this command performs.
+                "deterministic": int(counts.get(DETERMINISTIC) or 0),
+                "requires_context": int(counts.get(AMBIGUOUS) or 0),
+                "requires_source_reextraction": int(counts.get(REEXTRACT) or 0),
+                "no_change": int(counts.get(UNCHANGED) or 0),
+                "rows": [row for row in repair["rows"] if row["category"] != UNCHANGED],
+            },
+            "conflicts": {
+                "before": int(before.get("open_conflicts") or 0),
+                "predicted": int(predicted.get("conflicts", {}).get("conflicts") or 0),
+                "ambiguous_before": int(conflict_before.get("ambiguous_within_source") or 0),
+                "ambiguous_predicted": int(
+                    predicted.get("conflicts", {}).get("ambiguous_within_source") or 0
+                ),
+            },
+            "index": {
+                "before": index_stats,
+                "state": "stale" if index_drifted else "consistent",
+                "refreshed_by_knowledge_rebuild": (
+                    "document and knowledge chunks for the versions it derives"
+                ),
+                "structured_rows_refreshed": False,
+                "action": "drillintel index rebuild" if index_drifted else None,
+            },
+            "manual_facts": {
+                "preserved": manual_before == manual_after,
+                "count": manual_before,
+                "count_after_planned_rebuild": manual_after,
+            },
+            "recovery": assessment,
+            "warnings": warnings[:50],
+            "mutations": False,
+            "result": "PLAN_ONLY",
+        }
+
     # -- reporting ----------------------------------------------------------
-    def status(self, *, workspace_id: str | None = None, session: Any = None) -> dict[str, Any]:
+    def status(
+        self,
+        *,
+        workspace_id: str | None = None,
+        well_id: str | None = None,
+        session: Any = None,
+    ) -> dict[str, Any]:
         """What knowledge exists, and whether it is behind the registry.
 
         Reads only.  ``session`` is accepted so a caller can ask about rows it has written but not
@@ -604,8 +890,8 @@ class KnowledgeExtractionService:
         """
         with self._write_session(session) as scoped:
             repository = KnowledgeRepository(scoped)
-            counts = repository.counts(workspace_id=workspace_id)
-            counts.update(self._staleness(scoped, workspace_id=workspace_id))
+            counts = repository.counts(workspace_id=workspace_id, well_id=well_id)
+            counts.update(self._staleness(scoped, workspace_id=workspace_id, well_id=well_id))
             # The recommendation has to be actionable, so it fires on the two cases a rebuild
             # actually fixes: nothing was ever derived, or derived rows point at versions the
             # registry no longer considers current.  A version with *no* facts is not on that list
@@ -787,10 +1073,14 @@ class KnowledgeExtractionService:
             .where(DocumentVersion.is_current.is_(True))
             .order_by(Document.identity_path, DocumentVersion.version_number)
         )
-        if workspace_id:
-            statement = statement.where(Document.workspace_id == workspace_id)
-        if well_id:
-            statement = statement.where(Document.well_id == well_id)
+        # The same ``KnowledgeScope`` ``delete_derived`` and ``counts`` filter on, so "what a
+        # rebuild re-derives", "what it deletes first" and "what status reports" are one population
+        # rather than three filters that happen to agree.
+        scope = KnowledgeScope.of(workspace_id, well_id)
+        if scope.workspace_id:
+            statement = statement.where(Document.workspace_id == scope.workspace_id)
+        if scope.well_id:
+            statement = statement.where(Document.well_id == scope.well_id)
         if limit:
             statement = statement.limit(max(1, int(limit)))
         return [
@@ -810,7 +1100,9 @@ class KnowledgeExtractionService:
             statement = statement.where(KnowledgeItem.status != KnowledgeStatus.SUPERSEDED.value)
         return list(session.execute(statement.limit(max(1, int(limit)))).scalars())
 
-    def _staleness(self, session: Any, workspace_id: str | None) -> dict[str, Any]:
+    def _staleness(
+        self, session: Any, workspace_id: str | None, well_id: str | None = None
+    ) -> dict[str, Any]:
         """Two counts that answer "is the knowledge behind the documents?", without a stamp table.
 
         ``versions_without_knowledge`` is a current version that has an artefact but no derived
@@ -820,8 +1112,8 @@ class KnowledgeExtractionService:
         over indexed columns, because ``status`` has to stay cheap on a large workspace.
         """
         current = select(DocumentVersion.id).where(DocumentVersion.is_current.is_(True))
-        if workspace_id:
-            scoped_documents = select(Document.id).where(Document.workspace_id == workspace_id)
+        scoped_documents = KnowledgeScope.of(workspace_id, well_id).document_ids()
+        if scoped_documents is not None:
             current = current.where(DocumentVersion.document_id.in_(scoped_documents))
         derived = (
             select(KnowledgeItem.document_version_id)
@@ -845,17 +1137,23 @@ class KnowledgeExtractionService:
                 .where(DocumentVersion.id.in_(with_artefact), DocumentVersion.id.notin_(derived))
             ).scalar_one()
         )
-        detached = int(
-            session.execute(
-                select(func.count())
-                .select_from(KnowledgeItem)
-                .where(
-                    KnowledgeItem.origin == KnowledgeOrigin.EXTRACTED.value,
-                    KnowledgeItem.status != KnowledgeStatus.SUPERSEDED.value,
-                    KnowledgeItem.document_version_id.notin_(current),
-                )
-            ).scalar_one()
+        detached_statement = (
+            select(func.count())
+            .select_from(KnowledgeItem)
+            .where(
+                KnowledgeItem.origin == KnowledgeOrigin.EXTRACTED.value,
+                KnowledgeItem.status != KnowledgeStatus.SUPERSEDED.value,
+                KnowledgeItem.document_version_id.notin_(current),
+            )
         )
+        # Scoped through the documents rather than left file-wide, so a well-scoped status answers
+        # about that well's rows.  Without this the planner could report a workspace as stale on the
+        # strength of another well's rows while the rebuild it recommends touches none of them.
+        if scoped_documents is not None:
+            detached_statement = detached_statement.where(
+                KnowledgeItem.document_id.in_(scoped_documents)
+            )
+        detached = int(session.execute(detached_statement).scalar_one())
         return {
             "versions_with_artefacts": artefacts,
             "versions_without_knowledge": missing,

@@ -31,6 +31,9 @@ from ..core.errors import DrillingIntelligenceError
 from ..core.ids import new_id
 from .models import (
     BestPractice,
+    BhaComponent,
+    BhaReport,
+    BitRecord,
     Calculation,
     Company,
     CostItem,
@@ -55,6 +58,8 @@ from .models import (
     ServiceCompany,
     Skill,
     Source,
+    SurveyRun,
+    SurveyStation,
     Well,
     WellEvent,
     WellOperation,
@@ -68,6 +73,7 @@ __all__ = [
     "check_calculation_dependencies",
     "check_cross_well_links",
     "check_current_version_invariants",
+    "check_domain_identities",
     "check_extraction_cache",
     "check_knowledge_relations",
     "check_operational_integrity",
@@ -278,6 +284,12 @@ RELATION_ENDPOINT_MODELS: dict[str, type] = {
     "problem_occurrence": ProblemOccurrence,
     "mud_report": MudReport,
     "mud_measurement": MudMeasurement,
+    # hardware and geometry (V4)
+    "bha_report": BhaReport,
+    "bha_component": BhaComponent,
+    "bit_record": BitRecord,
+    "survey_run": SurveyRun,
+    "survey_station": SurveyStation,
     # engineering records
     "procedure": ProcedureRecord,
     "program": DrillingProgram,
@@ -593,6 +605,9 @@ _SAME_WELL_LINKS: tuple[tuple[type, str, type], ...] = (
     (ProblemOccurrence, "operation_id", WellOperation),
     (CostItem, "npt_id", NptRecord),
     (MudMeasurement, "mud_report_id", MudReport),
+    (BhaComponent, "bha_report_id", BhaReport),
+    (SurveyStation, "survey_run_id", SurveyRun),
+    (BitRecord, "bha_report_id", BhaReport),
 )
 
 #: Section-scoped rows: the section must be a section *of the well the row is filed under*.
@@ -605,6 +620,11 @@ _SECTION_OWNERS: tuple[type, ...] = (
     LessonLearned,
     MudReport,
     MudMeasurement,
+    BhaReport,
+    BhaComponent,
+    BitRecord,
+    SurveyRun,
+    SurveyStation,
 )
 
 #: The tables whose revisions form a chain, and whether "current" is a column they carry.
@@ -629,6 +649,11 @@ _PROMOTED_MODELS: tuple[type, ...] = (
     ProblemOccurrence,
     MudReport,
     MudMeasurement,
+    BhaReport,
+    BhaComponent,
+    BitRecord,
+    SurveyRun,
+    SurveyStation,
     CostItem,
     ProcedureRecord,
     DrillingProgram,
@@ -1068,8 +1093,135 @@ def check_calculation_dependencies(session: Session) -> list[IntegrityProblem]:
     return problems
 
 
+#: The domains whose identity and current/history semantics the schema cannot fully state.
+#:
+#: Each entry is ``(parent, child, child's parent foreign key)``.  A database *can* enforce that an
+#: ``identity_key`` is unique and that a child's foreign key resolves; it cannot say that a promoted
+#: parent must have the children its own ``*_count`` column claims, that a child may not outlive the
+#: parent it was promoted with, or that a single source version must not leave two rows claiming to be
+#: the current assembly of one well.  Those are the failure modes a re-promotion can produce, so they
+#: are checked here rather than trusted.
+_SOURCE_VERSIONED_DOMAINS: tuple[tuple[type, type | None, str], ...] = (
+    (MudReport, MudMeasurement, "mud_report_id"),
+    (BhaReport, BhaComponent, "bha_report_id"),
+    (SurveyRun, SurveyStation, "survey_run_id"),
+    (BitRecord, None, ""),
+)
+
+
+def check_domain_identities(session: Session) -> list[IntegrityProblem]:
+    """The identity and parent/child invariants of the source-versioned domains.
+
+    Four findings, each one a state the schema permits and the domain does not:
+
+    ``DUPLICATE_IDENTITY``      two rows carry the same ``identity_key``.  Promotion is idempotent by
+                                construction, so this means something wrote outside the promoter.
+    ``ORPHAN_CHILD``            a child row whose parent is gone.  SQLite only enforces a foreign key
+                                when told to, and a hand-repaired database is exactly where this shows
+                                up first.
+    ``CHILD_COUNT_MISMATCH``    a parent whose ``component_count``/``station_count`` disagrees with the
+                                rows it owns.  The counts are a promise the source made; a reader who
+                                sees "6 components" and finds five has no way to tell which is wrong.
+    ``MULTIPLE_CURRENT``        one source version produced more than one row claiming to be current
+                                for the same well.  "What is in the hole now" must have one answer.
+
+    Nothing is repaired here.  Each finding names the row and the reason, because the repair is either
+    a re-promotion from the source or a human decision, and neither is a side effect of a check.
+    """
+    problems: list[IntegrityProblem] = []
+    for parent_model, child_model, foreign_key in _SOURCE_VERSIONED_DOMAINS:
+        table = parent_model.__tablename__
+        for identity_key, count in session.execute(
+            select(parent_model.identity_key, func.count(parent_model.id))
+            .where(parent_model.identity_key.is_not(None))
+            .group_by(parent_model.identity_key)
+            .having(func.count(parent_model.id) > 1)
+        ).all():
+            problems.append(
+                IntegrityProblem(
+                    table,
+                    str(identity_key),
+                    "is the identity_key of more than one row",
+                    {"count": int(count)},
+                )
+            )
+        count_column = next(
+            (
+                name
+                for name in ("component_count", "station_count")
+                if name in {column.name for column in parent_model.__table__.columns}
+            ),
+            "",
+        )
+        if count_column and child_model is not None:
+            # One grouped count for the whole domain rather than one query per parent row.  A field's
+            # history is thousands of assemblies, and a check that costs a query per assembly costs
+            # more than the promotion it is auditing - which is how a doctor command ends up never
+            # being run.
+            owned_by_parent = dict(
+                session.execute(
+                    select(
+                        getattr(child_model, foreign_key),
+                        func.count(child_model.id),
+                    ).group_by(getattr(child_model, foreign_key))
+                ).all()
+            )
+            for row in session.execute(select(parent_model).order_by(parent_model.id)).scalars():
+                owned = int(owned_by_parent.get(row.id, 0))
+                claimed = int(getattr(row, count_column))
+                if owned != claimed:
+                    problems.append(
+                        IntegrityProblem(
+                            table,
+                            row.id,
+                            f"claims {claimed} children and owns {owned}",
+                            {count_column: claimed, "owned": owned},
+                        )
+                    )
+        if child_model is not None:
+            for child in session.execute(
+                select(child_model)
+                .where(getattr(child_model, foreign_key).notin_(select(parent_model.id)))
+                .order_by(child_model.id)
+            ).scalars():
+                problems.append(
+                    IntegrityProblem(
+                        child_model.__tablename__,
+                        child.id,
+                        f"names a {table} that does not exist",
+                        {foreign_key: str(getattr(child, foreign_key))},
+                    )
+                )
+        for well_id, version_id, count in session.execute(
+            select(
+                parent_model.well_id,
+                parent_model.document_version_id,
+                func.count(parent_model.id),
+            )
+            .where(
+                parent_model.is_current.is_(True),
+                parent_model.document_version_id.is_not(None),
+            )
+            .group_by(parent_model.well_id, parent_model.document_version_id)
+            .having(func.count(parent_model.id) > 1)
+        ).all():
+            # A bit record legitimately has several current rows per version - one per bit run - so
+            # "more than one" is only a finding for the domains that state one thing per version.
+            if parent_model is BitRecord:
+                continue
+            problems.append(
+                IntegrityProblem(
+                    table,
+                    str(well_id),
+                    "has more than one current row from the same document version",
+                    {"document_version_id": str(version_id), "count": int(count)},
+                )
+            )
+    return problems
+
+
 def check_operational_integrity(session: Session) -> list[IntegrityProblem]:
-    """All five operational checks in one call, which is what ``doctor`` and a test both want.
+    """All six operational checks in one call, which is what ``doctor`` and a test both want.
 
     Grouped because they answer one question - can these rows be read as a field's history? - and because
     a partial answer would be misread as a clean bill of health.
@@ -1080,4 +1232,79 @@ def check_operational_integrity(session: Session) -> list[IntegrityProblem]:
         + check_cross_well_links(session)
         + check_promoted_evidence(session)
         + check_calculation_dependencies(session)
+        + check_domain_identities(session)
     )
+
+
+def check_workspace_identity(session: Session) -> list[IntegrityProblem]:
+    """The one-database-per-workspace contract, and the rows that fall outside it.
+
+    ADR-0003 makes a single SQLite file the system of record for a single workspace.  Nothing in the
+    schema enforces that - ``workspace`` is an ordinary table and ``document.workspace_id`` is
+    nullable - so the assumption is load-bearing and invisible until something answers a
+    workspace-scoped question with rows from two workspaces merged together.  That is the failure
+    this checks for, and it is a finding rather than a note because a counter that silently sums two
+    workspaces is worse than a counter that is obviously wrong.
+
+    A NULL ``workspace_id`` is *not* reported here.  The foreign key is ``ondelete="SET NULL"``, so
+    an orphan whose workspace row was deleted is a legitimate state with a meaning, and doctor
+    counts those separately as a note.  What is checked instead is the state with no legitimate
+    reading: a pointer at a workspace row that is not there.
+    """
+    from .models import Workspace
+
+    problems: list[IntegrityProblem] = []
+    rows = list(session.execute(select(Workspace).order_by(Workspace.root_path)).scalars())
+    if len(rows) > 1:
+        problems.append(
+            IntegrityProblem(
+                "workspace",
+                str(len(rows)),
+                "this database holds more than one workspace row, but ADR-0003 makes one SQLite "
+                "file the system of record for one workspace; workspace-scoped counts here merge "
+                "populations that were never meant to share a file",
+                {"root_paths": [str(row.root_path) for row in rows]},
+            )
+        )
+
+    known = {str(row.id) for row in rows}
+    if known:
+        dangling = list(
+            session.execute(
+                select(Document.id, Document.workspace_id).where(
+                    Document.workspace_id.is_not(None),
+                    Document.workspace_id.notin_(known),
+                )
+            ).all()
+        )
+        if dangling:
+            problems.append(
+                IntegrityProblem(
+                    "document",
+                    str(dangling[0][0]),
+                    f"{len(dangling)} document(s) point at a workspace row that does not exist; "
+                    "they are invisible to every workspace-scoped query and cannot be attributed "
+                    "without a decision about which workspace they belong to",
+                    {
+                        "count": len(dangling),
+                        "missing_workspace_ids": sorted({str(row[1]) for row in dangling}),
+                    },
+                )
+            )
+
+    # A well is local to the workspace database and carries no workspace_id of its own, which is
+    # fine while the file holds one workspace - and incoherent the moment it holds two.  Naming the
+    # wells whose project is unknown is what makes that second case diagnosable.
+    if len(rows) > 1:
+        for well in session.execute(select(Well).order_by(Well.name, Well.id)).scalars():
+            if well.project_id and session.get(Project, str(well.project_id)) is None:
+                problems.append(
+                    IntegrityProblem(
+                        "well",
+                        well.id,
+                        "cites a project that does not exist, so it cannot be attributed to a "
+                        "workspace in a database that holds more than one",
+                        {"project_id": str(well.project_id)},
+                    )
+                )
+    return problems

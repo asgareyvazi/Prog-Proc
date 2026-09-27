@@ -109,6 +109,9 @@ with ws.database.session() as session:
     session.commit()
 
 pipe = IngestionPipeline(settings=settings, workspace_root=ws.root, database=ws.database)
+# workspace_id is optional: omit it and the pipeline resolves the folder's own registry row.
+# Supplying it is an assertion, not an override - it is checked against that resolution and
+# refused if it disagrees, so a corpus can never be filed under a workspace it did not come from.
 result = pipe.run(root=Path("/data/projects"), workspace_id=workspace_row.id, well_id=well.id)
 print(result.counts)  # NEW / MODIFIED / UNCHANGED / DUPLICATE / REMOVED
 for item in result.results:  # every file: what changed, what we read, how sure we are
@@ -292,6 +295,12 @@ version does. Nothing in the projection is ever written back to the domain table
 - **A record is not a document and not a fact.** Promotion writes rows that cite a version; it never
   edits a file's record, never confirms itself, and never fills a gap the source left open. A stated
   duration and a computed one are kept apart by `duration_basis` so they cannot be averaged together.
+- **A workspace is the folder and its database, and nothing else may say otherwise.** One
+  SQLite file under `.drillintel/database/` is the system of record for one workspace (ADR-0003).
+  Documents are identified by `(workspace_id, identity_path)`, the identity is attached where
+  documents are written rather than where commands are parsed, and a workspace moved to a new path
+  is the same workspace because the database travels with it. An explicit `workspace_id` is
+  validated against that binding, never trusted over it.
 - **No fake implementations.** If a subsystem is not built, it is absent from the tree —
   there are no stubs that return plausible-looking data.
 

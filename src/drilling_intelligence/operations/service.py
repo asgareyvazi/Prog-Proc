@@ -27,12 +27,17 @@ from sqlalchemy.orm import Session
 
 from ..core.enums import ConfirmationStatus
 from ..database.models import (
+    BhaComponent,
+    BhaReport,
+    BitRecord,
     DdrReport,
     Document,
     Extraction,
     MudReport,
     NptRecord,
     ProblemOccurrence,
+    SurveyRun,
+    SurveyStation,
     Well,
     WellEvent,
     WellOperation,
@@ -52,6 +57,11 @@ RECORD_TABLES: tuple[tuple[str, type], ...] = (
     ("npt", NptRecord),
     ("problems", ProblemOccurrence),
     ("mud_reports", MudReport),
+    ("bha_reports", BhaReport),
+    ("bha_components", BhaComponent),
+    ("bit_records", BitRecord),
+    ("survey_runs", SurveyRun),
+    ("survey_stations", SurveyStation),
 )
 
 
@@ -310,6 +320,111 @@ class OperationalService:
                 limit=limit,
             )
 
+    def list_bha_reports(
+        self,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        since: Any = None,
+        until: Any = None,
+        status: str = "",
+        current_only: bool = False,
+        limit: int = 200,
+        session: Session | None = None,
+    ) -> list[BhaReport]:
+        with self._session(session) as active:
+            return OperationsRepository(active).list_bha_reports(
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+                since=since,
+                until=until,
+                status=status,
+                current_only=current_only,
+                limit=limit,
+            )
+
+    def list_bha_components(
+        self,
+        *,
+        bha_report_id: str = "",
+        well_id: str = "",
+        component_type: str = "",
+        limit: int = 1000,
+        session: Session | None = None,
+    ) -> list[BhaComponent]:
+        with self._session(session) as active:
+            return OperationsRepository(active).list_bha_components(
+                bha_report_id=bha_report_id,
+                well_id=well_id,
+                component_type=component_type,
+                limit=limit,
+            )
+
+    def list_bit_records(
+        self,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        since: Any = None,
+        until: Any = None,
+        status: str = "",
+        current_only: bool = False,
+        limit: int = 200,
+        session: Session | None = None,
+    ) -> list[BitRecord]:
+        with self._session(session) as active:
+            return OperationsRepository(active).list_bit_records(
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+                since=since,
+                until=until,
+                status=status,
+                current_only=current_only,
+                limit=limit,
+            )
+
+    def list_survey_runs(
+        self,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        since: Any = None,
+        until: Any = None,
+        status: str = "",
+        current_only: bool = False,
+        limit: int = 200,
+        session: Session | None = None,
+    ) -> list[SurveyRun]:
+        with self._session(session) as active:
+            return OperationsRepository(active).list_survey_runs(
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+                since=since,
+                until=until,
+                status=status,
+                current_only=current_only,
+                limit=limit,
+            )
+
+    def list_survey_stations(
+        self,
+        *,
+        survey_run_id: str = "",
+        well_id: str = "",
+        limit: int = 2000,
+        session: Session | None = None,
+    ) -> list[SurveyStation]:
+        with self._session(session) as active:
+            return OperationsRepository(active).list_survey_stations(
+                survey_run_id=survey_run_id, well_id=well_id, limit=limit
+            )
+
     def list_operations(
         self,
         *,
@@ -414,6 +529,11 @@ def combine_promotion_results(
         "target",
         "mud_report",
         "mud_measurement",
+        "bha_report",
+        "bha_component",
+        "bit_record",
+        "survey_run",
+        "survey_station",
         "removed",
     )
     counts = {kind: {"created": 0, "unchanged": 0, "conflict": 0} for kind in kinds}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -22,11 +23,33 @@ from ..core.enums import (
 )
 from ..core.errors import ValidationError
 from ..core.ids import new_id
+from ..core.logging import get_logger
 from ..database.models import Company, Document, Field, Project, Well, WellSection, Workspace
 
 #: The section attributes that describe the hole as it was drilled, and so may only be written
 #: ``ACTUAL``.  A section's *planned* interval belongs to the program target that governs it.
 DEPTH_KEYS: frozenset[str] = frozenset({"top_depth", "bottom_depth"})
+
+
+log = get_logger("wells.repository")
+
+
+def _path_contains(root: Path, candidate: str) -> bool:
+    """Whether ``candidate`` resolves to somewhere underneath ``root``.
+
+    Used to decide whether a folder is really the home of a given database file.  A path that
+    cannot be resolved answers ``False`` rather than raising: an unreadable path is not evidence
+    that the database lives there.
+    """
+    try:
+        resolved = Path(candidate).expanduser().resolve()
+    except OSError:  # pragma: no cover - a path the OS will not resolve
+        return False
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 class WellRepository:
@@ -76,6 +99,108 @@ class WellRepository:
         return self.session.execute(
             select(Workspace).where(Workspace.root_path == root_path)
         ).scalar_one_or_none()
+
+    def resolve_workspace_id(
+        self,
+        root: Path | str,
+        *,
+        name: str = "",
+        data_dir: str = "",
+        database_path: str = "",
+    ) -> str:
+        """The registry row that owns a folder on disk, created when it does not exist yet.
+
+        This is the one authoritative answer to "which workspace is this folder?", and it lives in
+        the repository rather than in a caller because every path that persists a document needs the
+        same answer.  It used to live only in the CLI, which is how ingestion outside the CLI -
+        the desktop UI, the API, a test fixture - filed documents under ``workspace_id IS NULL``
+        while a workspace row for that exact folder was sitting in the table.  Every workspace-
+        scoped query filters on that column, so the documents existed and were invisible.
+
+        Two details are deliberate:
+
+        *   an existing row is matched by *resolved* path first, so a workspace registered through
+            the API with a differently spelled path is reused rather than duplicated;
+        *   ``get_or_create_workspace`` is then called with the **stored** path, so the tolerant
+            match can never register the same folder twice - ``workspace.root_path`` is unique.
+
+        ``Document.workspace_id`` is nullable because the foreign key is ``ondelete="SET NULL"``:
+        a NULL means "the owning workspace row was deleted", which is a real state with a meaning.
+        It does not mean "nobody asked", and this method is what makes sure nobody has to ask.
+        """
+        target = Path(root).expanduser().resolve()
+        rows = self.list_workspaces()
+        for row in rows:
+            try:
+                if Path(row.root_path).expanduser().resolve() == target:
+                    # Refresh rather than merely return.  Several callers resolve the same folder
+                    # and not all of them know everything about it: the pipeline resolves during
+                    # ingestion and has no data_dir, the CLI resolves with one.  Whichever arrives
+                    # first creates the row, so a caller that knows more has to be allowed to fill
+                    # the gap - otherwise the row silently keeps whatever the first caller happened
+                    # to know, which is how ``data_dir`` ended up empty.
+                    changed = False
+                    if name and row.name != name:
+                        row.name = name
+                        changed = True
+                    if data_dir and row.data_dir != data_dir:
+                        row.data_dir = data_dir
+                        changed = True
+                    if changed:
+                        self.session.flush()
+                    return str(row.id)
+            except OSError:  # pragma: no cover - a stored path that cannot be resolved
+                continue
+
+        # No row matches this path.  ADR-0003 makes one SQLite file per workspace the system of
+        # record, and a workspace is a folder you can pick up and move - so a registry holding
+        # exactly one row, none of whose path matches, is that same workspace after a move, not a
+        # second workspace appearing inside the first one's database.  Reuse the row and refresh
+        # the path.  Reproduced before this rule existed: moving the folder produced two rows for
+        # one database, and every workspace-scoped query then answered about the wrong half.
+        if len(rows) == 1:
+            row = rows[0]
+            # A workspace is a folder you can pick up and move, and ADR-0003 makes its SQLite file
+            # the system of record - so a *genuine* move carries the database with it.  That is the
+            # signal that separates "this workspace moved" from "this pipeline was pointed at the
+            # wrong folder", and without it the two are indistinguishable: the first draft of this
+            # rule treated any single-row path mismatch as a move, which let a pipeline attached to
+            # database A but handed root B silently repoint workspace A's ``root_path`` at B.  One
+            # ingest call could relocate a workspace it was never asked to touch.
+            if database_path and not _path_contains(target, database_path):
+                raise ValidationError(
+                    f"root {target} does not contain the database this pipeline is connected to "
+                    f"({database_path}), so it is not this workspace's folder. Refusing to either "
+                    "move the registered workspace there or register a second one in this "
+                    "database - ADR-0003 makes one SQLite file the system of record for one "
+                    "workspace."
+                )
+            moved_from = str(row.root_path)
+            row.root_path = str(target)
+            if name:
+                row.name = name
+            if data_dir:
+                row.data_dir = data_dir
+            self.session.flush()
+            log.event(
+                "workspace.relocated",
+                workspace_id=str(row.id),
+                moved_from=moved_from,
+                moved_to=str(target),
+            )
+            return str(row.id)
+
+        if len(rows) > 1:
+            # More than one workspace row and none of them is this folder.  Attribution is a guess
+            # at this point, and a guess here silently files a corpus under the wrong workspace.
+            raise ValidationError(
+                f"this database holds {len(rows)} workspace rows "
+                f"({', '.join(sorted(r.root_path for r in rows))}) and none matches {target}; "
+                "ADR-0003 makes one SQLite file per workspace the system of record, so this state "
+                "needs a human decision rather than an automatic one"
+            )
+
+        return str(self.get_or_create_workspace(str(target), name=name, data_dir=data_dir).id)
 
     def mark_scanned(self, workspace: Workspace, at: datetime | None = None) -> None:
         workspace.last_scan_at = at or datetime.now(UTC)

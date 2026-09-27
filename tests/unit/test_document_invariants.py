@@ -39,6 +39,7 @@ def make_document(session: Session, name: str = "program.pdf") -> Document:
     repository = DocumentRepository(session)
     return repository.create_document(
         workspace_id=None,
+        unscoped=True,  # a deliberate test row, not a production one
         identity_path=f"docs/{name}".lower(),
         filename=name,
         extension=".pdf",

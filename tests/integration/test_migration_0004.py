@@ -532,7 +532,18 @@ def test_the_downgrade_removes_the_domain_and_keeps_the_workspace(tmp_path) -> N
         assert snapshot(engine) == before, "downgrading the schema must not downgrade the data"
         diff = schema_diff(engine)
         assert sorted(diff["missing_tables"]) == sorted(
-            (*NEW_TABLES, "problem_definition", "mud_report", "mud_measurement")
+            (
+                *NEW_TABLES,
+                "problem_definition",
+                "mud_report",
+                "mud_measurement",
+                # 0011: the V4 hardware and geometry domains.
+                "bha_report",
+                "bha_component",
+                "bit_record",
+                "survey_run",
+                "survey_station",
+            )
         ), diff
 
         again = upgrade(engine, heads()[0])

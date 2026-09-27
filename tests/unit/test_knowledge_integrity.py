@@ -52,6 +52,7 @@ def knowledge_item(session) -> KnowledgeItem:
 def document_row(session) -> Document:
     document = DocumentRepository(session).create_document(
         workspace_id=None,
+        unscoped=True,  # a deliberate test row, not a production one
         identity_path="docs/lesson.txt",
         filename="lesson.txt",
         extension=".txt",

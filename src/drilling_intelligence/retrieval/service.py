@@ -49,6 +49,9 @@ from ..core.enums import (
 )
 from ..core.errors import ValidationError
 from ..database.models import (
+    BhaComponent,
+    BhaReport,
+    BitRecord,
     Document,
     DocumentVersion,
     Field,
@@ -61,6 +64,8 @@ from ..database.models import (
     ProblemOccurrence,
     Project,
     Recommendation,
+    SurveyRun,
+    SurveyStation,
     Well,
     WellEvent,
 )
@@ -86,6 +91,9 @@ _STRUCTURED_MODELS: dict[str, type] = {
     "lesson_learned": LessonLearned,
     "recommendation": Recommendation,
     "mud_report": MudReport,
+    "bha_report": BhaReport,
+    "bit_record": BitRecord,
+    "survey_run": SurveyRun,
 }
 
 #: The ``kind`` a knowledge-fact chunk carries (a fact is surfaced as a document-shaped chunk).
@@ -416,6 +424,29 @@ class RetrievalService:
                 rows["mud_measurements"].setdefault(str(measurement.mud_report_id), []).append(
                     measurement
                 )
+        # The same one-batch rule for the ordered children of the V4 domains: a component or a station
+        # is never re-queried per hit, and it is always re-read from the authoritative table so an
+        # evidence package cannot cite a row the index remembers but the database no longer holds.
+        bha_ids = sorted(set(structured_ids.get("bha_report", ())))
+        rows["bha_components"] = {}
+        if bha_ids:
+            components = active.execute(
+                select(BhaComponent)
+                .where(BhaComponent.bha_report_id.in_(bha_ids))
+                .order_by(BhaComponent.bha_report_id, BhaComponent.sequence, BhaComponent.id)
+            ).scalars()
+            for component in components:
+                rows["bha_components"].setdefault(str(component.bha_report_id), []).append(component)
+        survey_ids = sorted(set(structured_ids.get("survey_run", ())))
+        rows["survey_stations"] = {}
+        if survey_ids:
+            stations = active.execute(
+                select(SurveyStation)
+                .where(SurveyStation.survey_run_id.in_(survey_ids))
+                .order_by(SurveyStation.survey_run_id, SurveyStation.sequence, SurveyStation.id)
+            ).scalars()
+            for station in stations:
+                rows["survey_stations"].setdefault(str(station.survey_run_id), []).append(station)
         if version_ids:
             found = (
                 active.execute(
@@ -526,13 +557,17 @@ class RetrievalService:
         if req.lifecycle == LIFECYCLE_CURRENT and not current:
             return f"not current (status {status or 'unknown'})"
         measurements = rows.get("mud_measurements", {}).get(str(row.id), ())
+        children = (
+            rows.get("bha_components", {}).get(str(row.id), ())
+            or rows.get("survey_stations", {}).get(str(row.id), ())
+        )
         provenance_value = _row_provenance(row)
         provenance = (
             [provenance_value] if isinstance(provenance_value, Mapping) else list(provenance_value)
         )
-        if record_type == "mud_report":
-            for measurement in measurements:
-                child_provenance = _row_provenance(measurement)
+        if record_type in {"mud_report", "bha_report", "survey_run"}:
+            for child in (*measurements, *children):
+                child_provenance = _row_provenance(child)
                 provenance.extend(
                     [child_provenance]
                     if isinstance(child_provenance, Mapping)
@@ -556,7 +591,7 @@ class RetrievalService:
             locator_ref="",
             provenance=provenance,
             title=self._structured_title(record_type, row),
-            text=self._structured_text(record_type, row, measurements),
+            text=self._structured_text(record_type, row, (*measurements, *children)),
             record_date=self._structured_date(record_type, row),
             score=float(result.score),
             matched_terms=tuple(result.matched_terms),
@@ -574,7 +609,7 @@ class RetrievalService:
             return bool(getattr(row, "is_current", True))
         if record_type == "recommendation":
             return status != RecommendationLifecycle.SUPERSEDED.value
-        if record_type == "mud_report":
+        if record_type in {"mud_report", "bha_report", "bit_record", "survey_run"}:
             return bool(getattr(row, "is_current", True))
         return True
 
@@ -592,11 +627,17 @@ class RetrievalService:
             return str((row.statement or "").split(".")[0][:120])
         if record_type == "mud_report":
             return f"Mud report {row.revision or row.id}"
+        if record_type == "bha_report":
+            return f"BHA {row.bha_number or row.id}"
+        if record_type == "bit_record":
+            return f"Bit {row.bit_number}" + (f" run {row.run_number}" if row.run_number else "")
+        if record_type == "survey_run":
+            return f"Directional survey {row.run_label or row.id}"
         return str(getattr(row, "label", "") or f"Event - {getattr(row, 'event_type', '')}")
 
     @staticmethod
-    def _structured_text(record_type: str, row: Any, measurements: Sequence[Any] = ()) -> str:
-        """The authoritative row text, with mud child values re-read in the same batch."""
+    def _structured_text(record_type: str, row: Any, children: Sequence[Any] = ()) -> str:
+        """The authoritative row text, with the row's ordered children re-read in the same batch."""
         if record_type == "lesson_learned":
             return str(row.lesson or "")
         if record_type == "recommendation":
@@ -609,12 +650,80 @@ class RetrievalService:
                 f"measured depth {row.depth_md_value} {row.depth_md_unit}".strip(),
                 f"true vertical depth {row.depth_tvd_value} {row.depth_tvd_unit}".strip(),
             ]
-            for measurement in measurements:
+            for measurement in children:
                 value = "" if measurement.value is None else str(measurement.value)
                 unit = f" {measurement.unit}" if measurement.unit else ""
                 sample = measurement.sample_label or measurement.sample_key or "SUMMARY"
                 lines.append(
                     f"{measurement.property_name} {sample} {value}{unit} {measurement.quality}".strip()
+                )
+            return "\n".join(lines)
+        if record_type == "bha_report":
+            lines = [
+                f"bottom hole assembly {row.bha_number or row.id}",
+                f"report date {_iso(row.report_date)}",
+                f"assembly {row.assembly_description or ''}",
+            ]
+            for component in children:
+                dimensions = " x ".join(
+                    part
+                    for part in (
+                        f"OD {component.od_value} {component.od_unit}".strip()
+                        if component.od_value is not None
+                        else "",
+                        f"ID {component.id_value} {component.id_unit}".strip()
+                        if component.id_value is not None
+                        else "",
+                        f"length {component.length_value} {component.length_unit}".strip()
+                        if component.length_value is not None
+                        else "",
+                    )
+                    if part
+                )
+                lines.append(
+                    f"component {component.sequence} {component.source_label} "
+                    f"{component.component_type} {component.manufacturer} "
+                    f"{component.serial_number} {dimensions}".strip()
+                )
+            return "\n".join(lines)
+        if record_type == "bit_record":
+            return "\n".join(
+                line
+                for line in (
+                    f"bit {row.bit_number} run {row.run_number or ''}".strip(),
+                    f"{row.manufacturer} {row.model} {row.bit_type}".strip(),
+                    f"iadc {row.iadc_code}" if row.iadc_code else "",
+                    f"size {row.size_value} {row.size_unit}".strip()
+                    if row.size_value is not None
+                    else "",
+                    f"depth in {row.depth_in_value} {row.depth_in_unit}".strip()
+                    if row.depth_in_value is not None
+                    else "",
+                    f"depth out {row.depth_out_value} {row.depth_out_unit}".strip()
+                    if row.depth_out_value is not None
+                    else "",
+                    f"footage {row.footage_value} {row.footage_unit}".strip()
+                    if row.footage_value is not None
+                    else "",
+                    f"rotating hours {row.rotating_hours}" if row.rotating_hours is not None else "",
+                    f"pull reason {row.pull_reason}" if row.pull_reason else "",
+                    f"dull grade {row.dull_grade}" if row.dull_grade else "",
+                )
+                if line
+            )
+        if record_type == "survey_run":
+            lines = [
+                f"directional survey {row.run_label or row.id}",
+                f"survey date {_iso(row.survey_date)}",
+                f"survey tool {row.survey_tool}" if row.survey_tool else "",
+                f"stations {row.station_count}",
+            ]
+            for station in children:
+                lines.append(
+                    f"station {station.station_number_text or station.sequence} "
+                    f"MD {station.md_value} {station.md_unit} "
+                    f"inclination {station.inclination_value} {station.inclination_unit} "
+                    f"azimuth {station.azimuth_value} {station.azimuth_unit}".strip()
                 )
             return "\n".join(lines)
         return str(getattr(row, "description", "") or "")
@@ -629,6 +738,12 @@ class RetrievalService:
             return _iso(getattr(row, "decided_at", None))
         if record_type == "mud_report":
             return _iso(getattr(row, "report_date", None))
+        if record_type == "bha_report":
+            return _iso(getattr(row, "report_date", None))
+        if record_type == "bit_record":
+            return _iso(getattr(row, "run_date", None))
+        if record_type == "survey_run":
+            return _iso(getattr(row, "survey_date", None))
         return _iso(getattr(row, "occurred_at", None))
 
     def _document_item(

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
-from tests.fixtures.generate import build_corpus
+from tests.fixtures.generate import build_corpus, build_v4_operational_corpus
 
 from drilling_intelligence.database.models import Field, Well
 from drilling_intelligence.ingestion.pipeline import IngestionPipeline
@@ -26,9 +26,14 @@ __all__ = [
     "STATED",
     "ZERO_HOURS",
     "add_casing_program",
+    "document_id_for",
     "fetch",
     "field_id",
+    "ingest",
+    "ingest_v4",
     "promote",
+    "promote_file",
+    "reingest",
     "well_id_for",
 ]
 
@@ -81,6 +86,28 @@ def ingest(workspace, *, wells: tuple[str, ...] = ("A-3", "B-11")) -> Path:
     return root
 
 
+def ingest_v4(workspace, *, wells: tuple[str, ...] = ("A-3", "B-11")) -> Path:
+    """The nine-file corpus: the six operational fixtures plus the three V4 domain sources.
+
+    The V4 tests need the new domains promoted *alongside* a mud report and a DDR, because that is the
+    only configuration in which a cross-domain regression - a shared helper, a sweep order, a summary
+    fold - shows up.  The six-file baseline is left untouched so every other suite keeps asserting on
+    the corpus it was written against.
+    """
+    hierarchy = register_wells(workspace, wells=wells)
+    root = workspace.root / "corpus"
+    build_v4_operational_corpus(root)
+    pipeline = IngestionPipeline(
+        settings=workspace.settings,
+        workspace_root=workspace.root,
+        database=workspace.database,
+    )
+    result = pipeline.run(root=root, well_id=str(hierarchy["wells"][wells[0]].id))
+    assert result.ok, result.error
+    assert result.failures == 0, [item.error for item in result.failures_report()]
+    return root
+
+
 def promote(workspace) -> dict[str, Any]:
     return OperationalService.for_workspace(workspace).promote_workspace()
 
@@ -101,6 +128,36 @@ def field_id(workspace) -> str:
 def well_id_for(workspace, name: str) -> str:
     with workspace.database.read_only() as session:
         return str(session.scalar(select(Well.id).where(Well.name == name)) or "")
+
+
+def document_id_for(workspace, filename: str) -> str:
+    """The registry id of one corpus file, so a test can promote exactly that document."""
+    from drilling_intelligence.database.models import Document
+
+    with workspace.database.read_only() as session:
+        return str(session.scalar(select(Document.id).where(Document.filename == filename)) or "")
+
+
+def reingest(workspace) -> Any:
+    """Re-run the pipeline over the corpus with ``force``, as an operator editing a file would."""
+    result = IngestionPipeline(
+        settings=workspace.settings,
+        workspace_root=workspace.root,
+        database=workspace.database,
+    ).run(root=workspace.root / "corpus", force=True)
+    assert result.ok, result.error
+    return result
+
+
+def promote_file(workspace, filename: str) -> Any:
+    """Promote one file's current version and return that version's own result, not an aggregate.
+
+    The aggregate summary is what a workspace reports; a contract test needs the per-version outcome,
+    its row counts and its skip reasons, which only the single-document pass exposes.
+    """
+    return OperationalService.for_workspace(workspace).promote(
+        document_id=document_id_for(workspace, filename)
+    )
 
 
 def add_casing_program(workspace, *, well_name: str = "A-3") -> dict[str, Any]:

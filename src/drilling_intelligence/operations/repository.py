@@ -54,6 +54,9 @@ from ..core.vocabulary import (
 )
 from ..database.integrity import create_knowledge_relation
 from ..database.models import (
+    BhaComponent,
+    BhaReport,
+    BitRecord,
     DdrReport,
     Document,
     DocumentVersion,
@@ -64,6 +67,8 @@ from ..database.models import (
     ProblemDefinition,
     ProblemOccurrence,
     ProgramTarget,
+    SurveyRun,
+    SurveyStation,
     Well,
     WellEvent,
     WellOperation,
@@ -96,6 +101,11 @@ CONFIRMABLE_MODELS: tuple[type, ...] = (
     ProblemOccurrence,
     MudMeasurement,
     MudReport,
+    BhaReport,
+    BhaComponent,
+    BitRecord,
+    SurveyRun,
+    SurveyStation,
 )
 
 
@@ -379,6 +389,172 @@ class OperationsRepository:
         if current_only:
             statement = statement.where(MudReport.is_current.is_(True))
         statement = self._ordered(statement, MudReport.report_date.desc(), MudReport.id)
+        return list(self.session.execute(statement.limit(limit)).scalars())
+
+    def _list_source_versioned(
+        self,
+        model: type,
+        date_column: Any,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        since: object = None,
+        until: object = None,
+        status: str = "",
+        current_only: bool = False,
+        order_by: tuple[Any, ...] = (),
+        limit: int = 200,
+    ) -> list[Any]:
+        """The one listing shape the source-versioned hardware/geometry domains share.
+
+        Scope, date window, status and ``current_only`` are the same four questions asked of a mud
+        report, a BHA, a bit run and a survey: they are all "one source version's statement about one
+        well".  One implementation, so the four cannot drift into four different ideas of what a
+        field-scoped filter means.
+        """
+        statement: Select = self._scope_statement(
+            select(model),
+            model,
+            well_id=well_id,
+            field_id=field_id,
+            project_id=project_id,
+        )
+        if since is not None:
+            statement = statement.where(date_column >= _bound(since, label="since"))
+        if until is not None:
+            statement = statement.where(date_column <= _bound(until, label="until"))
+        if status:
+            statement = statement.where(model.status == str(status))
+        if current_only:
+            statement = statement.where(model.is_current.is_(True))
+        statement = self._ordered(statement, *order_by, model.id)
+        return list(self.session.execute(statement.limit(limit)).scalars())
+
+    def list_bha_reports(
+        self,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        since: object = None,
+        until: object = None,
+        status: str = "",
+        current_only: bool = False,
+        limit: int = 200,
+    ) -> list[BhaReport]:
+        """Bottom hole assembly runs, newest first, with source-version history explicit."""
+        return self._list_source_versioned(
+            BhaReport,
+            BhaReport.report_date,
+            well_id=well_id,
+            field_id=field_id,
+            project_id=project_id,
+            since=since,
+            until=until,
+            status=status,
+            current_only=current_only,
+            order_by=(BhaReport.report_date.desc(),),
+            limit=limit,
+        )
+
+    def list_bha_components(
+        self,
+        *,
+        bha_report_id: str = "",
+        well_id: str = "",
+        component_type: str = "",
+        limit: int = 1000,
+    ) -> list[BhaComponent]:
+        """The ordered components of one assembly, or of one well's assemblies."""
+        statement = select(BhaComponent)
+        if bha_report_id:
+            statement = statement.where(BhaComponent.bha_report_id == str(bha_report_id))
+        if well_id:
+            statement = statement.where(BhaComponent.well_id == str(well_id))
+        if component_type:
+            statement = statement.where(BhaComponent.component_type == str(component_type))
+        statement = self._ordered(
+            statement,
+            BhaComponent.bha_report_id,
+            BhaComponent.sequence,
+            BhaComponent.id,
+        )
+        return list(self.session.execute(statement.limit(limit)).scalars())
+
+    def list_bit_records(
+        self,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        since: object = None,
+        until: object = None,
+        status: str = "",
+        current_only: bool = False,
+        limit: int = 200,
+    ) -> list[BitRecord]:
+        """Bit runs, newest first.  A replacement bit is a later row, not a changed one."""
+        return self._list_source_versioned(
+            BitRecord,
+            BitRecord.run_date,
+            well_id=well_id,
+            field_id=field_id,
+            project_id=project_id,
+            since=since,
+            until=until,
+            status=status,
+            current_only=current_only,
+            order_by=(BitRecord.run_date.desc(),),
+            limit=limit,
+        )
+
+    def list_survey_runs(
+        self,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        since: object = None,
+        until: object = None,
+        status: str = "",
+        current_only: bool = False,
+        limit: int = 200,
+    ) -> list[SurveyRun]:
+        """Survey sets, newest first, one row per set the source labelled."""
+        return self._list_source_versioned(
+            SurveyRun,
+            SurveyRun.survey_date,
+            well_id=well_id,
+            field_id=field_id,
+            project_id=project_id,
+            since=since,
+            until=until,
+            status=status,
+            current_only=current_only,
+            order_by=(SurveyRun.survey_date.desc(),),
+            limit=limit,
+        )
+
+    def list_survey_stations(
+        self,
+        *,
+        survey_run_id: str = "",
+        well_id: str = "",
+        limit: int = 2000,
+    ) -> list[SurveyStation]:
+        """The stations of one survey set in the source's own order."""
+        statement = select(SurveyStation)
+        if survey_run_id:
+            statement = statement.where(SurveyStation.survey_run_id == str(survey_run_id))
+        if well_id:
+            statement = statement.where(SurveyStation.well_id == str(well_id))
+        statement = self._ordered(
+            statement,
+            SurveyStation.survey_run_id,
+            SurveyStation.sequence,
+            SurveyStation.id,
+        )
         return list(self.session.execute(statement.limit(limit)).scalars())
 
     # -- operations -----------------------------------------------------------
@@ -1126,6 +1302,20 @@ class OperationsRepository:
         mud_available = inspect(self.session.get_bind()).has_table(MudReport.__tablename__)
         if mud_available:
             models.append(("mud_reports", MudReport))
+        # The V4 tables may be absent from a database that has not been migrated yet; every count
+        # here is database-side, and an unmigrated table is reported as absent rather than zero.
+        inspector = inspect(self.session.get_bind())
+        v4_available = inspector.has_table(BhaReport.__tablename__) and inspector.has_table(
+            SurveyRun.__tablename__
+        )
+        if v4_available:
+            models.extend(
+                [
+                    ("bha_reports", BhaReport),
+                    ("bit_records", BitRecord),
+                    ("survey_runs", SurveyRun),
+                ]
+            )
         for label, model in models:
             statement = self._scope_statement(
                 select(func.count()).select_from(model),
@@ -1155,6 +1345,55 @@ class OperationsRepository:
                 "reports": int(payload.get("mud_reports", 0)),
                 "current_reports": int(self.session.execute(mud_current).scalar_one() or 0),
                 "measurements": int(self.session.execute(mud_measurements).scalar_one() or 0),
+            }
+
+        if v4_available:
+            payload["bha"] = {
+                "reports": int(payload.get("bha_reports", 0)),
+                "components": int(
+                    self.session.execute(
+                        self._scope_statement(
+                            select(func.count()).select_from(BhaComponent),
+                            BhaComponent,
+                            well_id=well_id,
+                            field_id=field_id,
+                            project_id=project_id,
+                        )
+                    ).scalar_one()
+                    or 0
+                ),
+            }
+            payload["bit"] = {
+                "runs": int(payload.get("bit_records", 0)),
+                "linked_to_bha": int(
+                    self.session.execute(
+                        self._scope_statement(
+                            select(func.count())
+                            .select_from(BitRecord)
+                            .where(BitRecord.bha_report_id.is_not(None)),
+                            BitRecord,
+                            well_id=well_id,
+                            field_id=field_id,
+                            project_id=project_id,
+                        )
+                    ).scalar_one()
+                    or 0
+                ),
+            }
+            payload["survey"] = {
+                "runs": int(payload.get("survey_runs", 0)),
+                "stations": int(
+                    self.session.execute(
+                        self._scope_statement(
+                            select(func.count()).select_from(SurveyStation),
+                            SurveyStation,
+                            well_id=well_id,
+                            field_id=field_id,
+                            project_id=project_id,
+                        )
+                    ).scalar_one()
+                    or 0
+                ),
             }
 
         statement = self._scope_statement(
