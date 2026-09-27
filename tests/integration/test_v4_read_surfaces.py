@@ -281,9 +281,7 @@ def test_a_confirmed_component_is_visible_as_confirmed_in_the_review(workspace) 
     # so the confirmation is visible on the component inside its parent's review record.
     parent = next(record for record in review.records if record.record_type == "bha_report")
     matching = [
-        component
-        for component in parent.data["components"]
-        if component["id"] == component_id
+        component for component in parent.data["components"] if component["id"] == component_id
     ]
     assert len(matching) == 1
     assert matching[0]["status"] == "CONFIRMED"
@@ -386,9 +384,7 @@ def test_two_current_assemblies_for_one_version_is_reported(workspace) -> None:
     assert any(
         "more than one current row from the same document version" in problem.problem
         for problem in problems
-    ), (
-        describe_problems(problems)
-    )
+    ), describe_problems(problems)
 
 
 def test_two_rows_cannot_share_one_identity_in_a_migrated_database(workspace) -> None:

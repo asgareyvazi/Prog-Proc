@@ -790,12 +790,15 @@ def _bha_report(row: BhaReport, scope: _Scope) -> StructuredRecord:
     text = _emit(
         [
             ("bottom hole assembly", row.bha_number or row.id),
-            ("run interval", (
-                f"{row.top_depth_value} {row.top_depth_unit} to "
-                f"{row.bottom_depth_value} {row.bottom_depth_unit}".strip()
-                if row.top_depth_value is not None and row.bottom_depth_value is not None
-                else ""
-            )),
+            (
+                "run interval",
+                (
+                    f"{row.top_depth_value} {row.top_depth_unit} to "
+                    f"{row.bottom_depth_value} {row.bottom_depth_unit}".strip()
+                    if row.top_depth_value is not None and row.bottom_depth_value is not None
+                    else ""
+                ),
+            ),
             ("report date", _iso(row.report_date)),
             ("assembly description", row.assembly_description),
             ("well", well_name),
@@ -853,10 +856,28 @@ def _bit_record(row: BitRecord, scope: _Scope) -> StructuredRecord:
             ("bit type", row.bit_type),
             ("iadc code", row.iadc_code),
             ("serial number", row.serial_number),
-            ("size", f"{row.size_value} {row.size_unit}".strip() if row.size_value is not None else ""),
-            ("depth in", f"{row.depth_in_value} {row.depth_in_unit}".strip() if row.depth_in_value is not None else ""),
-            ("depth out", f"{row.depth_out_value} {row.depth_out_unit}".strip() if row.depth_out_value is not None else ""),
-            ("footage", f"{row.footage_value} {row.footage_unit}".strip() if row.footage_value is not None else ""),
+            (
+                "size",
+                f"{row.size_value} {row.size_unit}".strip() if row.size_value is not None else "",
+            ),
+            (
+                "depth in",
+                f"{row.depth_in_value} {row.depth_in_unit}".strip()
+                if row.depth_in_value is not None
+                else "",
+            ),
+            (
+                "depth out",
+                f"{row.depth_out_value} {row.depth_out_unit}".strip()
+                if row.depth_out_value is not None
+                else "",
+            ),
+            (
+                "footage",
+                f"{row.footage_value} {row.footage_unit}".strip()
+                if row.footage_value is not None
+                else "",
+            ),
             ("rotating hours", row.rotating_hours),
             ("drilling hours", row.drilling_hours),
             ("pull reason", row.pull_reason),
@@ -939,11 +960,14 @@ def _survey_run(row: SurveyRun, scope: _Scope) -> StructuredRecord:
             ("survey tool", row.survey_tool),
             ("survey date", _iso(row.survey_date)),
             ("station count", row.station_count),
-            ("measured depth range", (
-                f"{row.min_md_value} to {row.max_md_value} {row.md_unit}".strip()
-                if row.min_md_value is not None
-                else ""
-            )),
+            (
+                "measured depth range",
+                (
+                    f"{row.min_md_value} to {row.max_md_value} {row.md_unit}".strip()
+                    if row.min_md_value is not None
+                    else ""
+                ),
+            ),
             ("well", well_name),
             *station_lines,
         ]

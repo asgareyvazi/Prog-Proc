@@ -272,7 +272,9 @@ def station_entries(payload: Mapping[str, Any]) -> tuple[SurveyStationEntry, ...
             inclination_text, inclination_value, inclination_unit = _measured(
                 row, header_values, columns, "inclination"
             )
-            azimuth_text, azimuth_value, azimuth_unit = _measured(row, header_values, columns, "azimuth")
+            azimuth_text, azimuth_value, azimuth_unit = _measured(
+                row, header_values, columns, "azimuth"
+            )
             tvd_text, tvd_value, tvd_unit = _measured(row, header_values, columns, "tvd")
             toolface_text, toolface_value, toolface_unit = _measured(
                 row, header_values, columns, "toolface"

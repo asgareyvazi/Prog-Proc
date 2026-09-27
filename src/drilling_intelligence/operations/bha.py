@@ -168,7 +168,11 @@ COMPONENT_TYPES: dict[str, tuple[str, ...]] = {
 #: a particular source.
 _TYPE_PHRASES: tuple[tuple[str, str], ...] = tuple(
     sorted(
-        ((normalise_label(alias), canonical) for canonical, aliases in COMPONENT_TYPES.items() for alias in aliases),
+        (
+            (normalise_label(alias), canonical)
+            for canonical, aliases in COMPONENT_TYPES.items()
+            for alias in aliases
+        ),
         key=lambda pair: (-len(pair[0]), pair[0]),
     )
 )
@@ -180,7 +184,9 @@ def canonical_component_type(description: Any) -> str:
     for phrase, canonical in _TYPE_PHRASES:
         if text == phrase:
             return canonical
-        if text.startswith(phrase) and (len(text) == len(phrase) or not text[len(phrase)].isalnum()):
+        if text.startswith(phrase) and (
+            len(text) == len(phrase) or not text[len(phrase)].isalnum()
+        ):
             return canonical
     return ""
 
@@ -271,9 +277,7 @@ def _component_columns(row: Sequence[Any]) -> tuple[dict[str, int], int] | None:
     would let any equipment table become a bottom hole assembly.
     """
     headers = header_index(row, strip_units=True)
-    columns = {
-        name: alias_column(headers, aliases) for name, aliases in COMPONENT_ALIASES.items()
-    }
+    columns = {name: alias_column(headers, aliases) for name, aliases in COMPONENT_ALIASES.items()}
     if columns["description"] < 0:
         return None
     if not any(columns[name] >= 0 for name in ("od", "inner_diameter", "length")):
@@ -281,7 +285,9 @@ def _component_columns(row: Sequence[Any]) -> tuple[dict[str, int], int] | None:
     return columns, -1
 
 
-def component_tables(payload: Mapping[str, Any]) -> list[tuple[dict[str, Any], dict[str, int], int]]:
+def component_tables(
+    payload: Mapping[str, Any],
+) -> list[tuple[dict[str, Any], dict[str, int], int]]:
     """``(table, columns, header_row_index)`` for every stored table that is a component tally."""
     found: list[tuple[dict[str, Any], dict[str, int], int]] = []
     for table in tables(payload):

@@ -1,5 +1,11 @@
 # MISSION_RESULT — V4.5 continuation: workspace binding, explicit scope validation, structured isolation
 
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
 ## 1. Verdict
 
 **NOT RELEASE-CERTIFIABLE** — on one gate only: the work cannot be pushed. GitHub credentials in
@@ -11,8 +17,8 @@ read either). Every engineering gate passes. The commit exists locally and is in
 
 | fact | value |
 |---|---|
-| base at session start | `e2cd1858f6128cda17a847590450478829ae631f` (V4.6) |
-| commit made | `8a402d5780d0e05a35624b346f3e9a6e2ccbf655` |
+| base at session start | `e2cd185` (V4.6) |
+| commit made | `8a402d5` |
 | branch | `arena/01a0c936-prog-proc` |
 | worktree | clean |
 | commits ahead of last known remote tip | 1 |

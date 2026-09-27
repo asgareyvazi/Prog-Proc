@@ -1,10 +1,16 @@
 # Document/domain coverage matrix (V4 authority)
 
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
 **Status:** authoritative source-derived registry and certification index
 **As of:** 2026-09-23 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0c936-prog-proc`
-**Inspected HEAD before final validation:** `f6a997613812d67d54386b6434ce3d8e7bdc1c7a`
+**Inspected HEAD before final validation:** `f6a9976`
 **Contract source:** `src/drilling_intelligence/operations/contracts.py`
 **Forensic corpus:** `tests/golden_corpus/manifest.json`
 

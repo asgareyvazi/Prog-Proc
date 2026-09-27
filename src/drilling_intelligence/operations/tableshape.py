@@ -86,9 +86,7 @@ def normalise_label(value: Any) -> str:
     return text.strip()
 
 
-def _drop_parentheticals(
-    label: str, qualifiers: Sequence[str] = SEMANTIC_QUALIFIERS
-) -> str:
+def _drop_parentheticals(label: str, qualifiers: Sequence[str] = SEMANTIC_QUALIFIERS) -> str:
     """Remove parenthesised header text, keeping any semantic qualifier it carried.
 
     A parenthetical whose contents include a declared qualifier is *unwrapped* - the qualifier joins

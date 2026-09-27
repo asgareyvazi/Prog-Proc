@@ -1,6 +1,12 @@
 # V4.5 — Workspace Identity, Scope Integrity and the Knowledge Boundary
 
-Branch `arena/01a0c936-prog-proc`, on top of the V4.4 re-land `c333dca2806f778c0260ee193f67524e6b1cc8da`.
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
+Branch `arena/01a0c936-prog-proc`, on top of the V4.4 re-land `c333dca`.
 
 The question this mission had to answer: **if the system says "this workspace contains these
 documents", does every downstream subsystem see exactly that population?** Before V4.5 it did not,

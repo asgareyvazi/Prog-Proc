@@ -1,9 +1,15 @@
 # Arena V4.3 retroactive semantic repair — last result
 
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
 **Date:** 2026-09-23 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0c936-prog-proc`
-**HEAD before this mission (remote):** `c279d1c61b7301bfb5d54d6f8c285ee2186bcfd9`
+**HEAD before this mission (remote):** `c279d1c`
 **V4.3 work commit:** the commit carrying this file —
 `git log -1 -- docs/ARENA_V4_3_RETROACTIVE_SEMANTIC_REPAIR_LAST_RESULT.md`
 **V3 baseline:** `b7703baf35abd84881432a93264a979c33751c6c` — **not** an ancestor of HEAD, and not
@@ -143,10 +149,10 @@ heuristic over any label found in the excerpt.
 
 ```python
 SPLIT_PREDICATES = {
-    "surface_pressure":  ("sidpp", "sicp", "maasp"),
-    "mud_volume":        ("pill_volume", "kick_volume", "trip_tank_volume"),
-    "rpm":               ("rheometer_speed",),
-    "hole_depth":        ("measured_depth", "true_vertical_depth"),
+    "surface_pressure": ("sidpp", "sicp", "maasp"),
+    "mud_volume": ("pill_volume", "kick_volume", "trip_tank_volume"),
+    "rpm": ("rheometer_speed",),
+    "hole_depth": ("measured_depth", "true_vertical_depth"),
     "hole_section_size": ("bit_size",),
 }
 ```

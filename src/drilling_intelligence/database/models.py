@@ -994,7 +994,10 @@ class BhaReport(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("identity_key", name="uq_bha_report_identity"),
         Index("ix_bha_report_well", "well_id", "is_current"),
-        Index("ix_bha_report_version", "document_version_id",),
+        Index(
+            "ix_bha_report_version",
+            "document_version_id",
+        ),
         Index("ix_bha_report_number", "well_id", "bha_number"),
     )
 
@@ -1023,7 +1026,9 @@ class BhaReport(Base, TimestampMixin):
     component_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: How the section was decided: ``EXPLICIT``, ``ATTRIBUTE``, ``AMBIGUOUS``, ``UNMATCHED`` or
     #: ``NOT_STATED``.  Kept so a reviewer can tell "the source named it" from "we left it open".
-    section_resolution: Mapped[str] = mapped_column(String(24), default="NOT_STATED", nullable=False)
+    section_resolution: Mapped[str] = mapped_column(
+        String(24), default="NOT_STATED", nullable=False
+    )
     record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     document_status: Mapped[str | None] = mapped_column(String(32))
@@ -1164,7 +1169,9 @@ class BitRecord(Base, TimestampMixin):
     nozzle_size_text: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     run_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     run_date_text: Mapped[str | None] = mapped_column(String(80))
-    section_resolution: Mapped[str] = mapped_column(String(24), default="NOT_STATED", nullable=False)
+    section_resolution: Mapped[str] = mapped_column(
+        String(24), default="NOT_STATED", nullable=False
+    )
     record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     document_status: Mapped[str | None] = mapped_column(String(32))
@@ -1219,7 +1226,9 @@ class SurveyRun(Base, TimestampMixin):
     #: Whether the source's own station numbers were unique.  When they were not, station identity
     #: falls back to source position and the ambiguity is reported - it is never resolved by guessing.
     station_identity: Mapped[str] = mapped_column(String(24), default="NUMBERED", nullable=False)
-    section_resolution: Mapped[str] = mapped_column(String(24), default="NOT_STATED", nullable=False)
+    section_resolution: Mapped[str] = mapped_column(
+        String(24), default="NOT_STATED", nullable=False
+    )
     record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     document_status: Mapped[str | None] = mapped_column(String(32))

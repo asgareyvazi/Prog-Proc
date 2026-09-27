@@ -68,7 +68,9 @@ def test_the_stations_are_promoted_in_the_sources_own_order(workspace) -> None:
         assert row.well_id == run.well_id
 
 
-def test_source_supplied_tvd_northing_easting_and_dls_are_preserved_not_recomputed(workspace) -> None:
+def test_source_supplied_tvd_northing_easting_and_dls_are_preserved_not_recomputed(
+    workspace,
+) -> None:
     ingest_v4(workspace)
     promote_file(workspace, FILE)
     first = sorted(fetch(workspace, SurveyStation), key=lambda row: row.sequence)[0]
@@ -86,9 +88,7 @@ def test_a_survey_that_omits_the_vertical_columns_stores_nothing_for_them(worksp
     ingest_v4(workspace)
     _write(
         workspace,
-        "Station,MD (ft),Inclination (deg),Azimuth (deg)\n"
-        "1,9000,1.2,140.5\n"
-        "2,9250,2.4,141.8\n",
+        "Station,MD (ft),Inclination (deg),Azimuth (deg)\n1,9000,1.2,140.5\n2,9250,2.4,141.8\n",
     )
     reingest(workspace)
     result = promote_file(workspace, FILE)
@@ -136,8 +136,7 @@ def test_one_column_recognised_three_times_is_not_a_survey(workspace) -> None:
     ingest_v4(workspace)
     _write(
         workspace,
-        "MD (ft),Inclination (deg),Azimuth (deg)\n"
-        "9000,1.2,140.5\n",
+        "MD (ft),Inclination (deg),Azimuth (deg)\n9000,1.2,140.5\n",
     )
     reingest(workspace)
     # This one *is* a survey - three real columns - so the guard that matters is the one below.
@@ -182,7 +181,9 @@ def test_two_source_labelled_sets_are_never_merged_into_one_survey(workspace) ->
     assert len({str(row.identity_key) for row in stations}) == 4
 
 
-def test_repeated_station_numbers_are_reported_and_identity_falls_back_to_position(workspace) -> None:
+def test_repeated_station_numbers_are_reported_and_identity_falls_back_to_position(
+    workspace,
+) -> None:
     ingest_v4(workspace)
     _write(
         workspace,

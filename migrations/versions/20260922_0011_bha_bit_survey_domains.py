@@ -64,11 +64,13 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["document_id"], ["document.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["document_version_id"], ["document_version.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(
+            ["document_version_id"], ["document_version.id"], ondelete="SET NULL"
+        ),
         sa.ForeignKeyConstraint(["section_id"], ["well_section.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["well_id"], ["well.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("identity_key", name="uq_bha_report_identity")
+        sa.UniqueConstraint("identity_key", name="uq_bha_report_identity"),
     )
     op.create_index("ix_bha_report_number", "bha_report", ["well_id", "bha_number"], unique=False)
     op.create_index("ix_bha_report_version", "bha_report", ["document_version_id"], unique=False)
@@ -112,15 +114,23 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["bha_report_id"], ["bha_report.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["document_id"], ["document.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["document_version_id"], ["document_version.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(
+            ["document_version_id"], ["document_version.id"], ondelete="SET NULL"
+        ),
         sa.ForeignKeyConstraint(["section_id"], ["well_section.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["well_id"], ["well.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("identity_key", name="uq_bha_component_identity")
+        sa.UniqueConstraint("identity_key", name="uq_bha_component_identity"),
     )
-    op.create_index("ix_bha_component_report", "bha_component", ["bha_report_id", "sequence"], unique=False)
-    op.create_index("ix_bha_component_version", "bha_component", ["document_version_id"], unique=False)
-    op.create_index("ix_bha_component_well", "bha_component", ["well_id", "component_type"], unique=False)
+    op.create_index(
+        "ix_bha_component_report", "bha_component", ["bha_report_id", "sequence"], unique=False
+    )
+    op.create_index(
+        "ix_bha_component_version", "bha_component", ["document_version_id"], unique=False
+    )
+    op.create_index(
+        "ix_bha_component_well", "bha_component", ["well_id", "component_type"], unique=False
+    )
 
     op.create_table(
         "bit_record",
@@ -168,11 +178,13 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["bha_report_id"], ["bha_report.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["document_id"], ["document.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["document_version_id"], ["document_version.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(
+            ["document_version_id"], ["document_version.id"], ondelete="SET NULL"
+        ),
         sa.ForeignKeyConstraint(["section_id"], ["well_section.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["well_id"], ["well.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("identity_key", name="uq_bit_record_identity")
+        sa.UniqueConstraint("identity_key", name="uq_bit_record_identity"),
     )
     op.create_index("ix_bit_record_number", "bit_record", ["well_id", "bit_number"], unique=False)
     op.create_index("ix_bit_record_version", "bit_record", ["document_version_id"], unique=False)
@@ -207,11 +219,13 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["document_id"], ["document.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["document_version_id"], ["document_version.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(
+            ["document_version_id"], ["document_version.id"], ondelete="SET NULL"
+        ),
         sa.ForeignKeyConstraint(["section_id"], ["well_section.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["well_id"], ["well.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("identity_key", name="uq_survey_run_identity")
+        sa.UniqueConstraint("identity_key", name="uq_survey_run_identity"),
     )
     op.create_index("ix_survey_run_version", "survey_run", ["document_version_id"], unique=False)
     op.create_index("ix_survey_run_well", "survey_run", ["well_id", "is_current"], unique=False)
@@ -262,16 +276,24 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(["document_id"], ["document.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["document_version_id"], ["document_version.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(
+            ["document_version_id"], ["document_version.id"], ondelete="SET NULL"
+        ),
         sa.ForeignKeyConstraint(["section_id"], ["well_section.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["survey_run_id"], ["survey_run.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["well_id"], ["well.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("identity_key", name="uq_survey_station_identity")
+        sa.UniqueConstraint("identity_key", name="uq_survey_station_identity"),
     )
-    op.create_index("ix_survey_station_run", "survey_station", ["survey_run_id", "sequence"], unique=False)
-    op.create_index("ix_survey_station_version", "survey_station", ["document_version_id"], unique=False)
-    op.create_index("ix_survey_station_well", "survey_station", ["well_id", "md_value"], unique=False)
+    op.create_index(
+        "ix_survey_station_run", "survey_station", ["survey_run_id", "sequence"], unique=False
+    )
+    op.create_index(
+        "ix_survey_station_version", "survey_station", ["document_version_id"], unique=False
+    )
+    op.create_index(
+        "ix_survey_station_well", "survey_station", ["well_id", "md_value"], unique=False
+    )
 
 
 def downgrade() -> None:

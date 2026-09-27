@@ -1,9 +1,15 @@
 # Arena V4.2 semantic predicate hardening — last result
 
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
 **Date:** 2026-09-23 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0c936-prog-proc`
-**HEAD before this mission:** `ddfe093da721ca631509674e02d4e255b555ea56`
+**HEAD before this mission:** `ddfe093`
 **V4.2 work commit:** the commit carrying this file — `git log -1 -- docs/ARENA_V4_2_SEMANTIC_PREDICATE_HARDENING_LAST_RESULT.md`
 **V3 baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (verified present in the object database,
 and verified **not** an ancestor of HEAD)

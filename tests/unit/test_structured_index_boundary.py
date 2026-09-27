@@ -94,7 +94,9 @@ def test_every_parent_with_children_folds_them_into_its_own_unit() -> None:
     for parent, (accessor, evidence_key) in PARENTS_WITH_CHILDREN.items():
         builder = _BUILDERS[parent]
         source = inspect.getsource(builder)
-        assert f"scope.{accessor}(" in source, f"{parent} no longer reads its children via {accessor}"
+        assert f"scope.{accessor}(" in source, (
+            f"{parent} no longer reads its children via {accessor}"
+        )
         # The child's own provenance must reach the unit, or the value is searchable but uncitable.
         assert f'"{evidence_key}"' in source, f"{parent} no longer carries {evidence_key}"
 

@@ -379,10 +379,10 @@ closed, auditable table — not a heuristic.
 
 ```python
 SPLIT_PREDICATES = {
-    "surface_pressure":  ("sidpp", "sicp", "maasp"),
-    "mud_volume":        ("pill_volume", "kick_volume", "trip_tank_volume"),
-    "rpm":               ("rheometer_speed",),
-    "hole_depth":        ("measured_depth", "true_vertical_depth"),
+    "surface_pressure": ("sidpp", "sicp", "maasp"),
+    "mud_volume": ("pill_volume", "kick_volume", "trip_tank_volume"),
+    "rpm": ("rheometer_speed",),
+    "hole_depth": ("measured_depth", "true_vertical_depth"),
     "hole_section_size": ("bit_size",),
 }
 ```

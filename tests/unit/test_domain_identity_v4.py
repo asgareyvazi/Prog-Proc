@@ -71,9 +71,7 @@ def _ingest_files(workspace, files: dict[str, object]) -> None:
 def test_the_same_tally_always_yields_the_same_entries(workspace) -> None:
     _ingest_files(
         workspace,
-        {
-            "bha_tally.xlsx": build_bha_tally_xlsx
-        },
+        {"bha_tally.xlsx": build_bha_tally_xlsx},
     )
     payload = _payload(workspace, "bha_tally.xlsx")
     first = component_entries(payload)
@@ -92,9 +90,7 @@ def test_the_same_tally_always_yields_the_same_entries(workspace) -> None:
 def test_a_component_carries_its_own_description_alongside_the_canonical_type(workspace) -> None:
     _ingest_files(
         workspace,
-        {
-            "bha_tally.xlsx": build_bha_tally_xlsx
-        },
+        {"bha_tally.xlsx": build_bha_tally_xlsx},
     )
     entries = component_entries(_payload(workspace, "bha_tally.xlsx"))
     by_type = {entry.component_type: entry for entry in entries}
@@ -234,7 +230,9 @@ def test_a_bit_run_carries_every_column_the_source_stated(workspace) -> None:
     assert first.pull_reason == "TD - casing point"
     assert first.dull_grade == "WT-1-NO-X-I-NO"
     assert first.iadc_code == "M1655SS"
-    assert first.bha_number == "13", "the source's own BHA number is kept even when it matches nothing"
+    assert first.bha_number == "13", (
+        "the source's own BHA number is kept even when it matches nothing"
+    )
     assert first.well_name == "A-3"
     assert [entry.source_row_index for entry in entries] == sorted(
         entry.source_row_index for entry in entries
@@ -286,9 +284,7 @@ def test_a_bit_row_without_a_bit_number_is_not_a_run(workspace) -> None:
 
 # ---------------------------------------------------------------- surveys
 def test_a_numbered_survey_keeps_its_station_numbers_and_order(workspace) -> None:
-    _ingest_files(
-        workspace, {"survey.csv": build_directional_survey_csv}
-    )
+    _ingest_files(workspace, {"survey.csv": build_directional_survey_csv})
     entries = station_entries(_payload(workspace, "survey.csv"))
     assert [entry.station_number_text for entry in entries] == ["1", "2", "3", "4", "5"]
     assert [entry.sequence for entry in entries] == [1, 2, 3, 4, 5]
@@ -530,10 +526,9 @@ def test_the_row_position_is_part_of_a_mud_identity_and_not_of_a_v4_one() -> Non
     must not move a component's identity, while a mud daily row's position *is* part of what identifies
     it.  Both behaviours are pinned here so neither can drift into the other.
     """
-    assert (
-        promotion_identity(version_id="v1", kind="mud_report", row_index=1, extra="x")
-        != promotion_identity(version_id="v1", kind="mud_report", row_index=2, extra="x")
-    )
+    assert promotion_identity(
+        version_id="v1", kind="mud_report", row_index=1, extra="x"
+    ) != promotion_identity(version_id="v1", kind="mud_report", row_index=2, extra="x")
     # The V4 writers always pass row_index=0 and put the semantics in ``extra``.
     assert promotion_identity(
         version_id="v1", kind="bha_component", row_index=0, extra="14|1|drill collar"

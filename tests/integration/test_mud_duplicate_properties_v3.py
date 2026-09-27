@@ -44,9 +44,7 @@ def _measurements(workspace, name: str) -> list[MudMeasurement]:
     """
     with workspace.database.read_only() as session:
         return sorted(
-            session.scalars(
-                select(MudMeasurement).where(MudMeasurement.property_name == name)
-            ),
+            session.scalars(select(MudMeasurement).where(MudMeasurement.property_name == name)),
             key=lambda row: (row.value or 0.0, row.identity_key or ""),
         )
 
@@ -70,7 +68,9 @@ def test_one_property_stated_twice_with_the_same_value_writes_one_current_row(wo
     assert all(row.quality == "CONFLICT" for row in stored)
 
 
-def test_one_property_stated_twice_with_different_values_is_a_conflict_not_a_choice(workspace) -> None:
+def test_one_property_stated_twice_with_different_values_is_a_conflict_not_a_choice(
+    workspace,
+) -> None:
     ingest(workspace)
     _write_mud(workspace, [("Mud weight (ppg)", 10.4, "ppg")])
     reingest(workspace)
@@ -132,7 +132,9 @@ def test_the_daily_sample_table_is_not_read_as_duplicates(workspace) -> None:
     assert all(row.sample_key != "SUMMARY" for row in inflow)
 
 
-def test_a_conflict_that_later_becomes_agreement_is_resolved_by_the_newer_version(workspace) -> None:
+def test_a_conflict_that_later_becomes_agreement_is_resolved_by_the_newer_version(
+    workspace,
+) -> None:
     ingest(workspace)
     _write_mud(workspace, [("Mud weight (ppg)", 10.4, "ppg")])
     reingest(workspace)
@@ -179,8 +181,5 @@ def test_a_property_outside_the_vocabulary_is_evidence_not_a_measurement(workspa
     promote_file(workspace, FILE)
     assert _current(workspace, "something_else") == []
     with workspace.database.read_only() as session:
-        labels = {
-            str(row.source_label)
-            for row in session.scalars(select(MudMeasurement))
-        }
+        labels = {str(row.source_label) for row in session.scalars(select(MudMeasurement))}
     assert "Something Else" not in labels

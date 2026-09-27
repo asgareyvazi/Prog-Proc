@@ -179,15 +179,25 @@ def test_the_quantities_that_used_to_collide_are_now_separate_predicates() -> No
                 out.add(predicate_for_field(hit.name)[0])
         return out
 
-    assert len(
-        predicates("SIDPP: 420 psi", "SICP: 610 psi", "MAASP: 1850 psi", "Surface pressure: 900 psi")
-    ) == 4
-    assert len(
-        predicates(
-            "Active mud volume: 1450 bbl", "Pill volume: 12 bbl", "Kick volume: 20 bbl",
-            "Trip tank volume: 85 bbl",
+    assert (
+        len(
+            predicates(
+                "SIDPP: 420 psi", "SICP: 610 psi", "MAASP: 1850 psi", "Surface pressure: 900 psi"
+            )
         )
-    ) == 4
+        == 4
+    )
+    assert (
+        len(
+            predicates(
+                "Active mud volume: 1450 bbl",
+                "Pill volume: 12 bbl",
+                "Kick volume: 20 bbl",
+                "Trip tank volume: 85 bbl",
+            )
+        )
+        == 4
+    )
     assert len(predicates("Rotary speed: 120 rpm", "Rheometer speed: 300 rpm")) == 2
     # both of these used to be ``hole_depth``
     assert len(predicates("MD: 9940 ft", "TVD: 9850 ft")) == 2
@@ -316,9 +326,7 @@ def test_category_b_different_quantities_same_number_is_not_a_conflict(workspace
     assert disputed == {"sidpp"}, disputed
 
     # the three quantities really do hold the same number, so this is agreement and not an absence
-    values = _predicate_values(
-        workspace, ("sidpp", "sicp", "maasp", "kick_volume", "pill_volume")
-    )
+    values = _predicate_values(workspace, ("sidpp", "sicp", "maasp", "kick_volume", "pill_volume"))
     assert values["sicp"] == [420.0], values
     assert values["maasp"] == [420.0], values
     assert 420.0 in values["sidpp"], values
@@ -387,7 +395,9 @@ def test_folding_two_quantities_back_together_restores_a_phantom_conflict(
     # Neither of these was disputed before the fold.  Both are now, purely because two quantities
     # were given one name - the values in the sources never changed.
     assert {"rpm", "measured_depth"} <= set(rows), sorted(rows)
-    assert {c["text"] for c in rows["rpm"].candidates} == {"120 rpm", "300 rpm"}, rows["rpm"].candidates
+    assert {c["text"] for c in rows["rpm"].candidates} == {"120 rpm", "300 rpm"}, rows[
+        "rpm"
+    ].candidates
     assert {c["text"] for c in rows["measured_depth"].candidates} == {
         "9940 ft",
         "9850 ft",

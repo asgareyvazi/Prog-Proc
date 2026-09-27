@@ -98,12 +98,13 @@ def test_fourteen_source_shaped_cases_classify_and_promote_exactly_as_documented
     # The two prose files are refused by shape, and the refusal says why rather than reporting a
     # generic "unsupported classification" for a class that does have a writer.
     shape_refusals = [
-        item
-        for item in summary["skipped_details"]
-        if item["reason"] == "NO_RECOGNISED_TABLE"
+        item for item in summary["skipped_details"] if item["reason"] == "NO_RECOGNISED_TABLE"
     ]
     assert len(shape_refusals) == 2
-    assert {"bottom hole assembly" in item["detail"] or "bit record" in item["detail"] for item in shape_refusals} == {True}
+    assert {
+        "bottom hole assembly" in item["detail"] or "bit record" in item["detail"]
+        for item in shape_refusals
+    } == {True}
 
 
 def test_no_row_is_written_for_a_refused_source_shape(workspace) -> None:

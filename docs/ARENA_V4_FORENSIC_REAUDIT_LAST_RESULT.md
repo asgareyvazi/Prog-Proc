@@ -1,10 +1,16 @@
 # Arena V4 forensic re-audit — last result
 
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
 **Audit date:** 2026-09-23 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0c936-prog-proc`
-**Audited HEAD (the V4 work as it was committed):** `f6a997613812d67d54386b6434ce3d8e7bdc1c7a`
-**HEAD after this audit's fixes:** `ce7f24f75db5ff9818fad37b8d97bde31bd60cb4`
+**Audited HEAD (the V4 work as it was committed):** `f6a9976`
+**HEAD after this audit's fixes:** `ce7f24f`
 **Baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (not an ancestor of HEAD; see §1)
 **Authority:** the checked-out repository. No prior Arena report, commit message, or documentation
 claim was accepted as evidence.

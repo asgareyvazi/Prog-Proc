@@ -1,10 +1,16 @@
 # Arena V4.1 production hardening — last result
 
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
 **Date:** 2026-09-23 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0c936-prog-proc`
-**HEAD before this mission:** `292830e127a4b0902ba217671d37bdfaa1f9b4ab`
-**V4.1 work commit:** `f4b45fb565ee5c553ebc92e3177355ed6c9e9ed9` (pushed; verified by both
+**HEAD before this mission:** `292830e`
+**V4.1 work commit:** `f4b45fb` (pushed; verified by both
 `git ls-remote` and `gh api`)
 **Carrying commit:** not stated here, by design - see the correction below.
 
@@ -17,7 +23,7 @@
 > whatever `git log -1 -- docs/ARENA_V4_1_PRODUCTION_HARDENING_LAST_RESULT.md` reports.  History is
 > not rewritten.  `tests/unit/test_report_integrity.py` now fails any report that makes the
 > un-holdable claim at all.
-**V4 implementation audited:** `f6a997613812d67d54386b6434ce3d8e7bdc1c7a`
+**V4 implementation audited:** `f6a9976`
 **V3 baseline:** `b7703baf35abd84881432a93264a979c33751c6c` (not an ancestor of HEAD)
 **Authority:** the checked-out repository. Every claim below comes from a command run during this
 mission; the previous audit report was treated as a set of claims to re-derive, not as evidence.

@@ -265,8 +265,12 @@ def test_prefix_matching_is_opt_in_because_it_turns_one_column_into_another() ->
 
 def test_a_prefix_match_requires_a_word_boundary() -> None:
     headers = header_index(["MW in (ppg)", "MW out (ppg)"])
-    assert alias_column(headers, DAILY_ALIASES["mud_weight_in"], prefix=True, strip_units=False) == 0
-    assert alias_column(headers, DAILY_ALIASES["mud_weight_out"], prefix=True, strip_units=False) == 1
+    assert (
+        alias_column(headers, DAILY_ALIASES["mud_weight_in"], prefix=True, strip_units=False) == 0
+    )
+    assert (
+        alias_column(headers, DAILY_ALIASES["mud_weight_out"], prefix=True, strip_units=False) == 1
+    )
     # "Mud Weight(ppg)Active" is the active system, not a daily sample: no boundary, no match.
     glued = header_index(["Mud Weight(ppg)Active"])
     assert alias_column(glued, ("mud weight", "mw"), prefix=True, strip_units=False) == -1

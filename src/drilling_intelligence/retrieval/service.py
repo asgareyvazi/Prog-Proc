@@ -436,7 +436,9 @@ class RetrievalService:
                 .order_by(BhaComponent.bha_report_id, BhaComponent.sequence, BhaComponent.id)
             ).scalars()
             for component in components:
-                rows["bha_components"].setdefault(str(component.bha_report_id), []).append(component)
+                rows["bha_components"].setdefault(str(component.bha_report_id), []).append(
+                    component
+                )
         survey_ids = sorted(set(structured_ids.get("survey_run", ())))
         rows["survey_stations"] = {}
         if survey_ids:
@@ -557,10 +559,9 @@ class RetrievalService:
         if req.lifecycle == LIFECYCLE_CURRENT and not current:
             return f"not current (status {status or 'unknown'})"
         measurements = rows.get("mud_measurements", {}).get(str(row.id), ())
-        children = (
-            rows.get("bha_components", {}).get(str(row.id), ())
-            or rows.get("survey_stations", {}).get(str(row.id), ())
-        )
+        children = rows.get("bha_components", {}).get(str(row.id), ()) or rows.get(
+            "survey_stations", {}
+        ).get(str(row.id), ())
         provenance_value = _row_provenance(row)
         provenance = (
             [provenance_value] if isinstance(provenance_value, Mapping) else list(provenance_value)
@@ -705,7 +706,9 @@ class RetrievalService:
                     f"footage {row.footage_value} {row.footage_unit}".strip()
                     if row.footage_value is not None
                     else "",
-                    f"rotating hours {row.rotating_hours}" if row.rotating_hours is not None else "",
+                    f"rotating hours {row.rotating_hours}"
+                    if row.rotating_hours is not None
+                    else "",
                     f"pull reason {row.pull_reason}" if row.pull_reason else "",
                     f"dull grade {row.dull_grade}" if row.dull_grade else "",
                 )

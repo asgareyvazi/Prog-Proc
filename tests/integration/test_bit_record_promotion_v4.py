@@ -90,8 +90,23 @@ def test_a_replacement_bit_is_a_new_run_and_the_earlier_one_survives(workspace) 
     workbook = load_workbook(source)
     workbook["Bit Record"].append(
         [
-            "14", "3", "A-3", "Halliburton", "PDC", "R1723RS", "SN-3320", 8.5, 10125.0, 10980.0,
-            855.0, 19.0, 15.0, "Washout", "WO-3-LT-A-X-NO", "4 x 16", "15",
+            "14",
+            "3",
+            "A-3",
+            "Halliburton",
+            "PDC",
+            "R1723RS",
+            "SN-3320",
+            8.5,
+            10125.0,
+            10980.0,
+            855.0,
+            19.0,
+            15.0,
+            "Washout",
+            "WO-3-LT-A-X-NO",
+            "4 x 16",
+            "15",
         ]
     )
     workbook.save(source)
@@ -158,7 +173,12 @@ def test_two_current_assemblies_sharing_a_number_leave_the_link_null(workspace) 
     summary = workbook.active
     summary.title = "Summary"
     for index, row in enumerate(
-        [("Well", "A-3"), ("Field", "North Cormorant"), ("BHA No", "14"), ("Report date", "2025-06-20")],
+        [
+            ("Well", "A-3"),
+            ("Field", "North Cormorant"),
+            ("BHA No", "14"),
+            ("Report date", "2025-06-20"),
+        ],
         start=3,
     ):
         summary.cell(row=index, column=1, value=row[0])
@@ -182,7 +202,9 @@ def test_two_current_assemblies_sharing_a_number_leave_the_link_null(workspace) 
     assert _runs(workspace)["13"].bha_report_id is None
 
 
-def test_a_row_naming_another_well_is_skipped_and_the_rest_of_the_tally_is_promoted(workspace) -> None:
+def test_a_row_naming_another_well_is_skipped_and_the_rest_of_the_tally_is_promoted(
+    workspace,
+) -> None:
     ingest_v4(workspace)
     source = workspace.root / "corpus" / FILE
     workbook = load_workbook(source)
@@ -324,9 +346,7 @@ def test_a_newer_source_version_stands_the_earlier_runs_down(workspace) -> None:
     # The restated footage is the current statement; the figure it replaced stays in the history
     # rather than being overwritten, so "what did the tally say before" remains answerable.
     superseded = [
-        row
-        for row in fetch(workspace, BitRecord)
-        if not row.is_current and row.bit_number == "12"
+        row for row in fetch(workspace, BitRecord) if not row.is_current and row.bit_number == "12"
     ]
     assert [row.footage_value for row in superseded] == [5600.0]
     assert {str(row.id) for row in runs.values()}.isdisjoint(before.values())

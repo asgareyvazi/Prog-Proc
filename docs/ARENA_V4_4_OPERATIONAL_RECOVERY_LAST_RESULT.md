@@ -1,5 +1,11 @@
 # V4.4 — Operational Recovery, Knowledge Dry-Run, Reconciliation & Production Certification
 
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
 **Status: CERTIFIABLE** — with the limitations in §12 stated, not buried.
 
 Every figure below was produced by a command run against this checkout during this mission. Where a
@@ -13,7 +19,7 @@ previous report is contradicted, the contradiction is named in §2 rather than q
 | --- | --- | --- |
 | Branch | `git branch --show-current` | `arena/01a0c936-prog-proc` |
 | Local HEAD at mission start | `git rev-parse HEAD` | `e8621136ca73108ae7b590e6baa72fedc1f00835` (grafted) |
-| Remote tip at mission start | `git ls-remote origin refs/heads/arena/01a0c936-prog-proc` | `c279d1c61b7301bfb5d54d6f8c285ee2186bcfd9` |
+| Remote tip at mission start | `git ls-remote origin refs/heads/arena/01a0c936-prog-proc` | `c279d1c` |
 | Shallow? | `git rev-parse --is-shallow-repository` | `true` |
 
 ### The V4.3 commit does not exist
@@ -66,7 +72,7 @@ delta was backed up, the tree was stashed with `git stash push -u`, fast-forward
 `git merge --ff-only c279d1c`, and the delta restored — all 12 re-hashed identical. No `reset`,
 no rebase, no force-push, no deletion. The stash remains as a safety net.
 
-The delta was then committed as a **re-land**, `9ecb64dfef7d7a2c7e72cf11a2bd63dd8b8e2216`, whose
+The delta was then committed as a **re-land**, `9ecb64d`, whose
 message states plainly that the original object never reached the remote and is not present, rather
 than pretending otherwise. Parentage verified:
 
@@ -403,6 +409,6 @@ out.
 | --- | --- |
 | V3 baseline (pre-boundary, absent in this shallow clone) | `b7703baf35abd84881432a93264a979c33751c6c` |
 | Local HEAD at mission start (grafted) | `e8621136ca73108ae7b590e6baa72fedc1f00835` |
-| Verified remote tip at mission start | `c279d1c61b7301bfb5d54d6f8c285ee2186bcfd9` |
-| V4.3 re-land (parent `c279d1c…`) | `9ecb64dfef7d7a2c7e72cf11a2bd63dd8b8e2216` |
+| Verified remote tip at mission start | `c279d1c` |
+| V4.3 re-land (parent `c279d1c…`) | `9ecb64d` |
 | V4.4 work | see `git log` — a document cannot name the commit that carries it |

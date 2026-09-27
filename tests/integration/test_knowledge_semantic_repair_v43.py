@@ -179,8 +179,12 @@ def test_the_dry_run_classifies_every_row_and_never_collapses_the_categories() -
     payloads = [
         {
             "extracted_fields": [
-                {"name": name, "value": value, "unit": "psi",
-                 "provenance": {"excerpt": excerpt, "filename": "kill_sheet.txt"}}
+                {
+                    "name": name,
+                    "value": value,
+                    "unit": "psi",
+                    "provenance": {"excerpt": excerpt, "filename": "kill_sheet.txt"},
+                }
                 for name, excerpt, value, _f, _c in RECOVERY_MATRIX
                 if excerpt
             ]
@@ -294,9 +298,7 @@ def test_the_same_statement_reaches_the_same_predicate_however_it_is_spelled() -
     extractor = FieldExtractor()
     failures = {}
     for phrase, _expected_field, expected_predicate in CROSS_SOURCE:
-        got = [
-            (hit.name, predicate_for_field(hit.name)[0]) for hit in extractor.scan_text(phrase)
-        ]
+        got = [(hit.name, predicate_for_field(hit.name)[0]) for hit in extractor.scan_text(phrase)]
         if not got or any(pred != expected_predicate for _name, pred in got):
             failures[phrase] = (expected_predicate, got)
     assert not failures, failures
@@ -321,8 +323,13 @@ def test_total_mud_volume_is_one_quantity_reached_by_two_paths() -> None:
     evidence they are one assertion, which is the only thing that may merge two labels.  Sharing the
     unit ``bbl`` is not.
     """
-    for field in ("total_mud_volume", "total_mud_volume_bbl", "mud_volume", "mud_volume_bbl",
-                  "pit_volume"):
+    for field in (
+        "total_mud_volume",
+        "total_mud_volume_bbl",
+        "mud_volume",
+        "mud_volume_bbl",
+        "pit_volume",
+    ):
         assert predicate_for_field(field)[0] == "mud_volume", field
     # and a batch or a kick is still its own quantity
     assert predicate_for_field("pill_volume")[0] == "pill_volume"
@@ -453,8 +460,7 @@ def test_a_rebuild_does_not_rewrite_the_stored_artefact(workspace) -> None:
     with workspace.database.read_only() as session:
         before = {
             str(ex.id): [
-                str(e.get("name"))
-                for e in ((ex.document_json or {}).get("extracted_fields") or [])
+                str(e.get("name")) for e in ((ex.document_json or {}).get("extracted_fields") or [])
             ]
             for ex in session.execute(select(Extraction)).scalars()
         }
@@ -464,8 +470,7 @@ def test_a_rebuild_does_not_rewrite_the_stored_artefact(workspace) -> None:
     with workspace.database.read_only() as session:
         after = {
             str(ex.id): [
-                str(e.get("name"))
-                for e in ((ex.document_json or {}).get("extracted_fields") or [])
+                str(e.get("name")) for e in ((ex.document_json or {}).get("extracted_fields") or [])
             ]
             for ex in session.execute(select(Extraction)).scalars()
         }
@@ -476,9 +481,7 @@ def test_an_ambiguous_stored_field_stays_generic_after_a_rebuild(workspace) -> N
     """The repair must not turn an unqualified ``120 rpm`` into a rotary speed it was never told about."""
     _ingest_v4(workspace)
     with workspace.database.read_only() as session:
-        rows = [
-            r for r in session.execute(select(KnowledgeItem)).scalars() if r.predicate == "rpm"
-        ]
+        rows = [r for r in session.execute(select(KnowledgeItem)).scalars() if r.predicate == "rpm"]
     assert rows, "the corpus states an unqualified rpm"
     assert all(row.predicate == "rpm" for row in rows)
 
@@ -496,8 +499,15 @@ def test_every_separated_quantity_keeps_its_provenance_through_the_repair(worksp
 
     with workspace.database.read_only() as session:
         rows = list(session.execute(select(KnowledgeItem)).scalars())
-    separated = {"sidpp", "sicp", "maasp", "measured_depth", "true_vertical_depth",
-                 "rheometer_speed", "kick_volume"}
+    separated = {
+        "sidpp",
+        "sicp",
+        "maasp",
+        "measured_depth",
+        "true_vertical_depth",
+        "rheometer_speed",
+        "kick_volume",
+    }
     seen = set()
     for row in rows:
         if row.predicate in separated:
@@ -683,8 +693,13 @@ def test_folding_the_recovered_predicates_back_recreates_the_phantom_conflicts(
             "measured_depth",
         }
 
-    folded = {"rheometer_speed": "rpm", "true_vertical_depth": "measured_depth", "sidpp":
-              "surface_pressure", "sicp": "surface_pressure", "maasp": "surface_pressure"}
+    folded = {
+        "rheometer_speed": "rpm",
+        "true_vertical_depth": "measured_depth",
+        "sidpp": "surface_pressure",
+        "sicp": "surface_pressure",
+        "maasp": "surface_pressure",
+    }
     from drilling_intelligence.knowledge import facts as facts_module
 
     original = facts_module.predicate_for_field
@@ -708,8 +723,12 @@ def test_the_dry_run_is_linear_and_makes_no_database_queries() -> None:
     """Classification is a pure function over in-memory payloads; there is no N+1 to find."""
     payload = {
         "extracted_fields": [
-            {"name": "hole_depth", "value": 10125.0, "unit": "ft",
-             "provenance": {"excerpt": "MD 10125 ft"}}
+            {
+                "name": "hole_depth",
+                "value": 10125.0,
+                "unit": "ft",
+                "provenance": {"excerpt": "MD 10125 ft"},
+            }
         ]
     }
     report = plan_recovery([payload] * 500)
@@ -758,10 +777,18 @@ def test_the_stored_versions_are_untouched_by_classification(workspace) -> None:
 def test_classify_entries_reports_the_reason_beside_every_row() -> None:
     rows = classify_entries(
         [
-            {"name": "hole_depth", "value": 10125.0, "unit": "ft",
-             "provenance": {"excerpt": "MD 10125 ft", "filename": "ddr.docx"}},
-            {"name": "rpm", "value": 120.0, "unit": "rpm",
-             "provenance": {"excerpt": "at 120 rpm", "filename": "ddr.docx"}},
+            {
+                "name": "hole_depth",
+                "value": 10125.0,
+                "unit": "ft",
+                "provenance": {"excerpt": "MD 10125 ft", "filename": "ddr.docx"},
+            },
+            {
+                "name": "rpm",
+                "value": 120.0,
+                "unit": "rpm",
+                "provenance": {"excerpt": "at 120 rpm", "filename": "ddr.docx"},
+            },
             {"name": "hole_depth", "value": 9000.0, "unit": "ft", "provenance": {}},
         ]
     )

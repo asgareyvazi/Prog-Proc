@@ -1,6 +1,12 @@
 # V4.6 — The Workspace Identity Boundary
 
-Branch `arena/01a0c936-prog-proc`, on top of `6eb4c409451cef041648e93c85c0edd0369f71db`.
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
+Branch `arena/01a0c936-prog-proc`, on top of `6eb4c40`.
 Recorded as ADR-0025 in `docs/DECISIONS.md`.
 
 V4.5 fixed documents that were being filed with no workspace at all. This mission covers what that
@@ -16,7 +22,7 @@ believes. Four defects, each reproduced against the real code before it was chan
 ```python
 def by_identity(self, workspace_id: str | None, identity_path: str) -> Document | None:
     stmt = select(Document).where(Document.identity_path == identity_path)
-    if workspace_id:                                    # <- falsey means "search everything"
+    if workspace_id:  # <- falsey means "search everything"
         stmt = stmt.where(Document.workspace_id == workspace_id)
 ```
 

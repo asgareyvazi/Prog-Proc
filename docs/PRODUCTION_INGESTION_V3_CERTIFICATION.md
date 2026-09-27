@@ -1,5 +1,11 @@
 # PROG-PROC — Drilling Domain Core V3 forensic certification (A–Z)
 
+> **Note on commit references.** This checkout is a shallow clone whose history was
+> collapsed to a single grafted commit, so the commits this document describes are not in
+> the local object database and their full hashes cannot be verified here. They are cited
+> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
+> that a report never names a full hash the repository cannot produce.
+
 **Certification date:** 2026-09-22
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0b7fd-prog-proc`
@@ -10,7 +16,7 @@
 > **Superseded in part by V4 (2026-09-23).** This record remains accurate for the V3 HEAD named above.
 > Three of the classes it certifies as *denied* — `BHA_REPORT`, `BIT_RECORD` and `DIRECTIONAL_SURVEY` —
 > were promoted to `END_TO_END_CERTIFIED` writers in V4 at
-> `f6a997613812d67d54386b6434ce3d8e7bdc1c7a`. Where this document says those classes have "no
+> `f6a9976`. Where this document says those classes have "no
 > handler", read the current matrix
 > [`DOCUMENT_DOMAIN_COVERAGE.md`](DOCUMENT_DOMAIN_COVERAGE.md) instead. The V3 findings that are still
 > in force are the admitted program/DDR/NPT/mud contracts and every denial that V4 did not touch

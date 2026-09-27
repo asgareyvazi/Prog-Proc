@@ -111,7 +111,9 @@ def test_the_corpus_produces_exactly_the_five_expected_disagreements(workspace) 
     ]
     for row in rows:
         assert row.status == "OPEN", (row.property_name, row.status)
-        assert not row.resolution, f"{row.property_name} was settled by something other than a person"
+        assert not row.resolution, (
+            f"{row.property_name} was settled by something other than a person"
+        )
         assert row.detected_by == "knowledge.conflicts"
         assert row.candidates, row.property_name
 
@@ -204,7 +206,7 @@ def test_agreement_and_single_source_ambiguity_are_not_counted_as_conflicts(work
         item["lookup_key"] for item in report.details if "same_values_in_every_source" in item
     }
     # The same property cannot be both settled and disputed.
-    assert not (conflicted_keys & agreed_keys), (conflicted_keys & agreed_keys)
+    assert not (conflicted_keys & agreed_keys), conflicted_keys & agreed_keys
     for item in report.details:
         if "same_values_in_every_source" in item:
             assert item["same_values_in_every_source"] >= 2, item
@@ -235,11 +237,15 @@ def test_resolving_a_conflict_is_a_recorded_decision_and_moves_doctor(workspace,
     assert after["knowledge"]["open_conflicts"] == len(EXPECTED_CONFLICTS) - 1, after["knowledge"]
     assert code_after == 1, "a dispute remains; a green doctor here would be the real defect"
 
-    resolved = next(row for row in _conflicts(workspace) if row.property_name == "hole_section_size")
+    resolved = next(
+        row for row in _conflicts(workspace) if row.property_name == "hole_section_size"
+    )
     assert resolved.resolution, "the decision was not recorded on the conflict"
     assert resolved.resolution["by"] == "toolpusher", resolved.resolution
     assert resolved.resolution["chosen_item_id"] == chosen, resolved.resolution
-    assert resolved.resolution["candidates_at_resolution"], "the options decided between were not kept"
+    assert resolved.resolution["candidates_at_resolution"], (
+        "the options decided between were not kept"
+    )
     # The resolution kind lives on the row's own status, so "is this still open" is one field.
     assert resolved.status == ConflictResolution.RESOLVED_MANUALLY.value, resolved.status
     assert resolved.status != "OPEN"

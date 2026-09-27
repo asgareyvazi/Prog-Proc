@@ -616,7 +616,9 @@ class VersionPromoter:
                 if not isinstance(table.get("provenance"), Mapping)
             ]
             if missing:
-                return f"{handler} table provenance is missing for: " + ", ".join(sorted(set(missing)))
+                return f"{handler} table provenance is missing for: " + ", ".join(
+                    sorted(set(missing))
+                )
             return ""
         tables = find_npt_tables(payload) + find_breakdown_tables(payload)
         if tables:
@@ -1125,7 +1127,9 @@ class VersionPromoter:
                 if section.hole_size_in is not None and float(section.hole_size_in) == hole
             ]
         if len(candidates) == 1:
-            return str(candidates[0].id), "EXPLICIT" if (explicit_id or explicit_name) else "ATTRIBUTE"
+            return str(candidates[0].id), "EXPLICIT" if (
+                explicit_id or explicit_name
+            ) else "ATTRIBUTE"
         if len(candidates) > 1:
             result.skipped.append(
                 {
@@ -1145,9 +1149,7 @@ class VersionPromoter:
         return None, "UNMATCHED"
 
     @staticmethod
-    def _report_duplicates(
-        *, summary: Sequence[SummaryEntry], result: PromotionResult
-    ) -> None:
+    def _report_duplicates(*, summary: Sequence[SummaryEntry], result: PromotionResult) -> None:
         """Report a summary label the source states more than once with different values.
 
         The parent row takes the first stated value in source order, which is deterministic and
@@ -1186,11 +1188,19 @@ class VersionPromoter:
         return self._explicit_section(
             well=well,
             explicit_id=next(
-                (entry.source_value.strip() for entry in summary if entry.property_name == "section_id"),
+                (
+                    entry.source_value.strip()
+                    for entry in summary
+                    if entry.property_name == "section_id"
+                ),
                 "",
             ),
             explicit_name=next(
-                (entry.source_value.strip() for entry in summary if entry.property_name == "section"),
+                (
+                    entry.source_value.strip()
+                    for entry in summary
+                    if entry.property_name == "section"
+                ),
                 "",
             ),
             hole_size_text=hole_entry.source_value if hole_entry else "",
@@ -1373,16 +1383,17 @@ class VersionPromoter:
                 attributes={
                     "table_id": table_id,
                     "source_row_index": row_index,
-                    **({"conflict": "the source states this property more than once, disagreeing"}
-                       if conflicted else {}),
+                    **(
+                        {"conflict": "the source states this property more than once, disagreeing"}
+                        if conflicted
+                        else {}
+                    ),
                 },
             )
         )
         result.bump("mud_measurement", "created")
 
-    def _delete_domain_orphans(
-        self, model: type, *, version_id: str, kept: set[str]
-    ) -> int:
+    def _delete_domain_orphans(self, model: type, *, version_id: str, kept: set[str]) -> int:
         """Remove only the unconfirmed derived rows this source version no longer states.
 
         Shared by every domain the promoter writes because the rule is the same everywhere: an
@@ -1513,7 +1524,9 @@ class VersionPromoter:
             extra=section_id or "",
         )
         result.identities.add(report_identity)
-        parent_provenance = self._table_provenance(summary_table, document=document, version=version)
+        parent_provenance = self._table_provenance(
+            summary_table, document=document, version=version
+        )
         report_content = {
             "well_id": well.id,
             "section_id": section_id,
@@ -1975,7 +1988,11 @@ class VersionPromoter:
             return None
         table_id = source_table_key(components[0].table) or "bha"
         bha_number = next(
-            (entry.source_value.strip() for entry in summary if entry.property_name == "bha_number"),
+            (
+                entry.source_value.strip()
+                for entry in summary
+                if entry.property_name == "bha_number"
+            ),
             "",
         )
         hole_entry = next(
@@ -1984,11 +2001,19 @@ class VersionPromoter:
         section_id, section_resolution = self._explicit_section(
             well=well,
             explicit_id=next(
-                (entry.source_value.strip() for entry in summary if entry.property_name == "section_id"),
+                (
+                    entry.source_value.strip()
+                    for entry in summary
+                    if entry.property_name == "section_id"
+                ),
                 "",
             ),
             explicit_name=next(
-                (entry.source_value.strip() for entry in summary if entry.property_name == "section"),
+                (
+                    entry.source_value.strip()
+                    for entry in summary
+                    if entry.property_name == "section"
+                ),
                 "",
             ),
             hole_size_text=hole_entry.source_value if hole_entry else "",
@@ -1998,7 +2023,9 @@ class VersionPromoter:
         date_entry = next(
             (entry for entry in summary if entry.property_name == "report_date"), None
         )
-        report_date, report_date_text = self._mud_date(date_entry.source_value if date_entry else "")
+        report_date, report_date_text = self._mud_date(
+            date_entry.source_value if date_entry else ""
+        )
         top_entry = next((entry for entry in summary if entry.property_name == "top_depth"), None)
         bottom_entry = next(
             (entry for entry in summary if entry.property_name == "bottom_depth"), None
@@ -2209,9 +2236,7 @@ class VersionPromoter:
                 }
             )
         run_date, run_date_text = self._mud_date(entry.run_date_text)
-        bha_report_id = self._linked_bha(
-            well=well, bha_number=entry.bha_number, result=result
-        )
+        bha_report_id = self._linked_bha(well=well, bha_number=entry.bha_number, result=result)
         content = {
             "well_id": well.id,
             "section_id": section_id,
@@ -2611,16 +2636,18 @@ class VersionPromoter:
         tool_entry = next(
             (entry for entry in summary if entry.property_name == "survey_tool"), None
         )
-        label_entry = next(
-            (entry for entry in summary if entry.property_name == "run_label"), None
-        )
+        label_entry = next((entry for entry in summary if entry.property_name == "run_label"), None)
         # Sets stay separate: the source's own run/set column groups them, and where it is absent the
         # table is the set.  Two unlabelled sets in one sheet remain one run, exactly as the source
         # presented them; that is a documented limit of the contract, not a silent merge.
         groups: dict[tuple[str, str], list[Any]] = {}
         for entry in stations:
             table_id = source_table_key(entry.table)
-            key = (table_id, entry.run_label.strip() or (label_entry.source_value.strip() if label_entry else ""))
+            key = (
+                table_id,
+                entry.run_label.strip()
+                or (label_entry.source_value.strip() if label_entry else ""),
+            )
             groups.setdefault(key, []).append(entry)
         first_run: SurveyRun | None = None
         for (table_id, run_label), group in groups.items():
@@ -2710,9 +2737,7 @@ class VersionPromoter:
                 "station_identity": station_identity,
                 "section_resolution": section_resolution,
             }
-            provenance = self._table_provenance(
-                group[0].table, document=document, version=version
-            )
+            provenance = self._table_provenance(group[0].table, document=document, version=version)
             existing, outcome = self._confirm_row(
                 SurveyRun, identity, content, "survey run", result
             )

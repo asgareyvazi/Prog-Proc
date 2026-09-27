@@ -102,7 +102,9 @@ def test_no_assembly_total_or_derived_dimension_is_computed(workspace) -> None:
     assert stabilizer.id_value is None
     assert stabilizer.id_text == ""
     hwdp = next(
-        row for row in fetch(workspace, BhaComponent) if row.component_type == "HEAVY_WEIGHT_DRILL_PIPE"
+        row
+        for row in fetch(workspace, BhaComponent)
+        if row.component_type == "HEAVY_WEIGHT_DRILL_PIPE"
     )
     # A component with no serial number keeps an empty one; nothing is generated.
     assert hwdp.serial_number == ""
@@ -183,7 +185,9 @@ def test_a_component_the_source_drops_leaves_the_earlier_string_readable(workspa
     assert {row.bha_report_id for row in history} == {str(by_state[False].id)}
 
 
-def test_a_re_tally_that_replaces_a_value_reports_the_change_rather_than_editing_it(workspace) -> None:
+def test_a_re_tally_that_replaces_a_value_reports_the_change_rather_than_editing_it(
+    workspace,
+) -> None:
     """A confirmed component is a person's statement; a later extraction may not rewrite it."""
     from drilling_intelligence.operations.service import OperationalService
 
@@ -263,9 +267,7 @@ def test_an_explicit_section_name_is_attached_and_an_ambiguous_one_is_not(worksp
     assert report.section_resolution == "ATTRIBUTE"
     assert report.section_id, "an exact hole-size match is the one attribute the contract accepts"
     with workspace.database.read_only() as session:
-        name = session.scalar(
-            select(Well.name).where(Well.id == report.well_id)
-        )
+        name = session.scalar(select(Well.name).where(Well.id == report.well_id))
     assert name == "A-3"
     assert result.outcome in {"PROMOTED", "UNCHANGED"}, result.to_dict()
 
