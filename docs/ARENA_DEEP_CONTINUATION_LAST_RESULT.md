@@ -15,7 +15,14 @@
 | HEAD at start | `8847d67` (worktree clean) |
 | remote tip at start | `71112e8` (local 1 ahead — one `.md`) |
 | work commit | `5fc4c85` |
-| push | `71112e8..5fc4c85`, **exit 0**, remote verified |
+| push of the work commit | `71112e8..5fc4c85`, **exit 0**, remote acknowledged |
+| HEAD | `632ccea` — this report, **not pushed** |
+
+The `GH_TOKEN` expired again part-way through the session. All source and test changes are published
+at `5fc4c85`; `git diff --name-only 5fc4c85 HEAD` returns exactly one path, this document, and
+**zero `.py` files**. The report commit is held locally for the next working credential. Note that a
+`git push ... | tail; echo $?` earlier reported exit 0 while the push had actually failed with 128 —
+the pipe masks the code, so every exit status quoted here was captured directly.
 
 The environment had been reset again at session start (grafted `e862113`, 80 uncommitted paths,
 `.venv` gone). It was recovered cleanly and verified before any work began: the working tree was
