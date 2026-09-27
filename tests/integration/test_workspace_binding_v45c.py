@@ -255,8 +255,19 @@ def test_a_real_move_keeps_logical_identity(tmp_path) -> None:
         reopened.close()
 
 
-def test_a_copy_is_a_separate_workspace(tmp_path) -> None:
-    """A copy carries a different database, so it is a different system of record entirely."""
+def test_a_copy_that_carries_the_database_is_indistinguishable_from_a_move(tmp_path) -> None:
+    """A copy of the whole folder reuses the logical workspace, and that is deliberate.
+
+    The evidence rule asks one question: does this root contain the database being written to?  A
+    copy made with the folder's ``.drillintel`` inside it answers yes, exactly as a move does, and
+    there is no honest way to tell the two apart from the filesystem - so the copy inherits the
+    original's workspace id and refreshes its ``root_path``.  It is *not* an independent workspace,
+    and this test used to be named as though it were, which is the dangerous direction to be wrong
+    in: a reader would assume copies are isolated when they share an identity.  The two diverge
+    only because each carries its own database file, and each is its own system of record from
+    then on.  A copy made *without* ``.drillintel`` has no database to carry and is covered by
+    ``test_a_copy_without_the_database_is_an_independent_workspace``.
+    """
     workspace = _mk(tmp_path / "original", "Original")
     corpus = workspace.root / "corpus"
     build_corpus(corpus)
@@ -269,8 +280,8 @@ def test_a_copy_is_a_separate_workspace(tmp_path) -> None:
     copy = Workspace.open(copied_root, workspace.settings)
     try:
         # The copy inherited the original's rows, including its workspace row pointing at the
-        # original's path. That row does not match, the copy's database *is* inside the copy, so
-        # this is the genuine relocation case - one row, reused, path refreshed.
+        # original's path.  That row does not match, the copy's database *is* inside the copy, so
+        # this is the relocation case: one row, reused, path refreshed.
         rows = _workspace_rows(copy.database)
         assert len(rows) == 1, f"a copy created extra rows: {rows}"
         assert rows[0][0] == original_id, "the copy did not reuse the logical workspace"

@@ -25,6 +25,7 @@ documents pointing at a workspace row that is gone.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from io import StringIO
 
@@ -293,21 +294,37 @@ def test_reopening_the_same_folder_is_a_no_op(tmp_path) -> None:
     assert len(_workspace_ids(workspace)) == 1, "resolving twice registered the folder twice"
 
 
-def test_a_copied_folder_is_a_different_workspace_because_it_has_a_different_database(
-    tmp_path,
-) -> None:
-    """A copy carries its own ``.drillintel``, so it is a different system of record entirely."""
+def test_a_copy_without_the_database_is_an_independent_workspace(tmp_path) -> None:
+    """A copy made *without* ``.drillintel`` starts empty, and stays a separate workspace.
+
+    This replaces a test of the same intent that never actually copied anything - it built two
+    independent workspaces and asserted they differed, with an ``or True`` in the middle that made
+    one assertion unconditionally true.  The distinction it was reaching for is real and worth
+    stating precisely, because the opposite case goes the other way: a copy that *does* carry the
+    database is indistinguishable from a move and inherits the original's identity.
+    """
     workspace = _workspace(tmp_path)
     corpus = workspace.root / "corpus"
     build_corpus(corpus)
     assert _pipeline(workspace).run(root=corpus).ok
+    original_ids = _workspace_ids(workspace)
+    assert _rows(workspace), "nothing was ingested into the original"
 
-    copy = _workspace(tmp_path / "copied", name="Copied")
-    with copy.database.read_only() as session:
-        assert list(session.execute(select(WorkspaceRow)).scalars()) or True
-    # The copy's database has never seen the original's documents.
-    assert _rows(copy) == [], "a fresh workspace database already contained documents"
-    assert _workspace_ids(copy) != _workspace_ids(workspace)
+    bare_copy = tmp_path / "bare-copy"
+    shutil.copytree(
+        str(workspace.root), str(bare_copy), ignore=shutil.ignore_patterns(".drillintel")
+    )
+    assert not (bare_copy / ".drillintel").exists(), "the copy carried the database after all"
+
+    copy = Workspace.open(bare_copy, workspace.settings)
+    try:
+        assert _rows(copy) == [], "a fresh workspace database already contained documents"
+        assert _workspace_ids(copy) != original_ids, "an empty copy inherited the original identity"
+        assert _pipeline(copy).run(root=bare_copy / "corpus").ok
+        assert len(_workspace_ids(copy)) == 1, "the copy registered more than one workspace row"
+        assert _workspace_ids(copy) != original_ids
+    finally:
+        copy.close()
 
 
 def test_ambiguous_attribution_is_refused_not_guessed(tmp_path) -> None:

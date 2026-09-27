@@ -363,11 +363,18 @@ class IngestionPipeline:
         from ..database.models import IngestionRun
 
         scan_root = Path(root).expanduser().resolve() if root else self.workspace_root
-        # An explicit ``workspace_id`` is an override and wins.  When there is none the identity is
-        # resolved from this pipeline's own workspace root rather than left NULL: a document with no
-        # workspace is invisible to every workspace-scoped query, and "the caller did not say" is
-        # not a reason to file it nowhere.  Resolution is by the folder's resolved path, which is
-        # unique in the registry, so this cannot attach the wrong workspace.
+        # Workspace identity comes from this pipeline's own root and database, never from the
+        # caller.  With no ``workspace_id`` it is resolved and attached here rather than left NULL:
+        # a document with no workspace is invisible to every workspace-scoped query, and "the
+        # caller did not say" is not a reason to file it nowhere.  With one, it is *checked*
+        # against that resolution and refused on disagreement (see
+        # :meth:`_assert_workspace_belongs_here`) - an assertion the caller may make, not an
+        # override it may exercise.
+        #
+        # ``root`` is where to *scan*, and is deliberately independent of where documents are
+        # filed: a pipeline attached to workspace A may ingest a corpus staged anywhere, and those
+        # documents belong to A.  What it may not do is change A's identity, which is why
+        # ``scan_root`` plays no part in resolution above.
         if not workspace_id:
             workspace_id = self.workspace_identity()
         else:

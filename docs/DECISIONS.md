@@ -1375,6 +1375,37 @@ actually contains the database file this pipeline is connected to; otherwise it 
 the alternative readings were both wrong — repointing the registered workspace at an unrelated
 folder, or registering a second workspace inside a database that ADR-0003 says holds one.
 
+The consequences of that one rule were measured rather than assumed, and four of them are worth
+stating because a reader would otherwise guess:
+
+*   **A copy is indistinguishable from a move, and inherits the identity.** A folder copied *with*
+    its `.drillintel` contains the database, so it satisfies the evidence test exactly as a move
+    does: the row is reused, `root_path` is refreshed, and the copy carries the original's
+    workspace id. There is no honest filesystem signal that separates the two, so the system does
+    not pretend to find one. The copy is **not** an isolated workspace. It diverges only because
+    each folder now has its own database file, and each is its own system of record from then on.
+    A copy made *without* `.drillintel` has no database to carry, is refused by the same rule, and
+    an empty folder opened as a workspace simply registers itself.
+*   **A move requires reopening the workspace at the new path.** Carrying the folder and calling
+    `Workspace.open(new_path)` preserves the identity, refreshes `root_path` and leaves every
+    document's ownership intact. Keeping the *old* connection and pointing a pipeline at the new
+    folder is refused — deliberately. That connection still names the pre-move path, and SQLite
+    would create a fresh empty file there on the next write, so the dangerous outcome is not a
+    wrong row but a second database appearing where the first used to be.
+*   **Paths are canonicalized with `expanduser().resolve()`, so aliases are the same folder.** A
+    symlinked root, a trailing slash, a `.` segment and an unnormalized `corpus/..` all resolve to
+    the row that already owns the folder and never register a second one; the stored `root_path`
+    stays the canonical spelling rather than being replaced by whatever alias arrived. No
+    case-folding is applied — the application does not promise case-insensitive paths.
+*   **`run(root=...)` says where to read, never where to file.** A pipeline attached to workspace A
+    may ingest a corpus staged anywhere, and those documents belong to A. The scan root plays no
+    part in identity resolution, so a corpus from elsewhere cannot drag the workspace row with it.
+
+Relocation is also **atomic in effect**: the evidence is checked before `root_path` is touched, so a
+refused relocation leaves the registry rows, the documents, their ownership and the ingestion-run
+audit trail exactly as they were. A rule that mutated first and validated afterwards would be worse
+than no rule, because it would leave the registry describing a folder the workspace never lived in.
+
 *Document identity is `(workspace_id, identity_path)`*, which is what
 `uq_document_workspace_identity` already enforced. `by_identity` therefore requires a workspace and
 raises without one; the genuinely global question is real, so it has its own name,
