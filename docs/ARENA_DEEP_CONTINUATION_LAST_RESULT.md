@@ -1,7 +1,4 @@
-# MISSION_RESULT — V5.1: NPT attribution and plan-vs-actual match provenance
-
-> Commits are cited in short form; `tests/unit/test_report_integrity.py` enforces that a report never
-> names a 40-hex hash the local object database cannot produce.
+# MISSION_RESULT — V5.2: calculation scope integrity and date-window semantics
 
 ## 1. Repository identity
 
@@ -9,186 +6,160 @@
 |---|---|
 | repo | `asgareyvazi/Prog-Proc` |
 | branch | `arena/01a0c936-prog-proc` |
-| local HEAD | `cd04c2d` |
-| remote HEAD | `cd04c2d` — **verified by `git ls-remote`** |
-| baseline | `5fc4c85` (present locally, `git cat-file -e` confirms) |
-| ahead/behind baseline | 4 ahead / 0 behind (2 doc + 2 source commits) |
-| worktree | clean, `git status --short` returns 0 lines |
+| local HEAD | `6c6d900` |
+| remote HEAD | `6c6d900` — verified by `git ls-remote` |
+| V5.1 baseline | `0b5b3da` (confirmed present, `git cat-file -e`) |
+| merge-base | `5fc4c85` reaches HEAD; **0 merge commits** in `5fc4c85..HEAD` |
+| worktree | clean, `git status --porcelain` = 0 lines |
 
-No environment reset this session — unlike the previous six, HEAD and the worktree were exactly as
-left. The two V5.0 report commits that were blocked by an expired token at the end of the last
-session were published at the start of this one (`5fc4c85..24118cb`, exit 0).
+**The environment had been reset again at session start** (eighth time): HEAD was back at grafted
+`e862113`, 86 uncommitted paths, `.venv` absent, shallow clone — while the remote still held
+`0b5b3da`. Recovery was proven before any work: re-provisioned `.venv`, `git fetch --depth=60`,
+staged everything and diffed against `FETCH_HEAD` → **zero differences**, all **38 untracked files
+byte-identical** to their remote versions, local **0 ahead / 23 behind**. Unlinked only the proven
+identical files, `git checkout FETCH_HEAD -- .`, `git merge --ff-only` → HEAD `0b5b3da`, clean.
+Nothing was discarded.
 
-## 2. Merge verification (§0.2, §1)
+## 2. Previous mission verification
 
-No new merge this session; the branch tip is linear from the baseline. The previously certified
-boundary was smoke-tested rather than re-audited, as §1 directs:
+V5.1's claims were re-proved from the repository, not accepted:
 
-* **V5.0 invariants re-proved green** — `test_intelligence_forensics.py` + `test_field_intelligence.py`,
-  84 tests, exit 0. All six V5.0 regression tests are present in source (snapshot freeze, candidate
-  refresh, staleness widening, exact grouping lookup, event fan-out, unknown duration).
-* **Workspace/promotion boundary** — identity_v45, boundary_v46, binding_v45c, relocation_safety_v46,
-  structured_index_boundary, document_invariants: **92 tests, exit 0**. Frozen, untouched.
-* `alembic heads` → **`0011`**, unchanged. No migration added (§62).
+* lineage is **linear** from `5fc4c85`; all four cited commits present as objects;
+* the V5.1 **code** is present — `sole_problem_on_event` / `having(count == 1)` in `field.py`,
+  `NAME_AMBIGUOUS` / `matched_by` in `engineering/repository.py`;
+* the V5.1 **tests** are present (2 NPT-attribution tests, `TestMatchProvenance`);
+* all three affected suites re-run green: **118 tests, exit 0**.
 
 ## 3. Defects found
 
-### 3.1 §50 — an incident's NPT hours were multiplied across the problems on it
+### 3.1 `CALC_SCOPE_BYPASS` — confirmed defect, fixed
 
-**Failure.** Two problems sharing one event each received that event's full NPT. Measured:
+**Symptom.** A calculation could be persisted with a scope contradicting the hierarchy it points at.
 
-```
-PROBE §50 rows=2 per_problem=[('pr-p1', 6.0), ('pr-p2', 6.0)]
-PROBE §50 SUM over problem_hours = 12.0   (the event only carries 6.0h of NPT)
-PROBLEMS -> npt_hours=12.0   find_recurring -> total_npt_hours=12.0
-```
+**Minimal reproduction** (measured before the fix):
 
-**Reproduction.** One `WellEvent`, two `ProblemOccurrence` rows pointing at it with `npt_id=NULL`,
-two `NptRecord` rows (2 h + 4 h) on the same event.
-
-**Root cause.** V5.0 collapsed the event path to one row per problem, which fixed *one problem
-coming back several times*. It did not address the other direction. Both consumers
-(`FieldIntelligence.problems`, `find_recurring`) `SUM` this subquery, so an incident-level quantity
-was spread across problem-level rows and then added up.
-
-**Semantics — decided from the model, not convenience.** `ProblemOccurrence.npt_id` is a direct FK
-to one NPT record: the source *stating* "this problem caused that record". `event_id` only says the
-problem and the NPT belong to the same **incident** — it never says which problem on that incident
-caused which record. With one problem on the event the attribution is unambiguous and is kept (V5.0's
-behaviour, still tested). With several it is genuinely ambiguous: attributing the hours to each
-asserts more than the source states, and splitting them would invent a proportion nobody wrote down.
-
-**Fix.** The event path attributes only when the problem is the sole problem on its event. The
-withheld set is queryable via a new `ambiguous_event_attribution()` and counted in the field
-aggregation as `unattributed_npt_problems` (per type and in total). After the fix:
-
-```
-rows=0   total_npt_hours=None   occurrence_count=2
-ambiguous set = [('pr-p1','evt-multi'), ('pr-p2','evt-multi')]
-unattributed total=2  for shared_event=2
-```
-
-The hours are **unknown, not zero**, the problems still count, and the hours remain visible in the
-event- and NPT-scoped aggregations where they are not ambiguous. The omission is named, not silent.
-
-**Regression tests.** `test_two_problems_on_one_incident_do_not_each_receive_its_npt_hours`,
-`test_a_pattern_is_not_inflated_by_several_problems_sharing_one_incident` (§51 — same join from the
-pattern side: `occurrence_count=2`, `event_count=1`, `total_npt_hours=None`).
-
-### 3.2 §14/§15 — a plan matched by name was indistinguishable from an exact join
-
-**Failure.** `_match_target` matched on section id first and fell back to the section **name**. Its
-docstring claimed a name match "is still reported without its id" so the two could be told apart.
-That was **false** — the row carried `target_id` either way. And when two governing programmes both
-carried a target of the same name, the precedence order silently picked one, so two plans
-disagreeing about the same section read as a single plan.
-
-**Measured.**
-
-```
-field template            -> planned=[5000.0] matched_by absent
-two equally-ranked plans  -> planned=[1111.0] (picked silently, no signal)
-```
-
-**Fix.** `_match_target` now returns the match *and* how it was found; every row carries
-`matched_by`: `SECTION_ID` (exact join), `NAME` (pre-spud template fallback), `NAME_AMBIGUOUS`
-(more than one governing programme claims the section name), `""` (nothing matched).
-
-```
-field template           -> matched_by=['NAME']
-two equally-ranked plans -> matched_by=['NAME_AMBIGUOUS']
-```
-
-**Regression tests.** Four, in a new `TestMatchProvenance` class.
-
-## 4. Suspected defects disproved
-
-Mandatory section — three hypotheses were tested and did **not** reproduce:
-
-1. **§15 cross-well plan leakage — DISPROVED.** A programme owned by well B with an unbound target
-   named `12 1/4 in` cannot supply the plan for well A's identically-named section, even with no
-   `program_id`. Measured `planned=[None]`, `target_id=[None]`, `matched_by=''`, `status=NO_TARGET`.
-   The target side is confined to programmes governing the subject wells
-   (well-owned → field-owned → project-owned). Now pinned by
-   `test_a_foreign_wells_program_still_cannot_supply_the_plan`.
-2. **§26 review writes — DISPROVED, and already proven properly.** `review/service.py` contains no
-   `flush`/`commit`/`delete`; its single `.add(` is `seen.add(key)` on a Python set. More
-   importantly `test_review_is_authoritative_repeatable_and_does_not_mutate` already takes a
-   full-table snapshot (`SELECT * FROM <every table> ORDER BY rowid`) before, between two reviews
-   and after, and asserts all three are equal — a real fingerprint proof, not a comment.
-3. **§6 unknown duration — correct as implemented** (carried from V5.0, re-verified green):
-   `records` minus rows carrying a duration, so `2 h / 4 h / NULL` reports `records=3, hours=6.0,
-   unknown_duration=1`.
-
-## 5. Problem-hours attribution — the four cases (§76.10)
-
-| case | rows | hours | semantics |
-|---|---|---|---|
-| one problem / one event / one NPT | 1 | that NPT's hours | direct `npt_id`, source-stated |
-| one problem / one event / many NPT | 1 | sum of the event's NPT | unambiguous — one candidate problem (V5.0) |
-| many problems / one event | **0** | **not attributed** | ambiguous — named via `ambiguous_event_attribution()` |
-| mixed direct + event paths | direct rows only | direct hours | the stated link wins; the ambiguous one is withheld |
-
-## 6. Mutation results
-
-| mutation | result |
+| attempt | result |
 |---|---|
-| M1 — never report `NAME_AMBIGUOUS` | **caught** (1 failure) |
-| M2 — drop the governing-programme scope from the target side | **caught** (1 failure) |
+| `well_id=A, section_id=` *(section of well B)* | **ACCEPTED and persisted** |
+| `section_id=` *(no `well_id`)* | **ACCEPTED and persisted** |
+| `well_id=A, project_id=` *(project of another block)* | **ACCEPTED and persisted** |
+| invented `well_id` / `section_id` / `project_id` | raw `sqlite3.IntegrityError` |
 
-Attempted **2**, caught **2**, survived **0**. Both reverted; `git diff --stat` confirms the tree
-returned to the intended change.
+**Root cause.** `EngineeringRepository._check_scope()` exists and is called by `create_program`,
+`create_procedure` and the section writer (lines 338, 444, 771) — but **not** by
+`record_calculation()`, which copied `well_id` / `section_id` / `project_id` straight into the
+content dict.
 
-## 7. Full test result
+**Semantic contract.** The same contradiction must be refused by every writer in the repository. It
+matters most for calculations because a calculation is the row a later reader is most likely to
+treat as an authoritative engineering number.
+
+**Fix.** Route `record_calculation`'s scope through `_check_scope` before the content dict is built —
+the smallest root-cause fix, reusing the existing validator rather than duplicating it. All six
+attempts are now domain `ValidationError`s, and a consistent scope still writes.
+
+**Regression tests.** 5, in a new `TestCalculationScopeIntegrity`. **Mutation M3** (delete the new
+call) is **killed by 4 tests**.
+
+### 3.2 Undocumented date-window semantics — contract gap, fixed
+
+The behaviour itself is correct (see §4.2), but the rule "an undated row survives a date window" was
+written down **nowhere** — an implicit semantic at a correctness boundary. It is now stated on both
+the shared filter (`search/index.py`) and the public `RetrievalRequest`, and pinned by two tests.
+
+## 4. Hypotheses disproved
+
+### 4.1 `DATE_SCOPE_UNDATED_SEARCH_RETRIEVAL` — **DISPROVED as a silent leak**
+
+Attacked exactly as specified. An early probe appeared to show a dated-but-out-of-range record
+surviving; that was **my probe's fault** — `LessonLearned` has no `record_date` column, so the
+attribute I set never reached the index. Re-run with a type that genuinely carries one
+(`ProblemOccurrence.occurred_at`):
 
 ```
-collected  1538
-passed     1535
-skipped    3
-failed     0
-errors     0
-exit code  0
+no window  -> 3 items: 2024-01-15, 2025-06-10, undated
+June 2025  -> 2 items: 2025-06-10, undated
 ```
 
-1538 = V5.0's 1532 + the 6 tests added this session. Counts taken from a regex over the progress
-lines, because `pytest -q` under a redirect emits no summary line here.
+The window **does** exclude what it can disprove. What it cannot disprove it keeps, and the item
+comes back with `record_date == ""`. That is the platform's standing rule that an empty date means
+*unknown*, not "outside every window"; dropping an undated problem from "June 2025" would assert the
+source never stated. §26's forbidden case — returning the row *without telling the caller* — does not
+occur, because the empty date is on the item. Recorded as disproved, with the contract documented.
 
-## 8. Quality gates
+## 5. Mandatory attack register (§80)
+
+| attack ID | result | evidence |
+|---|---|---|
+| `CALC_SCOPE_BYPASS` | **DEFECT_FIXED** | 3 contradictions persisted; now `ValidationError`; 5 tests; M3 killed by 4 |
+| `DATE_SCOPE_UNDATED_SEARCH_RETRIEVAL` | **HYPOTHESIS_DISPROVED** | out-of-range excluded, undated returned with `record_date=""`; contract documented, 2 tests |
+| `CALC_SUPERSESSION_DOUBLE_LEAF_RACE` | **OPEN / NOT EXERCISED** | — |
+| `PLAN_EXPLICIT_TEMPLATE_BY_NAME` | **OPEN / NOT EXERCISED** | — |
+| `PLAN_EXACT_ID_COLLISION` | **OPEN / NOT EXERCISED** | — |
+| `SCOPE_NULL_HIERARCHY` | **PARTIAL** | null-hierarchy permutations not built; `section` without `well` **is** now refused |
+| `REVIEW_NULL_WELL_LEAK` | **OPEN / NOT EXERCISED** | — |
+| `TIMELINE_INTERVAL_WINDOW` | **OPEN / NOT EXERCISED** | — |
+| `RETRIEVAL_ZERO_LIMIT_HARD_CAP` | **OPEN / NOT EXERCISED** | — |
+| `EVIDENCE_IDENTITY_ORDER_INDEPENDENCE` | **OPEN / NOT EXERCISED** | — |
+| `EVIDENCE_FRESHNESS_DELTA` | **OPEN / NOT EXERCISED** | — |
+| `CITATION_NOT_CHECKABLE_SEMANTICS` | **OPEN / NOT EXERCISED** | — |
+| `PROMOTION_ATOMIC_LATE_FAILURE` | **OPEN / NOT EXERCISED** | — |
+| `CHILD_ROW_IDENTITY_DUPLICATION` | **OPEN / NOT EXERCISED** | — |
+| `LIMIT_TRUNCATION_SIGNAL` | **OPEN / NOT EXERCISED** | — |
+
+Two of fifteen mandatory attacks were carried to a verdict. The remaining thirteen are named here as
+unexercised rather than implied by a green suite.
+
+## 6. Mutation matrix
+
+| mutation | target | result |
+|---|---|---|
+| M3 — remove `_check_scope` from `record_calculation` | calculation scope | **KILLED** (4 tests fail) |
+
+Attempted **1**, killed **1**, survived **0**. The V5.1 mutations (fan-out, snapshot freeze,
+staleness widening, programme scope, ambiguity signalling) were re-verified green via their tests but
+were not re-introduced this session.
+
+## 7. Verification gates
 
 ```
-ruff check src tests migrations          exit 0   All checks passed!
-ruff format --check src tests migrations exit 0   209 files already formatted
-python -m compileall -q src tests migrations      exit 0
-git diff --check                                  exit 0
-alembic heads                                     0011 (head)
+pytest (full)                 exit 0   1542 passed, 3 skipped, 0 failed, 0 errors  (1545 collected)
+ruff check src tests migrations        exit 0   All checks passed!
+ruff format --check src tests migrations exit 0  209 files already formatted
+python -m compileall -q src tests migrations     exit 0
+git diff --check                               exit 0
+alembic heads                                  0011 (head)
+alembic current                                no stamped revision (fresh DB, no version table)
 ```
 
-No unrelated formatting churn: `ruff format` was run only on the four files this mission touched.
+1545 = V5.1's 1538 + the 7 tests added here. Counts come from a regex over the progress lines,
+because `pytest -q` under a redirect emits no summary line in this environment.
 
-## 9. Git
+## 8. Git publication
 
 ```
-cd04c2d  V5.1 §14/§15: match provenance          <- HEAD, remote-verified
-362a557  V5.1 §50/§51: NPT attribution
-24118cb  docs: V5.0 report push status
-632ccea  docs: V5.0 forensic report
-5fc4c85  <- baseline
+6c6d900  V5.2 DATE_SCOPE_UNDATED_SEARCH_RETRIEVAL   <- HEAD, remote-verified
+23d994a  V5.2 CALC_SCOPE_BYPASS
+0b5b3da  <- V5.1 baseline
 ```
 
-Changed files: `intelligence/field.py` (+70), `engineering/repository.py` (+19/−11),
-`test_field_intelligence.py` (+150), `test_plan_actual_forensics.py` (+104), plus the V5.0 report
-document. Every change claimed here exists in Git and is on the remote.
+Files changed this session: `engineering/repository.py` (+10), `search/index.py` (+14 docstring),
+`retrieval/contract.py` (+5 docstring), `test_calculation_forensics.py` (+5 tests),
+`test_retrieval_forensics.py` (+2 tests). No generated files, no debug code, no temporary probes
+left behind (three probe files were created under `tests/integration/test_zz_*.py` and deleted before
+committing; `git status` is clean).
 
-## 10. Final verdict
+## 9. Final verdict
 
-**RELEASE-CERTIFIABLE** — for the scope actually exercised this session.
+**Certifiable with explicitly bounded remaining scope.**
 
-The tree is green on every gate that was run, the worktree is clean, and remote publication is
-directly verified by `git ls-remote`. No known defect is outstanding in the areas audited.
+Certified by executable evidence this session: repository lineage and recovery; V5.1 invariant
+re-proof; calculation scope integrity (`CALC_SCOPE_BYPASS`); date-window semantics across search and
+retrieval. Every gate that was run is green and the work is remotely verified.
 
-**Explicitly not exercised this session**, and therefore not certified by this report: calculation
-scope integrity (§3–§13), timeline (§21–§25), review current/history and truncation matrices
-(§27–§31), retrieval authority (§32–§34), evidence packages and citation verification (§35–§40),
-promotion contracts and idempotence (§41–§49), child-row identity (§45), concurrency (§59),
-performance (§60) and the query-limit audit (§61). These are open work, not passing gates — a future
-report should not read this one as covering them.
+**Not certified**, because it was not exercised: the other thirteen mandatory attacks in §5, and with
+them calculation provenance/identity/revision/dependency (§5.2–§11), timeline (§15–§18), review
+current/history/scope/limits (§19–§24), evidence and citation (§34–§40), promotion contracts and
+child-row identity (§41–§49), corrupted-data reads (§50), transaction and savepoint atomicity
+(§55–§56), concurrency (§57–§58), performance (§59) and the query-limit theory audit (§60–§61). A
+green suite does not cover them and this report does not claim that it does.
