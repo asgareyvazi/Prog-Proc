@@ -37,8 +37,10 @@ from drilling_intelligence.database.models import (
     CalculationInput,
     Document,
     DocumentVersion,
+    WellSection,
 )
 from drilling_intelligence.engineering.repository import EngineeringRepository
+from drilling_intelligence.wells.repository import WellRepository
 
 
 def _record(repository: EngineeringRepository, **overrides) -> tuple[Calculation, bool]:
@@ -362,3 +364,87 @@ class TestHistoryAndDeterminism:
         with pytest.raises(IntegrityError):
             session.flush()
         session.rollback()
+
+
+class TestCalculationScopeIntegrity:
+    """A calculation may not carry a scope that contradicts the hierarchy it points at.
+
+    The scope columns are denormalised copies, so nothing in the schema stops a row naming well A
+    beside well B's section.  Every other engineering writer routes its scope through
+    ``_check_scope``; ``record_calculation`` did not, so the same contradiction was rejected for a
+    programme and silently stored for a calculation - and a calculation is the row a later reader is
+    most likely to treat as an authoritative engineering number.
+    """
+
+    @staticmethod
+    def _two_wells(session, tmp_path):
+        repository = WellRepository(session)
+        repository.get_or_create_workspace(str(tmp_path), name="Scope Integrity")
+        project = repository.get_or_create_project("Scope Block")
+        field = repository.get_or_create_field("Scope Field", project=project)
+        well_a = repository.create_well("S-1", project_id=project.id, field_id=field.id)
+        well_b = repository.create_well("S-2", project_id=project.id, field_id=field.id)
+        other = repository.get_or_create_project("Other Block")
+        session.flush()
+        session.add_all(
+            [
+                WellSection(id="scope-sec-a", well_id=well_a.id, sequence=1, name="12 1/4 in"),
+                WellSection(id="scope-sec-b", well_id=well_b.id, sequence=1, name="12 1/4 in"),
+            ]
+        )
+        session.commit()
+        return well_a, well_b, other
+
+    def test_a_section_belonging_to_another_well_is_rejected(self, session, tmp_path) -> None:
+        well_a, _well_b, _other = self._two_wells(session, tmp_path)
+        repository = EngineeringRepository(session)
+        with pytest.raises(ValidationError, match="another well"):
+            _record(repository, well_id=well_a.id, section_id="scope-sec-b")
+        session.rollback()
+        assert session.execute(select(Calculation)).scalars().all() == [], (
+            "a rejected calculation still left a row behind"
+        )
+
+    def test_a_section_scope_requires_its_well(self, session, tmp_path) -> None:
+        """Without the well the section's ownership cannot be checked at all."""
+        self._two_wells(session, tmp_path)
+        repository = EngineeringRepository(session)
+        with pytest.raises(ValidationError, match="needs well_id"):
+            _record(repository, section_id="scope-sec-a")
+        session.rollback()
+
+    def test_a_scope_naming_a_different_project_than_the_well_is_rejected(
+        self, session, tmp_path
+    ) -> None:
+        well_a, _well_b, other = self._two_wells(session, tmp_path)
+        repository = EngineeringRepository(session)
+        with pytest.raises(ValidationError, match="is not in project_id"):
+            _record(repository, well_id=well_a.id, project_id=other.id)
+        session.rollback()
+
+    def test_an_unknown_scope_identity_is_a_domain_error_not_a_sql_one(
+        self, session, tmp_path
+    ) -> None:
+        """Invented ids were caught only by the foreign key, as a raw IntegrityError."""
+        well_a, _well_b, _other = self._two_wells(session, tmp_path)
+        repository = EngineeringRepository(session)
+        for kwargs, match in (
+            ({"well_id": "well-nobody-wrote"}, "no well"),
+            ({"well_id": well_a.id, "section_id": "sec-nobody-wrote"}, "no section"),
+            # A well is checked against its own project before the project's existence, so an
+            # invented id is caught as the contradiction it is rather than as a dangling reference.
+            ({"well_id": well_a.id, "project_id": "proj-nobody-wrote"}, "is not in project_id"),
+        ):
+            with pytest.raises(ValidationError, match=match):
+                _record(repository, **kwargs)
+            session.rollback()
+
+    def test_a_consistent_scope_still_writes(self, session, tmp_path) -> None:
+        """The check must not reject the ordinary case it exists to protect."""
+        well_a, _well_b, _other = self._two_wells(session, tmp_path)
+        repository = EngineeringRepository(session)
+        row, _created = _record(
+            repository, well_id=well_a.id, section_id="scope-sec-a", project_id=well_a.project_id
+        )
+        session.commit()
+        assert row.section_id == "scope-sec-a" and row.well_id == well_a.id

@@ -1492,6 +1492,16 @@ class EngineeringRepository:
         if confidence_value is not None and not math.isfinite(confidence_value):
             raise ValidationError("calculation confidence must be finite", confidence=confidence)
         superseded_by = str(supersedes_id or "").strip()
+        # The scope columns are denormalised copies of the hierarchy, so nothing stops a caller from
+        # writing a calculation that names well A beside well B's section.  Every other engineering
+        # writer routes its scope through :meth:`_check_scope`; this one did not, which meant the same
+        # contradiction was rejected for a programme and silently stored for a calculation - and a
+        # calculation is the row a later reader is most likely to treat as an authoritative number.
+        self._check_scope(
+            well_id=str(well_id or ""),
+            section_id=str(section_id or ""),
+            project_id=str(project_id or ""),
+        )
         content = {
             "method_id": method,
             "method_version": version,
