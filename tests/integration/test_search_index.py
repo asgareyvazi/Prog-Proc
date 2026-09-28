@@ -27,9 +27,11 @@ from drilling_intelligence.search.chunking import (
     ChunkSet,
     IndexDocument,
     build_chunk_set,
+    chunk_id_for,
 )
 from drilling_intelligence.search.index import (
     MAX_CANDIDATES,
+    RETRIEVAL_CAP,
     SCHEMA_VERSION,
     InMemorySearchIndex,
     SearchFilters,
@@ -816,3 +818,169 @@ class TestBroadenedMeansAFallbackHappened:
         )
         assert hits == []
         assert meta["broadened"] is False, "a scoped-out match is not evidence of no match"
+
+
+# ------------------------------------------------------- V5.6 real-constant boundary corpora
+#: The whole point of these tests is that they run against the production constants, not a
+#: monkeypatched ``MAX_CANDIDATES = 1`` over three rows: a cap that is only ever exercised at a
+#: toy size proves nothing about the size at which it actually bites.
+_BOUNDARY_QUERY = "zermatt loss"
+_MATCHING_TEXT = "the zermatt loss circulation event was recorded in the daily report"
+_FILLER_TEXT = "filler body text carrying common mud weight words and nothing else"
+
+
+def _settings_for(directory: Path):
+    from drilling_intelligence.config.settings import Settings
+
+    config = directory / "config.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "[app]",
+                'data_dir = ".drillintel"',
+                "",
+                "[database]",
+                'sqlite_filename = "drilling_intelligence.db"',
+                "",
+                "[logging]",
+                'level = "WARNING"',
+                "",
+                "[ai]",
+                "enabled = false",
+                "require_ai = false",
+                "",
+                "[mineru]",
+                'mode = "disabled"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return Settings.load(config)
+
+
+def _build(directory: Path, rows: list[tuple[str, str]]) -> tuple[Database, SqliteSearchIndex]:
+    """A real sidecar index holding ``rows`` as ``(version_id, text)``."""
+    database = Database.from_url(
+        "sqlite:///" + str(directory / "sidecar.sqlite"), _settings_for(directory)
+    )
+    index = SqliteSearchIndex(database)
+    for version_id, text in rows:
+        index.store(chunk_set(version_id, version_id, artifact(("text", text))))
+    return database, index
+
+
+def _identity_ranked(count: int) -> list[str]:
+    """``count`` version ids in ``chunk_id`` order - the order discovery actually walks.
+
+    ``chunk_id`` is ``sha256("<version_id>:<index>")``, so identity order is unrelated to
+    insertion order but entirely computable in advance, which is what makes it possible to place
+    a genuine match deliberately past the discovery bound.
+    """
+    pool = [f"ver-{i:06d}" for i in range(count + 400)]
+    return sorted(pool, key=lambda v: chunk_id_for(v, 0))[:count]
+
+
+@pytest.fixture(scope="module")
+def late_match_index(tmp_path_factory):
+    """``RETRIEVAL_CAP + 1`` chunks, three of which genuinely match, one past the bound."""
+    directory = tmp_path_factory.mktemp("late_match")
+    ranked = _identity_ranked(RETRIEVAL_CAP + 1)
+    special = {ranked[0], ranked[len(ranked) // 2], ranked[-1]}
+    rows = [(vid, _MATCHING_TEXT if vid in special else _FILLER_TEXT) for vid in ranked]
+    database, index = _build(directory, rows)
+    yield index, {chunk_id_for(vid, 0) for vid in special}, chunk_id_for(ranked[-1], 0)
+    database.dispose()
+
+
+@pytest.fixture(scope="module")
+def cut_index(tmp_path_factory):
+    """``MAX_CANDIDATES + 1`` chunks that *all* match, so the surviving hits exceed the cap."""
+    directory = tmp_path_factory.mktemp("cut")
+    rows = [(vid, _MATCHING_TEXT) for vid in _identity_ranked(MAX_CANDIDATES + 1)]
+    database, index = _build(directory, rows)
+    yield index, [vid for vid, _ in rows]
+    database.dispose()
+
+
+class TestRetrievalCapBoundaryIsAboutMatchingRows:
+    """``RETRIEVAL_CAP`` bounds the *candidates*, not the table the candidates come from."""
+
+    def test_fts_and_scan_return_the_same_ids_including_the_late_match(
+        self, late_match_index
+    ) -> None:
+        index, expected_ids, late_id = late_match_index
+        fts_hits, fts_meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        fts_ids = sorted(hit.chunk.chunk_id for hit in fts_hits)
+        assert fts_ids == sorted(expected_ids)
+
+        index._fts_ready = False  # the documented "this SQLite build has no FTS5" path
+        try:
+            scan_hits, scan_meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        finally:
+            index._fts_ready = None
+        scan_ids = sorted(hit.chunk.chunk_id for hit in scan_hits)
+
+        assert scan_ids == fts_ids, "the accelerator must not change which rows are found"
+        assert late_id in scan_ids, (
+            "a genuine match whose identity sorts past the bound must still be found: discovery "
+            "is term-aware on both paths, so the bound applies to matching rows, not to the table"
+        )
+        assert scan_meta["truncated"] == fts_meta["truncated"] is False, (
+            "every matching candidate was examined on both paths, so neither may claim a bound"
+        )
+        assert scan_meta["candidates"] == fts_meta["candidates"] == len(expected_ids)
+        assert fts_meta["fts_used"] is True and scan_meta["fts_used"] is False
+
+    def test_scores_and_matched_terms_are_identical_across_backends(self, late_match_index) -> None:
+        index, _expected, _late = late_match_index
+        first = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))[0]
+        index._fts_ready = False
+        try:
+            second = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))[0]
+        finally:
+            index._fts_ready = None
+        assert [hit.chunk.chunk_id for hit in first] == [hit.chunk.chunk_id for hit in second], (
+            "same ranking order, not merely the same set"
+        )
+        assert [hit.score for hit in first] == [hit.score for hit in second]
+        assert [hit.matched_terms for hit in first] == [hit.matched_terms for hit in second]
+
+
+class TestMaxCandidatesBoundary:
+    """Exactly at the bound is not the same as past it.
+
+    ``len(hits) > MAX_CANDIDATES`` - not ``>=`` - is the whole claim, and the three cases below
+    are what keep it that way.  ``limit=0`` at the index layer means "no caller cap", so the
+    returned length is the cap's own doing and nothing else.
+    """
+
+    def test_4001_4000_and_3999_surviving_hits(self, cut_index) -> None:
+        index, version_ids = cut_index
+        assert len(version_ids) == MAX_CANDIDATES + 1
+
+        hits, meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        assert len(hits) == MAX_CANDIDATES, "one row past the cap, so exactly the cap is returned"
+        assert meta["truncated"] is True
+        assert meta["candidates"] == MAX_CANDIDATES + 1
+
+        index.remove_version(version_ids[-1])
+        hits, meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        assert len(hits) == MAX_CANDIDATES
+        assert meta["truncated"] is False, (
+            "exactly at the bound proves nothing was cut; only exceeding it does"
+        )
+        assert meta["candidates"] == MAX_CANDIDATES
+
+        index.remove_version(version_ids[-2])
+        hits, meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        assert len(hits) == MAX_CANDIDATES - 1
+        assert meta["truncated"] is False
+        assert meta["candidates"] == MAX_CANDIDATES - 1
+
+    def test_a_caller_limit_smaller_than_the_cap_still_reports_the_cut(self, cut_index) -> None:
+        """The cap is about what was *scored*, so it is reported even when fewer rows are shown."""
+        index, _version_ids = cut_index
+        _hits, meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=20))
+        assert meta["truncated"] is False, "two rows were removed, so the cap no longer bites"
+        assert meta["candidates"] == MAX_CANDIDATES - 1

@@ -37,9 +37,11 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    and_,
     delete,
     func,
     insert,
+    or_,
     select,
 )
 from sqlalchemy import inspect as sa_inspect
@@ -1270,6 +1272,46 @@ class SqliteSearchIndex:
             retrieval_truncated=retrieval_truncated,
         )
 
+    def _scan_candidate_ids(
+        self, table: Table, id_column: Any, terms: Sequence[str], mode: str
+    ) -> tuple[list[str] | None, bool]:
+        """Identity-ordered candidate ids for a SQLite build without FTS5.
+
+        This mirrors :meth:`_candidate_ids` term for term, and the detail that matters is *what
+        the bound applies to*: here and there it is the **matching** rows, never the raw table.
+        Capping the table first and matching afterwards is a different question - a genuine match
+        whose identity sorts past the bound is silently absent from the answer, so the same corpus
+        and the same query would return different results depending on whether this particular
+        SQLite build happens to have the FTS5 extension.  :meth:`_candidate_ids` promises the
+        opposite ("must never be a query that returns a different list"), so the scan has to keep
+        that promise too.
+
+        ``instr(terms_json, '"<term>":')`` is the same predicate :meth:`_statistics` already uses,
+        so both paths read the row's own indexed vocabulary rather than its prose, and the bound,
+        the ordering and the ``+ 1`` look-ahead are identical to the FTS query.
+        """
+        if not terms:
+            # Nothing to predicate on (a phrase-only query): the raw bounded scan is the only
+            # option, and ``candidates_for`` reports that bound honestly.
+            return None, False
+        unique = list(dict.fromkeys(terms))
+        clauses = [
+            sa_text("instr(terms_json, :needle) > 0").bindparams(
+                needle=f'"{term.replace(chr(34), "")}":'
+            )
+            for term in unique
+        ]
+        condition = or_(*clauses) if mode == "any" else and_(*clauses)
+        statement = (
+            select(id_column).select_from(table).where(condition).order_by(id_column).limit(
+                RETRIEVAL_CAP + 1
+            )
+        )
+        with self.engine.connect() as connection:
+            rows = connection.execute(statement).all()
+        truncated = len(rows) > RETRIEVAL_CAP
+        return [str(row[0]) for row in rows[:RETRIEVAL_CAP]], truncated
+
     def _candidate_ids(self, terms: Sequence[str], mode: str) -> tuple[list[str] | None, bool]:
         """Ids to score, or ``None`` for "scan the table" (no FTS5, or no plain terms).
 
@@ -1287,8 +1329,12 @@ class SqliteSearchIndex:
         runs slower on a machine without the extension must never be a query that returns a
         different list.
         """
-        if not self.fts_available() or not terms:
+        if not terms:
             return None, False
+        if not self.fts_available():
+            return self._scan_candidate_ids(
+                search_chunk_table, search_chunk_table.c.chunk_id, terms, mode
+            )
         unique = list(dict.fromkeys(terms))
         joiner = " OR " if mode == "any" else " "
         match = joiner.join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in unique)
@@ -1302,7 +1348,9 @@ class SqliteSearchIndex:
                 ).all()
         except Exception:  # noqa: BLE001 - a malformed expression means "use the scan"
             log.warning("search.fts_query_failed", match=match[:200], level=25)
-            return None, False
+            return self._scan_candidate_ids(
+                search_chunk_table, search_chunk_table.c.chunk_id, terms, mode
+            )
         truncated = len(rows) > RETRIEVAL_CAP
         return [str(row[0]) for row in rows[:RETRIEVAL_CAP]], truncated
 
@@ -1316,8 +1364,12 @@ class SqliteSearchIndex:
         on both sides, and any rejected expression falls back to the scan.  Acceleration only,
         never the ranking.
         """
-        if not self.fts_available() or not terms:
+        if not terms:
             return None, False
+        if not self.fts_available():
+            return self._scan_candidate_ids(
+                search_structured_table, search_structured_table.c.record_id, terms, mode
+            )
         unique = list(dict.fromkeys(terms))
         joiner = " OR " if mode == "any" else " "
         match = joiner.join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in unique)
@@ -1331,7 +1383,9 @@ class SqliteSearchIndex:
                 ).all()
         except Exception:  # noqa: BLE001 - a malformed expression means "use the scan"
             log.warning("search.fts_query_failed", match=match[:200], level=25)
-            return None, False
+            return self._scan_candidate_ids(
+                search_structured_table, search_structured_table.c.record_id, terms, mode
+            )
         truncated = len(rows) > RETRIEVAL_CAP
         return [str(row[0]) for row in rows[:RETRIEVAL_CAP]], truncated
 

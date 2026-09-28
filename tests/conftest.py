@@ -17,6 +17,40 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+
+@pytest.fixture(autouse=True)
+def _isolate_cli_logging():
+    """Keep a CLI invocation's log handler from outliving the test that made it.
+
+    ``configure_logging`` attaches ``StreamHandler(sys.stderr)`` to the ``drilling_intelligence``
+    logger (``core/logging.py:119``) - bound to whatever ``sys.stderr`` is *at that moment* - and
+    then sets a module-global ``_CONFIGURED`` idempotence flag.  Under ``capsys`` that stream is
+    pytest's capture stream, which pytest closes at teardown; because the flag stays set, the next
+    ``main()`` returns early and keeps writing into the closed stream, so ``ValueError: I/O
+    operation on closed file`` leaks into a later test's captured output.
+
+    That is cross-test contamination, not a product defect, but it made two knowledge-CLI
+    assertions about "no Traceback in the output" fail or pass depending purely on which modules
+    happened to run first.  Restoring the handler list *and* the flag returns each test to the
+    fresh-process state a real CLI run would have.
+    """
+    import logging
+
+    from drilling_intelligence.core import logging as platform_logging
+
+    logger = logging.getLogger("drilling_intelligence")
+    saved_handlers = list(logger.handlers)
+    saved_configured = platform_logging._CONFIGURED
+    try:
+        yield
+    finally:
+        for handler in list(logger.handlers):
+            if handler not in saved_handlers:
+                logger.removeHandler(handler)
+                handler.close()
+        platform_logging._CONFIGURED = saved_configured
+
+
 from tests.fixtures.generate import GROUND_TRUTH, build_corpus  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures"
