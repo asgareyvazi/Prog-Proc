@@ -1387,3 +1387,21 @@ Delta reconciles exactly: 1596 at the previous checkpoint plus 27 new test funct
 33. Row 33 in particular is still not certified — this section reports only that the boundary
 fixtures build in roughly 60 s per 16 001-chunk corpus, which is a test-runtime observation, not a
 performance certification.
+
+### 36E. Publication status — `PUBLISH_BLOCKED` again, transient
+
+| item | value |
+| --- | --- |
+| last verified remote tip | `fd506b6` (pushed and `ls-remote`-verified earlier this session) |
+| this section's commit | `799e89d` — **local only** |
+| worktree | 0 dirty paths |
+
+The GitHub credential expired a second time mid-session: `git push` returns exit **128** and
+`gh auth status` reports *"The github.com token in `GH_TOKEN` is no longer valid."* Nine push
+attempts spread over roughly seven minutes all failed, so this is recorded as `PUBLISH_BLOCKED`.
+The identical block earlier in this session cleared on its own and the push then succeeded, which is
+why this is labelled transient rather than final.
+
+`799e89d` is a fast-forward child of the published `fd506b6`; the worktree is clean and nothing was
+reset, rebased, squashed or force-pushed. Reconnecting GitHub in Arena and running
+`git push origin arena/01a0c936-prog-proc` publishes it.
