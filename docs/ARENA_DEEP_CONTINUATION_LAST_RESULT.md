@@ -1455,3 +1455,23 @@ Rows 25 and 31 stay open for the reasons already recorded and not repeated here:
 survived with one survivor unexplained, and 31's obvious tiebreaker sorts Completion before Spud,
 which is domain-wrong. Row 33 stays open because no benchmark in this mission was run against the
 repository's own performance-certification criteria.
+
+### 37D. Executed gates for rows 13 and 21
+
+| gate | result |
+| --- | --- |
+| targeted: `test_domain_review.py` | 13 passed, 0 failed |
+| targeted: evidence package + citation forensics | 0 failed |
+| **full suite (after the final change)** | **1625 passed / 3 skipped / 1628 collected, 0 failed**, exit 0 |
+| `ruff check .` / `ruff format --check .` | all checks passed / 234 files already formatted |
+| `python -m compileall -q src tests` | exit 0 |
+| `git diff --check` | exit 0 |
+| `alembic heads` | `0012 (head)` |
+| `tests/unit/test_report_integrity.py` | 5 passed |
+
+Delta reconciles exactly: 1623 at the previous checkpoint plus the 2 new tests (row 13, row 21) =
+1625. Published as `019c3b3`, with `git ls-remote` equal to local `HEAD` and 0 dirty paths.
+
+Neither row required a production change: both contracts already held, and what was missing was the
+executed evidence. That is the distinction the ledger exists to keep — a row is not closed because
+the code looks right, and it is not left open because nobody wrote the test down.
