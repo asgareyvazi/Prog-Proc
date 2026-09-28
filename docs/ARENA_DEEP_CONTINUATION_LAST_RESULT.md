@@ -942,3 +942,86 @@ Two honesty notes carried forward rather than smoothed over:
 * one mutation attempt in Checkpoint 6 silently failed to apply and initially reported another
   mutation's failures. It was re-run with the mutation verified present in the file, and only that
   run is counted (§26E).
+
+## 33. V5.4 close-out — checkpoints 8-10 and final state
+
+### 33.1 Checkpoints
+
+```
+checkpoint: V5.4-C8 — supplied dates must not become "no date"
+status: REMOTE_PUBLISHED
+commit: d89365e
+push: exit 0, 836566e..d89365e
+remote_verified: yes
+changed_files: operations/repository.py, test_field_intelligence.py,
+               test_operation_dates.py (new), report
+attacks_closed: ledger rows 29 (proven + documented), 30 (fixed); 31 recorded open with reason
+tests: 4 new + 99 corpus/promotion/review, exit 0
+mutations: 2 attempted, 2 killed
+
+checkpoint: V5.4-C9 — promotion atomicity
+status: REMOTE_PUBLISHED
+commit: 38a1677
+push: exit 0, d89365e..38a1677
+remote_verified: yes
+changed_files: test_promotion_atomicity.py (new), report
+attacks_closed: none — row 25 left OPEN_NOT_EXERCISED with the reason recorded
+tests: 3 new, pass on the real code
+mutations: 2 attempted, 0 killed (both SURVIVED; one unexplained)
+
+checkpoint: V5.4-C10 — final gates and verdict
+status: see the remote verification recorded with this commit
+changed_files: report only
+tests: full suite after the last source/test change
+```
+
+### 33.2 Final gate results
+
+| gate | result |
+| --- | --- |
+| `ruff check src tests migrations` | exit 0, "All checks passed!" |
+| `ruff format --check src tests migrations` | exit 0 |
+| `python -m compileall -q src tests migrations` | exit 0 |
+| `git diff --check` | exit 0 |
+| `alembic heads` | `0012 (head)` |
+| report integrity | exit 0, 5 passed |
+| **full suite, after the last source/test change** | **1581 passed / 3 skipped / 1584, 0 failed, 0 errors** |
+
+Derived by summing the per-character progress output with `^([.sFEx]+)\s*\[\s*\d+%\]$` because
+`pytest -q` again printed no summary line; `grep -cE '^FAILED'` = 0. Reconciles exactly with the
+previous 1577 plus 4 (operation dates) + 3 (promotion atomicity). No `tests/integration/test_zz_*`
+probe files remain.
+
+### 33.3 Final ledger movement
+
+| verdict | V5.4 start | V5.4 end |
+| --- | ---: | ---: |
+| `DEFECT_FOUND_AND_FIXED` | 7 | **14** |
+| `BEHAVIOURALLY_PROVEN` | 5 | **7** |
+| `HYPOTHESIS_DISPROVED` | 1 | **2** |
+| `OPEN_NOT_EXERCISED` | 20 | **11** |
+| `OPEN_DEFECT` | 1 | **0** |
+
+Seven defects found and fixed at the root, each with an executed mutation and a test that failed
+because of it: review truncation truthfulness · retrieval cap inference · evidence package cap
+visibility · a contract that lied about another layer's `limit=0` · field/project scope contradiction
+· bare `date` dropped to NULL · unreadable dates laundered into "no date".
+
+### 33.4 Final verdict
+
+**CERTIFIABLE WITH BOUNDED REMAINING SCOPE.**
+
+No `OPEN_DEFECT` remains. Eleven rows are still `OPEN_NOT_EXERCISED`, and they are unexamined rather
+than cleared: 13 review null-well semantics · 14 review current/history matrix · 16 search `truncated`
+semantics · 17 FTS/scan equivalence · 18 strict-query fallback metadata · 21 evidence identity
+order-independence · 22 evidence freshness delta · 25 promotion atomicity · 26 child-row identity ·
+28 defensive reads · 31 timeline determinism · 33 performance at scale.
+
+Three honesty notes are carried in the report rather than smoothed over:
+
+* **row 25** — three atomicity tests pass, but both mutations survived and one survivor is
+  unexplained, so the tests are not proven sensitive (§26G);
+* **row 31** — the comparator ties for two undated milestones of one well; the obvious tiebreaker
+  sorts Completion before Spud, which is domain-wrong, so the change was reverted and the gap left
+  recorded (§26F);
+* the `MATCH + NOT_CHECKABLE` citation combination is derived from code but has no test (§26B).

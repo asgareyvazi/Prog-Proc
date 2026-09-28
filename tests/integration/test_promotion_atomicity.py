@@ -91,8 +91,6 @@ class TestPromotionIsAtomic:
         """A parent must not survive holding only some of the children it was given."""
         filename, before = self._populated(workspace)
 
-        real = OperationsRepository.record_npt
-
         def exploding(self: Any, **kwargs: Any) -> Any:
             raise _Explode("forced failure while writing children")
 
