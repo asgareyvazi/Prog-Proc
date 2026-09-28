@@ -781,9 +781,14 @@ tests: 6 new + 189 existing engineering, exit 0
 mutations: 2 attempted, 2 killed
 
 checkpoint: V5.4-C7 — final gates and verdict
-status: see the remote verification recorded with this commit
-changed_files: report only
-tests: full suite after the last source change
+status: REMOTE_PUBLISHED
+commit: dcfff13
+push: exit 0, bbf9df7..dcfff13
+local_head: dcfff13b288aa9168362bb75abc463b6bf866051
+remote_head: dcfff13b288aa9168362bb75abc463b6bf866051
+remote_verified: yes - git ls-remote returned the same SHA as local HEAD
+changed_files: report only (no source change after C6)
+tests: full suite after the last source change, 1574 passed / 3 skipped / 1577, 0 failed
 ```
 
 ### 32.2 Final gate results
