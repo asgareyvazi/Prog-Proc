@@ -142,6 +142,14 @@ class SearchResponse:
     #: that never ran.
     broadened: bool = False
 
+    #: The two halves of ``truncated``, exposed separately because they mean different things:
+    #: ``candidate_capped`` - discovery hit ``RETRIEVAL_CAP``, so the universe examined was
+    #: incomplete and an absent row is not evidence of absence; ``results_capped`` - every
+    #: discovered candidate was scored but more survived than ``MAX_CANDIDATES``, so the ranking is
+    #: complete and only its tail was cut.  ``truncated`` remains their OR.
+    candidate_capped: bool = False
+    results_capped: bool = False
+
     @property
     def ok(self) -> bool:
         return True
@@ -157,6 +165,8 @@ class SearchResponse:
             "mode": self.mode,
             "broadened": self.broadened,
             "truncated": self.truncated,
+            "candidate_capped": self.candidate_capped,
+            "results_capped": self.results_capped,
             "candidates": self.candidates,
             "total_chunks": self.total_chunks,
             "fts_used": self.fts_used,
@@ -368,6 +378,8 @@ class SearchService:
             results=tuple(results),
             mode=str(meta.get("mode") or request.mode),
             broadened=bool(meta.get("broadened")),
+            candidate_capped=bool(meta.get("candidate_capped")),
+            results_capped=bool(meta.get("results_capped")),
             truncated=bool(meta.get("truncated")),
             candidates=int(meta.get("candidates") or 0),
             total_chunks=int(meta.get("total_chunks") or 0),

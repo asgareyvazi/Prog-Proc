@@ -1100,6 +1100,176 @@ class TestBroadeningUnderBoundedDiscovery:
         )
 
 
+@pytest.fixture(scope="module")
+def state_cut_index(tmp_path_factory):
+    """``MAX_CANDIDATES + 1`` matching chunks, reserved for the state matrix.
+
+    :class:`TestMaxCandidatesBoundary` walks its own corpus down by removing versions, so the state
+    matrix cannot share it: "the result set was cut" is only true while all 4001 rows are present.
+    """
+    directory = tmp_path_factory.mktemp("state_cut")
+    rows = [(vid, _MATCHING_TEXT) for vid in _identity_ranked(MAX_CANDIDATES + 1)]
+    database, index = _build(directory, rows)
+    yield index, [vid for vid, _ in rows]
+    database.dispose()
+
+
+class TestTruncationStatesAreDistinguishable:
+    """The five states a bounded search can be in, and whether a caller can tell them apart.
+
+    ``truncated`` alone cannot: it is the OR of two different facts.  ``candidate_capped`` says the
+    universe examined was incomplete, so an absent row proves nothing; ``results_capped`` says every
+    candidate was examined and only the answer list was cut, so the ranking is complete.  These run
+    before :class:`TestRetrievalCapExactBound` because that one removes versions from the shared
+    corpus.
+    """
+
+    def test_state_a_neither_bound(self, late_match_index) -> None:
+        index, _expected, _late = late_match_index
+        _hits, meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        assert meta["truncated"] is False
+        assert meta["candidate_capped"] is False
+        assert meta["results_capped"] is False
+
+    def test_state_b_only_the_candidate_universe_was_bounded(self, scoped_index) -> None:
+        index, _in_scope = scoped_index
+        _hits, meta = index.search(
+            SearchRequest(query="zermatt", filters=SearchFilters(well_id="well-1"), limit=0)
+        )
+        assert meta["candidate_capped"] is True
+        assert meta["results_capped"] is False, (
+            "far fewer rows survived than MAX_CANDIDATES, so nothing was cut off the answer"
+        )
+        assert meta["truncated"] is True
+
+    def test_state_c_only_the_result_set_was_cut(self, state_cut_index) -> None:
+        index, _version_ids = state_cut_index
+        _hits, meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        assert meta["results_capped"] is True
+        assert meta["candidate_capped"] is False, (
+            "every matching candidate was discovered; only the returned list was cut"
+        )
+        assert meta["truncated"] is True
+
+    def test_state_d_both_bounds(self, scoped_index) -> None:
+        """Unscoped, every row matches, so discovery is bounded *and* the answer list is cut."""
+        index, _in_scope = scoped_index
+        _hits, meta = index.search(SearchRequest(query="zermatt", limit=0))
+        assert meta["candidate_capped"] is True
+        assert meta["results_capped"] is True
+        assert meta["truncated"] is True
+        assert meta["candidates"] == RETRIEVAL_CAP
+
+    def test_the_two_backends_agree_at_the_bound_itself(self, scoped_index) -> None:
+        """Parity where it is hardest: more matching rows than the cap, on both paths.
+
+        Every other parity test uses a corpus where both backends find all the matches, which
+        cannot detect one backend applying a *different* cap policy.  Here 16 001 rows match, so
+        the candidate list, the count and both flags are all products of the bound.
+        """
+        index, _in_scope = scoped_index
+        request = SearchRequest(query="zermatt", limit=0)
+        fts_hits, fts_meta = index.search(request)
+        index._fts_ready = False
+        try:
+            scan_hits, scan_meta = index.search(request)
+        finally:
+            index._fts_ready = None
+        assert [h.chunk.chunk_id for h in scan_hits] == [h.chunk.chunk_id for h in fts_hits]
+        assert scan_meta["candidates"] == fts_meta["candidates"] == RETRIEVAL_CAP
+        assert scan_meta["candidate_capped"] is fts_meta["candidate_capped"] is True
+        assert scan_meta["results_capped"] is fts_meta["results_capped"] is True
+        assert scan_meta["truncated"] is fts_meta["truncated"] is True
+
+    def test_state_e_exactly_at_a_bound_is_not_a_bound(self, state_cut_index) -> None:
+        """Reaching a bound with nothing beyond it is a complete answer, not a truncated one.
+
+        Runs last within the class because it removes a version; state C above needs all 4001.
+        """
+        index, version_ids = state_cut_index
+        index.remove_version(version_ids[-1])
+        _hits, meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        assert meta["truncated"] is False
+        assert meta["candidate_capped"] is False
+        assert meta["results_capped"] is False
+
+
+class TestDrillingTokensAndPhrasesAgreeAcrossBackends:
+    """The tokenizer-sensitive query forms this product actually has to answer."""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "10.2",
+            "12 1/4",
+            "500/300",
+            "12 bbl",
+            "9,940 ft",
+            "10.2 ppg",
+            "shoe depth",
+            '"mud weight"',
+            "mud mud weight",
+        ],
+    )
+    def test_fts_and_scan_agree(self, index, query: str) -> None:
+        index.store(
+            chunk_set(
+                "doc-tok",
+                "ver-tok",
+                artifact(
+                    ("text", "mud weight 10.2 ppg at 9,940 ft with a 12 1/4 inch bit and 500/300")
+                ),
+            )
+        )
+        index.store(
+            chunk_set(
+                "doc-tok2",
+                "ver-tok2",
+                artifact(("text", "shoe depth 12 bbl circulated, mud weight held at 10.2 ppg")),
+            )
+        )
+        fts_hits, fts_meta = index.search(SearchRequest(query=query, limit=0))
+        index._fts_ready = False
+        try:
+            scan_hits, scan_meta = index.search(SearchRequest(query=query, limit=0))
+        finally:
+            index._fts_ready = None
+        assert [h.chunk.chunk_id for h in scan_hits] == [h.chunk.chunk_id for h in fts_hits], query
+        assert [h.score for h in scan_hits] == [h.score for h in fts_hits], query
+        assert scan_meta["mode"] == fts_meta["mode"], query
+        assert scan_meta["broadened"] == fts_meta["broadened"], query
+        assert scan_meta["candidate_capped"] == fts_meta["candidate_capped"], query
+        assert scan_meta["results_capped"] == fts_meta["results_capped"], query
+
+
+class TestInMemoryBackendSharesTheRankingContract:
+    """In-memory runs no bounded discovery stage at all, and that must be visible, not silent."""
+
+    def test_it_never_reports_a_discovery_bound(self) -> None:
+        index = InMemorySearchIndex()
+        index.store(chunk_set("doc-mem", "ver-mem", artifact(("text", _MATCHING_TEXT))))
+        _hits, meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        assert meta["candidate_capped"] is False, (
+            "there is no candidate-retrieval stage to cap; claiming one would be a lie in the "
+            "other direction"
+        )
+        assert meta["results_capped"] is False
+        assert meta["truncated"] is False
+        assert meta["fts_used"] is False
+
+    def test_it_agrees_with_sqlite_on_a_small_corpus(self, index) -> None:
+        index.store(chunk_set("doc-par", "ver-par", artifact(("text", _MATCHING_TEXT))))
+        memory = InMemorySearchIndex()
+        memory.store(chunk_set("doc-par", "ver-par", artifact(("text", _MATCHING_TEXT))))
+        sql_hits, sql_meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        mem_hits, mem_meta = memory.search(SearchRequest(query=_BOUNDARY_QUERY, limit=0))
+        assert [h.chunk.chunk_id for h in mem_hits] == [h.chunk.chunk_id for h in sql_hits]
+        assert [h.score for h in mem_hits] == [h.score for h in sql_hits]
+        assert mem_meta["mode"] == sql_meta["mode"]
+        assert mem_meta["broadened"] == sql_meta["broadened"]
+        assert mem_meta["candidates"] == sql_meta["candidates"]
+
+
 class TestRetrievalCapExactBound:
     """``RETRIEVAL_CAP`` at 15999 / 16000 / 16001, against the production constant.
 

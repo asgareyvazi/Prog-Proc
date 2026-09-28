@@ -739,7 +739,13 @@ def score_candidates(
     hits, scoring_truncated, matched_any = _score(
         candidates.pairs, candidates.records, replace(request, mode=mode), statistics=statistics
     )
-    truncated = scoring_truncated or bool(retrieval_truncated and retrieval_truncated(mode))
+    #: The two bounds are different facts about the answer and a caller has to be able to tell
+    #: them apart: ``candidate_capped`` says the universe examined was incomplete, so an absent row
+    #: proves nothing; ``results_capped`` says every candidate was examined but the answer list was
+    #: cut, so the ranking is complete and only its tail is missing.  ``truncated`` stays their OR
+    #: for backward compatibility, but it can no longer be the only thing a caller has.
+    results_capped = scoring_truncated
+    candidate_capped = bool(retrieval_truncated and retrieval_truncated(mode))
     candidate_count = len(candidates)
     if not hits and matched_any is False and mode == "all" and len(request.terms) > 1:
         # Reported, never silent: "nothing matched the whole query" and "here is what matched
@@ -752,11 +758,16 @@ def score_candidates(
         hits, scoring_truncated, _ = _score(
             candidates.pairs, candidates.records, replace(request, mode=mode), statistics=statistics
         )
-        truncated = truncated or scoring_truncated
+        results_capped = results_capped or scoring_truncated
+        candidate_capped = candidate_capped or bool(
+            retrieval_truncated and retrieval_truncated(mode)
+        )
     return hits, {
         "mode": mode,
         "broadened": broadened,
-        "truncated": truncated,
+        "truncated": candidate_capped or results_capped,
+        "candidate_capped": candidate_capped,
+        "results_capped": results_capped,
         "candidates": candidate_count,
         "total_chunks": total_chunks,
         "fts_used": fts_used,
@@ -1295,11 +1306,15 @@ class SqliteSearchIndex:
             # option, and ``candidates_for`` reports that bound honestly.
             return None, False
         unique = list(dict.fromkeys(terms))
+        # One *distinct* bind name per term.  Reusing ``:needle`` collapses every clause onto the
+        # last term's value, so an OR over two terms silently became "the second term alone" - a
+        # multi-term broadened query then found nothing on a machine without FTS5 while finding
+        # everything on one with it.
         clauses = [
-            sa_text("instr(terms_json, :needle) > 0").bindparams(
-                needle=f'"{term.replace(chr(34), "")}":'
+            sa_text(f"instr(terms_json, :needle{position}) > 0").bindparams(
+                **{f"needle{position}": f'"{term.replace(chr(34), "")}":'}
             )
-            for term in unique
+            for position, term in enumerate(unique)
         ]
         condition = or_(*clauses) if mode == "any" else and_(*clauses)
         statement = (

@@ -399,8 +399,8 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 13 | Review null-well semantics | null must never become an accidental wildcard | `review/service.py` `_for_well` | `OPEN_NOT_EXERCISED` |
 | 14 | Review current/history matrix | one definition of currentness per domain | `review/service.py` | `OPEN_NOT_EXERCISED` |
 | 15 | Review read-only proof | a read must not write | `test_domain_review.py` fingerprint | `BEHAVIOURALLY_PROVEN` (existing) |
-| 16 | Search `truncated` semantics | two facts OR'd: discovery cap and result-set cut (§34A, §35A) | `search/index.py:696,736` | `OPEN_NOT_EXERCISED` — both bounds now exercised at the real constants and mutation-killed, but one boolean still cannot say *which* was reached, and `to_dict()` serialisation is untested (§35E) |
-| 17 | FTS vs scan equivalence | the accelerator must not change the answer | `search/index.py` | `OPEN_NOT_EXERCISED` — a real divergence was found and fixed for document chunks (§35B), with parity proven at 16 001 rows and M3 killed; **structured records, mixed populations, phrase/drilling tokens and in-memory at scale remain unexercised** |
+| 16 | Search `truncated` semantics | the two bounds must be separately knowable, and exact-bound must not read as exceeded | `search/index.py:696,736`, `search/service.py` | `DEFECT_FOUND_AND_FIXED` — `candidate_capped`/`results_capped` added, `truncated` kept as their OR; states A–E and both 3999/4000/4001 and 15999/16000/16001 walked at the real constants; serialisation proven; M1/M2/M4/M5/M6 killed (§35, §36A) |
+| 17 | FTS vs scan equivalence | the accelerator must not change the answer | `search/index.py` | `DEFECT_FOUND_AND_FIXED` — two divergences found and fixed (scan bounded the table not the candidates, §35B; a shared bind name collapsed multi-term scans to nothing, §36B). Parity proven on ids, order, scores, matched terms, mode, broadened and both cap flags across documents, structured records, mixed populations, phrase and drilling tokens, at and below the bound, plus in-memory; M3/M8/M9 killed |
 | 18 | Strict-query fallback metadata | broadening must describe the answer returned | `search/service.py` | `DEFECT_FOUND_AND_FIXED` |
 | 19 | Retrieval `capped` inference | `>=` cap does not prove truncation | `retrieval/service.py` `_discover` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/contract.py:159`, `evidence/service.py:101` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
@@ -1278,7 +1278,112 @@ clean, and the branch needs reconnecting GitHub in Arena and then a single
 `git push origin arena/01a0c936-prog-proc`. No `reset`, `rebase`, `squash` or force-push was used at
 any point.
 
-**What is durably published versus not.** The production fix itself — the term-aware scan in
-`_scan_candidate_ids`, plus the test-isolation fixture and the four parity/`MAX_CANDIDATES` boundary
-tests — is on the remote at `01a8600`. What is local-only is the `RETRIEVAL_CAP` exact-bound walk,
-the scope and broadening tests, the §25 ledger reconciliation and this report section.
+**Resolved later in the same session.** The credential recovered; `git push` then succeeded
+(`01a8600..fd506b6`) and `git ls-remote` confirmed the remote tip equal to local `HEAD`, with 0
+dirty paths. The block was transient, and no work was lost or rewritten while it lasted.
+
+## 36. V5.6 continued — which bound was reached, and a defect the parity test caught
+
+Published continuation from `fd506b6`. This section closes the two gaps §35E named for row 16 and
+the structured/mixed gaps for row 17.
+
+### 36A. `truncated` now names its own halves
+
+`truncated` stays exactly the OR of two facts, for backward compatibility, but a caller no longer has
+to infer which one fired:
+
+| field | true means |
+| --- | --- |
+| `candidate_capped` | discovery hit `RETRIEVAL_CAP`, so the universe examined was **incomplete** — an absent row is not evidence of absence |
+| `results_capped` | every discovered candidate was scored but more survived than `MAX_CANDIDATES` — the ranking is **complete**, only its tail was cut |
+| `truncated` | `candidate_capped or results_capped`, unchanged in meaning |
+
+Both are set in `score_candidates` (the one place both backends share), carried onto
+`SearchResponse`, and emitted by `to_dict()`. The CLI now prints a different sentence for each, and
+the old generic sentence is kept only as a fallback so an incomplete metadata set can never silently
+drop the warning.
+
+All five states are tested at the production constants — **A** neither bound, **B** candidate-bound
+only, **C** result-bound only, **D** both, **E** exactly at a bound with nothing beyond it — plus a
+parity assertion *at* the bound, where 16 001 rows match and the candidate list, count and both flags
+are all products of the cap.
+
+### 36B. A defect the parity test caught — in code this mission had just written
+
+Adding structured/mixed parity over the real promotion path immediately failed. Measured:
+
+```
+Q=mud zermatt   FTS cands=56 hits=56     SCAN cands=0 hits=0
+```
+
+**Root cause.** `_scan_candidate_ids` built every term clause with the *same* bind parameter name
+`:needle`. Combined under `or_()`, the clauses collapse onto the last term's value, so a two-term
+broadened query silently became "the second term alone" — and since nothing matched it, the scan
+returned **nothing at all** on a machine without FTS5 while FTS5 returned 56 rows. The `and_()` path
+was equally wrong but happened to agree with FTS on every corpus tried so far, because both collapsed
+to the same single term.
+
+**Why it survived until now.** Every earlier parity test used a corpus where all the matching rows
+contained *all* the query terms, so collapsing the AND onto one term selected the same rows. Only a
+query whose terms do not co-occur exposes it.
+
+**Fix.** One distinct bind name per term (`:needle0`, `:needle1`, …). Post-fix, all five real queries
+agree exactly on candidates, hits, scores, matched terms, mode, broadened and both cap flags.
+
+This is recorded as a defect **introduced and fixed inside this mission**, not as a pre-existing one.
+
+### 36C. Tests and mutations added
+
+* `TestTruncationStatesAreDistinguishable` (6) — states A–E plus parity at the bound.
+* `TestDrillingTokensAndPhrasesAgreeAcrossBackends` (9 params) — `10.2`, `12 1/4`, `500/300`,
+  `12 bbl`, `9,940 ft`, `10.2 ppg`, `shoe depth`, a quoted phrase, and a duplicated term.
+* `TestInMemoryBackendSharesTheRankingContract` (2) — in-memory runs no discovery stage and must
+  never claim a discovery bound; small-corpus parity with SQLite on ids, scores, mode and count.
+* `TestTheCapContractSurvivesSerialisation` (3) — `to_dict()` carries both flags and the OR stays
+  exactly the OR; the service re-derives nothing the backend did not report.
+* `TestStructuredAndMixedParityAcrossBackends` (7) — structured and mixed document+structured
+  queries through the real promotion path, FTS vs scan.
+
+| mutation | result |
+| --- | --- |
+| M2 — drop the `+ 1` look-ahead from FTS discovery | **KILLED** |
+| M6 — collapse `candidate_capped`/`results_capped` into `truncated` | **KILLED** (2) |
+| M7 — drop `matched_any is False`, so a scoped-out match licences broadening | **KILLED** |
+| M8 — give the scan a different cap policy (`RETRIEVAL_CAP // 2`) | **KILLED** |
+| M9 — restore the shared `:needle` bind name | **KILLED** (3) |
+
+M8 needed a test that did not exist: parity had only ever been asserted where both backends find all
+the matches, which cannot detect a differing cap policy. `test_the_two_backends_agree_at_the_bound_itself`
+was added for exactly that, and only then did M8 have something to kill.
+
+### 36D. A test-isolation defect found by the full suite, and the executed gates
+
+The first full-suite run after these additions failed one test:
+`test_state_c_only_the_result_set_was_cut`. It passed in isolation and failed in the module, because
+`TestMaxCandidatesBoundary` walks its shared `cut_index` down by removing versions — so "the result
+set was cut" was no longer true by the time the state matrix ran. The state matrix now has its own
+module-scoped corpus. The lesson recorded: **a boundary test that consumes its corpus must never
+share a fixture with one that asserts an intact count**, and running a class in isolation proves
+nothing about its position in the module. The whole module was then re-run in file order (75 tests,
+0 failures) before the full suite.
+
+| gate | result |
+| --- | --- |
+| targeted: `test_search_index.py` whole module, file order | 75 passed, 0 failed |
+| targeted: structured + mixed parity | 7 passed |
+| targeted: serialisation + CLI | 3 passed |
+| **full suite (after the final change)** | **1623 passed / 3 skipped / 1626 collected, 0 failed**, exit 0 |
+| `ruff check .` | all checks passed |
+| `ruff format --check .` | 234 files already formatted |
+| `python -m compileall -q src tests` | exit 0 |
+| `git diff --check` | exit 0 |
+| `alembic heads` | `0012 (head)` |
+| `tests/unit/test_report_integrity.py` | 5 passed |
+
+Delta reconciles exactly: 1596 at the previous checkpoint plus 27 new test functions (6 state matrix
++ 9 drilling-token params + 2 in-memory + 3 serialisation + 7 structured/mixed) = **1623**.
+
+**Rows 16 and 17 are now closed.** Open rows fall from 11 to **9**: 13, 14, 21, 22, 25, 26, 28, 31,
+33. Row 33 in particular is still not certified — this section reports only that the boundary
+fixtures build in roughly 60 s per 16 001-chunk corpus, which is a test-runtime observation, not a
+performance certification.

@@ -816,3 +816,44 @@ class TestBroadenedWordingIsTruthful:
         assert meta["broadened"] is False, (
             "an explicitly broadened reading disproved nothing, so nothing may be reported as disproved"
         )
+
+
+class TestTheCapContractSurvivesSerialisation:
+    """§13: metadata must not change meaning or disappear between the index and the JSON."""
+
+    def test_to_dict_carries_both_bounds_and_the_fallback_flag(self, searched) -> None:
+        service, _corpus, _result = searched
+        response = service.search("mud weight 10.2 ppg")
+        payload = response.to_dict()
+        for key in ("truncated", "candidate_capped", "results_capped", "broadened", "candidates"):
+            assert key in payload, f"{key} must survive to_dict()"
+        assert payload["truncated"] == (payload["candidate_capped"] or payload["results_capped"]), (
+            "the OR must stay exactly the OR of the two named facts"
+        )
+        assert payload["truncated"] is response.truncated
+        assert payload["candidate_capped"] is response.candidate_capped
+        assert payload["results_capped"] is response.results_capped
+
+    def test_the_flags_agree_with_the_index_layer(self, searched) -> None:
+        """The service must not re-derive or drop what the backend reported."""
+        from drilling_intelligence.search.index import SearchRequest
+
+        service, _corpus, _result = searched
+        _hits, meta = service.index.search(SearchRequest(query="mud weight 10.2 ppg", limit=20))
+        response = service.search("mud weight 10.2 ppg", limit=20)
+        assert response.candidate_capped is meta["candidate_capped"]
+        assert response.results_capped is meta["results_capped"]
+        assert response.truncated is meta["truncated"]
+        assert response.candidates == meta["candidates"]
+
+    def test_the_cli_makes_no_cap_claim_for_an_unbounded_search(
+        self, searched, workspace, capsys
+    ) -> None:
+        from drilling_intelligence.cli.app import main
+
+        _service, _corpus, _result = searched
+        main(["search", "mud weight 10.2 ppg", "--workspace", str(workspace.root)])
+        out = capsys.readouterr().out
+        assert "candidate cap reached" not in out
+        assert "result cap reached" not in out
+        assert "not every matching row was examined" not in out

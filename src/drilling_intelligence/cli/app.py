@@ -552,7 +552,16 @@ def command_search(args: argparse.Namespace) -> int:
         header = f"{len(response.results)} result(s) for {args.query!r}"
         if response.broadened:
             header += "  [no chunk matched every term; these match any of them]"
-        if response.truncated:
+        if response.candidate_capped:
+            header += (
+                "  [candidate cap reached: not every matching row was examined, so absence here"
+                " is not proof of absence]"
+            )
+        if response.results_capped:
+            header += "  [result cap reached: more rows matched than were returned]"
+        if response.truncated and not (response.candidate_capped or response.results_capped):
+            # Only reachable if a backend reports the OR without naming a bound; kept so the
+            # sentence can never be silently dropped by an incomplete metadata set.
             header += "  [candidate cap reached: more matched than were scored]"
         lines = [header]
         for number, hit in enumerate(response.results, start=1):

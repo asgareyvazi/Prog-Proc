@@ -807,3 +807,62 @@ def test_cli_rebuilds_and_searches_structured_records(tmp_path, settings) -> Non
     assert structured, "the CLI must list the promoted structured records"
     assert structured[0]["metadata"]["record_id"].startswith("structured:")
     assert structured[0]["metadata"]["record_type"] in STRUCTURED_RECORD_TYPES
+
+
+class TestStructuredAndMixedParityAcrossBackends:
+    """Row 17: the structured projection and the mixed query answer the same on both paths.
+
+    ``_structured_candidate_ids`` shares ``_scan_candidate_ids`` with the document half, so the
+    bound is per population - one budget for chunks and one for records, OR'd into a single flag.
+    These run the real promotion path rather than a synthetic record list, so the shapes are the
+    ones production writes.
+    """
+
+    @pytest.mark.parametrize(
+        "query", ["mud", "mud weight", "10.2", "shoe depth", "zermatt", "mud zermatt"]
+    )
+    def test_fts_and_scan_agree(self, rebuilt, query: str) -> None:
+        from drilling_intelligence.search.index import SearchRequest
+
+        index = rebuilt.index
+        fts_hits, fts_meta = index.search(SearchRequest(query=query, limit=0))
+        index._fts_ready = False
+        try:
+            scan_hits, scan_meta = index.search(SearchRequest(query=query, limit=0))
+        finally:
+            index._fts_ready = None
+
+        def shape(hits):
+            return [
+                (
+                    getattr(getattr(hit, "record", None), "record_id", None) or hit.chunk.chunk_id,
+                    hit.score,
+                    tuple(sorted(hit.matched_terms)),
+                )
+                for hit in hits
+            ]
+
+        assert shape(scan_hits) == shape(fts_hits), query
+        for key in (
+            "mode",
+            "broadened",
+            "truncated",
+            "candidate_capped",
+            "results_capped",
+            "candidates",
+        ):
+            assert scan_meta[key] == fts_meta[key], f"{query}: {key}"
+        assert fts_meta["fts_used"] is True and scan_meta["fts_used"] is False
+
+    def test_both_populations_share_one_candidate_count(self, rebuilt) -> None:
+        """``candidates`` counts documents *and* structured rows, and neither starves the other."""
+        from drilling_intelligence.search.index import SearchRequest
+
+        index = rebuilt.index
+        _hits, meta = index.search(SearchRequest(query="mud", limit=0))
+        assert meta["candidates"] > 0
+        assert meta["candidate_capped"] is False, (
+            "this corpus is nowhere near RETRIEVAL_CAP, so no bound may be claimed"
+        )
+        assert meta["results_capped"] is False
+        assert meta["total_chunks"] >= meta["candidates"]
