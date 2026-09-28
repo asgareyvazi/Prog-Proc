@@ -103,6 +103,7 @@ class EvidenceQueryService:
                 returned=len(bundle.items),
                 dropped=len(bundle.dropped),
                 broadened=bundle.discovery_broadened,
+                discovery_capped=bundle.discovery_capped,
                 drop_reasons=tuple(dict(entry) for entry in bundle.dropped),
             )
             for topic, bundle in zip(req.topics, bundles, strict=True)
@@ -126,6 +127,11 @@ class EvidenceQueryService:
         Deliberately excluded: scores (ranking is a property of the disposable index, not of the
         evidence), display order and per-topic hit counts beyond coverage - what stays is what was
         asked, which authoritative records answered, in which state, and how each topic fared.
+
+        ``discovery_capped`` is part of "how each topic fared" for the same reason ``broadened``
+        is: two packages with identical items but different completeness are not the same answer,
+        and a freshness check that ignored the difference would call a newly truncated read
+        unchanged.
         """
         evidence = [
             {
@@ -158,6 +164,7 @@ class EvidenceQueryService:
                     "returned": entry.returned,
                     "dropped": entry.dropped,
                     "broadened": entry.broadened,
+                    "discovery_capped": entry.discovery_capped,
                 }
                 for entry in sorted(coverage, key=lambda entry: entry.topic)
             ],

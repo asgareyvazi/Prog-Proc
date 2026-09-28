@@ -161,14 +161,22 @@ class TopicCoverage:
 
     ``returned`` counts the verified items the topic answered with; ``dropped`` counts the
     candidates the authoritative re-read rejected (each entry carries the reason); ``broadened``
-    says whether search had to relax the exact query.  All three are read off the retrieval bundle
-    for that topic, never re-derived.
+    says whether search had to relax the exact query.  All of these are read off the retrieval
+    bundle for that topic, never re-derived.
+
+    ``discovery_capped`` is the bundle's own statement that the topic's candidate discovery stopped
+    before seeing the whole population.  A package that answered 260 verified items and a package
+    that answered 260 *because it could look no further* are different assertions, and a consumer
+    reading only ``returned`` could not tell them apart.  It is the same kind of fact as
+    ``broadened`` - a property of how the answer was obtained - so it travels with it.
     """
 
     topic: str
     returned: int
     dropped: int
     broadened: bool
+    #: True when the topic's discovery hit its bound; ``returned`` is then a floor, not a total.
+    discovery_capped: bool = False
     drop_reasons: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -177,6 +185,7 @@ class TopicCoverage:
             "returned": self.returned,
             "dropped": self.dropped,
             "broadened": self.broadened,
+            "discovery_capped": self.discovery_capped,
             "drop_reasons": [dict(entry) for entry in self.drop_reasons],
         }
 

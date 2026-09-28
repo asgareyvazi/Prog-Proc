@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from io import StringIO
 from typing import Any
 
@@ -647,3 +647,124 @@ class TestCommandLine:
         stale_code, stale_out = self._call(world, *argv, "--expect", "evpkg:" + "0" * 64)
         assert stale_code == 1
         assert json.loads(stale_out)["fresh"] is False
+
+
+def _build_capped_corpus(world) -> int:
+    """Enough matching rows that one topic's discovery genuinely runs past its bound."""
+    from datetime import datetime
+
+    from drilling_intelligence.database.models import ProblemDefinition, ProblemOccurrence
+    from drilling_intelligence.retrieval.service import _DISCOVERY_CAP
+
+    with world.ws.database.session() as session:
+        session.add(
+            ProblemDefinition(
+                id="pdef-cap",
+                canonical_key="kryptonite",
+                problem_type="kryptonite",
+                name="kryptonite issue",
+            )
+        )
+        session.flush()
+        for index in range(_DISCOVERY_CAP + 1):
+            session.add(
+                ProblemOccurrence(
+                    id=f"pk-{index}",
+                    well_id=world.ids["A1"],
+                    problem_definition_id="pdef-cap",
+                    problem_type="kryptonite",
+                    description=f"kryptonite observed entry {index}",
+                    occurred_at=datetime(2025, 6, 1, 8, 0),
+                )
+            )
+        session.commit()
+    world.search.rebuild()
+    return _DISCOVERY_CAP
+
+
+class TestDiscoveryCapVisibility:
+    """A package must not hide the ceiling its own topics ran into.
+
+    ``TopicCoverage`` reported ``returned``, ``dropped`` and ``broadened`` - all read off the
+    retrieval bundle - but discarded the bundle's ``discovery_capped``. A consumer reading the
+    package saw "260 verified items" with no way to tell whether that was the whole answer or the
+    point where discovery stopped looking. ``broadened`` was already carried for exactly this
+    reason; the cap is the same kind of fact.
+    """
+
+    def test_coverage_carries_the_cap_flag_for_a_normal_corpus(self, world) -> None:
+        package = world.query(topics=("stuck",), well_id=world.ids["A1"])
+        assert package.coverage
+        for entry in package.coverage:
+            assert entry.discovery_capped is False
+            assert "discovery_capped" in entry.to_dict(), (
+                "the cap flag is not in the serialized coverage a consumer receives"
+            )
+
+    def test_a_capped_topic_says_so_in_the_package(self, world) -> None:
+        """Drive a real topic past the discovery bound and require the package to admit it."""
+        _build_capped_corpus(world)
+        package = world.query(topics=("kryptonite",), well_id=world.ids["A1"])
+        coverage = {entry.topic: entry for entry in package.coverage}
+        assert coverage["kryptonite"].discovery_capped is True, (
+            "discovery stopped before the whole population and the package said nothing"
+        )
+
+    def test_cap_state_is_part_of_the_package_identity(self, world) -> None:
+        """Two packages with the same items but different completeness are not the same answer."""
+        package = world.query(topics=("stuck",), well_id=world.ids["A1"])
+        as_answered = EvidenceQueryService._content_identity(
+            EvidenceQuery(topics=("stuck",), well_id=world.ids["A1"]),
+            package.items,
+            package.coverage,
+        )
+        capped_coverage = tuple(replace(entry, discovery_capped=True) for entry in package.coverage)
+        as_capped = EvidenceQueryService._content_identity(
+            EvidenceQuery(topics=("stuck",), well_id=world.ids["A1"]),
+            package.items,
+            capped_coverage,
+        )
+        assert as_answered == package.identity, "the identity helper does not reproduce the package"
+        assert as_capped != as_answered, (
+            "a truncated read and a complete read hashed to the same package identity, so "
+            "check_freshness could not see the difference"
+        )
+
+    def test_the_cli_shows_the_cap_in_both_output_modes(self, world) -> None:
+        """The text output must not read as complete when the topic stopped looking."""
+        import json
+        import sys
+        from io import StringIO
+
+        from drilling_intelligence.cli.app import main
+
+        _build_capped_corpus(world)
+
+        def call(*argv: str) -> str:
+            out, err = StringIO(), StringIO()
+            saved_out, saved_err = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = out, err
+            try:
+                code = int(
+                    main(
+                        [
+                            "evidence",
+                            "query",
+                            "--workspace",
+                            str(world.ws.root),
+                            "--topic",
+                            "kryptonite",
+                            *argv,
+                        ]
+                    )
+                )
+                assert code == 0, err.getvalue()
+                return out.getvalue()
+            finally:
+                sys.stdout, sys.stderr = saved_out, saved_err
+
+        text = call()
+        assert "[capped: discovery stopped before the whole population]" in text, text
+        payload = json.loads(call("--json"))
+        capped = [entry for entry in payload["coverage"] if entry["topic"] == "kryptonite"]
+        assert capped and capped[0]["discovery_capped"] is True

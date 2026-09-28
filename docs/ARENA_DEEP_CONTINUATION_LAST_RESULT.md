@@ -398,7 +398,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 17 | FTS vs scan equivalence | the accelerator must not change the answer | `search/index.py` | `OPEN_NOT_EXERCISED` |
 | 18 | Strict-query fallback metadata | broadening must describe the answer returned | `search/service.py` | `OPEN_NOT_EXERCISED` |
 | 19 | Retrieval `capped` inference | `>=` cap does not prove truncation | `retrieval/service.py` `_discover` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
-| 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/service.py` | `OPEN_NOT_EXERCISED` |
+| 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/contract.py:159`, `evidence/service.py:101` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 21 | Evidence identity order-independence | presentation must not change identity | `EvidenceQueryService._content_identity` | `OPEN_NOT_EXERCISED` |
 | 22 | Evidence freshness delta | detect every mutation the contract promises | `check_freshness` | `OPEN_NOT_EXERCISED` |
 | 23 | Citation `NOT_CHECKABLE` | "no citation" ≠ "citation failed" | `evidence/verify.py:59,116` | `BEHAVIOURALLY_PROVEN` (existing tests, see §26B) |
@@ -410,7 +410,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 29 | Timeline interval semantics | interval vs point-in-window must be explicit | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
 | 30 | Timeline malformed dates | no silent conversion to a clean result | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
 | 31 | Timeline determinism | a total order on identical timestamps | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
-| 32 | CLI limit contract | the CLI must not re-implement limit policy | `cli/app.py` | `OPEN_NOT_EXERCISED` |
+| 32 | CLI limit contract | the CLI must not re-implement limit policy | `cli/app.py:663` | `PARTIALLY_CLOSED` — cap disclosure added (V5.4); `--limit` parsing per command still unaudited |
 | 33 | Performance at 1k / 10k | bounded, no N+1 | all read paths | `OPEN_NOT_EXERCISED` |
 | 34 | System-wide limit audit | one matrix, five distinct bound kinds | 5 limit constants found | `OPEN_DEFECT` |
 
@@ -520,6 +520,29 @@ Existing coverage already pins the surrounding matrix: `test_a_broken_second_cit
 has no test of its own, so it is proven by reading `min` and not by execution. It is recorded as
 such rather than claimed as tested.
 
+## 26C. V5.4 defect: the evidence package discarded the discovery ceiling
+
+**Contract.** `TopicCoverage` exists so "an empty answer is a statement rather than a silence". Its
+own docstring said every field is "read off the retrieval bundle for that topic, never re-derived".
+
+**Defect.** The bundle carries `discovery_capped`, and the evidence layer never read it. A grep for
+`capped` or `truncat` across `evidence/contract.py` and `evidence/service.py` returned **zero hits**.
+A package consumer — or a CLI user reading text output — saw `260 returned, 0 dropped` with no way
+to tell whether that was the whole answer or the point where discovery stopped. `broadened`, the same
+kind of fact, was already carried.
+
+**Fix.** `TopicCoverage.discovery_capped`, populated from `bundle.discovery_capped`, serialized in
+`to_dict()`, and included in the identity payload. It belongs in the identity because `coverage`
+already contributes `returned`/`dropped`/`broadened`: two packages with identical items but
+different completeness are not the same answer, and `check_freshness` compares identity, so a newly
+truncated read would otherwise have hashed identically to a complete one.
+
+**CLI.** `command_evidence` printed `[broadened: ...]` and nothing about the cap, so the text output
+could read as complete when it was not. Both notes are now emitted, and they can co-occur.
+
+**Regression tests:** 4, including one that drives a real topic past the bound with 4001 rows and
+one that runs the real CLI in both output modes. **Mutations:** 3 attempted, **3 killed**.
+
 ## 27. V5.4 mutation matrix
 
 | mutation | target | tests failing | result |
@@ -528,6 +551,9 @@ such rather than claimed as tested.
 | record `limit` instead of the query's real bound | `review/service.py` `note_bounded` | 2 | **KILLED** |
 | infer `discovery_capped` from `length >= cap` | `retrieval/service.py` `_discover` | 1 | **KILLED** |
 | discard `SearchResponse.truncated` | `retrieval/service.py` `_discover` | 1 | survived first run, **KILLED** after the gap was closed |
+| evidence layer drops `bundle.discovery_capped` | `evidence/service.py:101` | 1 | **KILLED** |
+| identity payload ignores cap state | `evidence/service.py` `_content_identity` | 1 | **KILLED** |
+| CLI hides the cap note | `cli/app.py:663` | 1 | **KILLED** |
 
 ## 28. V5.4 publication checkpoints
 

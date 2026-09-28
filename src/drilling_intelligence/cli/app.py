@@ -660,9 +660,16 @@ def command_evidence(args: argparse.Namespace) -> int:
             f"({package.count} item(s), {len(package.coverage)} topic(s), {package.policy})"
         ]
         for entry in package.coverage:
-            note = " [broadened: no record matched every term]" if entry.broadened else ""
+            # Both notes are honesty about how the answer was obtained, and both can apply at once.
+            # Without the second, "260 returned, 0 dropped" reads as a complete answer when the
+            # topic actually stopped looking - the JSON already said so; the text output must too.
+            notes = ""
+            if entry.broadened:
+                notes += " [broadened: no record matched every term]"
+            if entry.discovery_capped:
+                notes += " [capped: discovery stopped before the whole population]"
             lines.append(
-                f"  topic {entry.topic!r}: {entry.returned} returned, {entry.dropped} dropped{note}"
+                f"  topic {entry.topic!r}: {entry.returned} returned, {entry.dropped} dropped{notes}"
             )
             for reason in entry.drop_reasons:
                 lines.append(f"    dropped {reason['identity']}: {reason['reason']}")
