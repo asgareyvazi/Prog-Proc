@@ -397,7 +397,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 16 | Search `truncated` semantics | query-honest, not corpus-size | `search/index.py:696` | `OPEN_NOT_EXERCISED` |
 | 17 | FTS vs scan equivalence | the accelerator must not change the answer | `search/index.py` | `OPEN_NOT_EXERCISED` |
 | 18 | Strict-query fallback metadata | broadening must describe the answer returned | `search/service.py` | `OPEN_NOT_EXERCISED` |
-| 19 | Retrieval `capped` inference | `>=` cap does not prove truncation | `retrieval/service.py:233` | `OPEN_NOT_EXERCISED` |
+| 19 | Retrieval `capped` inference | `>=` cap does not prove truncation | `retrieval/service.py` `_discover` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/service.py` | `OPEN_NOT_EXERCISED` |
 | 21 | Evidence identity order-independence | presentation must not change identity | `EvidenceQueryService._content_identity` | `OPEN_NOT_EXERCISED` |
 | 22 | Evidence freshness delta | detect every mutation the contract promises | `check_freshness` | `OPEN_NOT_EXERCISED` |
@@ -466,18 +466,47 @@ PROBE limit= 1000 child_bound=  5000 truncated=False records=90
 **Regression tests:** 4 (`TestReviewTruncationTruthfulness`), including one asserting no record is
 returned twice. **Mutations:** 2 attempted, **2 killed**.
 
+## 26A. V5.4 defect: retrieval inferred a ceiling from a length
+
+**Contract.** `EvidenceBundle.discovery_capped` says an uncapped request did not see the whole
+population. It must not fire when discovery saw everything there was.
+
+**Root cause.** Checkpoint D had computed it as `req.limit <= 0 and discovered >= _DISCOVERY_CAP`.
+A corpus holding *precisely* `_DISCOVERY_CAP` (4000) matching rows satisfies that comparison while
+discovery returned every row that existed, so the bundle invented a ceiling. The comparison also
+discarded two facts the search layer already publishes: `SearchResponse.truncated` and
+`SearchResponse.candidates` (`search/service.py:130,131`).
+
+**Fix.** `_discover` now asks search for `cap + 1` rows when the caller imposed no cap, so only an
+*extra* row proves there was more to find, and it ORs in search's own `truncated`, which covers the
+search layer's independent candidate universe. Reaching the bound exactly is now reported as the
+complete answer it is.
+
+**Regression tests:** 2, at the real 4000-row boundary (built and retrieved in under 4 s each).
+
+**A surviving mutation, and what was done about it.** The first mutation (restore `>= cap`
+inference) was killed. The second (discard `response.truncated`) **survived**: no test exercised
+search's own candidate cap. Rather than record a survivor, the gap was closed with
+`test_the_search_layers_own_candidate_cap_is_propagated` at 4001 rows, after which the same mutation
+is killed.
+
 ## 27. V5.4 mutation matrix
 
 | mutation | target | tests failing | result |
 | --- | --- | --- | --- |
 | restore `size >= limit` in the truncation verdict | `review/service.py:1540` | 2 | **KILLED** |
 | record `limit` instead of the query's real bound | `review/service.py` `note_bounded` | 2 | **KILLED** |
+| infer `discovery_capped` from `length >= cap` | `retrieval/service.py` `_discover` | 1 | **KILLED** |
+| discard `SearchResponse.truncated` | `retrieval/service.py` `_discover` | 1 | survived first run, **KILLED** after the gap was closed |
 
 ## 28. V5.4 publication checkpoint
 
 ```
 checkpoint: V5.4-C1 — recovery, master ledger, review truncation truthfulness
-status: see the remote verification recorded with this commit
+status: REMOTE_PUBLISHED
+local_head: 1f8cd1de75af0173f34ce0a74ceeb59bc4ec9ab6
+remote_head: 1f8cd1de75af0173f34ce0a74ceeb59bc4ec9ab6
+remote_verified: yes - git ls-remote returned the same SHA as local HEAD
 attacks_closed: REVIEW truncation truthfulness (ledger row 12)
 targeted_tests: domain_review + cli_domain + cli = 86, exit 0; baseline re-proof 149, exit 0
 mutations: 2 attempted, 2 killed

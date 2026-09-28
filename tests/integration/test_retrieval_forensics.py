@@ -1266,3 +1266,69 @@ class TestZeroLimitIsNotASmallerCap:
         result = world.retrieve(query="kryptonite", well_id=world.ids["A1"], limit=0)
         assert result.count == 5
         assert "discovery_capped" in result.to_dict(), "the cap signal is not in the public shape"
+
+
+class TestDiscoveryCapIsProvenNotInferred:
+    """Reaching the discovery bound exactly is a complete answer, not a truncated one.
+
+    Retrieval used to report ``discovery_capped`` from ``discovered >= _DISCOVERY_CAP``.  A corpus
+    holding precisely that many matching rows satisfies the comparison while discovery saw every
+    row there was, so the bundle claimed a ceiling that did not exist.  Discovery now asks search
+    for one row more than the bound, so only an extra row proves there was more to find.
+    """
+
+    @staticmethod
+    def _corpus(world, count: int) -> None:
+        from datetime import datetime
+
+        from drilling_intelligence.database.models import ProblemDefinition, ProblemOccurrence
+
+        with world.ws.database.session() as session:
+            session.add(
+                ProblemDefinition(
+                    id="pdef-bound",
+                    canonical_key="xenonite",
+                    problem_type="xenonite",
+                    name="xenonite issue",
+                )
+            )
+            session.flush()
+            for index in range(count):
+                session.add(
+                    ProblemOccurrence(
+                        id=f"px-{index}",
+                        well_id=world.ids["A1"],
+                        problem_definition_id="pdef-bound",
+                        problem_type="xenonite",
+                        description=f"xenonite observed entry {index}",
+                        occurred_at=datetime(2025, 6, 1, 8, 0),
+                    )
+                )
+            session.commit()
+        world.search.rebuild()
+
+    def test_exactly_the_discovery_bound_is_not_reported_as_capped(self, world) -> None:
+        from drilling_intelligence.retrieval.service import _DISCOVERY_CAP
+
+        self._corpus(world, _DISCOVERY_CAP)
+        bundle = world.retrieve(query="xenonite", well_id=world.ids["A1"], limit=0)
+        assert bundle.count == _DISCOVERY_CAP, bundle.count
+        assert bundle.discovery_capped is False, (
+            f"discovery saw all {_DISCOVERY_CAP} matching rows and still claimed a ceiling"
+        )
+
+    def test_the_search_layers_own_candidate_cap_is_propagated(self, world) -> None:
+        """Discovery must pass on search's own truncation, not only its own result bound.
+
+        Search truncates on its candidate universe independently of the limit it was handed, so a
+        corpus just over that universe is cut even when retrieval asked for more.  Retrieval has no
+        business re-deriving that from a length: the search layer already knows, and it says so.
+        """
+        from drilling_intelligence.retrieval.service import _DISCOVERY_CAP
+
+        self._corpus(world, _DISCOVERY_CAP + 1)
+        bundle = world.retrieve(query="xenonite", well_id=world.ids["A1"], limit=0)
+        assert bundle.count <= _DISCOVERY_CAP, bundle.count
+        assert bundle.discovery_capped is True, (
+            "the search layer reported a cut candidate universe and the bundle said it was complete"
+        )

@@ -229,12 +229,11 @@ class RetrievalService:
         )
         with self._authority(session) as active:
             scope = self._resolve_scope(active, req)
-            candidates, broadened, discovered = self._discover(req)
-            capped = req.limit <= 0 and discovered >= _DISCOVERY_CAP
+            candidates, broadened, capped = self._discover(req)
             return self._verify(active, req, scope, candidates, broadened, capped)
 
     # -- discovery: search is the only candidate source ------------------------
-    def _discover(self, req: RetrievalRequest) -> tuple[list[Any], bool, int]:
+    def _discover(self, req: RetrievalRequest) -> tuple[list[Any], bool, bool]:
         """The ranked candidates from the search layer, plus whether discovery was broadened.
 
         An empty query has no terms to match, so there is nothing to verify and the answer is
@@ -244,15 +243,22 @@ class RetrievalService:
         The second element is search's own ``broadened`` flag: retrieval never broadens a query on
         its own, but when the exact all-terms AND finds nothing the search layer falls back to
         any-of-the-terms, and the bundle must say so - broadened discovery is not an exact match.
+
+        The third is whether discovery stopped before it could see everything.  It is *proven*, not
+        inferred from a length: an uncapped request asks search for one row more than the discovery
+        bound, so only an extra row establishes that there was more to find.  A corpus holding
+        exactly ``_DISCOVERY_CAP`` matching rows is a complete answer, and reporting a ceiling there
+        would invent one.
         """
         if not str(req.query or "").strip():
-            return [], False, 0
+            return [], False, False
         if self._search is None:
             raise ValidationError(
                 "no search service is bound; retrieval discovers candidates through search",
                 hint="bind a workspace so the disposable index is available",
             )
-        cap = req.limit if req.limit > 0 else _DISCOVERY_CAP
+        uncapped = req.limit <= 0
+        cap = _DISCOVERY_CAP if uncapped else req.limit
         # The scope is a single level decided by the platform's precedence (well beats field beats
         # project).  Only that level is passed to search: handing it well_id AND field_id would
         # make search AND them (the empty intersection), and ORing them is exactly the union the
@@ -270,7 +276,9 @@ class RetrievalService:
             req.query,
             date_from=req.date_from,
             date_to=req.date_to,
-            limit=cap,
+            # One extra row when the caller imposed no cap: it is the only way to *know* discovery
+            # stopped early rather than guessing from a length that equals the bound.
+            limit=cap + 1 if uncapped else cap,
             # A history answer must be able to *discover* superseded document versions; a current
             # answer must not.  (Historical structured rows are a different matter: the search
             # projection stores only the domain's current structured rows, so their history is what
@@ -278,7 +286,14 @@ class RetrievalService:
             include_superseded=req.lifecycle == LIFECYCLE_HISTORY,
             **scope_kwargs,
         )
-        return list(response.results), response.broadened, len(response.results)
+        results = list(response.results)
+        # Search's own flag covers its candidate universe; the look-ahead row covers the result
+        # bound retrieval itself imposed.  Either one means the answer is not the whole population.
+        capped = bool(response.truncated)
+        if uncapped and len(results) > cap:
+            results = results[:cap]
+            capped = True
+        return results, response.broadened, capped
 
     # -- scope ----------------------------------------------------------------
     def _resolve_scope(self, active: Any, req: RetrievalRequest) -> _Scope:
