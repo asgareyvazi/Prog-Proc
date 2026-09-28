@@ -768,3 +768,42 @@ class TestDiscoveryCapVisibility:
         payload = json.loads(call("--json"))
         capped = [entry for entry in payload["coverage"] if entry["topic"] == "kryptonite"]
         assert capped and capped[0]["discovery_capped"] is True
+
+
+def test_identity_does_not_depend_on_presentation_order(world) -> None:
+    """Ledger row 21: presentation must not change identity.
+
+    ``EvidencePackage.identity`` is documented as an address for the *verified evidence*, with
+    discovery rank and display order explicitly excluded.  This proves it rather than trusting the
+    docstring, by handing the same request, items and coverage back to the real identity function
+    in a different order.  The permutation goes through ``_content_identity`` because that is the
+    only place the inputs can be reordered - the public path always composes them the same way -
+    but the function itself is the production one, not a reimplementation.
+    """
+    # Unscoped on purpose: the fixture puts the same term in a record in every well, so the
+    # package has several items and "order" is a real property to be indifferent to.
+    package = world.query(topics=(SHARED_TERM,))
+    assert len(package.items) >= 2, "order can only mean something with more than one item"
+    assert len(package.coverage) >= 1
+
+    # ``package.request`` is the serialised form (it carries a derived ``scope`` key), so rebuild
+    # the query from the same inputs rather than round-tripping the dict.
+    request = EvidenceQuery(topics=(SHARED_TERM,))
+    assert world.evq._content_identity(request, package.items, package.coverage) == package.identity
+
+    reversed_items = world.evq._content_identity(
+        request, tuple(reversed(package.items)), package.coverage
+    )
+    reversed_coverage = world.evq._content_identity(
+        request, package.items, tuple(reversed(package.coverage))
+    )
+    both_reversed = world.evq._content_identity(
+        request, tuple(reversed(package.items)), tuple(reversed(package.coverage))
+    )
+    assert reversed_items == package.identity, "item order is presentation"
+    assert reversed_coverage == package.identity, "coverage order is presentation"
+    assert both_reversed == package.identity
+
+    # Not vacuous: a different scope must produce a different address.
+    other = world.query(topics=(SHARED_TERM,), well_id=world.ids["A1"])
+    assert other.identity != package.identity, "a narrower scope is a different question"

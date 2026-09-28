@@ -218,7 +218,7 @@ Verdicts use the six labels only. A label is never `PASS` merely because a suite
 | 18 | Retrieval `limit=0` | `DEFECT_FOUND_AND_FIXED` | 200 vs 260, now equal; 2 tests; mutation killed |
 | 19 | Search `limit=0` | `HYPOTHESIS_DISPROVED` | `int(limit or default_limit)` makes 0 mean "use the default", not "cap at 200" |
 | 20 | Retrieval truncation signal | `DEFECT_FOUND_AND_FIXED` | `discovery_capped` reports the only remaining bound |
-| 21 | Search candidate-cap semantics | `OPEN_NOT_EXERCISED` | `truncated = len(hits) > MAX_CANDIDATES` is a corpus-size statement, not a per-query one |
+| 21 | Evidence identity order-independence | presentation must not change identity | `evidence/service.py:122` | `BEHAVIOURALLY_PROVEN` — the real identity function was handed the same request, items and coverage in reversed and doubly-reversed order and returned the same address; a narrower scope returns a different one, so the equality is not vacuous |
 | 22 | Evidence identity / freshness / citation semantics | `OPEN_NOT_EXERCISED` | not probed |
 | 23 | Promotion atomicity on late failure | `OPEN_NOT_EXERCISED` | not probed |
 | 24 | Child-row identity | `OPEN_NOT_EXERCISED` | not probed |
@@ -396,7 +396,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 10 | Date-window / undated | unknown date is not outside every window | `retrieval/contract.py` | `BEHAVIOURALLY_PROVEN` |
 | 11 | Migration / ORM parity | fresh `create_all` equals migrated-to-head | `test_migration_0005.py:240` | `BEHAVIOURALLY_PROVEN` |
 | 12 | **Review truncation truthfulness** | a review must not claim a cut it did not make | `review/service.py:1540` | **`DEFECT_FOUND_AND_FIXED`** (V5.4) |
-| 13 | Review null-well semantics | null must never become an accidental wildcard | `review/service.py` `_for_well` | `OPEN_NOT_EXERCISED` |
+| 13 | Review null-well semantics | null must never become an accidental wildcard | `review/service.py:466`, `engineering/repository.py:1081` | `BEHAVIOURALLY_PROVEN` — a record with no scope at all is fetched by nobody and appears in no well's review, while a positively field-scoped record is inherited by its wells; `_for_well`'s null allowance only ever sees rows a scoped query returned |
 | 14 | Review current/history matrix | one definition of currentness per domain | `review/service.py` | `OPEN_NOT_EXERCISED` |
 | 15 | Review read-only proof | a read must not write | `test_domain_review.py` fingerprint | `BEHAVIOURALLY_PROVEN` (existing) |
 | 16 | Search `truncated` semantics | the two bounds must be separately knowable, and exact-bound must not read as exceeded | `search/index.py:696,736`, `search/service.py` | `DEFECT_FOUND_AND_FIXED` — `candidate_capped`/`results_capped` added, `truncated` kept as their OR; states A–E and both 3999/4000/4001 and 15999/16000/16001 walked at the real constants; serialisation proven; M1/M2/M4/M5/M6 killed (§35, §36A) |
@@ -404,7 +404,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 18 | Strict-query fallback metadata | broadening must describe the answer returned | `search/service.py` | `DEFECT_FOUND_AND_FIXED` |
 | 19 | Retrieval `capped` inference | `>=` cap does not prove truncation | `retrieval/service.py` `_discover` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/contract.py:159`, `evidence/service.py:101` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
-| 21 | Evidence identity order-independence | presentation must not change identity | `EvidenceQueryService._content_identity` | `OPEN_NOT_EXERCISED` |
+| 21 | Evidence identity order-independence | presentation must not change identity | `evidence/service.py:122` | `BEHAVIOURALLY_PROVEN` — the real identity function was handed the same request, items and coverage in reversed and doubly-reversed order and returned the same address; a narrower scope returns a different one, so the equality is not vacuous |
 | 22 | Evidence freshness delta | detect every mutation the contract promises | `check_freshness` | `OPEN_NOT_EXERCISED` |
 | 23 | Citation `NOT_CHECKABLE` | "no citation" ≠ "citation failed" | `evidence/verify.py:59,116` | `BEHAVIOURALLY_PROVEN` (existing tests, see §26B) |
 | 24 | Citation multi-aggregation | the worst citation decides the item | `evidence/verify.py:62,224` | `HYPOTHESIS_DISPROVED` (see §26B) |
@@ -1406,3 +1406,52 @@ why this is labelled transient rather than final.
 `git ls-remote` confirmed the remote tip equal to local `HEAD` (`fd5fd5a`) with 0 dirty paths. Both
 blocks were transient. Nothing was reset, rebased, squashed or force-pushed at any point, and no
 work was lost while the blocks lasted.
+
+## 37. Rows 13 and 21 closed from the repository, not from the docstring
+
+### 37A. Row 13 — null scope is not a wildcard
+
+`_for_well` (`review/service.py:466`) keeps rows with no `well_id`, and its docstring calls those
+"genuinely well-wide rows". Read alone that looks like exactly the failure the standing prohibition
+names — null scope becoming universal scope — so it was tested rather than argued about.
+
+`DrillingProgram.well_id`, `field_id` and `project_id` are all nullable, and `_check_scope`
+validates the *consistency* of a scope without requiring that at least one be present. So a record
+with no scope at all is writable. It does not, however, reach any review: `programs_for_well` is
+documented and implemented as "its own, then its field's and project's", so an unscoped record is
+fetched by nobody. Measured on a real promoted workspace:
+
+```
+created unscoped program  well_id=None field_id=None project_id=None
+  review A-3 : present = False
+  review B-11: present = False
+```
+
+`_for_well`'s null allowance is therefore defensive: it only ever sees rows a *positively* scoped
+query returned, which is what makes a field-wide record legitimately well-wide. The test pins both
+halves of that contrast — the unscoped record appears in neither well, and the field-scoped one is
+inherited — because the first half alone would also pass if inheritance were simply broken.
+
+### 37B. Row 21 — identity is indifferent to presentation
+
+`EvidencePackage.identity` is documented as excluding discovery rank and display order. The claim
+was tested against the production identity function rather than believed: the same request, items
+and coverage were handed back in reversed, coverage-reversed and doubly-reversed order and produced
+the same address each time. A narrower scope produces a different address, so the equalities are not
+vacuous.
+
+Two details found while writing it, both recorded because they are the kind of thing that silently
+makes such a test meaningless: `package.request` is the *serialised* request and carries a derived
+`scope` key that is not a constructor argument, and a single-well query returns one item, where
+"order" has nothing to be indifferent to.
+
+### 37C. Ledger movement
+
+Open rows fall from 9 to **7**: 14, 22, 25, 26, 28, 31, 33. The canonical table remains mechanically
+explainable — 34 rows, 34 distinct numbers, no duplicates, statuses summing to 34 (14 fixed,
+11 behaviourally proven, 7 open, 2 disproved).
+
+Rows 25 and 31 stay open for the reasons already recorded and not repeated here: 25's two mutations
+survived with one survivor unexplained, and 31's obvious tiebreaker sorts Completion before Spud,
+which is domain-wrong. Row 33 stays open because no benchmark in this mission was run against the
+repository's own performance-certification criteria.

@@ -397,3 +397,45 @@ class TestReviewTruncationTruthfulness:
         review = service.review(DomainReviewRequest(well_id=well_id, limit=10_000))
         ids = [record.record_id for record in review.records]
         assert len(ids) == len(set(ids)), "the review returned the same record more than once"
+
+
+def test_an_unscoped_record_is_not_treated_as_universal(workspace) -> None:
+    """Ledger row 13: null scope must never become an accidental wildcard.
+
+    ``_for_well`` keeps rows with no ``well_id`` on purpose - a field- or project-wide record is
+    genuinely well-wide - but that allowance only ever sees rows a *positively* scoped query
+    returned.  A record with no scope at all is fetched by nobody, so it belongs to no review; the
+    alternative would be a record nobody filed against any well silently appearing in every well's
+    review in the workspace.
+    """
+    ingest(workspace)
+    promote(workspace)
+    a_id = well_id_for(workspace, "A-3")
+    b_id = well_id_for(workspace, "B-11")
+
+    with workspace.database.unit_of_work() as session:
+        repository = EngineeringRepository(session)
+        unscoped = repository.create_program(title="no scope at all")
+        a_well = session.get(Well, a_id)
+        assert a_well is not None and a_well.field_id
+        field_wide = repository.create_program(
+            title="field template",
+            field_id=str(a_well.field_id),
+            project_id=str(a_well.project_id),
+        )
+        assert unscoped.well_id is None and unscoped.field_id is None
+        assert unscoped.project_id is None, "a writable record with no scope at all"
+        unscoped_id, field_wide_id = unscoped.id, field_wide.id
+
+    service = DomainReviewService.for_workspace(workspace)
+    ids: dict[str, set[str]] = {}
+    for label, well_id in (("A-3", a_id), ("B-11", b_id)):
+        review = service.review(DomainReviewRequest(well_id=well_id))
+        ids[label] = {record.record_id for record in _records(review, "drilling_program")}
+
+    assert unscoped_id not in ids["A-3"], "no scope means no well, not every well"
+    assert unscoped_id not in ids["B-11"], "and not any other well either"
+    assert field_wide_id in ids["A-3"], (
+        "a positively field-scoped record really is well-wide, so the contrast is the point: "
+        "inheritance comes from a scope that was asserted, not from one that was left empty"
+    )
