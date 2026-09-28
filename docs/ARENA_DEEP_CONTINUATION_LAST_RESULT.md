@@ -529,21 +529,11 @@ such rather than claimed as tested.
 | infer `discovery_capped` from `length >= cap` | `retrieval/service.py` `_discover` | 1 | **KILLED** |
 | discard `SearchResponse.truncated` | `retrieval/service.py` `_discover` | 1 | survived first run, **KILLED** after the gap was closed |
 
-## 28. V5.4 publication checkpoint
+## 28. V5.4 publication checkpoints
 
-```
-checkpoint: V5.4-C1 — recovery, master ledger, review truncation truthfulness
-status: REMOTE_PUBLISHED
-local_head: 1f8cd1de75af0173f34ce0a74ceeb59bc4ec9ab6
-remote_head: 1f8cd1de75af0173f34ce0a74ceeb59bc4ec9ab6
-remote_verified: yes - git ls-remote returned the same SHA as local HEAD
-attacks_closed: REVIEW truncation truthfulness (ledger row 12)
-targeted_tests: domain_review + cli_domain + cli = 86, exit 0; baseline re-proof 149, exit 0
-mutations: 2 attempted, 2 killed
-full_suite_at_checkpoint: not yet rerun — the full suite must run after the final change of the
-                          mission, per the no-false-green rule
-remaining_open: ledger rows 13, 14, 16-34
-```
+The per-checkpoint record lives in §30, which is the single authoritative list. This section held
+the first draft of the Checkpoint 1 block; it was folded into §30 rather than left as a second copy
+that could drift out of step with it.
 
 ## 29. V5.4 gate results
 
@@ -581,7 +571,9 @@ commit: 1f8cd1d
 push: exit 0, dd20f71..1f8cd1d
 remote_verified: yes - git ls-remote returned the same SHA as local HEAD
 changed_files: review/service.py, test_domain_review.py, report
-tests: 86 targeted + 149 baseline, exit 0
+attacks_closed: review truncation truthfulness (ledger row 12)
+tests: domain_review + cli_domain + cli = 86, exit 0; baseline re-proof = 149, exit 0
+mutations: 2 attempted, 2 killed
 remaining_open: ledger rows 13, 14, 16-18, 20-34
 
 checkpoint: V5.4-C2 — retrieval discovery cap proven, not inferred
@@ -592,7 +584,9 @@ commit: bc29467
 push: exit 0, 1f8cd1d..bc29467
 remote_verified: yes - git ls-remote returned the same SHA as local HEAD
 changed_files: retrieval/service.py, test_retrieval_forensics.py, report
+attacks_closed: retrieval discovery-cap inference (ledger row 19)
 tests: 102 retrieval + evidence, exit 0
+mutations: 2 attempted, 2 killed (one only after a survivor exposed an untested path)
 remaining_open: ledger rows 13, 14, 16-18, 20-22, 25-34
 
 checkpoint: V5.4-C3 — ledger correction, citation aggregation, final gates
