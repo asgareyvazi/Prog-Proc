@@ -286,3 +286,114 @@ def test_review_context_uses_the_existing_serialized_domain_rows(workspace) -> N
         expected = record_to_dict(source)
     actual = next(record.data for record in review.records if record.record_id == source.id)
     assert actual == expected
+
+
+def _clone_mud_reports(workspace, well_id: str, extra: int) -> tuple[int, int]:
+    """Duplicate the corpus mud report so one well's child batch spans several parents.
+
+    The review fetches a report's measurements as one batch bounded by ``limit * parents``.  With a
+    single parent that bound equals ``limit``, so the corpus as generated cannot distinguish "this
+    child batch was cut" from "this child batch simply has many rows".  Several parents can.
+    """
+    import uuid
+
+    from drilling_intelligence.database.models import MudMeasurement, MudReport
+
+    with workspace.database.unit_of_work() as session:
+        original = session.execute(select(MudReport)).scalars().first()
+        base = list(
+            session.execute(
+                select(MudMeasurement).where(MudMeasurement.mud_report_id == original.id)
+            ).scalars()
+        )
+        for n in range(extra):
+            clone = MudReport(
+                id=str(uuid.uuid4()),
+                well_id=well_id,
+                section_id=original.section_id,
+                identity_key=f"{original.identity_key}-clone-{n}",
+                report_date=original.report_date,
+                is_current=True,
+            )
+            session.add(clone)
+            session.flush()
+            for measurement in base:
+                session.add(
+                    MudMeasurement(
+                        id=str(uuid.uuid4()),
+                        mud_report_id=clone.id,
+                        well_id=well_id,
+                        section_id=measurement.section_id,
+                        identity_key=f"{measurement.identity_key}-clone-{n}",
+                        property_name=measurement.property_name,
+                        sample_key=measurement.sample_key,
+                        value=measurement.value,
+                        unit=measurement.unit,
+                    )
+                )
+        session.commit()
+        reports = len(session.execute(select(MudReport)).scalars().all())
+        measurements = len(session.execute(select(MudMeasurement)).scalars().all())
+    return reports, measurements
+
+
+class TestReviewTruncationTruthfulness:
+    """A review must not claim truncation it did not perform.
+
+    The child batches (mud measurements, BHA components, survey stations) are fetched at
+    ``limit * number_of_parents`` so that no single report can starve the others.  Their sizes were
+    then compared against ``limit`` - a bound belonging to a different population - so a well with
+    several mud reports reported ``truncated=True`` while every measurement it had was returned.
+    A reviewer told a complete answer was incomplete.
+    """
+
+    def test_a_complete_child_batch_is_not_reported_as_truncated(self, workspace) -> None:
+        ingest(workspace)
+        promote(workspace)
+        well_id = well_id_for(workspace, "A-3")
+        reports, measurements = _clone_mud_reports(workspace, well_id, extra=4)
+        assert reports == 5 and measurements == 110, (
+            "the probe corpus is not the one this test reasons about"
+        )
+
+        service = DomainReviewService.for_workspace(workspace)
+        # limit=100 bounds the child batch at 100 * 5 = 500, and only 110 measurements exist, so
+        # nothing is cut.  The review returned every row it has.
+        review = service.review(DomainReviewRequest(well_id=well_id, limit=100))
+        assert review.truncated is False, (
+            f"a review that returned all {measurements} measurements claimed truncation"
+        )
+
+    def test_the_same_corpus_is_stable_across_generous_limits(self, workspace) -> None:
+        """Raising the limit past the population must not change the answer or the flag."""
+        ingest(workspace)
+        promote(workspace)
+        well_id = well_id_for(workspace, "A-3")
+        _clone_mud_reports(workspace, well_id, extra=4)
+        service = DomainReviewService.for_workspace(workspace)
+        small = service.review(DomainReviewRequest(well_id=well_id, limit=100))
+        large = service.review(DomainReviewRequest(well_id=well_id, limit=10_000))
+        assert small.truncated is large.truncated is False
+        assert len(small.records) == len(large.records)
+
+    def test_a_limit_that_actually_cuts_still_reports_truncation(self, workspace) -> None:
+        """Fixing the false positive must not silence the true one."""
+        ingest(workspace)
+        promote(workspace)
+        well_id = well_id_for(workspace, "A-3")
+        _clone_mud_reports(workspace, well_id, extra=4)
+        service = DomainReviewService.for_workspace(workspace)
+        uncapped = service.review(DomainReviewRequest(well_id=well_id, limit=10_000))
+        cut = service.review(DomainReviewRequest(well_id=well_id, limit=10))
+        assert len(cut.records) < len(uncapped.records), "limit=10 did not actually cut anything"
+        assert cut.truncated is True, "a review that dropped rows said it was complete"
+
+    def test_review_rows_are_not_duplicated_by_the_bounded_read(self, workspace) -> None:
+        """The truncation bookkeeping must not feed the review's own row list twice."""
+        ingest(workspace)
+        promote(workspace)
+        well_id = well_id_for(workspace, "A-3")
+        service = DomainReviewService.for_workspace(workspace)
+        review = service.review(DomainReviewRequest(well_id=well_id, limit=10_000))
+        ids = [record.record_id for record in review.records]
+        assert len(ids) == len(set(ids)), "the review returned the same record more than once"

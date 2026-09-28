@@ -875,11 +875,20 @@ class DomainReviewService:
 
         operational = OperationsRepository(session)
         rows: list[Any] = []
-        bounded_sizes: list[int] = []
+        #: Every bounded read records the size it returned *and the bound that was actually applied
+        #: to its own query*.  A bare size cannot answer "was anything cut?": a child batch fetched
+        #: at ``limit * number_of_parents`` legitimately returns far more than ``limit`` rows without
+        #: a single row being cut, and comparing it against ``limit`` made a semantically complete
+        #: review report itself truncated.
+        bounded_sizes: list[tuple[int, int]] = []
+
+        def note_bounded(size: int, *, bound: int = limit) -> None:
+            """Record one bounded read against the bound its own query used."""
+            bounded_sizes.append((int(size), int(bound)))
 
         def add_bounded(group: Sequence[Any], *, fetched_count: int | None = None) -> None:
             rows.extend(group)
-            bounded_sizes.append(len(group) if fetched_count is None else int(fetched_count))
+            note_bounded(len(group) if fetched_count is None else int(fetched_count))
 
         add_bounded(operational.list_reports(well_id=well.id, limit=limit))
         add_bounded(operational.list_operations(well_id=well.id, limit=limit))
@@ -910,7 +919,7 @@ class DomainReviewService:
                     .limit(limit * max(1, len(mud_report_ids)))
                 ).scalars()
             )
-            bounded_sizes.append(len(mud_measurements))
+            note_bounded(len(mud_measurements), bound=limit * max(1, len(mud_report_ids)))
             for measurement in mud_measurements:
                 mud_measurements_by_report[str(measurement.mud_report_id)].append(measurement)
         # The V4 hardware and geometry domains are reviewed by the same contract as the mud report:
@@ -952,7 +961,7 @@ class DomainReviewService:
                     .limit(limit * max(1, len(bha_report_ids)))
                 ).scalars()
             )
-            bounded_sizes.append(len(components))
+            note_bounded(len(components), bound=limit * max(1, len(bha_report_ids)))
             for component in components:
                 components_by_report[str(component.bha_report_id)].append(component)
         survey_run_ids = [str(row.id) for row in survey_runs]
@@ -966,7 +975,7 @@ class DomainReviewService:
                     .limit(limit * max(1, len(survey_run_ids)))
                 ).scalars()
             )
-            bounded_sizes.append(len(stations))
+            note_bounded(len(stations), bound=limit * max(1, len(survey_run_ids)))
             for station in stations:
                 stations_by_run[str(station.survey_run_id)].append(station)
         problems = operational.list_problems(well_id=well.id, limit=limit)
@@ -1018,7 +1027,7 @@ class DomainReviewService:
                 ).scalars()
             )
             rows.extend(version_rows)
-            bounded_sizes.append(len(version_rows))
+            note_bounded(len(version_rows))
         extraction_by_version: dict[str, Extraction] = {}
         version_ids = sorted({str(row.id) for row in version_rows})
         if version_ids:
@@ -1077,7 +1086,7 @@ class DomainReviewService:
                 ).scalars()
             )
             rows.extend(target_rows)
-            bounded_sizes.append(len(target_rows))
+            note_bounded(len(target_rows))
 
         risk_repo = RiskRepository(session)
         risks = risk_repo.list_risks(well_id=well.id, include_closed=True, limit=limit)
@@ -1215,7 +1224,7 @@ class DomainReviewService:
                 .limit(limit)
             ).scalars()
             input_rows = list(input_rows)
-            bounded_sizes.append(len(input_rows))
+            note_bounded(len(input_rows))
             for input_row in input_rows:
                 calculation_inputs[str(input_row.calculation_id)].append(
                     _plain(record_to_dict(input_row))
@@ -1281,7 +1290,8 @@ class DomainReviewService:
         service_company_rows = assets.service_companies_for_well(well.id, limit=limit)
         rows.extend(rig_rows)
         rows.extend(service_company_rows)
-        bounded_sizes.extend((len(rig_rows), len(service_company_rows)))
+        note_bounded(len(rig_rows))
+        note_bounded(len(service_company_rows))
 
         knowledge = KnowledgeRepository(session)
         facts = knowledge.facts_for_well(well.id, include_superseded=True, limit=limit)
@@ -1298,7 +1308,8 @@ class DomainReviewService:
             and (not fact.resolved_well_id or str(fact.resolved_well_id) == str(well.id))
         ]
         conflicts = knowledge.conflicts(well_id=well.id, status=None, limit=limit)
-        bounded_sizes.extend((fetched_fact_count, len(conflicts)))
+        note_bounded(fetched_fact_count)
+        note_bounded(len(conflicts))
         conflict_by_item: dict[str, list[str]] = defaultdict(list)
         review_conflicts: list[ReviewConflict] = []
         for conflict in conflicts:
@@ -1347,7 +1358,7 @@ class DomainReviewService:
                     .limit(limit)
                 ).scalars()
             )
-            bounded_sizes.append(len(edge_rows))
+            note_bounded(len(edge_rows))
             for edge in edge_rows:
                 lesson_evidence[str(edge.source_id)].append(
                     {
@@ -1526,8 +1537,8 @@ class DomainReviewService:
                 ),
             )
         )
-        bounded_sizes.append(len(relation_rows))
-        truncated = sections_truncated or any(size >= limit for size in bounded_sizes)
+        note_bounded(len(relation_rows))
+        truncated = sections_truncated or any(size >= bound for size, bound in bounded_sizes)
         if len(row_records) > result_limit:
             row_records = row_records[:result_limit]
             truncated = True

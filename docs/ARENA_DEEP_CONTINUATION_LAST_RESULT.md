@@ -147,6 +147,31 @@ that ran out of room. After the fix `limit=0` returns **260**, equal to `limit=1
 `limit=0` docstring now says precisely what is and is not bounded. **Regression tests:** 2.
 **Mutation** (restore the 200 cap): **killed**, 1 failure.
 
+### 4.5 Three migration tests pinned 0011 as the head — stale assertions, fixed
+
+Migration 0012 turned three assertions red. None was a product defect; each was pinning the same
+thing — *"this migration is still the head"* — instead of anything 0011 actually guarantees:
+
+1. `test_the_revision_is_a_real_head_of_a_single_headed_chain` asserted
+   `METADATA_REVISION == "0011"`. True of exactly one revision at a time, so it would break on
+   every future migration for no gain. It now asserts the invariant that outlives a single head:
+   the chain is single-headed, `METADATA_REVISION` tracks the real head, and 0011 is still an
+   addressable revision in it.
+2. `test_the_upgrade_is_replayable` asserted `upgrade(engine, "0011").up_to_date is True`.
+   `up_to_date` is literally `current == head` — it means *at the head of the chain*, not *at the
+   revision I asked for*. Sitting at 0011 is now genuinely a revision behind, and **reporting that
+   is the point of the field**: a workspace must be able to say it is stale. Replay now asserts
+   what replaying actually promises — a row-level snapshot is unchanged — rather than conflating
+   "replayed" with "at head".
+3. `test_migration_0005` parity upgraded only to `"0005"`. Parity is claimed for a *workspace*, and
+   a workspace is at the head. Against `"0005"` the comparison would have passed even with a later
+   migration and the models disagreeing about `calculation` — precisely the drift the test exists to
+   catch. Upgrading to `head` makes it stronger, and it now holds **with 0012's index included**,
+   which independently confirms the migration and the ORM `Index` produce the same object.
+
+These are assertion corrections, not weakenings: all three now assert more, not less. Migration
+tests after the change: **26 passed**.
+
 ## 5. Hypotheses disproved
 
 None newly this checkpoint. V5.2's `DATE_SCOPE_UNDATED_SEARCH_RETRIEVAL` remains disproved with its
@@ -219,11 +244,20 @@ Verdicts use the six labels only. A label is never `PASS` merely because a suite
 | `git diff --check` | exit 0 |
 | `alembic heads` | `0012` |
 | targeted: calculation + change-impact + migrations | exit 0, 83 tests |
-| full suite | see the latest checkpoint block below |
+| full suite (after the last change) | **1553 passed / 3 skipped / 1556, 0 failed** |
+| targeted: migration 0005 + 0011 + migrations | exit 0, 26 tests |
 
 ## 21. Git publication checkpoints
 
 ```
+CHECKPOINT D' — MIGRATION TEST PINS
+status: COMPLETE
+attacks_closed: none (stale test assertions uncovered by the full suite after 0012)
+targeted_tests: test_migration_0005 + test_migration_0011 + test_migrations = 26, exit 0
+mutations: n/a
+full_suite_at_checkpoint: 1553 passed / 3 skipped / 1556, 0 failed
+remaining_open: LIMIT_TRUNCATION_SIGNAL and the §22 list
+
 CHECKPOINT D — RETRIEVAL LIMITS
 status: COMPLETE
 attacks_closed: RETRIEVAL_ZERO_LIMIT_HARD_CAP (fixed)
@@ -259,6 +293,195 @@ CHILD_ROW_IDENTITY_DUPLICATION      SCOPE_NULL_HIERARCHY
 
 ## Final verdict
 
-In progress — see the checkpoint blocks above. The current verdict is
-**CERTIFIABLE WITH BOUNDED REMAINING SCOPE** for the calculation supersession surface only; the
-twelve attacks listed in §22 are unexercised.
+**CERTIFIABLE WITH BOUNDED REMAINING SCOPE.**
+
+*Correction carried into V5.4:* the sentence below said "the ten attacks in §22".  §22 names
+**nine**.  The register opened with 13 attacks; 3 were resolved before Checkpoint D, leaving 10, and
+Checkpoint D resolved `RETRIEVAL_ZERO_LIMIT_HARD_CAP` — §22 was updated to nine but this sentence was
+not.  Nine is correct.  Separately, §22 is *not* the complete open set: §18 independently lists 17
+open surfaces (16 `OPEN_NOT_EXERCISED` + 1 `OPEN_DEFECT`), of which only 9 carry a named attack id.
+The master ledger in §24 is now the single authoritative enumeration.
+
+Four attacks are closed with behavioural proof, not with a green suite:
+`CALC_SUPERSESSION_DOUBLE_LEAF_RACE`, `PLAN_EXACT_ID_COLLISION`,
+`PLAN_EXPLICIT_TEMPLATE_BY_NAME`, `RETRIEVAL_ZERO_LIMIT_HARD_CAP`. Five mutations were attempted and
+five were killed. The full suite after the last change is 1553 passed / 3 skipped / 1556 with zero
+failures.
+
+What is *not* certified, and must not be read as certified: the ten attacks in §22 are
+`OPEN_NOT_EXERCISED`, and the system-wide limit audit (§28) is an `OPEN_DEFECT` — retrieval is now
+internally coherent, but search, review and CLI limits have not been reconciled against it. This
+verdict covers the calculation supersession, plan-vs-actual and retrieval-limit surfaces only.
+
+---
+
+# V5.4 — Checkpointed Forensic Closure and System-Wide Certification
+
+## 24. V5.4 repository identity and recovery
+
+| item | value |
+| --- | --- |
+| repository | `asgareyvazi/Prog-Proc` |
+| branch | `arena/01a0c936-prog-proc` |
+| mission-named remote baseline | `dd20f71e11ee30419aa21c370c97eebe40042835` |
+| remote tip at mission start (`git ls-remote`) | `dd20f71e11ee30419aa21c370c97eebe40042835` — **matches** |
+| local HEAD at mission start | `e8621136ca73108ae7b590e6baa72fedc1f00835` — **the branch point, not the tip** |
+| shallow | `true` (single grafted commit at start) |
+| recovery required | **yes** |
+
+### 24.1 The recovery event
+
+The session opened with Git metadata reverted to the branch point `e862113` while the worktree still
+carried all V4/V5 work, so the entire history appeared as ~100 uncommitted paths. This is the eighth
+occurrence of this failure mode.
+
+Recovery was lossless and evidence-led, per the standing rule never to discard files to make the
+repository look tidy:
+
+1. The local report and `git status` were copied to a scratch directory **before** any recovery
+   action, so nothing could be lost.
+2. `git fetch --depth=60 origin arena/01a0c936-prog-proc` → `FETCH_HEAD = dd20f71`.
+3. Every differing path was byte-compared against `FETCH_HEAD:<path>` with `cmp`. Exactly **one**
+   path differed: `docs/ARENA_DEEP_CONTINUATION_LAST_RESULT.md` (47 insertions / 4 deletions).
+   Everything else in the worktree was already byte-identical to the remote tree.
+4. `git merge-base --is-ancestor e862113 FETCH_HEAD` → true, so a fast-forward was valid.
+5. `git checkout FETCH_HEAD -- .` then `git merge --ff-only FETCH_HEAD` → HEAD `dd20f71`, then the
+   preserved report was restored.
+
+**Local-only work found and preserved:** the V5.3 report finalisation (commit `724c189`), which had
+never been pushed. `git cat-file -e` confirms `724c189` exists in neither the local object database
+nor the remote — the V5.3 statement that it was `LOCAL_COMMIT_ONLY` was correct. Its content survived
+only because the worktree persisted; it is republished here.
+
+`.venv` had also vanished and was re-provisioned: Python 3.11.2, ruff 0.16.9, pytest 9.1.1,
+`alembic heads` = `0012`.
+
+### 24.2 Baseline re-proof at `dd20f71`
+
+Every claimed V5.3 change was verified **in the tree**, not from a report:
+
+| claimed change | verified at |
+| --- | --- |
+| migration 0012 partial unique index | `migrations/versions/20260927_0012_one_superseding_calculation.py:37,41,42` |
+| matching ORM `Index` | `database/models.py:696` |
+| retrieval inherits `MAX_CANDIDATES` | `retrieval/service.py:72,109,255` |
+| `EvidenceBundle.discovery_capped` | `retrieval/contract.py:243,256` |
+| plan exact-id ambiguity | `engineering/repository.py:1316` |
+| explicit-template anchor branch | `engineering/repository.py:1163` |
+| migration test corrections | `test_migration_0011.py:67`, `test_migration_0005.py:240` |
+
+Targeted re-proof: **149 tests, 0 failures, exit 0** (calculation, plan-vs-actual, retrieval,
+migrations, 0005, 0011, report integrity).
+
+## 25. Master certification ledger
+
+Reconstructed from the repository. Replaces §18 and §22 as the single enumeration; `#` is stable.
+
+| # | Surface | Contract | Source | Verdict |
+| --- | --- | --- | --- | --- |
+| 1 | Calculation scope enforcement | a recorded calculation's scope must match its well's hierarchy | `engineering/repository.py:273` | `BEHAVIOURALLY_PROVEN` |
+| 2 | Supersession, sequential | one superseding revision per parent | `engineering/repository.py:1547` | `BEHAVIOURALLY_PROVEN` |
+| 3 | Supersession, concurrent | the *database* enforces one child | migration 0012 | `DEFECT_FOUND_AND_FIXED` |
+| 4 | Plan exact-id collision | an id join several plans claim is ambiguous | `engineering/repository.py:1316` | `DEFECT_FOUND_AND_FIXED` |
+| 5 | Plan explicit template by name | a caller anchor is the scope boundary | `engineering/repository.py:1163` | `DEFECT_FOUND_AND_FIXED` |
+| 6 | Retrieval `limit=0` | no-cap must not return fewer rows than a large explicit limit | `retrieval/service.py:109` | `DEFECT_FOUND_AND_FIXED` |
+| 7 | Retrieval cap disclosure | the internal bound must be reported | `EvidenceBundle.discovery_capped` | `DEFECT_FOUND_AND_FIXED` |
+| 8 | Search `limit=0` | 0 means "use the default", not a cap | `search/service.py:351` | `HYPOTHESIS_DISPROVED` |
+| 9 | NPT attribution | an event's NPT belongs to its sole problem | `intelligence/field.py` | `BEHAVIOURALLY_PROVEN` |
+| 10 | Date-window / undated | unknown date is not outside every window | `retrieval/contract.py` | `BEHAVIOURALLY_PROVEN` |
+| 11 | Migration / ORM parity | fresh `create_all` equals migrated-to-head | `test_migration_0005.py:240` | `BEHAVIOURALLY_PROVEN` |
+| 12 | **Review truncation truthfulness** | a review must not claim a cut it did not make | `review/service.py:1540` | **`DEFECT_FOUND_AND_FIXED`** (V5.4) |
+| 13 | Review null-well semantics | null must never become an accidental wildcard | `review/service.py` `_for_well` | `OPEN_NOT_EXERCISED` |
+| 14 | Review current/history matrix | one definition of currentness per domain | `review/service.py` | `OPEN_NOT_EXERCISED` |
+| 15 | Review read-only proof | a read must not write | `test_domain_review.py` fingerprint | `BEHAVIOURALLY_PROVEN` (existing) |
+| 16 | Search `truncated` semantics | query-honest, not corpus-size | `search/index.py:696` | `OPEN_NOT_EXERCISED` |
+| 17 | FTS vs scan equivalence | the accelerator must not change the answer | `search/index.py` | `OPEN_NOT_EXERCISED` |
+| 18 | Strict-query fallback metadata | broadening must describe the answer returned | `search/service.py` | `OPEN_NOT_EXERCISED` |
+| 19 | Retrieval `capped` inference | `>=` cap does not prove truncation | `retrieval/service.py:233` | `OPEN_NOT_EXERCISED` |
+| 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/service.py` | `OPEN_NOT_EXERCISED` |
+| 21 | Evidence identity order-independence | presentation must not change identity | `EvidenceQueryService._content_identity` | `OPEN_NOT_EXERCISED` |
+| 22 | Evidence freshness delta | detect every mutation the contract promises | `check_freshness` | `OPEN_NOT_EXERCISED` |
+| 23 | Citation `NOT_CHECKABLE` | "no citation" ≠ "citation failed" | `evidence/verify.py:59,116` | `OPEN_NOT_EXERCISED` |
+| 24 | Citation multi-aggregation | `_RANK` puts `NOT_CHECKABLE` **above** `MATCH` | `evidence/verify.py:62` | `OPEN_NOT_EXERCISED` |
+| 25 | Promotion atomicity | late failure leaves no partial rows | `operations/promote.py` | `OPEN_NOT_EXERCISED` |
+| 26 | Child-row identity | no inference from UUID or row position | `operations/*.py` | `OPEN_NOT_EXERCISED` |
+| 27 | Scope null hierarchy | unknown ≠ contradictory ≠ unbound | `engineering/repository.py:273` | `OPEN_NOT_EXERCISED` |
+| 28 | Defensive reads / corruption | no silent repair of malformed persisted data | read paths, `doctor` | `OPEN_NOT_EXERCISED` |
+| 29 | Timeline interval semantics | interval vs point-in-window must be explicit | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
+| 30 | Timeline malformed dates | no silent conversion to a clean result | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
+| 31 | Timeline determinism | a total order on identical timestamps | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
+| 32 | CLI limit contract | the CLI must not re-implement limit policy | `cli/app.py` | `OPEN_NOT_EXERCISED` |
+| 33 | Performance at 1k / 10k | bounded, no N+1 | all read paths | `OPEN_NOT_EXERCISED` |
+| 34 | System-wide limit audit | one matrix, five distinct bound kinds | 5 limit constants found | `OPEN_DEFECT` |
+
+Ledger row 34 is the reason five distinct limits must not be conflated; the constants actually in the
+tree are `MAX_CANDIDATES = 4000` (`search/index.py:91`), `RETRIEVAL_CAP = MAX_CANDIDATES * 4`
+(`search/index.py:100`), `_DISCOVERY_CAP = MAX_CANDIDATES` (`retrieval/service.py:109`),
+`_SAFE_LIMIT = 10_000` (`review/service.py:95`), and `default_limit` (`search/service.py:193`, with a
+derived `min(200, max(1, limit // 2))` at `:219`).
+
+## 26. V5.4 defect: review claimed truncation it did not perform
+
+**Contract.** `DomainReview.truncated` tells a consumer that the answer is incomplete. It is the only
+signal a reviewer has that rows are missing.
+
+**Symptom.** A review that returned every row it had reported `truncated=True`.
+
+**Reproduction** (real corpus, real workspace, 5 mud reports × 22 measurements = 110):
+
+```
+PROBE limit=  100 child_bound=   500 truncated=True  records=90   <- nothing was cut
+PROBE limit= 1000 child_bound=  5000 truncated=False records=90
+```
+
+**Root cause.** `review/service.py:1530` computed
+`truncated = sections_truncated or any(size >= limit for size in bounded_sizes)`.
+Three child batches — mud measurements (`:913`), BHA components (`:955`), survey stations (`:969`) —
+are deliberately fetched at `.limit(limit * number_of_parents)` so one busy report cannot starve the
+others. Their raw sizes were pushed into `bounded_sizes` and then compared against `limit`, a bound
+belonging to a **different population**. With N parents the check trips whenever the child batch
+returns ≥ `limit` rows, even though its own bound `limit * N` was nowhere near reached. The
+generated corpus has one mud report, so `limit * 1 == limit` hid this completely.
+
+**Fix.** `bounded_sizes` now holds `(size, bound)` pairs and a `note_bounded()` recorder takes the
+bound that was actually applied to that query; the verdict compares each size against its own bound.
+Every call site was routed through the recorder so no future site can bypass the pairing.
+
+**A regression introduced and caught during the fix.** The first attempt routed the
+`bounded_sizes.append(len(x))` sites through the existing `add_bounded()`, which also performs
+`rows.extend(group)`. Those sites had already extended `rows` on their own line, so the rows were
+added **twice** and the review grew from 90 records to 201. This was caught only because the record
+count was checked rather than assumed; `grep -c 'rows.extend'` is now 6 in both the original and the
+fixed file. The corrected fix separates recording from row collection.
+
+**After the fix:**
+
+```
+PROBE limit=  100 child_bound=   500 truncated=False records=90
+PROBE limit= 1000 child_bound=  5000 truncated=False records=90
+```
+
+`limit=10` still reports `truncated=True` (it genuinely cuts), so the true positive is intact.
+
+**Regression tests:** 4 (`TestReviewTruncationTruthfulness`), including one asserting no record is
+returned twice. **Mutations:** 2 attempted, **2 killed**.
+
+## 27. V5.4 mutation matrix
+
+| mutation | target | tests failing | result |
+| --- | --- | --- | --- |
+| restore `size >= limit` in the truncation verdict | `review/service.py:1540` | 2 | **KILLED** |
+| record `limit` instead of the query's real bound | `review/service.py` `note_bounded` | 2 | **KILLED** |
+
+## 28. V5.4 publication checkpoint
+
+```
+checkpoint: V5.4-C1 — recovery, master ledger, review truncation truthfulness
+status: see the remote verification recorded with this commit
+attacks_closed: REVIEW truncation truthfulness (ledger row 12)
+targeted_tests: domain_review + cli_domain + cli = 86, exit 0; baseline re-proof 149, exit 0
+mutations: 2 attempted, 2 killed
+full_suite_at_checkpoint: not yet rerun — the full suite must run after the final change of the
+                          mission, per the no-false-green rule
+remaining_open: ledger rows 13, 14, 16-34
+```
