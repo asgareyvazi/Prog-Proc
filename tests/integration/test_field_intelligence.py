@@ -536,7 +536,16 @@ def test_moving_data_stales_a_snapshot_and_reports_the_difference(field_workspac
         # Only the numbers that moved are reported: the well count was 2 before and is 2 now, and a
         # difference report full of "no change" would train a reader to ignore it.
         assert "well_count" not in after["differences"]
-        assert set(after["differences"]) == {"occurrence_count"}, after["differences"]
+        # ``last_seen_at`` moves too, and must: the new occurrence is dated 2025-07-01, later than the
+        # 2025-06-13 the snapshot was taken with.  This assertion used to expect *only*
+        # ``occurrence_count`` to change, which held only because ``record_problem`` was dropping a
+        # bare ``date`` on the floor - ``_stamp`` handled ``datetime`` and ``str`` but not ``date``, so
+        # the occurrence was stored undated and the window's end never moved.  A stale-snapshot report
+        # that hides a moved ``last_seen_at`` is reporting the bug, not the data.
+        assert set(after["differences"]) == {"occurrence_count", "last_seen_at"}, after[
+            "differences"
+        ]
+        assert after["differences"]["last_seen_at"]["now"] == "2025-07-01T00:00:00", after
         # The snapshot keeps the number it was taken with: a reviewed figure is not edited underneath
         # whoever reviewed it.
         assert get_pattern(session, pattern_id).occurrence_count == 2

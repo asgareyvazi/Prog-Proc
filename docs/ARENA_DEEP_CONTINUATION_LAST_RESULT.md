@@ -408,7 +408,9 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 27 | Scope null hierarchy | unknown ≠ contradictory ≠ unbound | `engineering/repository.py:273` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 28 | Defensive reads / corruption | no silent repair of malformed persisted data | read paths, `doctor` | `OPEN_NOT_EXERCISED` |
 | 29 | Timeline interval semantics | interval vs point-in-window must be explicit | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
-| 30 | Timeline malformed dates | no silent conversion to a clean result | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
+| 30 | Supplied dates must not become "no date" | a date given must be stored or refused | `operations/repository.py:112,133` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
+| 29 | Timeline interval semantics | point-in-window over an index of dated facts | `intelligence/timeline.py:326,341` | `PASS_WITH_BEHAVIOURAL_PROOF` + documented |
+| 31 | Timeline determinism | a total order on identical timestamps | `intelligence/timeline.py:121` | `OPEN_NOT_EXERCISED` — see §26F |
 | 31 | Timeline determinism | a total order on identical timestamps | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
 | 32 | CLI limit contract | the CLI must not re-implement limit policy | `cli/app.py:663`, `docs/LIMIT_CONTRACTS.md` §3 | `BEHAVIOURALLY_PROVEN` for `--limit 0` and cap disclosure; per-command negative-value handling still unaudited |
 | 33 | Performance at 1k / 10k | bounded, no N+1 | all read paths | `OPEN_NOT_EXERCISED` |
@@ -627,6 +629,69 @@ narrowed.
 (its guard assertion fired) and reported the previous mutation's failures; it was re-run with the
 mutation verified present in the file before the tests, and it is the second run that is recorded.
 
+## 26F. V5.4 timeline and date findings
+
+### A supplied date was being laundered into "no date" — two ways, both silent
+
+**Bare `date`.** `operations/repository._stamp` handled `datetime` and `str` but not
+`datetime.date`. `date` is the *parent* of `datetime`, so `isinstance(value, datetime)` is False for
+it and the value fell through to `return None`. Recording a problem with
+`occurred_at=date(2025, 7, 1)` stored no timestamp at all. The timeline's own `_stamp`
+(`intelligence/timeline.py:106`) *does* handle `date`, so the two readers disagreed.
+
+This had propagated into a test: `test_moving_data_stales_a_snapshot_and_reports_the_difference`
+asserted `set(differences) == {"occurrence_count"}` — that adding a July occurrence did **not** move
+`last_seen_at`. That held only because the July date was being dropped. The assertion is corrected to
+`{"occurrence_count", "last_seen_at"}`, which is what the data actually says; the test still asserts
+staleness, the occurrence count, the absence of `well_count` and that the snapshot is not edited.
+
+**Unreadable string.** A supplied-but-unparseable value also returned `None`, so
+`ended_at="14 June 2025"` was stored as `ended_at IS NULL`: a mistyped end date became an operation
+that never ended, with nothing saying a date had been dropped. The same file already refuses to do
+this for a *query* bound — `_bound`'s docstring: "both look like an answer - so the caller is told
+instead". A record is worse, because the silence is persisted. `_stamp_strict` now raises a domain
+`ValidationError` at all five write sites; an *absent* date stays legal and prose still belongs in
+the `*_text` columns.
+
+**Regression tests:** 4 new. **Mutations:** 2 attempted, **2 killed**. The first attempt at the second
+mutation matched its anchor twice and never applied, reporting a meaningless zero; it was re-run with
+a verified-unique anchor, and that is the run recorded.
+
+### Interval semantics: proven, not patched
+
+Operations contribute two **point** entries, `<id>:start` and `<id>:end`. The consequence, probed:
+
+```
+operation spanning 10 -> 20 June, window 11 -> 19:  the operation does not appear
+```
+
+Neither endpoint falls in the window, so an operation in progress throughout it is absent. That is
+correct under the module's stated contract — a timeline is "one ordered list built from the records
+that already have dates", an index of dated facts, not a duration query, and the same docstring
+refuses to invent a date for depth because "a timeline that invented one would be a story rather than
+an index". Changing it to interval-overlap would invent exactly that. It is now documented and tested
+rather than left implicit. Boundary cases verified: exact lower bound includes the start, exact upper
+bound includes the end, a window after everything returns nothing, and `include_undated=True` restores
+the undated tail inside a window.
+
+### Determinism: an honest gap, not a claimed pass
+
+`entry_comparator` sorts on `(dated, timestamp, kind, table, row_id)`. A well contributes one entry
+per milestone and **every one carries the well's own id**, so two undated milestones of the same well
+tie on every component:
+
+```
+kind=well table=well row_id=well-9798... at=None title='Spud: TL2-1'
+kind=well table=well row_id=well-9798... at=None title='Completion: TL2-1'
+```
+
+A key that ties is not the total order the docstring claims; the emitted sequence comes from the order
+`_WELL_EVENTS` is appended in. Adding `title` as a tiebreaker makes the key total but sorts
+*Completion before Spud*, which is domain-wrong and broke a test that correctly asserts the lifecycle
+order. That change was **reverted**: making the key total needs a domain ordinal the entry does not
+currently carry, and shipping a domain-wrong order to satisfy a totality claim would be the worse
+defect. Row 31 stays open with this reason recorded.
+
 ## 27. V5.4 mutation matrix
 
 | mutation | target | tests failing | result |
@@ -642,6 +707,8 @@ mutation verified present in the file before the tests, and it is the second run
 | retrieval treats `0` as `20` | `retrieval/service.py` `_discover` | 1 | **KILLED** |
 | remove the field/project consistency check | `engineering/repository.py:320` | 2 | **KILLED** |
 | treat a NULL `field.project_id` as contradictory | `engineering/repository.py:322` | 1 | **KILLED** |
+| bare `date` returns `None` again | `operations/repository.py` `_stamp` | 2 | **KILLED** |
+| swallow an unreadable date again | `operations/repository.py` `_stamp_strict` | 1 | **KILLED** |
 
 ## 28. V5.4 publication checkpoints
 

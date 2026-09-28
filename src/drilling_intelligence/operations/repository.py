@@ -23,7 +23,7 @@ knowledge layer's content-addressed fact ids do.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import Select, func, inspect, select
@@ -121,6 +121,13 @@ def _stamp(value: object) -> datetime | None:
         return None
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, date):
+        # A bare ``date`` is a date the caller really supplied.  It used to fall through to ``None``
+        # here - ``date`` is not a ``datetime`` - so recording an operation with ``date(2025, 7, 1)``
+        # silently stored no timestamp at all.  Midnight is not invented as a *claim* about the time
+        # of day; it is the only reading of a day with no time on it, and it is what the timeline's
+        # own ``_stamp`` already does with the same input.
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
     if isinstance(value, str):
         try:
             parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
@@ -128,6 +135,32 @@ def _stamp(value: object) -> datetime | None:
             return None
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     return None
+
+
+def _stamp_strict(value: object, *, label: str) -> datetime | None:
+    """Like :func:`_stamp`, but a value that was *supplied* and cannot be read is an error.
+
+    ``_stamp`` answers ``None`` for both "nothing was given" and "something was given that is not a
+    date", which is right for internal coercion and wrong at a write boundary: an operation recorded
+    with ``ended_at="14 June 2025"`` was stored with ``ended_at IS NULL``, so a mistyped end date
+    became an operation that never ended, with nothing anywhere saying the date had been dropped.
+    The same file already refuses to do this for a query bound, for the reason given in ``_bound`` -
+    both a wrong answer and no answer *look* like an answer.  A record is worse than a query, because
+    the silence is then persisted.
+
+    Prose still belongs in the ``*_text`` columns; that is unchanged.  This only stops an unreadable
+    value from being laundered into an absent one.
+    """
+    if value is None or value == "":
+        return None
+    parsed = _stamp(value)
+    if parsed is None:
+        raise ValidationError(
+            f"{label} is not a date or ISO timestamp: {value!r}",
+            hint="the platform does not guess at a date it cannot read; use YYYY-MM-DD, "
+            "or keep the wording in the matching *_text column",
+        )
+    return parsed
 
 
 def _bound(value: object, *, label: str) -> datetime:
@@ -297,7 +330,7 @@ class OperationsRepository:
             document_id=document_id or None,
             document_version_id=document_version_id or None,
             report_number=(str(report_number).strip() or None) if report_number else None,
-            report_date=_stamp(report_date),
+            report_date=_stamp_strict(report_date, label="report_date"),
             report_date_text=(report_date_text or None),
             shift=shift or None,
             record_state=str(getattr(record_state, "value", record_state)),
@@ -596,7 +629,8 @@ class OperationsRepository:
         if not str(operation_type or label or "").strip():
             raise ValidationError("an operation needs a type or a label: both were empty")
         match = match_operation(operation_type or label)
-        started, ended = _stamp(started_at), _stamp(ended_at)
+        started = _stamp_strict(started_at, label="started_at")
+        ended = _stamp_strict(ended_at, label="ended_at")
         if started and ended and ended < started:
             raise ValidationError(
                 "an operation cannot end before it starts",
@@ -709,7 +743,8 @@ class OperationsRepository:
         kind = match_problem(event_type)
         category_match = match_category(category)
         level = match_severity(severity_text)
-        started, ended = _stamp(occurred_at), _stamp(ended_at)
+        started = _stamp_strict(occurred_at, label="occurred_at")
+        ended = _stamp_strict(ended_at, label="ended_at")
         if started and ended and ended < started:
             raise ValidationError(
                 "an event cannot end before it started",
@@ -859,7 +894,8 @@ class OperationsRepository:
         if found is not None:
             return found
         match = match_problem(code or category)
-        start, end = _stamp(started_at), _stamp(ended_at)
+        start = _stamp_strict(started_at, label="started_at")
+        end = _stamp_strict(ended_at, label="ended_at")
         measured = None if duration_hours is None else float(duration_hours)
         basis = str(getattr(duration_basis, "value", duration_basis) or "").strip().upper() or None
         if basis not in _DURATION_BASES:
@@ -1162,7 +1198,7 @@ class OperationsRepository:
             problem_type=match.token,
             code=(str(code).strip() or None) if code else None,
             description=str(description or ""),
-            occurred_at=_stamp(occurred_at),
+            occurred_at=_stamp_strict(occurred_at, label="occurred_at"),
             hole_size_in=None if hole_size_in is None else float(hole_size_in),
             formation=(str(formation).strip() or None) if formation else None,
             immediate_cause=(str(immediate_cause).strip() or None) if immediate_cause else None,
