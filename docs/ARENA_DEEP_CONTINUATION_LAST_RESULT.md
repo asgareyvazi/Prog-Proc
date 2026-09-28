@@ -1388,7 +1388,7 @@ Delta reconciles exactly: 1596 at the previous checkpoint plus 27 new test funct
 fixtures build in roughly 60 s per 16 001-chunk corpus, which is a test-runtime observation, not a
 performance certification.
 
-### 36E. Publication status — `PUBLISH_BLOCKED` again, transient
+### 36E. Publication status — blocked twice, then published
 
 | item | value |
 | --- | --- |
@@ -1402,6 +1402,7 @@ attempts spread over roughly seven minutes all failed, so this is recorded as `P
 The identical block earlier in this session cleared on its own and the push then succeeded, which is
 why this is labelled transient rather than final.
 
-`799e89d` is a fast-forward child of the published `fd506b6`; the worktree is clean and nothing was
-reset, rebased, squashed or force-pushed. Reconnecting GitHub in Arena and running
-`git push origin arena/01a0c936-prog-proc` publishes it.
+**Resolved.** The credential recovered again; `git push` then succeeded (`fd506b6..fd5fd5a`) and
+`git ls-remote` confirmed the remote tip equal to local `HEAD` (`fd5fd5a`) with 0 dirty paths. Both
+blocks were transient. Nothing was reset, rebased, squashed or force-pushed at any point, and no
+work was lost while the blocks lasted.
