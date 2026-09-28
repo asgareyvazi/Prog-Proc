@@ -401,8 +401,8 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/service.py` | `OPEN_NOT_EXERCISED` |
 | 21 | Evidence identity order-independence | presentation must not change identity | `EvidenceQueryService._content_identity` | `OPEN_NOT_EXERCISED` |
 | 22 | Evidence freshness delta | detect every mutation the contract promises | `check_freshness` | `OPEN_NOT_EXERCISED` |
-| 23 | Citation `NOT_CHECKABLE` | "no citation" ≠ "citation failed" | `evidence/verify.py:59,116` | `OPEN_NOT_EXERCISED` |
-| 24 | Citation multi-aggregation | `_RANK` puts `NOT_CHECKABLE` **above** `MATCH` | `evidence/verify.py:62` | `OPEN_NOT_EXERCISED` |
+| 23 | Citation `NOT_CHECKABLE` | "no citation" ≠ "citation failed" | `evidence/verify.py:59,116` | `BEHAVIOURALLY_PROVEN` (existing tests, see §26B) |
+| 24 | Citation multi-aggregation | the worst citation decides the item | `evidence/verify.py:62,224` | `HYPOTHESIS_DISPROVED` (see §26B) |
 | 25 | Promotion atomicity | late failure leaves no partial rows | `operations/promote.py` | `OPEN_NOT_EXERCISED` |
 | 26 | Child-row identity | no inference from UUID or row position | `operations/*.py` | `OPEN_NOT_EXERCISED` |
 | 27 | Scope null hierarchy | unknown ≠ contradictory ≠ unbound | `engineering/repository.py:273` | `OPEN_NOT_EXERCISED` |
@@ -490,6 +490,36 @@ search's own candidate cap. Rather than record a survivor, the gap was closed wi
 `test_the_search_layers_own_candidate_cap_is_propagated` at 4001 rows, after which the same mutation
 is killed.
 
+## 26B. V5.4 hypothesis disproved: citation aggregation is not inverted
+
+A ledger row drafted during inspection claimed `_RANK` placed `NOT_CHECKABLE` **above** `MATCH`,
+which would have made an unchecked citation outrank a verified one. That reading was wrong, and it
+was wrong because it read the dictionary without reading how it is used.
+
+`_RANK` (`evidence/verify.py:62`) is a *worst-is-lowest* scale, and the aggregation at `:224` is
+`worst = min(results, key=lambda check: _RANK[check.status])`. So:
+
+| citations on one item | aggregated status | why |
+| --- | --- | --- |
+| MATCH + MISMATCH | MISMATCH | rank 0 is the minimum |
+| MATCH + UNREADABLE | UNREADABLE | rank 1 |
+| MATCH + NOT_CHECKABLE | MATCH | rank 2 beats rank 3: a checked citation outranks an unchecked one |
+| NOT_CHECKABLE only | NOT_CHECKABLE | never silently promoted to MATCH |
+
+`all_verified` (`:116`) is `not (MISMATCH or UNREADABLE)`, and its docstring at `:100` states
+explicitly that `NOT_CHECKABLE` does not block it because "an honest 'no file citation' is not a
+broken citation", with the tally left for the reader. That is a documented contract, not a silent
+collapse, so it is not changed.
+
+Existing coverage already pins the surrounding matrix: `test_a_broken_second_citation_folds_the_row_to_the_worst`,
+`test_a_structured_row_without_a_file_citation_is_not_checkable_not_passed`,
+`test_a_citation_at_a_version_missing_from_the_registry_is_not_checkable`,
+`test_an_item_without_any_provenance_is_not_checkable_not_passed`.
+
+**Still honestly open:** the MATCH + NOT_CHECKABLE combination is *derived* from the code above but
+has no test of its own, so it is proven by reading `min` and not by execution. It is recorded as
+such rather than claimed as tested.
+
 ## 27. V5.4 mutation matrix
 
 | mutation | target | tests failing | result |
@@ -514,3 +544,95 @@ full_suite_at_checkpoint: not yet rerun — the full suite must run after the fi
                           mission, per the no-false-green rule
 remaining_open: ledger rows 13, 14, 16-34
 ```
+
+## 29. V5.4 gate results
+
+The full suite was run **after the last source and test change** of the mission, per the
+no-false-green rule. No earlier suite result is reused.
+
+| gate | command | result |
+| --- | --- | --- |
+| lint | `ruff check src tests migrations` | exit 0, "All checks passed!" |
+| format | `ruff format --check src tests migrations` | exit 0, 210 files already formatted |
+| compile | `python -m compileall -q src tests migrations` | exit 0 |
+| whitespace | `git diff --check` | exit 0 |
+| migration head | `alembic heads` | `0012 (head)` |
+| report integrity | `pytest tests/unit/test_report_integrity.py` | exit 0, 5 passed |
+| targeted: domain review | `pytest tests/integration/test_domain_review.py` | exit 0, 12 tests |
+| targeted: review + CLI | review + cli_domain + cli | exit 0, 86 tests |
+| targeted: retrieval + evidence | 3 suites | exit 0, 102 tests |
+| baseline re-proof at `dd20f71` | 7 suites | exit 0, 149 tests |
+| **full suite** | `pytest -q` | **1559 passed / 3 skipped / 1562 total, 0 failed, 0 errors** |
+
+**How the full-suite total was calculated.** `pytest -q` again emitted no final summary line, so the
+count was derived by summing the per-character progress output with
+`^([.sFEx]+)\s*\[\s*\d+%\]$`, giving `total=1562 passed=1559 skipped=3 failed=0 errors=0`, with
+`grep -cE '^FAILED'` = 0. This is consistent with the V5.3 baseline of 1556 plus the 6 tests added
+in this mission (4 review truncation + 2 retrieval cap).
+
+## 30. V5.4 publication checkpoints
+
+```
+checkpoint: V5.4-C1 — recovery, master ledger, review truncation truthfulness
+status: REMOTE_PUBLISHED
+local_head: 1f8cd1de75af0173f34ce0a74ceeb59bc4ec9ab6
+remote_head: 1f8cd1de75af0173f34ce0a74ceeb59bc4ec9ab6
+commit: 1f8cd1d
+push: exit 0, dd20f71..1f8cd1d
+remote_verified: yes - git ls-remote returned the same SHA as local HEAD
+changed_files: review/service.py, test_domain_review.py, report
+tests: 86 targeted + 149 baseline, exit 0
+remaining_open: ledger rows 13, 14, 16-18, 20-34
+
+checkpoint: V5.4-C2 — retrieval discovery cap proven, not inferred
+status: REMOTE_PUBLISHED
+local_head: bc29467ecd5167e19287480f5238bf87462a6261
+remote_head: bc29467ecd5167e19287480f5238bf87462a6261
+commit: bc29467
+push: exit 0, 1f8cd1d..bc29467
+remote_verified: yes - git ls-remote returned the same SHA as local HEAD
+changed_files: retrieval/service.py, test_retrieval_forensics.py, report
+tests: 102 retrieval + evidence, exit 0
+remaining_open: ledger rows 13, 14, 16-18, 20-22, 25-34
+
+checkpoint: V5.4-C3 — ledger correction, citation aggregation, final gates
+status: see the remote verification recorded with this commit
+local_head: this commit
+changed_files: report only (no source change after C2)
+tests: full suite 1559 passed / 3 skipped / 1562, 0 failed
+remaining_open: ledger rows 13, 14, 16-18, 20-22, 25-34
+```
+
+## 31. V5.4 final verdict
+
+**CERTIFIABLE WITH BOUNDED REMAINING SCOPE.**
+
+What is certified by behaviour, not by a green suite:
+
+* the review no longer claims truncation it did not perform (ledger row 12) — defect fixed, 4
+  regression tests, 2 mutations killed;
+* retrieval no longer invents a discovery ceiling from a length (ledger row 19) — defect fixed, 2
+  regression tests at the real 4000/4001-row boundary, 2 mutations killed, one of them only after a
+  surviving mutation exposed an untested path;
+* the citation aggregation hypothesis was attacked and **disproved** with the exact `min`/`_RANK`
+  evidence (ledger row 24), and the `NOT_CHECKABLE` contract is documented rather than silently
+  collapsed (ledger row 23);
+* the V5.3 "ten attacks / nine listed" inconsistency is resolved: nine was correct, and the true
+  open set was 17 surfaces, now enumerated in a 34-row ledger.
+
+What is **not** certified, and must not be read as certified — 18 ledger rows remain open:
+
+`OPEN_NOT_EXERCISED`: 13 review null-well semantics · 14 review current/history matrix · 16 search
+`truncated` semantics · 17 FTS/scan equivalence · 18 strict-query fallback metadata · 20 evidence
+package cap visibility · 21 evidence identity order-independence · 22 evidence freshness delta ·
+25 promotion atomicity · 26 child-row identity · 27 scope null hierarchy · 28 defensive reads ·
+29 timeline interval semantics · 30 timeline malformed dates · 31 timeline determinism ·
+32 CLI limit contract · 33 performance at scale.
+
+`OPEN_DEFECT`: 34 the system-wide limit audit. Five distinct limit kinds are in the tree
+(`MAX_CANDIDATES`, `RETRIEVAL_CAP`, `_DISCOVERY_CAP`, `_SAFE_LIMIT`, `default_limit`) and have not
+been reconciled into one matrix. Retrieval and review are now each internally honest; the
+cross-layer contract is not yet written.
+
+Also recorded honestly: the MATCH + NOT_CHECKABLE citation combination is derived from `min` over
+`_RANK` but has no test of its own (§26B).
