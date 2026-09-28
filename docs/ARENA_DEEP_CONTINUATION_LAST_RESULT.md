@@ -403,7 +403,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 22 | Evidence freshness delta | detect every mutation the contract promises | `check_freshness` | `OPEN_NOT_EXERCISED` |
 | 23 | Citation `NOT_CHECKABLE` | "no citation" ≠ "citation failed" | `evidence/verify.py:59,116` | `BEHAVIOURALLY_PROVEN` (existing tests, see §26B) |
 | 24 | Citation multi-aggregation | the worst citation decides the item | `evidence/verify.py:62,224` | `HYPOTHESIS_DISPROVED` (see §26B) |
-| 25 | Promotion atomicity | late failure leaves no partial rows | `operations/promote.py` | `OPEN_NOT_EXERCISED` |
+| 25 | Promotion atomicity | late failure leaves no partial rows | `operations/promote.py:635`, `database/session.py:78` | `OPEN_NOT_EXERCISED` — tests written but **not proven sensitive**, see §26G |
 | 26 | Child-row identity | no inference from UUID or row position | `operations/*.py` | `OPEN_NOT_EXERCISED` |
 | 27 | Scope null hierarchy | unknown ≠ contradictory ≠ unbound | `engineering/repository.py:273` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 28 | Defensive reads / corruption | no silent repair of malformed persisted data | read paths, `doctor` | `OPEN_NOT_EXERCISED` |
@@ -692,6 +692,28 @@ order. That change was **reverted**: making the key total needs a domain ordinal
 currently carry, and shipping a domain-wrong order to satisfy a totality claim would be the worse
 defect. Row 31 stays open with this reason recorded.
 
+## 26G. V5.4 promotion atomicity: tested, but the tests are not proven to bite
+
+`VersionPromoter` never commits; the caller owns the transaction and `unit_of_work` rolls back on
+exception (`database/session.py:78`). Three tests were added against the dangerous shape — a
+re-promotion with `replace=True`, which deletes this version's rows *before* rewriting them — forcing
+a failure after the first write and comparing row counts before and after. All three **pass on the
+real code**.
+
+**Both mutations survived, and that is the result.**
+
+| mutation | result | why |
+| --- | --- | --- |
+| remove `session.rollback()` from `unit_of_work` | **SURVIVED** (0 failures) | `session.close()` in the `finally` discards the uncommitted transaction anyway, so the explicit rollback is defensive rather than load-bearing |
+| make `record_operation` commit mid-promotion | **SURVIVED** (0 failures) | not explained; a commit inside the caller's transaction should have persisted the first row and changed the counts |
+
+The first survivor is understood and is itself useful: it says the rollback is not the thing holding
+atomicity together. The second is **not** understood, and an unexplained survivor is not a pass. Row
+25 therefore stays `OPEN_NOT_EXERCISED` — the behaviour looks right and is now watched, but nothing
+here demonstrates that a regression would be caught. Claiming `BEHAVIOURALLY_PROVEN` on the strength
+of three green tests whose mutations both survive would be exactly the false green this mission
+exists to prevent.
+
 ## 27. V5.4 mutation matrix
 
 | mutation | target | tests failing | result |
@@ -709,6 +731,8 @@ defect. Row 31 stays open with this reason recorded.
 | treat a NULL `field.project_id` as contradictory | `engineering/repository.py:322` | 1 | **KILLED** |
 | bare `date` returns `None` again | `operations/repository.py` `_stamp` | 2 | **KILLED** |
 | swallow an unreadable date again | `operations/repository.py` `_stamp_strict` | 1 | **KILLED** |
+| remove `session.rollback()` from `unit_of_work` | `database/session.py:78` | 0 | **SURVIVED** — `close()` rolls back implicitly |
+| a writer commits mid-promotion | `operations/repository.py` `record_operation` | 0 | **SURVIVED** — unexplained; row 25 left open |
 
 ## 28. V5.4 publication checkpoints
 
