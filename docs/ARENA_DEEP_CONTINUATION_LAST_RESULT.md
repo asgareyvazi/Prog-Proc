@@ -1257,3 +1257,28 @@ The full-suite delta reconciles test by test: 1587 at V5.5 plus the 9 new bounda
 **Row 33 is not certified by this mission.** Fixture construction was measured at roughly 60 s per
 16 001-chunk corpus (200 documents in 0.54 s, extrapolated and then confirmed by the actual runs);
 the three corpora are module-scoped and built once each. No throughput or latency claim is made.
+
+### 35H. Publication status — `PUBLISH_BLOCKED`
+
+| item | value |
+| --- | --- |
+| starting SHA (verified baseline) | `e5e2603` |
+| checkpoint 1 (production fix, isolation fixture, first 4 boundary tests) | `01a8600` — **pushed and `ls-remote`-verified during this session** |
+| final commit (report, ledger reconciliation, docs, remaining 5 tests) | `b0b2219` — **local only** |
+| worktree | 0 dirty paths |
+
+After checkpoint 1 was published, the GitHub credential expired mid-session: `git push` returns
+exit **128** (`could not read Username for 'https://github.com'`), and `git fetch` / `git ls-remote`
+now fail the same way. `gh auth status` confirms it directly: *"The github.com token in `GH_TOKEN` is
+no longer valid."* Three push attempts spaced 20 s apart all failed, so this is recorded as
+`PUBLISH_BLOCKED` rather than reported as published.
+
+**Nothing is lost.** `b0b2219` is a fast-forward child of the published `01a8600`, the worktree is
+clean, and the branch needs reconnecting GitHub in Arena and then a single
+`git push origin arena/01a0c936-prog-proc`. No `reset`, `rebase`, `squash` or force-push was used at
+any point.
+
+**What is durably published versus not.** The production fix itself — the term-aware scan in
+`_scan_candidate_ids`, plus the test-isolation fixture and the four parity/`MAX_CANDIDATES` boundary
+tests — is on the remote at `01a8600`. What is local-only is the `RETRIEVAL_CAP` exact-bound walk,
+the scope and broadening tests, the §25 ledger reconciliation and this report section.
