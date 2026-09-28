@@ -394,9 +394,9 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 13 | Review null-well semantics | null must never become an accidental wildcard | `review/service.py` `_for_well` | `OPEN_NOT_EXERCISED` |
 | 14 | Review current/history matrix | one definition of currentness per domain | `review/service.py` | `OPEN_NOT_EXERCISED` |
 | 15 | Review read-only proof | a read must not write | `test_domain_review.py` fingerprint | `BEHAVIOURALLY_PROVEN` (existing) |
-| 16 | Search `truncated` semantics | query-honest, not corpus-size | `search/index.py:696` | `OPEN_NOT_EXERCISED` |
+| 16 | Search `truncated` semantics | two facts OR'd: discovery cap and result-set cut (§34A) | `search/index.py:696,736` | `OPEN_NOT_EXERCISED` |
 | 17 | FTS vs scan equivalence | the accelerator must not change the answer | `search/index.py` | `OPEN_NOT_EXERCISED` |
-| 18 | Strict-query fallback metadata | broadening must describe the answer returned | `search/service.py` | `OPEN_NOT_EXERCISED` |
+| 18 | Strict-query fallback metadata | broadening must describe the answer returned | `search/service.py` | `DEFECT_FOUND_AND_FIXED` |
 | 19 | Retrieval `capped` inference | `>=` cap does not prove truncation | `retrieval/service.py` `_discover` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/contract.py:159`, `evidence/service.py:101` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 21 | Evidence identity order-independence | presentation must not change identity | `EvidenceQueryService._content_identity` | `OPEN_NOT_EXERCISED` |
@@ -1025,3 +1025,89 @@ Three honesty notes are carried in the report rather than smoothed over:
   sorts Completion before Spud, which is domain-wrong, so the change was reverted and the gap left
   recorded (§26F);
 * the `MATCH + NOT_CHECKABLE` citation combination is derived from code but has no test (§26B).
+
+## 34. V5.5 — fallback metadata (row 18) closed; rows 16 and 17 sharpened but still open
+
+Starting point verified before any work: local `HEAD` had reverted to the grafted branch point
+`e862113` while the remote held `648a73e`; `git diff --cached FETCH_HEAD --name-only` returned
+**0 paths**, so the worktree was already byte-identical to the published tip and the recovery was a
+fast-forward, not a restore. `.venv` had vanished and was re-provisioned.
+
+### 34A. The contract, read out of the source
+
+`SearchResponse.truncated` is **two facts OR'd together** (`search/index.py:736`):
+
+* `scoring_truncated` — `len(hits) > MAX_CANDIDATES` *after* the filter set was applied (`:696`),
+  i.e. the surviving result set was cut;
+* `retrieval_truncated(mode)` — the backend's candidate discovery reached `RETRIEVAL_CAP`
+  (`RETRIEVAL_CAP + 1` rows fetched, truncated when the `+1` came back), i.e. the candidate
+  **universe** was bounded.
+
+One boolean cannot say which happened. That is the honest statement of row 16 and it is now
+written into `docs/LIMIT_CONTRACTS.md` rather than left as an inference. Discovery is ordered
+`order by chunk_id` — **identity order, not relevance** — and the scope filter is applied *after*
+the cap, in `_score`. Both facts are recorded; neither is exercised at the real constants yet.
+
+### 34B. Row 18 — a real defect, found and fixed
+
+`broadened` was `return self.mode == "any"`. That is an echo of the reading in use, not a report
+of an event, so a caller who **asked** for the broadened reading was told a strict query had been
+disproved when no strict query was ever attempted. Proven directly:
+
+```
+SearchResponse(query="x", mode="any").broadened  ->  True   # nothing was tested
+```
+
+The value propagates: `to_dict()` emits `"broadened"`, and `retrieval/service.py:296` feeds it into
+`EvidenceBundle.discovery_broadened`, which evidence renders.
+
+**Fix.** `score_candidates` now tracks a real `broadened` flag, set only inside the fallback branch,
+and returns it in the metadata; `SearchResponse.broadened` is a reported field, not a derivation.
+Both backends go through the one decision point (`index.py:873` and `:1258`), so a single change
+covers SQLite and in-memory alike.
+
+**Reach, stated plainly rather than inflated.** Neither the CLI nor `SearchService.search` exposes
+the reading — `grep` finds no production caller passing `mode="any"`. So the false claim was
+reachable at the index/API contract and in the JSON it emits, **not** through today's CLI, whose
+sentence "no chunk matched every term" could in practice only fire after a genuine fallback. The
+defect is real where the request is accepted; it is not a CLI regression, and it is not claimed as
+one.
+
+### 34C. Tests and mutations
+
+Six tests, all against real SQLite, a real sidecar, FTS5 and a real ingestion run:
+
+* `test_search_index.py::TestBroadenedMeansAFallbackHappened` (3) — an explicit broadened request
+  reports no fallback; a genuine fallback still does; and a strict match **excluded by scope** does
+  *not* broaden, preserving the existing distinction between "nothing matched" and "matched, but
+  outside the scope you asked about".
+* `test_search_pipeline.py::TestBroadenedWordingIsTruthful` (3) — the CLI sentence appears for a
+  real fallback, is absent for a strict hit, and the API contract reports no disproof it never ran.
+
+Mutations, each applied against a verified-unique anchor, grep-confirmed after applying, and
+restored from a backup taken *after* the fix:
+
+| mutation | result |
+| --- | --- |
+| MS1 — restore `"broadened": mode == "any"` | **KILLED** (1 failure) |
+| MS2 — never set `broadened` on a real fallback | **KILLED** (1 failure) |
+
+One harness error is recorded because it matters: the first restore used a backup taken **before**
+the fix and silently reverted it. It was caught by grepping the restored file for the fix, not by
+the test run, and the backup practice was corrected.
+
+### 34D. Gates and ledger
+
+ruff check / ruff format / `compileall -q` / `git diff --check` all exit 0; `alembic heads` =
+`0012 (head)`; diff is 5 files, +116/−4. Full suite **1587 passed / 3 skipped / 1590, 0 failed**
+(previously 1581 — exactly +6, reconciled test-by-test; the fourth `-k Broadened` match is the
+pre-existing `test_the_broadened_fallback_is_reported_by_both`, which still passes).
+
+| row | subject | status | note |
+| --- | --- | --- | --- |
+| 18 | Strict-query fallback metadata | `DEFECT_FOUND_AND_FIXED` | `broadened` echoed the mode instead of reporting an event; 6 tests, 2 mutations killed |
+| 16 | Search `truncated` semantics | `OPEN_NOT_EXERCISED` | contract now documented as two conflated facts; not exercised at 3999/4000/4001 |
+| 17 | FTS vs scan equivalence | `OPEN_NOT_EXERCISED` | not exercised at H1–H10 |
+
+Rows 16 and 17 are **not** claimed. The boundary corpus they need (>16 000 indexed rows) was not
+built in this pass, and no benchmark is asserted without having been run.

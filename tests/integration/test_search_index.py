@@ -757,3 +757,62 @@ def test_registry_tables_are_not_touched_by_the_index(workspace) -> None:
         before = set(connection.exec_driver_sql("select name from sqlite_master").scalars())
     assert {"document", "document_version", "extraction"} & before
     assert not set(Base.metadata.tables) & {"search_chunk", "search_document", "search_meta"}
+
+
+class TestBroadenedMeansAFallbackHappened:
+    """``broadened`` is a report of an event, not an echo of the requested reading.
+
+    It used to be ``mode == "any"``, so a caller who *asked* for the broadened reading was told
+    "no chunk matched every term" - a claim about a strict query that was never run.  The CLI
+    printed exactly that sentence.
+    """
+
+    def test_an_explicit_broadened_request_reports_no_fallback(self, index) -> None:
+        index.store(
+            chunk_set(
+                "doc-any",
+                "ver-any",
+                artifact(("text", "the zermatt mud report notes a tight hole")),
+            )
+        )
+        _, meta = index.search(SearchRequest(query="zermatt loss", mode="any", limit=20))
+        assert meta["mode"] == "any"
+        assert meta["broadened"] is False
+
+    def test_a_real_fallback_is_still_reported(self, index) -> None:
+        index.store(
+            chunk_set(
+                "doc-fb",
+                "ver-fb",
+                artifact(("text", "the zermatt mud report notes a tight hole")),
+            )
+        )
+        # "loss" appears nowhere, so the strict reading is genuinely disproved.
+        _, meta = index.search(SearchRequest(query="zermatt loss", limit=20))
+        assert meta["broadened"] is True
+        assert meta["mode"] == "any"
+
+    def test_a_strict_match_excluded_by_scope_does_not_broaden(self, index) -> None:
+        """``matched_any`` covers discovered candidates *before* the filter set, on purpose.
+
+        "Nothing matched" and "something matched, but outside the scope you asked about" are
+        different answers; only the first justifies silently widening the question.
+        """
+        index.store(
+            chunk_set(
+                "doc-elsewhere",
+                "ver-elsewhere",
+                artifact(("text", "the zermatt loss circulation event")),
+                well_id="well-9",
+                well_name="B-7",
+            )
+        )
+        hits, meta = index.search(
+            SearchRequest(
+                query="zermatt loss",
+                filters=SearchFilters(well_id="well-1"),
+                limit=20,
+            )
+        )
+        assert hits == []
+        assert meta["broadened"] is False, "a scoped-out match is not evidence of no match"

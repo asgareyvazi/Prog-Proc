@@ -60,6 +60,8 @@ the one place where the help text does not say what the service actually does wi
 
 | flag | true means | does **not** mean |
 | --- | --- | --- |
+| `SearchResponse.truncated` | **two** distinct facts OR'd together: the backend's candidate discovery hit `RETRIEVAL_CAP` (`retrieval_truncated`), or the surviving hits exceeded `MAX_CANDIDATES` and were cut (`scoring_truncated`) | which of the two happened. The one flag cannot say whether the *universe* was bounded or the *result set* was |
+| `SearchResponse.broadened` | the strict reading was actually tried and abandoned for any-of-terms (`index.py`, set only inside the fallback branch) | that the reading is `"any"`. It used to be `mode == "any"`, so an explicitly broadened request reported a strict query it never ran |
 | `SearchResponse.truncated` | the candidate universe exceeded `MAX_CANDIDATES`; ranking ran over a bounded set | that this query had more *relevant* rows than were examined |
 | `EvidenceBundle.discovery_capped` | an uncapped request's discovery stopped before the whole population — proven by a look-ahead row, not inferred from a length | that the caller's own `limit` cut anything |
 | `TopicCoverage.discovery_capped` | the same statement, per topic, carried into the package and its identity | that another topic was capped |

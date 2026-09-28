@@ -729,6 +729,10 @@ def score_candidates(
     rather than a pre-fetched list.
     """
     mode = request.mode if request.mode in ("all", "any") else "all"
+    #: Whether the strict reading was actually tried and abandoned.  ``mode == "any"`` cannot say
+    #: this: a caller who asked for the broadened reading never had a strict query to disprove, and
+    #: reporting one would tell them "no chunk matched every term" when nothing was ever tested.
+    broadened = False
     candidates = candidates_for(mode)
     hits, scoring_truncated, matched_any = _score(
         candidates.pairs, candidates.records, replace(request, mode=mode), statistics=statistics
@@ -740,6 +744,7 @@ def score_candidates(
         # any word of it" are different answers about a well, and a caller must be able to tell
         # which one it was given.
         mode = "any"
+        broadened = True
         candidates = candidates_for(mode)
         candidate_count = len(candidates)
         hits, scoring_truncated, _ = _score(
@@ -748,6 +753,7 @@ def score_candidates(
         truncated = truncated or scoring_truncated
     return hits, {
         "mode": mode,
+        "broadened": broadened,
         "truncated": truncated,
         "candidates": candidate_count,
         "total_chunks": total_chunks,

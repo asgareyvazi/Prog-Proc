@@ -135,10 +135,12 @@ class SearchResponse:
     #: Filters that were applied, for display ("searched 4 mud reports for A-3").
     filters: dict[str, Any] = field(default_factory=dict)
 
-    @property
-    def broadened(self) -> bool:
-        """Did the exact query find nothing, and we fell back to any-of-the-terms?"""
-        return self.mode == "any"
+    #: True only when the strict reading was actually tried and abandoned.  A caller who asked for
+    #: the broadened reading gets ``mode == "any"`` with ``broadened`` False: no strict query was
+    #: disproved, so the response must not claim one was.  This used to be ``mode == "any"``, which
+    #: made an explicit ANY query print "no chunk matched every term" - a statement about a test
+    #: that never ran.
+    broadened: bool = False
 
     @property
     def ok(self) -> bool:
@@ -365,6 +367,7 @@ class SearchService:
             query=request.query,
             results=tuple(results),
             mode=str(meta.get("mode") or request.mode),
+            broadened=bool(meta.get("broadened")),
             truncated=bool(meta.get("truncated")),
             candidates=int(meta.get("candidates") or 0),
             total_chunks=int(meta.get("total_chunks") or 0),

@@ -774,3 +774,45 @@ class TestBackendsOnRealData:
         finally:
             backend._fts_ready = None
         assert without == with_fts and without
+
+
+class TestBroadenedWordingIsTruthful:
+    """The CLI sentence must describe a test that actually ran.
+
+    Note the reach: neither the CLI nor :meth:`SearchService.search` exposes the reading, so via
+    those entry points ``mode == "any"`` can only ever mean a real fallback happened.  The lie was
+    reachable one layer down, where ``SearchRequest(mode="any")`` is accepted - see
+    ``TestBroadenedMeansAFallbackHappened`` - and it propagated through ``to_dict()`` and into
+    ``EvidenceBundle.discovery_broadened``.
+    """
+
+    def test_a_genuine_fallback_still_says_so(self, searched, workspace, capsys) -> None:
+        from drilling_intelligence.cli.app import main
+
+        _service, _corpus, _result = searched
+        main(["search", "mud weight 99.9 ppg", "--workspace", str(workspace.root)])
+        out = capsys.readouterr().out
+        assert "no chunk matched every term" in out, (
+            "a real fallback is the one case where this sentence is true, and it must stay"
+        )
+
+    def test_a_strict_hit_makes_no_broadened_claim(self, searched, workspace, capsys) -> None:
+        from drilling_intelligence.cli.app import main
+
+        _service, _corpus, _result = searched
+        main(["search", "mud weight 10.2 ppg", "--workspace", str(workspace.root)])
+        out = capsys.readouterr().out
+        assert "no chunk matched every term" not in out
+
+    def test_the_api_contract_does_not_claim_a_test_that_never_ran(self, searched) -> None:
+        """The layer that *does* accept a reading must report it honestly."""
+        from drilling_intelligence.search.index import SearchRequest
+
+        service, _corpus, _result = searched
+        hits, meta = service.index.search(
+            SearchRequest(query="mud weight 10.2 ppg", mode="any", limit=20)
+        )
+        assert hits, "the corpus contains the term"
+        assert meta["broadened"] is False, (
+            "an explicitly broadened reading disproved nothing, so nothing may be reported as disproved"
+        )
