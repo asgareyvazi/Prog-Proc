@@ -306,10 +306,24 @@ class EngineeringRepository:
                         f"well {well.name} is not in {label} {wanted!r}",
                         actual=stored,
                     )
-        if field_id and self.session.get(Field, field_id) is None:
+        field = self.session.get(Field, field_id) if field_id else None
+        if field_id and field is None:
             raise ValidationError(f"no field {field_id!r}")
         if project_id and self.session.get(Project, project_id) is None:
             raise ValidationError(f"no project {project_id!r}")
+        # A field and a project named together are a claim about each other, independent of any well:
+        # the field row records the project it belongs to.  Both values being present and disagreeing
+        # is a contradiction, not an unknown hierarchy, and it is the same denormalisation hazard the
+        # well check above exists to stop - except that this one puts a field's records into another
+        # project's report instead of excluding a well from its own.  As with the well check, a field
+        # whose project is NULL is unknown rather than contradictory and stays acceptable.
+        if field is not None and project_id:
+            stored_project = str(field.project_id or "")
+            if stored_project and stored_project != project_id:
+                raise ValidationError(
+                    f"field {field.name} is not in project {project_id!r}",
+                    actual=stored_project,
+                )
 
     # -- procedures -----------------------------------------------------------
     def create_procedure(

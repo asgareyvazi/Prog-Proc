@@ -25,6 +25,7 @@ the real database.
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, select, text
@@ -572,3 +573,104 @@ class TestOneSupersedingRevision:
             )
         assert [row.id for row in current] == [v3], "more than one row claims to be current"
         assert len(history) == 3, "a superseded revision was not retained"
+
+
+class TestScopeNullHierarchy:
+    """Unknown hierarchy, contradictory hierarchy, unbound scope and invalid scope are four things.
+
+    ``_check_scope`` compares a caller's field/project against what the well records, and skips the
+    comparison when the well's own value is NULL - correctly, because a well whose field was never
+    recorded is *unknown*, not *contradictory*.  But a field and a project named together make a
+    claim about each other that no well is needed to check: the field row records the project it
+    belongs to.  That claim was never checked, so a record could name field A beside project Bravo
+    while the database said field A is in project Alpha - and because the scope columns are
+    denormalised for querying, that row then appears in Bravo's report.
+    """
+
+    @staticmethod
+    def _hierarchy(session, tmp_path):
+        repository = WellRepository(session)
+        repository.get_or_create_workspace(str(tmp_path), name="Null Hierarchy")
+        alpha = repository.get_or_create_project("Alpha")
+        bravo = repository.get_or_create_project("Bravo")
+        field_a = repository.get_or_create_field("Field A", project=alpha)
+        orphan_field = repository.get_or_create_field("Orphan Field")
+        known = repository.create_well("H-1", project_id=alpha.id, field_id=field_a.id)
+        no_field = repository.create_well("H-2", project_id=bravo.id)
+        session.commit()
+        return SimpleNamespace(
+            alpha=alpha,
+            bravo=bravo,
+            field_a=field_a,
+            orphan_field=orphan_field,
+            known=known,
+            no_field=no_field,
+        )
+
+    def _attempt(self, session, label: str, **scope: str):
+        from drilling_intelligence.engineering.repository import EngineeringRepository
+
+        try:
+            EngineeringRepository(session).create_procedure(title=label, code=label, **scope)
+            session.flush()
+            return None
+        except ValidationError as error:
+            return str(error)
+
+    def test_a_field_and_project_that_disagree_are_rejected(self, session, tmp_path) -> None:
+        h = self._hierarchy(session, tmp_path)
+        error = self._attempt(
+            session, "contradictory", field_id=h.field_a.id, project_id=h.bravo.id
+        )
+        assert error is not None, (
+            "field A belongs to Alpha, so naming it beside Bravo is a contradiction, not an unknown"
+        )
+        assert "not in project" in error, error
+
+    def test_a_consistent_field_and_project_are_accepted(self, session, tmp_path) -> None:
+        h = self._hierarchy(session, tmp_path)
+        assert (
+            self._attempt(session, "consistent", field_id=h.field_a.id, project_id=h.alpha.id)
+            is None
+        )
+
+    def test_a_field_whose_project_is_unknown_stays_acceptable(self, session, tmp_path) -> None:
+        """The same unknown-is-not-contradictory rule the well check already applies."""
+        h = self._hierarchy(session, tmp_path)
+        assert (
+            self._attempt(session, "orphan", field_id=h.orphan_field.id, project_id=h.bravo.id)
+            is None
+        ), "a field with no recorded project is unknown, and must not become unbindable"
+
+    def test_a_well_whose_field_is_unknown_stays_acceptable(self, session, tmp_path) -> None:
+        """Pinned so the new check is not read as a licence to tighten the well rule."""
+        h = self._hierarchy(session, tmp_path)
+        assert (
+            self._attempt(session, "no-field-well", well_id=h.no_field.id, field_id=h.field_a.id)
+            is None
+        )
+
+    def test_another_writer_inherits_the_same_check(self, session, tmp_path) -> None:
+        """The check lives in the shared ``_check_scope``, so every writer gets it, not just one.
+
+        ``record_calculation`` cannot carry this particular contradiction - its scope parameters are
+        ``well_id``, ``section_id`` and ``project_id``, with no ``field_id`` - so a programme is used
+        here to prove the check is shared rather than bolted onto procedures.
+        """
+        from drilling_intelligence.engineering.repository import EngineeringRepository
+
+        h = self._hierarchy(session, tmp_path)
+        repository = EngineeringRepository(session)
+        with pytest.raises(ValidationError, match="not in project"):
+            repository.create_program(
+                title="contradictory programme",
+                field_id=h.field_a.id,
+                project_id=h.bravo.id,
+            )
+
+    def test_unbound_and_invalid_scope_keep_their_own_meanings(self, session, tmp_path) -> None:
+        h = self._hierarchy(session, tmp_path)
+        assert self._attempt(session, "unbound") is None, "an unbound scope is legal"
+        assert self._attempt(session, "bad-field", field_id="nope") is not None
+        assert self._attempt(session, "bad-project", project_id="nope") is not None
+        assert self._attempt(session, "bad-well", well_id=h.known.id, field_id="nope") is not None

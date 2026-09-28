@@ -405,7 +405,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 24 | Citation multi-aggregation | the worst citation decides the item | `evidence/verify.py:62,224` | `HYPOTHESIS_DISPROVED` (see §26B) |
 | 25 | Promotion atomicity | late failure leaves no partial rows | `operations/promote.py` | `OPEN_NOT_EXERCISED` |
 | 26 | Child-row identity | no inference from UUID or row position | `operations/*.py` | `OPEN_NOT_EXERCISED` |
-| 27 | Scope null hierarchy | unknown ≠ contradictory ≠ unbound | `engineering/repository.py:273` | `OPEN_NOT_EXERCISED` |
+| 27 | Scope null hierarchy | unknown ≠ contradictory ≠ unbound | `engineering/repository.py:273` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 28 | Defensive reads / corruption | no silent repair of malformed persisted data | read paths, `doctor` | `OPEN_NOT_EXERCISED` |
 | 29 | Timeline interval semantics | interval vs point-in-window must be explicit | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
 | 30 | Timeline malformed dates | no silent conversion to a clean result | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
@@ -579,6 +579,54 @@ box into an unbounded read. The asymmetry is defensible; the undocumented claim 
 
 **Regression tests:** 5. **Mutations:** 2 attempted, **2 killed**.
 
+## 26E. V5.4 defect: a field and a project that contradicted each other were accepted
+
+**Contract.** `_check_scope` exists to refuse "a record whose scope contradicts the hierarchy it was
+copied from", because the scope columns are denormalised copies that nothing in the schema stops from
+disagreeing.
+
+**Probe.** Every case in the §15 matrix, against the real repository:
+
+```
+known+matching field               -> ACCEPTED
+known+wrong field                  -> REJECTED: well W-known is not in field_id ...
+known+matching project             -> ACCEPTED
+known+wrong project                -> REJECTED: well W-known is not in project_id ...
+well w/o field + explicit field    -> ACCEPTED      (correct: unknown, not contradictory)
+well w/ nothing + explicit both    -> ACCEPTED
+field+project CONSISTENT           -> ACCEPTED
+field+project CONTRADICTORY        -> ACCEPTED      <-- DEFECT
+unknown field id                   -> REJECTED: no field 'nope'
+no scope at all                    -> ACCEPTED
+```
+
+**Root cause.** The well comparison and the field/project comparison are two different claims. The
+well one asks "does this record's scope match the well it points at", and correctly skips when the
+well's own value is NULL — a well whose field was never recorded is *unknown*, not *contradictory*.
+But a field and a project named together make a claim about **each other** that needs no well at all:
+`field.project_id` records the project the field belongs to. That claim was never checked, only the
+existence of each id.
+
+**Consequence.** A record could name field A beside project Bravo while the database said field A is
+in project Alpha. Because the scope columns are denormalised *for querying*, that row then surfaces
+in Bravo's report — the same hazard the docstring names, except it *includes* a field's records in
+the wrong project rather than excluding a well from its own.
+
+**Fix.** When both a field and a project are named and the field's `project_id` is known and
+different, refuse. A field whose `project_id` is NULL stays acceptable, applying the same
+unknown-is-not-contradictory rule the well check already uses, so the fix narrows nothing that was
+legitimately unbound.
+
+**Regression tests:** 6, covering the consistent, contradictory, field-NULL, well-NULL, unbound and
+invalid cases, plus one proving the check is shared (a programme inherits it; `record_calculation`
+cannot carry this contradiction because its scope parameters are `well_id`/`section_id`/`project_id`
+with no `field_id`). Existing engineering suites: **189 tests, 0 failures** — nothing legitimate was
+narrowed.
+
+**Mutations:** 2 attempted, **2 killed**. One attempt at the second mutation silently failed to apply
+(its guard assertion fired) and reported the previous mutation's failures; it was re-run with the
+mutation verified present in the file before the tests, and it is the second run that is recorded.
+
 ## 27. V5.4 mutation matrix
 
 | mutation | target | tests failing | result |
@@ -592,6 +640,8 @@ box into an unbounded read. The asymmetry is defensible; the undocumented claim 
 | CLI hides the cap note | `cli/app.py:663` | 1 | **KILLED** |
 | search treats `0` as no cap | `search/service.py:351` | 2 | **KILLED** |
 | retrieval treats `0` as `20` | `retrieval/service.py` `_discover` | 1 | **KILLED** |
+| remove the field/project consistency check | `engineering/repository.py:320` | 2 | **KILLED** |
+| treat a NULL `field.project_id` as contradictory | `engineering/repository.py:322` | 1 | **KILLED** |
 
 ## 28. V5.4 publication checkpoints
 
@@ -678,13 +728,13 @@ What is certified by behaviour, not by a green suite:
 * the V5.3 "ten attacks / nine listed" inconsistency is resolved: nine was correct, and the true
   open set was 17 surfaces, now enumerated in a 34-row ledger.
 
-What is **not** certified, and must not be read as certified — 14 ledger rows remain open:
+What is **not** certified, and must not be read as certified — 13 ledger rows remain open:
 
 `OPEN_NOT_EXERCISED`: 13 review null-well semantics · 14 review current/history matrix · 16 search
 `truncated` semantics · 17 FTS/scan equivalence · 18 strict-query fallback metadata · 21 evidence
 identity order-independence · 22 evidence freshness delta · 25 promotion atomicity · 26 child-row
-identity · 27 scope null hierarchy · 28 defensive reads · 29 timeline interval semantics ·
-30 timeline malformed dates · 31 timeline determinism · 33 performance at scale.
+identity · 28 defensive reads · 29 timeline interval semantics · 30 timeline malformed dates ·
+31 timeline determinism · 33 performance at scale.
 
 `OPEN_DEFECT`: none. The system-wide limit audit (row 34) is now written in
 `docs/LIMIT_CONTRACTS.md` and pinned by `tests/integration/test_limit_contracts.py`; the false
