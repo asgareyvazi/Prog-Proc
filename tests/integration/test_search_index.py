@@ -984,3 +984,160 @@ class TestMaxCandidatesBoundary:
         _hits, meta = index.search(SearchRequest(query=_BOUNDARY_QUERY, limit=20))
         assert meta["truncated"] is False, "two rows were removed, so the cap no longer bites"
         assert meta["candidates"] == MAX_CANDIDATES - 1
+
+
+@pytest.fixture(scope="module")
+def scoped_index(tmp_path_factory):
+    """``RETRIEVAL_CAP + 1`` chunks that all match, exactly one of which is in scope.
+
+    The in-scope row is deliberately the one whose ``chunk_id`` sorts *last*, so it sits past the
+    discovery bound: this is the corpus that asks whether a bounded search can tell "nothing
+    matched" apart from "nothing matching was inside the universe I examined".
+    """
+    directory = tmp_path_factory.mktemp("scoped")
+    ranked = _identity_ranked(RETRIEVAL_CAP + 1)
+    rows = [
+        (
+            vid,
+            _MATCHING_TEXT,
+        )
+        for vid in ranked
+    ]
+    database = Database.from_url(
+        f"sqlite:///{directory / 'sidecar.sqlite'}", _settings_for(directory)
+    )
+    index = SqliteSearchIndex(database)
+    for position, (version_id, text) in enumerate(rows):
+        in_scope = position == len(rows) - 1
+        index.store(
+            chunk_set(
+                version_id,
+                version_id,
+                artifact(("text", text)),
+                well_id="well-1" if in_scope else "well-other",
+                well_name="A-3" if in_scope else "B-9",
+            )
+        )
+    in_scope_id = chunk_id_for(ranked[-1], 0)
+    yield index, in_scope_id
+    database.dispose()
+
+
+class TestScopeIsFilteredAfterDiscovery:
+    """Discovery is term-aware but *not* scope-aware, and the metadata must carry that."""
+
+    def test_a_bounded_universe_is_reported_even_when_few_results_survive(
+        self, scoped_index
+    ) -> None:
+        """State B: the candidate universe exceeded the discovery bound, the result set did not."""
+        index, _in_scope = scoped_index
+        hits, meta = index.search(
+            SearchRequest(query="zermatt", filters=SearchFilters(well_id="well-1"), limit=0)
+        )
+        assert meta["truncated"] is True, (
+            "16001 rows matched the term and only 16000 were examined, so the answer is bounded"
+        )
+        assert meta["candidates"] == RETRIEVAL_CAP
+        assert len(hits) <= MAX_CANDIDATES
+
+    def test_an_in_scope_match_past_the_bound_is_not_reported_as_absent(self, scoped_index) -> None:
+        """The known limitation, pinned: the answer may be empty, but never *unqualified* empty.
+
+        Discovery is term-aware and not scope-aware, so an in-scope row whose identity sorts past
+        ``RETRIEVAL_CAP`` is genuinely not examined.  What must not happen is that this looks like
+        "no such record exists": ``truncated`` is the caller's only proof that the universe was
+        bounded, and it has to be set.
+        """
+        index, in_scope_id = scoped_index
+        with index.engine.connect() as connection:
+            present = connection.execute(
+                sa_text("select count(*) from search_chunk where chunk_id = :cid"),
+                {"cid": in_scope_id},
+            ).scalar_one()
+        assert present == 1, "the row really is indexed; only the bound keeps it out of the answer"
+
+        hits, meta = index.search(
+            SearchRequest(query="zermatt", filters=SearchFilters(well_id="well-1"), limit=0)
+        )
+        assert hits == [], "the in-scope row is past the bound, so the scoped answer is empty"
+        assert meta["truncated"] is True, (
+            "an empty scoped answer over a bounded universe must never be indistinguishable from "
+            "a proven absence"
+        )
+
+
+class TestBroadeningUnderBoundedDiscovery:
+    """Whether the decision to broaden was itself justified, not just whether it was reported.
+
+    Row 18 made ``broadened`` a truthful report of an event.  These pin the harder half: the event
+    must only be allowed to happen when the strict reading was actually disproved.  With term-aware
+    discovery the two are linked - ``matched_any is False`` means the strict expression matched no
+    discovered row, and a discovery that matched nothing cannot itself have hit the bound - so a
+    bounded strict universe always carries strict matches with it and never triggers a fallback.
+    """
+
+    def test_a_scoped_out_strict_match_does_not_license_broadening(self, scoped_index) -> None:
+        index, _in_scope = scoped_index
+        _hits, meta = index.search(
+            SearchRequest(
+                query="zermatt loss",
+                filters=SearchFilters(well_id="well-nonexistent"),
+                limit=0,
+            )
+        )
+        assert meta["broadened"] is False, (
+            "strict matches were discovered and then excluded by scope; that is not a disproof"
+        )
+        assert meta["mode"] == "all"
+
+    def test_a_genuinely_absent_strict_match_still_broadens(self, late_match_index) -> None:
+        index, _expected, _late = late_match_index
+        _hits, meta = index.search(SearchRequest(query="zermatt xylophone", limit=0))
+        assert meta["broadened"] is True
+        assert meta["mode"] == "any"
+        assert meta["truncated"] is False, (
+            "the fallback is only sound because the strict universe was fully examined"
+        )
+
+
+class TestRetrievalCapExactBound:
+    """``RETRIEVAL_CAP`` at 15999 / 16000 / 16001, against the production constant.
+
+    This class *consumes* ``scoped_index`` (it removes versions), so it is defined last: the
+    assertions above all run against the intact corpus first.  The point of the walk is the same
+    one the retrieval look-ahead exists for - reaching the bound exactly must not be reported as
+    having exceeded it, which is why discovery fetches ``RETRIEVAL_CAP + 1`` and compares with ``>``.
+    """
+
+    def test_16001_16000_and_15999_candidates(self, scoped_index) -> None:
+        """The scoped query keeps the surviving hits far below ``MAX_CANDIDATES``, so the flag
+        being asserted here can only be the *discovery* bound - the two are deliberately not
+        conflated, which is the whole subject of ledger row 16."""
+        index, in_scope_id = scoped_index
+        scoped = SearchRequest(query="zermatt", filters=SearchFilters(well_id="well-1"), limit=0)
+
+        _hits, meta = index.search(scoped)
+        assert meta["candidates"] == RETRIEVAL_CAP
+        assert meta["truncated"] is True, "one candidate past the bound, so the bound really bit"
+
+        index.remove_version(next(iter(_version_for(index, in_scope_id))))
+        _hits, meta = index.search(scoped)
+        assert meta["candidates"] == RETRIEVAL_CAP
+        assert meta["truncated"] is False, (
+            "exactly at the bound with nothing beyond it is a complete answer, not a bounded one"
+        )
+
+        index.remove_version(next(iter(_version_for(index, in_scope_id))))
+        _hits, meta = index.search(scoped)
+        assert meta["candidates"] == RETRIEVAL_CAP - 1
+        assert meta["truncated"] is False
+
+
+def _version_for(index: SqliteSearchIndex, chunk_id: str) -> list[str]:
+    """The version id behind a chunk id - removal is keyed by version, not by chunk."""
+    with index.engine.connect() as connection:
+        rows = connection.execute(
+            sa_text("select version_id from search_chunk where chunk_id <> :cid limit 2"),
+            {"cid": chunk_id},
+        ).all()
+    return [str(row[0]) for row in rows]

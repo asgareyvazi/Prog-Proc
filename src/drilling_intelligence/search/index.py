@@ -1303,9 +1303,11 @@ class SqliteSearchIndex:
         ]
         condition = or_(*clauses) if mode == "any" else and_(*clauses)
         statement = (
-            select(id_column).select_from(table).where(condition).order_by(id_column).limit(
-                RETRIEVAL_CAP + 1
-            )
+            select(id_column)
+            .select_from(table)
+            .where(condition)
+            .order_by(id_column)
+            .limit(RETRIEVAL_CAP + 1)
         )
         with self.engine.connect() as connection:
             rows = connection.execute(statement).all()

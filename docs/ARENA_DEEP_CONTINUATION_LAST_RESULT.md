@@ -189,6 +189,11 @@ contract documented.
 
 ## 18. Section-by-section audit (§48 form)
 
+> **Historical — superseded by §25.** The `#` column below is this section's own enumeration and is
+> *not* the master ledger's row number: rows 16/17/18 here are review and retrieval subjects, while
+> rows 16/17/18 in §25 are the search-boundary subjects. Kept as the record of what was audited at
+> the time; for a row's current status, §25 is the only authority.
+
 Verdicts use the six labels only. A label is never `PASS` merely because a suite stayed green.
 
 | # | Area | Verdict | Evidence |
@@ -394,8 +399,8 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 13 | Review null-well semantics | null must never become an accidental wildcard | `review/service.py` `_for_well` | `OPEN_NOT_EXERCISED` |
 | 14 | Review current/history matrix | one definition of currentness per domain | `review/service.py` | `OPEN_NOT_EXERCISED` |
 | 15 | Review read-only proof | a read must not write | `test_domain_review.py` fingerprint | `BEHAVIOURALLY_PROVEN` (existing) |
-| 16 | Search `truncated` semantics | two facts OR'd: discovery cap and result-set cut (§34A) | `search/index.py:696,736` | `OPEN_NOT_EXERCISED` |
-| 17 | FTS vs scan equivalence | the accelerator must not change the answer | `search/index.py` | `OPEN_NOT_EXERCISED` |
+| 16 | Search `truncated` semantics | two facts OR'd: discovery cap and result-set cut (§34A, §35A) | `search/index.py:696,736` | `OPEN_NOT_EXERCISED` — both bounds now exercised at the real constants and mutation-killed, but one boolean still cannot say *which* was reached, and `to_dict()` serialisation is untested (§35E) |
+| 17 | FTS vs scan equivalence | the accelerator must not change the answer | `search/index.py` | `OPEN_NOT_EXERCISED` — a real divergence was found and fixed for document chunks (§35B), with parity proven at 16 001 rows and M3 killed; **structured records, mixed populations, phrase/drilling tokens and in-memory at scale remain unexercised** |
 | 18 | Strict-query fallback metadata | broadening must describe the answer returned | `search/service.py` | `DEFECT_FOUND_AND_FIXED` |
 | 19 | Retrieval `capped` inference | `>=` cap does not prove truncation | `retrieval/service.py` `_discover` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/contract.py:159`, `evidence/service.py:101` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
@@ -407,11 +412,9 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 26 | Child-row identity | no inference from UUID or row position | `operations/*.py` | `OPEN_NOT_EXERCISED` |
 | 27 | Scope null hierarchy | unknown ≠ contradictory ≠ unbound | `engineering/repository.py:273` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 28 | Defensive reads / corruption | no silent repair of malformed persisted data | read paths, `doctor` | `OPEN_NOT_EXERCISED` |
-| 29 | Timeline interval semantics | interval vs point-in-window must be explicit | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
+| 29 | Timeline interval semantics | point-in-window over an index of dated facts, not a duration | `intelligence/timeline.py:326,341` | `BEHAVIOURALLY_PROVEN` — documented in §26F, boundary cases verified |
 | 30 | Supplied dates must not become "no date" | a date given must be stored or refused | `operations/repository.py:112,133` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
-| 29 | Timeline interval semantics | point-in-window over an index of dated facts | `intelligence/timeline.py:326,341` | `PASS_WITH_BEHAVIOURAL_PROOF` + documented |
 | 31 | Timeline determinism | a total order on identical timestamps | `intelligence/timeline.py:121` | `OPEN_NOT_EXERCISED` — see §26F |
-| 31 | Timeline determinism | a total order on identical timestamps | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
 | 32 | CLI limit contract | the CLI must not re-implement limit policy | `cli/app.py:663`, `docs/LIMIT_CONTRACTS.md` §3 | `BEHAVIOURALLY_PROVEN` for `--limit 0` and cap disclosure; per-command negative-value handling still unaudited |
 | 33 | Performance at 1k / 10k | bounded, no N+1 | all read paths | `OPEN_NOT_EXERCISED` |
 | 34 | System-wide limit audit | one matrix, five distinct bound kinds | `docs/LIMIT_CONTRACTS.md` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
@@ -1111,3 +1114,146 @@ pre-existing `test_the_broadened_fallback_is_reported_by_both`, which still pass
 
 Rows 16 and 17 are **not** claimed. The boundary corpus they need (>16 000 indexed rows) was not
 built in this pass, and no benchmark is asserted without having been run.
+
+## 35. V5.6 — search truncation semantics and FTS/scan parity (rows 16 and 17)
+
+**Starting state.** Local `HEAD` had again reverted to the grafted branch point `e862113` (shallow,
+remote-tracking ref missing) while `git ls-remote` showed `e5e2603` — the expected baseline.
+`git diff --cached FETCH_HEAD --name-only` returned **0 paths**, so the worktree was already
+byte-identical to the published tip; recovery was a fast-forward, and `git diff --name-status
+FETCH_HEAD` afterwards was empty with 0 dirty paths. `.venv` had vanished and was re-provisioned.
+Nothing unpublished was lost.
+
+### 35A. The contract, read out of the source
+
+| item | value / semantics |
+| --- | --- |
+| `MAX_CANDIDATES` | `4000` (`index.py:91`). Applied in `_score` as `len(hits) > MAX_CANDIDATES` — **after** ranking and **after** the filter set, so it bounds the surviving result set. |
+| `RETRIEVAL_CAP` | `16000` (`index.py:100`), applied **per population**: once to document chunks, once to structured records, OR'd into one flag. |
+| discovery order | `ORDER BY chunk_id` on every path. `chunk_id` is `sha256("<version_id>:<index>")[:24]` (`chunking.py:283`) — identity order, unrelated to relevance *and* unrelated to insertion order, but computable in advance. |
+| filter order | discovery → ranking → Python filters → `MAX_CANDIDATES` cut. Filters are deliberately last (see the `_score` comment): "no unit contains these words" and "the units that do belong to a scope you did not ask about" must stay distinguishable. |
+| `truncated` | two facts OR'd (`index.py:736`): discovery hit `RETRIEVAL_CAP`, or surviving hits exceeded `MAX_CANDIDATES`. Still one boolean — see 35E. |
+| `candidates` | rows **discovered** for the mode actually used, document + structured together, **before** filtering and before the cap cut. |
+| FTS | `WHERE fts MATCH … ORDER BY chunk_id LIMIT RETRIEVAL_CAP + 1`; term-aware, so the bound applies to *matching* rows. |
+| scan | **was** `ORDER BY chunk_id LIMIT RETRIEVAL_CAP` on the raw table; **now** the same term-aware shape via `instr(terms_json, '"<term>":')`. |
+| in-memory | no discovery stage at all — examines every row, passes no `retrieval_truncated`. Can only ever report the `MAX_CANDIDATES` cut. |
+| fallback | allowed only when `not hits and matched_any is False and mode == "all" and len(terms) > 1`. `matched_any` is computed **pre-filter**, so a scoped-out match never licences broadening. |
+
+### 35B. Defect found: the scan bounded the table, not the candidates
+
+**Symptom.** On a corpus of `RETRIEVAL_CAP + 1` chunks holding three genuine matches, one of whose
+`chunk_id`s sorts past the bound, the same query through the same production stack answered
+differently depending on whether SQLite had FTS5:
+
+```
+FTS5 : 3 hits, truncated=False, candidates=3
+scan : 2 hits, truncated=True,  candidates=16000   <- the third match silently absent
+```
+
+**Root cause.** `_rows(None)` / `_structured_rows(None)` applied `LIMIT RETRIEVAL_CAP` to
+`search_chunk` **before** any term matching, while `_candidate_ids` applies the same limit to rows
+that already match. Capping the table first and matching afterwards is a different question.
+
+**Why existing tests missed it.** Parity was only ever asserted on a small corpus, where both paths
+fit entirely inside the bound and the asymmetry cannot express itself.
+
+**Fix.** `_scan_candidate_ids` mirrors `_candidate_ids` exactly — same bound, same ordering, same
+`+ 1` look-ahead — using the `instr(terms_json, '"<term>":')` predicate `_statistics` already uses,
+so both paths read the row's own indexed vocabulary rather than its prose. It is wired in both where
+FTS5 is absent and where an FTS expression is rejected. Semantic parity, bounded resources and
+deterministic ordering all hold; no bound was removed and the scan is now strictly cheaper per
+query (`candidates=3` instead of `16000` rows loaded into Python).
+
+This also restores a promise the module already made in prose: *"a query that runs slower on a
+machine without the extension must never be a query that returns a different list."*
+
+**Post-fix measurement, same corpus and query:** both paths return the same three `chunk_id`s in the
+same order with identical scores and matched terms, `truncated=False`, `candidates=3`.
+
+### 35C. Tests added (all real SQLite, real sidecar, real FTS5, real constants)
+
+Nine tests in `test_search_index.py`, over three module-scoped corpora built once each at the
+**production** constants — not `monkeypatch(MAX_CANDIDATES=1)` over three rows:
+
+* `late_match_index` — `RETRIEVAL_CAP + 1` chunks, three matches, one deliberately past the bound.
+* `cut_index` — `MAX_CANDIDATES + 1` chunks that *all* match, so the surviving hits exceed the cap.
+* `scoped_index` — `RETRIEVAL_CAP + 1` matching chunks, exactly one in scope, and that one is the
+  row whose identity sorts last.
+
+`TestRetrievalCapBoundaryIsAboutMatchingRows` (2) — FTS and scan return the same ids including the
+late match, and the same ordering, scores and matched terms.
+`TestMaxCandidatesBoundary` (2) — 4001 → cut to 4000 with `truncated=True`; then 4000 → **not**
+truncated; then 3999 → not truncated. Exactly at the bound is distinguished from past it.
+`TestScopeIsFilteredAfterDiscovery` (2) — State B: a bounded universe is reported even when few
+results survive; and an in-scope row past the bound yields an empty answer that is **qualified** by
+`truncated=True`, never an unqualified absence.
+`TestBroadeningUnderBoundedDiscovery` (2) — a scoped-out strict match does not licence broadening;
+a genuinely absent one still does, and only because its universe was fully examined.
+`TestRetrievalCapExactBound` (1) — `RETRIEVAL_CAP` walked 16001 → 16000 → 15999 by removing
+versions from the intact corpus. It uses the *scoped* query on purpose: an unscoped one leaves
+16 000 surviving hits, which trips the result-set bound as well and would make the assertion about
+the wrong fact.
+
+Full-suite delta reconciles exactly: 1587 passed at V5.5 plus these 9 = **1596 passed / 3 skipped /
+1599 collected, 0 failed** (see §35G for the executed run).
+
+### 35D. Mutation matrix
+
+Every mutation was applied against a verified-unique anchor, grep-read back after applying, restored
+from a backup taken **after** the fix was known-good, and grep-verified on restore.
+
+| mutation | result |
+| --- | --- |
+| M1 — `len(hits) > MAX_CANDIDATES` → `>=` | **KILLED** (2 failures) |
+| M3 — scan reverts to `return None, False` (raw-table cap) | **KILLED** (2 failures) |
+| M4 — `truncated` drops the discovery term | **KILLED** (2 failures) |
+| M5 — `truncated` drops the result-set term | **KILLED** (2 failures) |
+
+### 35E. What is *not* claimed
+
+* **`truncated` is still one boolean for two facts.** A caller can infer which bound was reached
+  (`candidates == RETRIEVAL_CAP` vs `candidates > MAX_CANDIDATES`) but that is an inference, not a
+  field. Splitting it into explicit `candidate_capped` / `results_capped` metadata is the remaining
+  work on row 16, and it is deliberately not done here: §18 forbids an API redesign for elegance, and
+  the current field is backward-compatible and no longer *untruthful*.
+* **Discovery is term-aware but not scope-aware.** An in-scope row past `RETRIEVAL_CAP` is genuinely
+  not examined, so a scoped query can return nothing while a matching row exists. This is pinned by a
+  test rather than fixed: `truncated=True` keeps it distinguishable from a proven absence, and making
+  discovery scope-aware would push filters into SQL and duplicate the ranking module's semantics.
+* **Broadening on an unproven negative is unreachable for plain-term queries** — `matched_any is
+  False` means the strict expression matched no discovered row, and a discovery that matched nothing
+  cannot itself have hit the bound. A phrase query at >16 000 scale (where FTS is a superset and the
+  Python ranker may reject everything FTS returned) is the residual case; it is **not exercised**, so
+  it is not claimed either way.
+* **Row 33 (performance) is not certified.** Fixture build was measured at roughly 60 s per
+  16 001-chunk corpus and the three corpora are built once per module; no benchmark claim is made.
+
+### 35F. Ledger hygiene
+
+§25 previously held **36 data rows with only 34 distinct numbers**: row 29 appeared twice with
+*contradictory* statuses (`OPEN_NOT_EXERCISED` and a pass) and row 31 twice identically, so the open
+count could not be derived mechanically. Both were reconciled to one row each — the later, more
+precisely sourced wording kept, the superseded claim left on record in the section that made it.
+§18, which reuses numbers 16/17/18 for *different* subjects, is now marked historical at the table
+itself. Recount after the fix: **34 rows, 34 distinct numbers, no duplicates**; 12 fixed, 11 open,
+9 behaviourally proven, 2 disproved.
+
+### 35G. Executed gates
+
+| gate | result |
+| --- | --- |
+| targeted: `test_search_index.py` boundary classes | 9 passed |
+| targeted: search + retrieval + evidence + limit + CLI suites | 0 failed |
+| **full suite (after the final change)** | **1596 passed / 3 skipped / 1599 collected, 0 failed**, exit 0 |
+| `ruff check .` | all checks passed |
+| `ruff format --check .` | all files formatted |
+| `python -m compileall -q src tests` | exit 0 |
+| `git diff --check` | exit 0 |
+| `alembic heads` | `0012 (head)` |
+| `tests/unit/test_report_integrity.py` | 5 passed |
+
+The full-suite delta reconciles test by test: 1587 at V5.5 plus the 9 new boundary tests = 1596.
+
+**Row 33 is not certified by this mission.** Fixture construction was measured at roughly 60 s per
+16 001-chunk corpus (200 documents in 0.54 s, extrapolated and then confirmed by the actual runs);
+the three corpora are module-scoped and built once each. No throughput or latency claim is made.

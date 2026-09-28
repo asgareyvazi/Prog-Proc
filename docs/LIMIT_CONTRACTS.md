@@ -62,10 +62,26 @@ the one place where the help text does not say what the service actually does wi
 | --- | --- | --- |
 | `SearchResponse.truncated` | **two** distinct facts OR'd together: the backend's candidate discovery hit `RETRIEVAL_CAP` (`retrieval_truncated`), or the surviving hits exceeded `MAX_CANDIDATES` and were cut (`scoring_truncated`) | which of the two happened. The one flag cannot say whether the *universe* was bounded or the *result set* was |
 | `SearchResponse.broadened` | the strict reading was actually tried and abandoned for any-of-terms (`index.py`, set only inside the fallback branch) | that the reading is `"any"`. It used to be `mode == "any"`, so an explicitly broadened request reported a strict query it never ran |
-| `SearchResponse.truncated` | the candidate universe exceeded `MAX_CANDIDATES`; ranking ran over a bounded set | that this query had more *relevant* rows than were examined |
 | `EvidenceBundle.discovery_capped` | an uncapped request's discovery stopped before the whole population — proven by a look-ahead row, not inferred from a length | that the caller's own `limit` cut anything |
 | `TopicCoverage.discovery_capped` | the same statement, per topic, carried into the package and its identity | that another topic was capped |
 | `DomainReview.truncated` | some bounded read reached the bound **applied to its own query**, or a result list was cut | that a child batch was large; a batch fetched at `limit * parents` legitimately exceeds `limit` |
 
-`SearchResponse.truncated` is a corpus-size statement, not a per-query one, and remains the weakest
-of the four. Making it query-honest is still open work (master ledger row 16).
+Both halves of `SearchResponse.truncated` are now **query-specific** on every backend. Candidate
+discovery is term-aware on the FTS *and* the non-FTS scan path, so the bound is applied to rows
+that match the query rather than to the raw table; the old scan applied `LIMIT RETRIEVAL_CAP` to
+`search_chunk` before any term matching, which made `truncated` a corpus-size statement *and*
+silently dropped a genuine match whose `chunk_id` sorted past the bound. The one remaining
+corpus-size fallback is the term-less (phrase-only) query, where there is no vocabulary to
+predicate on and the raw bounded scan is the only option.
+
+What `truncated` still cannot do is say **which** bound was reached. The two facts are
+distinguishable in principle - `candidates` above `MAX_CANDIDATES` implies the result-set cut,
+`candidates == RETRIEVAL_CAP` implies the discovery bound - but that is an inference the caller has
+to make, not a field. Splitting it into explicit `candidate_capped` / `results_capped` metadata is
+the remaining open work on master ledger row 16.
+
+Discovery is term-aware but **not** scope-aware: filters are applied after ranking, in `_score`.
+So an in-scope row whose identity sorts past `RETRIEVAL_CAP` is genuinely not examined, and the
+scoped answer can come back empty while a matching row exists. `truncated` is set in that case,
+which is what keeps it distinguishable from a proven absence - pinned by
+`TestScopeIsFilteredAfterDiscovery`.
