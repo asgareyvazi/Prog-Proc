@@ -742,3 +742,107 @@ cross-layer claim it uncovered is recorded in §26D.
 
 Also recorded honestly: the MATCH + NOT_CHECKABLE citation combination is derived from `min` over
 `_RANK` but has no test of its own (§26B).
+
+## 32. V5.4 completion — checkpoints, gates and final ledger state
+
+### 32.1 Checkpoints published this mission
+
+```
+checkpoint: V5.4-C4 — evidence package cap visibility
+status: REMOTE_PUBLISHED
+commit: fe102f8
+push: exit 0, e2ab9d2..fe102f8
+remote_verified: yes
+changed_files: evidence/contract.py, evidence/service.py, cli/app.py,
+               test_evidence_package_forensics.py, report
+attacks_closed: ledger row 20
+tests: 116 across evidence + retrieval + cli, exit 0
+mutations: 3 attempted, 3 killed
+
+checkpoint: V5.4-C5 — system-wide limit audit
+status: REMOTE_PUBLISHED
+commit: e740f52
+push: exit 0, fe102f8..e740f52
+remote_verified: yes
+changed_files: evidence/contract.py, search/service.py, docs/LIMIT_CONTRACTS.md (new),
+               tests/integration/test_limit_contracts.py (new), report
+attacks_closed: ledger rows 34 (OPEN_DEFECT) and 32
+tests: 5 new, exit 0
+mutations: 2 attempted, 2 killed
+
+checkpoint: V5.4-C6 — scope null hierarchy
+status: REMOTE_PUBLISHED
+commit: bbf9df7
+push: exit 0, e740f52..bbf9df7
+remote_verified: yes
+changed_files: engineering/repository.py, test_calculation_forensics.py, report
+attacks_closed: ledger row 27
+tests: 6 new + 189 existing engineering, exit 0
+mutations: 2 attempted, 2 killed
+
+checkpoint: V5.4-C7 — final gates and verdict
+status: see the remote verification recorded with this commit
+changed_files: report only
+tests: full suite after the last source change
+```
+
+### 32.2 Final gate results
+
+| gate | result |
+| --- | --- |
+| `ruff check src tests migrations` | exit 0, "All checks passed!" |
+| `ruff format --check src tests migrations` | exit 0, 211 files already formatted |
+| `python -m compileall -q src tests migrations` | exit 0 |
+| `git diff --check` | exit 0 |
+| `alembic heads` | `0012 (head)` |
+| migration suites (migrations + 0005 + 0011) | exit 0 |
+| report integrity | exit 0, 5 passed |
+| **full suite, after the last source/test change** | **1574 passed / 3 skipped / 1577, 0 failed, 0 errors** |
+
+The full-suite total was derived by summing the per-character progress output with
+`^([.sFEx]+)\s*\[\s*\d+%\]$`, because `pytest -q` again emitted no summary line;
+`grep -cE '^FAILED'` returned 0. The total reconciles exactly with the V5.4-C3 figure of 1562 plus
+the tests added since: 4 (evidence cap) + 5 (limit contracts) + 6 (scope hierarchy) = 1577.
+
+No probe files remain: `tests/integration/test_zz_*` is empty.
+
+### 32.3 Ledger movement across the mission
+
+| verdict | at V5.4 start | at V5.4 end |
+| --- | ---: | ---: |
+| `DEFECT_FOUND_AND_FIXED` | 7 | **12** |
+| `BEHAVIOURALLY_PROVEN` | 5 | **6** |
+| `HYPOTHESIS_DISPROVED` | 1 | **2** |
+| `OPEN_NOT_EXERCISED` | 20 | **13** |
+| `OPEN_DEFECT` | 1 | **0** |
+
+Five defects were found and fixed at the root, each with an executed mutation that restored the
+defective behaviour and a test that failed because of it:
+
+1. review claimed truncation it did not perform;
+2. retrieval inferred a discovery ceiling from a length;
+3. the evidence package discarded the ceiling its topics hit, in both JSON and CLI output;
+4. a contract stated a falsehood about another layer's `limit=0` semantics;
+5. a field and a project that contradicted each other were accepted as a scope.
+
+### 32.4 Final verdict
+
+**CERTIFIABLE WITH BOUNDED REMAINING SCOPE.**
+
+Every `OPEN_DEFECT` is closed. Thirteen ledger rows remain `OPEN_NOT_EXERCISED`: 13 review null-well
+semantics · 14 review current/history matrix · 16 search `truncated` semantics · 17 FTS/scan
+equivalence · 18 strict-query fallback metadata · 21 evidence identity order-independence ·
+22 evidence freshness delta · 25 promotion atomicity · 26 child-row identity · 28 defensive reads ·
+29 timeline interval semantics · 30 timeline malformed dates · 31 timeline determinism ·
+33 performance at scale.
+
+These are unexamined, not cleared. The mission's own rule applies: an area is not complete because
+existing tests are green, and none of these thirteen has been attacked with an adversarial fixture.
+
+Two honesty notes carried forward rather than smoothed over:
+
+* the `MATCH + NOT_CHECKABLE` citation combination is derived from `min` over `_RANK` but has no test
+  of its own (§26B);
+* one mutation attempt in Checkpoint 6 silently failed to apply and initially reported another
+  mutation's failures. It was re-run with the mutation verified present in the file, and only that
+  run is counted (§26E).
