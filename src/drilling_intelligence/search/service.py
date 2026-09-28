@@ -348,7 +348,13 @@ class SearchService:
             category=category,
         )
         request = SearchRequest(
-            query=str(query or ""), filters=filters, limit=int(limit or self.default_limit)
+            # ``limit`` of zero or None means "use the default", not "no cap": this is a search box,
+            # and an unset limit should not turn into an unbounded read.  That is deliberately
+            # different from retrieval, evidence and the domain review, where zero means no cap;
+            # the per-layer contract is recorded in docs/LIMIT_CONTRACTS.md.
+            query=str(query or ""),
+            filters=filters,
+            limit=int(limit or self.default_limit),
         )
         hits, meta = self.index.search(request)
         # Verification reads files, and the registry row that names the file has to come from a

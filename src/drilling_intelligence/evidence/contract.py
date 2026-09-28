@@ -74,8 +74,14 @@ class EvidenceQuery:
 
     The scope follows the platform's one precedence rule (a named well is the whole scope, never a
     union with a field or project) and is handed to retrieval unchanged.  ``limit`` of zero means
-    "no cap", the convention the search and intelligence layers use.  Topics are the questions; the
-    package is the union of their verified answers.
+    "no cap", the convention this layer shares with retrieval and the domain review.  Topics are the
+    questions; the package is the union of their verified answers.
+
+    Note that the *search* layer does **not** share it: ``SearchService.search`` resolves
+    ``int(limit or self.default_limit)``, so a zero there means "use the default" (20), not
+    "everything".  Evidence never forwards a zero to search - retrieval substitutes its own
+    discovery bound - but the two conventions must not be confused, and a caller driving search
+    directly with ``limit=0`` gets the default, not the corpus.
     """
 
     topics: tuple[str, ...]

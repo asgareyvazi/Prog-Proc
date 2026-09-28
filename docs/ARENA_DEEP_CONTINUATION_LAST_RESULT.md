@@ -410,9 +410,9 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 29 | Timeline interval semantics | interval vs point-in-window must be explicit | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
 | 30 | Timeline malformed dates | no silent conversion to a clean result | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
 | 31 | Timeline determinism | a total order on identical timestamps | `intelligence/timeline.py` | `OPEN_NOT_EXERCISED` |
-| 32 | CLI limit contract | the CLI must not re-implement limit policy | `cli/app.py:663` | `PARTIALLY_CLOSED` — cap disclosure added (V5.4); `--limit` parsing per command still unaudited |
+| 32 | CLI limit contract | the CLI must not re-implement limit policy | `cli/app.py:663`, `docs/LIMIT_CONTRACTS.md` §3 | `BEHAVIOURALLY_PROVEN` for `--limit 0` and cap disclosure; per-command negative-value handling still unaudited |
 | 33 | Performance at 1k / 10k | bounded, no N+1 | all read paths | `OPEN_NOT_EXERCISED` |
-| 34 | System-wide limit audit | one matrix, five distinct bound kinds | 5 limit constants found | `OPEN_DEFECT` |
+| 34 | System-wide limit audit | one matrix, five distinct bound kinds | `docs/LIMIT_CONTRACTS.md` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 
 Ledger row 34 is the reason five distinct limits must not be conflated; the constants actually in the
 tree are `MAX_CANDIDATES = 4000` (`search/index.py:91`), `RETRIEVAL_CAP = MAX_CANDIDATES * 4`
@@ -543,6 +543,42 @@ could read as complete when it was not. Both notes are now emitted, and they can
 **Regression tests:** 4, including one that drives a real topic past the bound with 4001 rows and
 one that runs the real CLI in both output modes. **Mutations:** 3 attempted, **3 killed**.
 
+## 26D. V5.4 defect: a contract that lied about another layer
+
+**Symptom.** `evidence/contract.py:76` stated that `limit` of zero means "no cap", **"the convention
+the search and intelligence layers use"**.
+
+**The claim was false of search.** `SearchService.search` resolves `int(limit or self.default_limit)`
+(`search/service.py:351`), so a zero means *use the default*, not *everything*. Proven against a real
+60-row corpus:
+
+```
+PROBE search.default_limit = 20
+PROBE SEARCH    limit=  0 -> results= 20 candidates=61 truncated=False
+PROBE RETRIEVAL limit=  0 -> items=60 discovery_capped=False
+```
+
+Search answered 20 while 61 candidates existed; retrieval answered all 60. The intelligence half of
+the sentence was true — `lessons` resolves `.limit(limit if limit and limit > 0 else None)`
+(`field.py:826`) and `offset_candidates` slices only for a positive limit (`:1002`) — so the defect
+was one false clause in a sentence whose other half was right, which is the kind of error that
+survives review.
+
+**Why it matters.** A caller driving `SearchService.search` or `drillintel search --limit 0`
+directly gets 20 rows and no signal that more existed. The evidence path is unaffected because
+retrieval substitutes its own discovery bound rather than forwarding a zero.
+
+**Fix.** The claim is corrected at the point of use, the real behaviour is documented where it lives
+(`search/service.py:351`), and the whole per-layer contract is written down in
+`docs/LIMIT_CONTRACTS.md` — five bound kinds, the `limit=0` meaning per layer, the CLI table, and
+what each truncation flag does and does not claim. `tests/integration/test_limit_contracts.py` pins
+all four layers plus the CLI, so the document and the behaviour cannot drift apart silently.
+
+**Behaviour deliberately unchanged.** Making search treat zero as "everything" would turn a search
+box into an unbounded read. The asymmetry is defensible; the undocumented claim about it was not.
+
+**Regression tests:** 5. **Mutations:** 2 attempted, **2 killed**.
+
 ## 27. V5.4 mutation matrix
 
 | mutation | target | tests failing | result |
@@ -554,6 +590,8 @@ one that runs the real CLI in both output modes. **Mutations:** 3 attempted, **3
 | evidence layer drops `bundle.discovery_capped` | `evidence/service.py:101` | 1 | **KILLED** |
 | identity payload ignores cap state | `evidence/service.py` `_content_identity` | 1 | **KILLED** |
 | CLI hides the cap note | `cli/app.py:663` | 1 | **KILLED** |
+| search treats `0` as no cap | `search/service.py:351` | 2 | **KILLED** |
+| retrieval treats `0` as `20` | `retrieval/service.py` `_discover` | 1 | **KILLED** |
 
 ## 28. V5.4 publication checkpoints
 
@@ -640,19 +678,17 @@ What is certified by behaviour, not by a green suite:
 * the V5.3 "ten attacks / nine listed" inconsistency is resolved: nine was correct, and the true
   open set was 17 surfaces, now enumerated in a 34-row ledger.
 
-What is **not** certified, and must not be read as certified — 18 ledger rows remain open:
+What is **not** certified, and must not be read as certified — 14 ledger rows remain open:
 
 `OPEN_NOT_EXERCISED`: 13 review null-well semantics · 14 review current/history matrix · 16 search
-`truncated` semantics · 17 FTS/scan equivalence · 18 strict-query fallback metadata · 20 evidence
-package cap visibility · 21 evidence identity order-independence · 22 evidence freshness delta ·
-25 promotion atomicity · 26 child-row identity · 27 scope null hierarchy · 28 defensive reads ·
-29 timeline interval semantics · 30 timeline malformed dates · 31 timeline determinism ·
-32 CLI limit contract · 33 performance at scale.
+`truncated` semantics · 17 FTS/scan equivalence · 18 strict-query fallback metadata · 21 evidence
+identity order-independence · 22 evidence freshness delta · 25 promotion atomicity · 26 child-row
+identity · 27 scope null hierarchy · 28 defensive reads · 29 timeline interval semantics ·
+30 timeline malformed dates · 31 timeline determinism · 33 performance at scale.
 
-`OPEN_DEFECT`: 34 the system-wide limit audit. Five distinct limit kinds are in the tree
-(`MAX_CANDIDATES`, `RETRIEVAL_CAP`, `_DISCOVERY_CAP`, `_SAFE_LIMIT`, `default_limit`) and have not
-been reconciled into one matrix. Retrieval and review are now each internally honest; the
-cross-layer contract is not yet written.
+`OPEN_DEFECT`: none. The system-wide limit audit (row 34) is now written in
+`docs/LIMIT_CONTRACTS.md` and pinned by `tests/integration/test_limit_contracts.py`; the false
+cross-layer claim it uncovered is recorded in §26D.
 
 Also recorded honestly: the MATCH + NOT_CHECKABLE citation combination is derived from `min` over
 `_RANK` but has no test of its own (§26B).
