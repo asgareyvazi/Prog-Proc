@@ -807,3 +807,116 @@ def test_identity_does_not_depend_on_presentation_order(world) -> None:
     # Not vacuous: a different scope must produce a different address.
     other = world.query(topics=(SHARED_TERM,), well_id=world.ids["A1"])
     assert other.identity != package.identity, "a narrower scope is a different question"
+
+
+class TestFreshnessNamesWhatActuallyMoved:
+    """Ledger row 22: a stale package must say *what* changed, not merely that it is old.
+
+    The contract is explicit about what freshness can see - ``_content_identity`` hashes the
+    request, each item's ``(identity, source_type, record_type, status, current)`` and the coverage
+    row.  Substantive text, provenance and score are deliberately outside it, so these tests assert
+    both halves: every promised delta class is detected, and a change the contract excludes is not
+    reported as one.
+    """
+
+    def test_an_unchanged_database_is_fresh(self, world) -> None:
+        package = world.query(topics=(SHARED_TERM,), well_id=world.ids["A1"])
+        report = world.evq.check_freshness(package)
+        assert report.fresh is True
+        assert report.added == () and report.removed == () and report.changed == ()
+        assert report.stored_identity == report.current_identity == package.identity
+
+    def test_a_new_answer_is_reported_as_added(self, world) -> None:
+        package = world.query(topics=(SHARED_TERM,), well_id=world.ids["A1"])
+        assert world.evq.check_freshness(package).fresh is True
+
+        with world.ws.database.session() as session:
+            LessonRepository(session).capture(
+                lesson=f"a second {SHARED_TERM} {SECOND_TERM} lesson for the same well",
+                title="second lesson",
+                well_id=world.ids["A1"],
+                field_id=world.ids["fA"],
+                project_id=world.ids["pA"],
+            )
+            session.commit()
+        world.search.rebuild()
+
+        report = world.evq.check_freshness(package)
+        assert report.fresh is False
+        assert len(report.added) == 1, "the delta must name the identity that now answers"
+        assert report.removed == () and report.changed == ()
+        assert report.stored_identity != report.current_identity
+
+    def test_a_deleted_answer_is_reported_as_removed(self, world) -> None:
+        package = world.query(topics=(SHARED_TERM,), well_id=world.ids["A1"])
+        stored_identity = package.items[0].item.identity
+
+        with world.ws.database.session() as session:
+            row = session.get(LessonLearned, world.ids["les_A1"])
+            assert row is not None
+            session.delete(row)
+            session.commit()
+        world.search.rebuild()
+
+        report = world.evq.check_freshness(package)
+        assert report.fresh is False
+        assert report.removed == (stored_identity,), "and name the one that no longer answers"
+        assert report.added == () and report.changed == ()
+
+    def test_presentation_order_is_not_a_freshness_change(self, world) -> None:
+        """Row 21's guarantee must not be silently undone by the freshness comparison."""
+        package = world.query(topics=(SHARED_TERM,))
+        assert len(package.items) >= 2
+        shuffled = replace(package, items=tuple(reversed(package.items)))
+        report = world.evq.check_freshness(shuffled)
+        assert report.fresh is True, "reordering the same evidence is presentation, not mutation"
+        assert report.added == () and report.removed == () and report.changed == ()
+
+    def test_a_substantive_edit_the_contract_excludes_is_not_claimed(self, world) -> None:
+        """The boundary, pinned in the direction that protects the consumer from a false alarm.
+
+        Identity covers ``(identity, source_type, record_type, status, current)`` - not the lesson's
+        wording.  So editing the text while the row keeps its id and state leaves the package
+        ``fresh``.  That is what the contract promises; asserting it here means a future change to
+        the identity cannot silently start firing on edits nobody asked it to track.
+        """
+        package = world.query(topics=(SHARED_TERM,), well_id=world.ids["A1"])
+        with world.ws.database.session() as session:
+            row = session.get(LessonLearned, world.ids["les_A1"])
+            assert row is not None
+            row.lesson = f"{SHARED_TERM} {SECOND_TERM} reworded but same row, same state"
+            session.commit()
+        world.search.rebuild()
+        report = world.evq.check_freshness(package)
+        assert report.fresh is True
+        assert report.changed == ()
+
+
+def test_a_status_change_on_a_row_that_still_answers_is_reported_as_changed(world) -> None:
+    """The delta class a set-diff implementation cannot see.
+
+    The identity is unchanged and the row still answers the query, so comparing identity sets
+    reports nothing at all - yet the authoritative state the package recorded has moved.  Note the
+    contrast with ``is_current``: flipping *that* removes the row from the answer entirely, so it
+    surfaces as ``removed``.  Which class a mutation lands in is a fact about the retrieval
+    contract, and the test asserts the one that actually happens.
+    """
+    package = world.query(topics=(SHARED_TERM,), well_id=world.ids["A1"])
+    stored_identity = package.items[0].item.identity
+    original_status = package.items[0].item.status
+
+    with world.ws.database.session() as session:
+        row = session.get(LessonLearned, world.ids["les_A1"])
+        assert row is not None
+        assert row.status != "REVIEWED"
+        row.status = "REVIEWED"
+        session.commit()
+    world.search.rebuild()
+
+    report = world.evq.check_freshness(package)
+    assert report.fresh is False
+    assert report.added == () and report.removed == (), "the same row still answers the query"
+    assert len(report.changed) == 1
+    delta = report.changed[0]
+    assert delta["identity"] == stored_identity
+    assert delta["status"] == {"from": original_status, "to": "REVIEWED"}
