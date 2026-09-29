@@ -68,6 +68,10 @@ class TimelineEntry:
     document_version_id: str = ""
     text: str = ""
     provenance: tuple[dict[str, Any], ...] = ()
+    #: Where this entry sits in a *domain* sequence when it carries no instant of its own.  The
+    #: ordinal comes from the lifecycle definition itself (``_WELL_EVENTS``), never from the title:
+    #: alphabetically "Completion" precedes "Spud", which is the wrong way round for a well's life.
+    ordinal: int = 0
 
     @property
     def dated(self) -> bool:
@@ -118,23 +122,20 @@ def _stamp(value: object) -> datetime | None:
         return None
 
 
-def entry_comparator(entry: TimelineEntry) -> tuple[int, float, int, str, str]:
-    """The sort key: dated first, then by instant, kind order, table and id.
+def entry_comparator(entry: TimelineEntry) -> tuple[int, float, int, str, str, int]:
+    """The sort key: dated first, then instant, kind order, table, id and lifecycle ordinal.
 
     Exposed because a caller that merges a timeline with something else (a screen that interleaves
-    calendar entries, an export that unions two wells) needs the *same* total order, not an approximation
-    of it.
+    calendar entries, an export that unions two wells) needs the *same* total order, not an
+    approximation of it.  ``ordinal`` is what makes the key **total**: two undated milestones of one
+    well share kind, table and row_id, so without it they tie on every component and the emitted
+    order is merely the order the query appended them - reproducible, but not a fact about the data.
     """
+    kind_rank = _KIND_RANK.get(entry.kind, len(TIMELINE_KINDS))
     if entry.at is None:
-        # Undated entries sort after every dated one, among themselves by the same stable sub-keys.
-        return (1, 0.0, _KIND_RANK.get(entry.kind, len(TIMELINE_KINDS)), entry.table, entry.row_id)
-    return (
-        0,
-        entry.at.timestamp(),
-        _KIND_RANK.get(entry.kind, len(TIMELINE_KINDS)),
-        entry.table,
-        entry.row_id,
-    )
+        # Undated entries sort after every dated one, among themselves by the same sub-keys.
+        return (1, 0.0, kind_rank, entry.table, entry.row_id, entry.ordinal)
+    return (0, entry.at.timestamp(), kind_rank, entry.table, entry.row_id, entry.ordinal)
 
 
 def _scope(statement, model: Any, *, well_id: str, field_id: str, project_id: str) -> Any:
@@ -172,6 +173,7 @@ def _entry(
     section_id: str = "",
     document_version_id: str = "",
     provenance: Sequence[dict[str, Any]] | None = None,
+    ordinal: int = 0,
 ) -> TimelineEntry:
     return TimelineEntry(
         at=_stamp(at),
@@ -185,6 +187,7 @@ def _entry(
         document_version_id=str(document_version_id or ""),
         text=str(text or ""),
         provenance=tuple(dict(item) for item in provenance or ()),
+        ordinal=int(ordinal),
     )
 
 
@@ -238,7 +241,7 @@ def build_timeline(
         well = session.get(Well, well_id)
         if well is None:
             raise ValidationError(f"no well {well_id!r}")
-        for column, _kind, title in _WELL_EVENTS:
+        for position, (column, _kind, title) in enumerate(_WELL_EVENTS):
             value = getattr(well, column, None)
             if value is None and not undated_wanted:
                 continue
@@ -255,6 +258,7 @@ def build_timeline(
                     at=value,
                     text="" if value is not None else "no date recorded",
                     provenance=(well.attributes or {}).get("provenance") or (),
+                    ordinal=position,
                 )
             )
 

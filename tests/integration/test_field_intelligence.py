@@ -960,3 +960,98 @@ def test_a_pattern_is_not_inflated_by_several_problems_sharing_one_incident(
     assert grouping["total_npt_hours"] is None, (
         f"six hours of one incident became {grouping['total_npt_hours']}"
     )
+
+
+def test_undated_well_milestones_follow_the_lifecycle_not_the_append_order(field_workspace) -> None:
+    """Ledger row 31: the timeline sort key must be *total*, not merely stable.
+
+    Two undated milestones of one well share ``kind``, ``table`` and ``row_id`` and carry no
+    instant, so before a lifecycle ordinal was added they tied on every component of the key.  The
+    emitted order was then whatever order the query appended them in - reproducible on one machine,
+    but not a fact about the data, and reversing the input reversed the answer.
+    """
+    from drilling_intelligence.database.models import Well
+    from drilling_intelligence.intelligence.timeline import entry_comparator
+
+    with field_workspace.database.session() as session:
+        well_id = well_id_for(field_workspace, "A-3")
+        well = session.get(Well, well_id)
+        assert well is not None
+        well.spud_date = None
+        well.completion_date = None
+        session.flush()
+        entries = build_timeline(session, well_id=well_id, include_undated=True)
+
+    milestones = [
+        entry
+        for entry in entries
+        if entry.kind == "well" and entry.table == "well" and entry.row_id == well_id
+    ]
+    assert len(milestones) == 2, describe(milestones)
+
+    titles = [entry.title.split(":", 1)[0] for entry in milestones]
+    assert titles == ["Spud", "Completion"], (
+        "the lifecycle order.  Alphabetically 'Completion' precedes 'Spud', which is the wrong way "
+        "round for a well's life - the tie breaker has to come from the domain, not from the title"
+    )
+    assert [entry.ordinal for entry in milestones] == [0, 1]
+
+    # The key is total, so the answer cannot depend on the order the rows arrived in.
+    assert len({entry_comparator(entry) for entry in milestones}) == 2, (
+        "the two entries must not tie"
+    )
+    arrived_last_first = list(milestones)
+    arrived_last_first.reverse()
+    assert sorted(arrived_last_first, key=entry_comparator) == milestones
+
+
+def test_the_ordinal_survives_serialisation(field_workspace) -> None:
+    """The ordinal is part of the entry's meaning, so it must reach the consumer."""
+    from drilling_intelligence.database.models import Well
+
+    with field_workspace.database.session() as session:
+        well_id = well_id_for(field_workspace, "A-3")
+        well = session.get(Well, well_id)
+        assert well is not None
+        well.spud_date = None
+        session.flush()
+        entries = build_timeline(session, well_id=well_id, include_undated=True)
+    milestone = next(entry for entry in entries if entry.kind == "well" and entry.table == "well")
+    assert milestone.to_dict()["ordinal"] == milestone.ordinal
+
+
+def test_two_milestones_on_the_same_day_are_still_ordered_by_the_lifecycle(field_workspace) -> None:
+    """The dated half of the key needs the ordinal for exactly the same reason the undated half does.
+
+    When a well's spud and completion carry the *same* date, the two entries share instant, kind,
+    table and row_id as well - so without the ordinal they tie again, and the mutation that drops
+    it from the dated branch survives.  Same-day milestones are unusual but perfectly writable, and
+    a tie broken by append order is not an order a consumer can rely on.
+    """
+    from datetime import date as _date
+
+    from drilling_intelligence.database.models import Well
+    from drilling_intelligence.intelligence.timeline import entry_comparator
+
+    with field_workspace.database.session() as session:
+        well_id = well_id_for(field_workspace, "A-3")
+        well = session.get(Well, well_id)
+        assert well is not None
+        well.spud_date = _date(2025, 6, 13)
+        well.completion_date = _date(2025, 6, 13)
+        session.flush()
+        entries = build_timeline(session, well_id=well_id)
+
+    milestones = [
+        entry
+        for entry in entries
+        if entry.kind == "well" and entry.table == "well" and entry.row_id == well_id
+    ]
+    assert len(milestones) == 2, describe(milestones)
+    assert milestones[0].at == milestones[1].at, "the premise: one instant, two entries"
+    assert [entry.title.split(":", 1)[0] for entry in milestones] == ["Spud", "Completion"]
+    assert len({entry_comparator(entry) for entry in milestones}) == 2, "they must not tie"
+
+    arrived_last_first = list(milestones)
+    arrived_last_first.reverse()
+    assert sorted(arrived_last_first, key=entry_comparator) == milestones
