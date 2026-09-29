@@ -1815,3 +1815,63 @@ written down: verify a path exists before citing a result from it.
 34 rows, 34 distinct numbers, no duplicates. **`BEHAVIOURALLY_PROVEN` 16, `DEFECT_FOUND_AND_FIXED`
 16, `HYPOTHESIS_DISPROVED` 2, `OPEN_NOT_EXERCISED` 0** — summing to 34, counted by splitting the
 table's cells rather than by reading it. No row was deleted and no historical evidence removed.
+
+## 41. V6.0 — post-certification production readiness
+
+This section is a **release-readiness** audit, not a reopening of the 34-row certification ledger,
+which stays resolved and untouched.
+
+### 41A. Starting state and recovery
+
+Expected baseline `cb0ffb8e2ef5eecc0f424d5424184a60a8903a26`. The workspace had reverted again:
+grafted `e862113`, `shallow=true`, **107 dirty paths**, `.venv` absent; `ls-remote` returned the
+expected `cb0ffb8`. Inspected before touching anything — `git add -A` then
+`git diff --cached FETCH_HEAD --name-only | wc -l` returned **0**, so the worktree already equalled
+the remote tip and recovery was byte-identical. Fast-forwarded to `cb0ffb8`; post-recovery
+local == `ls-remote`, `diff_vs_tip = 0`, `dirty = 0`. **No reset, rebase or force-push.**
+
+### 41B. Release-readiness matrix
+
+| Area | Finding | Severity | Evidence | Fix | Status |
+| --- | --- | --- | --- | --- | --- |
+| CLI global options | `drillintel --workspace W wells list` ignored `W` and ran against the **cwd**; `--json`/`--debug`/`--config` in that position were dropped too | **High** — a documented flag silently did nothing, and machine output came back as prose | argparse applies a subparser's defaults over the namespace the parent filled | `SUPPRESS` defaults in `_common()`, real defaults on the top-level parser, which needs its *own* `_common()` instance because `set_defaults` rewrites `action.default` on shared action objects | **FIXED**, 6 tests, M60-1 + M60-2b KILLED |
+| `doctor` on an installed package | Reported `schema is at '0012' while head is ''` and **exited 1** on a healthy wheel-installed workspace, advising `alembic upgrade head` — impossible without the scripts the wheel does not ship | **High** — a false finding that also fails the exit code trains operators to ignore doctor | `upgrade()`'s migrations-unavailable branch returned `head=""`; `up_to_date` requires a non-empty head | The head an installed package can attest to is `METADATA_REVISION`, which is what its schema was built from | **FIXED**, 1 test, M60-3 KILLED, verified from a rebuilt wheel *and* sdist |
+| CI | **None existed.** `docs/DECISIONS.md` ADR-0002 says "two runtimes are exercised in CI" with nothing behind it | **High** — the compatibility claim was unenforceable | no `.github` directory | `.github/workflows/ci.yml`: CPython 3.11 + 3.14, ruff check/format, compileall over src+tests+migrations, single-alembic-head gate, full pytest, plus a clean-install smoke job | **FIXED**, and observed queued→running on GitHub |
+| README quick start | `PYTHONPATH=src` (unnecessary — the editable install resolves from anywhere) and a frozen "1083 passed … V2 certification run" count | Medium — misleading, and hides the sys.path parity problem | verified by importing from `/tmp` and running a test module with `PYTHONPATH` unset | Command stands alone; the count now lives only in dated certification records where it is a historical fact; CI and the smoke are documented | **FIXED** |
+| Migration discovery from a wheel | Suspected release defect; **not a defect** | — | A clean wheel install creates a workspace and stamps `0012` via `stamped-from-metadata` (45 tables, `alembic_version` present) | none needed — the documented bootstrap works | **VERIFIED SOUND** |
+| Path / symlink boundary | Suspected traversal; **not a defect** | — | A scan root containing a symlink to an outside *file* and to an outside *directory* registered **1** file — only the real one | none needed | **VERIFIED SOUND** |
+| Optional-dependency boundary | Vector and Qt extras are genuinely optional | — | The clean smoke venv installs neither and the package imports, the CLI runs and every read surface works | none needed | **VERIFIED SOUND** |
+| Version `0.0.1a0` | Consistent with `Development Status :: 2 - Pre-Alpha` and `requires-python >=3.11` | — | `pyproject.toml` classifiers agree with the metadata | left as-is deliberately | **INTENTIONAL** |
+| Historical test counts | Several dated reports quote old counts (1077, 1089, 1291, 1313) | — | they are historical records of what was true then | **not** changed — rewriting history is out of scope | **INTENTIONAL** |
+
+### 41C. Packaging, verified by execution not inspection
+
+`tools/release_smoke.py` is the executable form of the installation question, and it is what CI's
+second job runs. For **each** of the wheel and the sdist it: builds through the project's own
+backend; installs into a fresh virtualenv outside the checkout; asserts the package imports from
+`site-packages` with **no** repository path on `sys.path`; runs `drillintel --help`/`--version`;
+creates a workspace; opens it (which bootstraps the schema from ORM metadata and stamps `0012`, the
+only path a wheel has); creates a well and reads it back; exercises `records list`/`summary`/`review`,
+`search`, `timeline`, `knowledge status`, `index status`; and runs `doctor` including its `--json`
+shape. Locally: **all checks pass for both artefacts.** The wheel carries 119 entries and **zero**
+Alembic revision scripts, which is intentional and now matched by `doctor` treating that mode as
+healthy rather than as drift.
+
+Two of my own smoke-script bugs were found and fixed while writing it — `records` needs a subaction
+and a scope — and the CLI's refusals were correct and well-hinted in both cases. Those were script
+errors, not product defects, and are recorded as such.
+
+### 41D. Mutations this mission
+
+| Mutation | Target | Result |
+| --- | --- | --- |
+| M60-1 | drop `SUPPRESS` from `--workspace` | **KILLED** |
+| M60-2b | share one `_common()` instance between top level and subparsers (the shape of the failed first attempt) | **KILLED** |
+| M60-3 | `head=METADATA_REVISION` back to `head=""` | **KILLED** |
+| M60-2 | rename to an undefined symbol | **INVALID MUTATION** — it raised `NameError`, so all six tests failed for the wrong reason and it proves nothing |
+
+One honest process note: the **first attempt at the CLI fix did not work**. `set_defaults()` does not
+merely record a namespace default — it rewrites `action.default` on any matching action object, and
+`parents=` shares those very objects between parsers, so the real defaults leaked into the
+subparsers and undid the `SUPPRESS`. The failure was found by parsing argv directly and inspecting
+`action.default`, not by re-running the CLI and hoping.

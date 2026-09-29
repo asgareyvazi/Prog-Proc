@@ -98,6 +98,12 @@ drilling_intelligence = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+# `tests/conftest.py` imports `tests.fixtures.generate`, so the *repository root* has to be
+# importable.  `python -m pytest` puts the current directory on sys.path and hides this; the bare
+# `pytest` console script does not, and failed with "No module named 'tests'" - which is how CI
+# found it after every local run had used the `python -m` form.  Declaring it here makes both
+# invocations equivalent instead of leaving one of them silently broken.
+pythonpath = ["."]
 markers = [
     "ui: PySide6 desktop tests (skipped automatically when Qt cannot load)",
     "network: tests requiring a locally running Ollama instance (skipped by default)",
