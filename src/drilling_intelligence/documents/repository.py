@@ -685,8 +685,21 @@ class DocumentRepository:
         ).scalar_one_or_none()
 
     def extraction_for_version(self, version_id: str) -> Extraction | None:
+        # A version can carry more than one extraction: ``ingest --force`` re-extracts a file whose
+        # content has not changed, which is a documented operation and legitimately leaves several
+        # rows for the same ``document_version_id``.  So "the extraction for this version" is not
+        # singular, and a bare ``limit(1)`` answered it with whatever SQLite scanned first - the
+        # oldest, i.e. precisely the one a forced re-extraction was performed to replace, with no
+        # diagnostic that a choice had been made.
+        #
+        # Newest wins, matching ``latest_extraction``.  ``id`` is a deterministic tiebreaker: rows
+        # written inside one transaction can share a ``created_at`` resolution, and an unordered
+        # query over equal timestamps would drift between runs.
         return self.session.execute(
-            select(Extraction).where(Extraction.document_version_id == version_id).limit(1)
+            select(Extraction)
+            .where(Extraction.document_version_id == version_id)
+            .order_by(Extraction.created_at.desc(), Extraction.id.desc())
+            .limit(1)
         ).scalar_one_or_none()
 
     # -- sources ------------------------------------------------------------

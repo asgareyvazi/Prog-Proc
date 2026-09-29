@@ -373,3 +373,125 @@ def test_the_invariant_check_is_opt_out_for_a_repair_pass(ingested, workspace) -
     assert result.ok, result.error
     assert result.invariant_problems == [], "silence here is the configured behaviour, not a bug"
     assert not any("invariant" in warning for warning in result.warnings)
+
+
+def _state(workspace) -> tuple:
+    """Everything a re-run could duplicate or lose, as an exact snapshot rather than a count.
+
+    Counts alone would hide the failure that actually matters here: a crash that drops the old
+    extraction and writes a new one with a different id keeps the count identical while churning
+    identity, and a crash that leaves a half-written version behind can be masked by a later run
+    adding one more of something else.
+    """
+    with workspace.database.read_only() as session:
+        return (
+            tuple(
+                sorted(
+                    (d.id, d.filename, d.current_version_id or "")
+                    for d in session.scalars(select(Document))
+                )
+            ),
+            tuple(
+                sorted(
+                    (v.id, v.document_id, v.sha256, bool(v.is_current))
+                    for v in session.scalars(select(DocumentVersion))
+                )
+            ),
+            tuple(sorted((e.id, e.document_id) for e in session.scalars(select(Extraction)))),
+        )
+
+
+def test_an_interrupted_run_converges_on_the_next_one_instead_of_piling_up(
+    ingested, workspace
+) -> None:
+    """Cancel part-way, then finish: the end state is the same as an uninterrupted run.
+
+    The pipeline takes a ``cancel`` callback, so stopping early is a supported path and not an
+    error - which is exactly why its aftermath has to be clean.  A partial run that left a
+    half-registered document, a duplicate version or an orphaned extraction behind would make the
+    *next* run's answer depend on when the previous one was interrupted.
+    """
+    pipeline, corpus, ids = ingested
+    workspace_id, well_id = ids
+
+    clean = run(pipeline, corpus, ids)
+    assert clean.ok, clean.error
+    settled = _state(workspace)
+    assert settled[0], "the corpus must actually have registered documents"
+
+    # Interrupt after the first file.  ``cancel`` is polled by the pipeline, so this stops a real
+    # run part-way rather than simulating the aftermath.
+    seen = {"n": 0}
+
+    def stop_after_one() -> bool:
+        seen["n"] += 1
+        return seen["n"] > 1
+
+    partial = pipeline.run(
+        root=corpus, workspace_id=workspace_id, well_id=well_id, cancel=stop_after_one
+    )
+    assert seen["n"] > 1, "the run must actually have been polled before it stopped"
+
+    # Finishing the job must land on exactly the uninterrupted state.
+    resumed = run(pipeline, corpus, ids)
+    assert resumed.ok, resumed.error
+    assert _state(workspace) == settled, (
+        "an interrupted run left the registry somewhere other than where a clean run puts it"
+    )
+    assert partial is not None
+
+
+def test_extraction_for_version_picks_the_newest_not_an_arbitrary_row(ingested, workspace) -> None:
+    """``extraction_for_version`` must be deterministic once a version has been re-extracted.
+
+    ``--force`` re-extracts a version that is unchanged on disk, which is a documented flag and a
+    legitimate operation, and it leaves more than one ``extraction`` row pointing at the *same*
+    ``document_version_id``.  So "the extraction for this version" stops being singular, and the
+    reader has to say which one it means.
+
+    Its sibling ``latest_extraction`` already orders by ``created_at``; this one took a bare
+    ``limit(1)`` with no ordering, so SQLite scanned in insertion order and quietly handed back the
+    oldest - the opposite of the newest, with no diagnostic that a choice had been made at all.
+    A re-extraction performed to pick up an extractor fix would then read back the stale text.
+    """
+    pipeline, corpus, ids = ingested
+    assert run(pipeline, corpus, ids).ok
+
+    from drilling_intelligence.documents.repository import DocumentRepository
+
+    with workspace.database.session() as session:
+        repo = DocumentRepository(session)
+        doc = session.scalars(select(Document)).first()
+        assert doc is not None
+        version_id = doc.current_version_id
+        assert version_id
+
+        first = repo.extraction_for_version(version_id)
+        assert first is not None
+        first_id, first_sha = first.id, first.content_sha256
+
+        # A second extraction for the SAME version - exactly what ``--force`` produces - carrying
+        # different content, so picking the wrong one is observably wrong and not merely untidy.
+        newer = Extraction(
+            id="ext-newer-forced",
+            document_id=doc.id,
+            document_version_id=version_id,
+            content_sha256="f" * 64,
+            extractor=first.extractor,
+            extractor_version=first.extractor_version,
+        )
+        session.add(newer)
+        session.commit()
+        assert first_sha != "f" * 64
+
+        chosen = repo.extraction_for_version(version_id)
+        assert chosen is not None
+        assert chosen.id == "ext-newer-forced", (
+            f"a re-extracted version resolved to {chosen.id!r} (sha {chosen.content_sha256[:8]}), "
+            f"not the newest one - the reader picked arbitrarily among duplicates"
+        )
+        assert chosen.content_sha256 == "f" * 64
+        assert chosen.id != first_id
+
+        # The per-document reader already gets this right; the two must not disagree.
+        assert repo.latest_extraction(doc.id).content_sha256 == "f" * 64
