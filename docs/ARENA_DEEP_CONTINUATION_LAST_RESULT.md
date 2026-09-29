@@ -395,7 +395,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 9 | NPT attribution | an event's NPT belongs to its sole problem | `intelligence/field.py` | `BEHAVIOURALLY_PROVEN` |
 | 10 | Date-window / undated | unknown date is not outside every window | `retrieval/contract.py` | `BEHAVIOURALLY_PROVEN` |
 | 11 | Migration / ORM parity | fresh `create_all` equals migrated-to-head | `test_migration_0005.py:240` | `BEHAVIOURALLY_PROVEN` |
-| 12 | **Review truncation truthfulness** | a review must not claim a cut it did not make | `review/service.py:1540` | **`DEFECT_FOUND_AND_FIXED`** (V5.4) |
+| 12 | **Review truncation truthfulness** | a review must not claim a cut it did not make | `review/service.py:1540` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 13 | Review null-well semantics | null must never become an accidental wildcard | `review/service.py:466`, `engineering/repository.py:1081` | `BEHAVIOURALLY_PROVEN` — a record with no scope at all is fetched by nobody and appears in no well's review, while a positively field-scoped record is inherited by its wells; `_for_well`'s null allowance only ever sees rows a scoped query returned |
 | 14 | Review current/history matrix | one definition of currentness per domain | `review/service.py` | `OPEN_NOT_EXERCISED` |
 | 15 | Review read-only proof | a read must not write | `test_domain_review.py` fingerprint | `BEHAVIOURALLY_PROVEN` (existing) |
@@ -405,7 +405,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 19 | Retrieval `capped` inference | `>=` cap does not prove truncation | `retrieval/service.py` `_discover` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 20 | Evidence package cap visibility | a package must not hide a discovery ceiling | `evidence/contract.py:159`, `evidence/service.py:101` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 21 | Evidence identity order-independence | presentation must not change identity | `evidence/service.py:122` | `BEHAVIOURALLY_PROVEN` — the real identity function was handed the same request, items and coverage in reversed and doubly-reversed order and returned the same address; a narrower scope returns a different one, so the equality is not vacuous |
-| 22 | Evidence freshness delta | detect every mutation the contract promises | `check_freshness` | `OPEN_NOT_EXERCISED` |
+| 22 | Evidence freshness delta | detect every mutation the contract promises | `_content_identity` hashes the request, each item's (identity, source_type, record_type, status, current) and coverage - **not** wording, provenance or score, so the contract never promised content-level staleness; 6 tests pin both halves (fresh/added/removed/changed, order is not a change, an excluded edit is **not** claimed); `is_current=False` surfaces as `removed`, not `changed`; M22-3 + M22-5 KILLED | `BEHAVIOURALLY_PROVEN` |
 | 23 | Citation `NOT_CHECKABLE` | "no citation" ≠ "citation failed" | `evidence/verify.py:59,116` | `BEHAVIOURALLY_PROVEN` (existing tests, see §26B) |
 | 24 | Citation multi-aggregation | the worst citation decides the item | `evidence/verify.py:62,224` | `HYPOTHESIS_DISPROVED` (see §26B) |
 | 25 | Promotion atomicity | late failure leaves no partial rows | `operations/promote.py:635`, `database/session.py:78` | `OPEN_NOT_EXERCISED` — tests written but **not proven sensitive**, see §26G |
@@ -414,7 +414,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 28 | Defensive reads / corruption | no silent repair of malformed persisted data | read paths, `doctor` | `OPEN_NOT_EXERCISED` |
 | 29 | Timeline interval semantics | point-in-window over an index of dated facts, not a duration | `intelligence/timeline.py:326,341` | `BEHAVIOURALLY_PROVEN` — documented in §26F, boundary cases verified |
 | 30 | Supplied dates must not become "no date" | a date given must be stored or refused | `operations/repository.py:112,133` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
-| 31 | Timeline determinism | a total order on identical timestamps | `intelligence/timeline.py:121` | `OPEN_NOT_EXERCISED` — see §26F |
+| 31 | Timeline determinism | a total order on identical timestamps | **DEFECT FOUND AND FIXED:** undated milestones of one well share kind, table and row_id and carry no instant, so they tied on *every* component of `entry_comparator` and the emitted order was merely append order; the same tie hits the dated side when spud and completion share a date. Fixed with an `ordinal` taken from the lifecycle definition (`_WELL_EVENTS`), not the title - alphabetically Completion precedes Spud, which is the wrong way round. 3 tests; M31-1 + M31-3 KILLED | `DEFECT_FOUND_AND_FIXED` |
 | 32 | CLI limit contract | the CLI must not re-implement limit policy | `cli/app.py:663`, `docs/LIMIT_CONTRACTS.md` §3 | `BEHAVIOURALLY_PROVEN` for `--limit 0` and cap disclosure; per-command negative-value handling still unaudited |
 | 33 | Performance at 1k / 10k | bounded, no N+1 | all read paths | `OPEN_NOT_EXERCISED` |
 | 34 | System-wide limit audit | one matrix, five distinct bound kinds | `docs/LIMIT_CONTRACTS.md` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
@@ -1475,3 +1475,162 @@ Delta reconciles exactly: 1623 at the previous checkpoint plus the 2 new tests (
 Neither row required a production change: both contracts already held, and what was missing was the
 executed evidence. That is the distinction the ledger exists to keep — a row is not closed because
 the code looks right, and it is not left open because nobody wrote the test down.
+
+## 38. V5.7 Phase A — ledger rows 22 and 31
+
+### 38A. Row 31 — timeline determinism — `DEFECT_FOUND_AND_FIXED`
+
+**Symptom.** `entry_comparator` returned `(dated, timestamp, kind_rank, table, row_id)`. Well
+milestones are emitted with `kind="well"`, `table="well"`, `row_id=well.id` — the `_kind` from
+`_WELL_EVENTS` is discarded — so **Spud and Completion of one well are identical on every
+component of the key** whenever they share an instant, and unconditionally when neither has one.
+The emitted order was then merely the order the query appended them: reproducible on one machine,
+but not a fact about the data, and reversing the input reversed the answer.
+
+**Root cause.** The comparator is not *total*. Stability of Python's `sorted` made the output
+deterministic for a fixed input order, which is exactly why no test caught it: every existing
+assertion reads the list in the order the builder produced it.
+
+**Fix.** `TimelineEntry.ordinal`, set from the position in the lifecycle definition
+(`enumerate(_WELL_EVENTS)`), and used as the final component of both comparator branches. The
+tie breaker comes from the *domain*, not the title: alphabetically "Completion" precedes "Spud",
+which is the wrong way round for a well's life. That is precisely why the earlier title-based
+attempt was reverted.
+
+**Tests** (`tests/integration/test_field_intelligence.py`): undated milestones follow the
+lifecycle and reversing the input cannot change the answer; **same-day** milestones do too (the
+dated branch needs the ordinal for the same reason); the ordinal survives `to_dict()`.
+
+**Mutations.** `M31-1` (drop the ordinal from the dated branch) and `M31-3` (drop it from the
+undated branch) both **KILLED**. Honest note: `M31-1` **first survived**, for two compounding
+reasons — the mutation harness's `-k` filter did not yet name the new test, and the dated branch is
+never reached when both dates are `NULL`. Adding the same-day case and widening the filter killed
+it. A survival is a finding, not a pass.
+
+### 38B. Row 22 — evidence freshness delta — `BEHAVIOURALLY_PROVEN`
+
+**The row's premise was wrong, and reading the source settles it.** `_content_identity` hashes the
+request, each item's `(identity, source_type, record_type, status, current)` and the coverage row —
+**not** the wording, provenance or score. So the contract never promised content-level staleness,
+and "identical identities hide a substantive change" is a *true statement about a contract that
+does not claim otherwise*. The honest closure is to prove both halves rather than invent a change.
+
+**Tests** (`tests/integration/test_evidence_package_forensics.py`): unchanged is fresh with an
+empty delta and matching identities; a new answer is named in `added`; a deleted answer is named
+in `removed`; a status change on a row that still answers is reported as `changed` **with from/to**
+— the class a set-diff implementation cannot see at all; presentation order is *not* a freshness
+change, so row 21's guarantee is not silently undone here; and a substantive text edit the
+contract excludes is pinned as **not** reported, so a future identity change cannot start firing on
+edits nobody asked it to track.
+
+**One honest finding.** `is_current=False` removes the row from the answer entirely, so it surfaces
+as `removed`, not `changed`. Which class a mutation lands in is a fact about the *retrieval*
+contract, not about the freshness comparison — the first version of this test assumed otherwise and
+was corrected against the measurement.
+
+**Mutations.** `M22-3` (ignore status/current) and `M22-5` (make ordering affect freshness) both
+**KILLED**. `M22-3` also killed a pre-existing status test, so this was a gap in the delta-class
+*matrix* rather than a wholly unguarded path.
+
+### 38C. Ledger
+
+34 rows, 34 distinct numbers, no duplicates; `BEHAVIOURALLY_PROVEN 12`, `DEFECT_FOUND_AND_FIXED 15`,
+`HYPOTHESIS_DISPROVED 2`, `OPEN_NOT_EXERCISED 5` = 34. Row 12's status cell was bold-wrapped
+(`**`…`**`), the only non-canonical form in the table; normalised without dropping its `(V5.4)`
+mission tag. **Open rows are now 14, 25, 26, 28, 33** — reduced from seven, by closing rows 22 and
+31, with no row deleted and no historical evidence removed.
+
+## 39. V5.7 Phase A — final report
+
+**STARTING STATE:** expected baseline `180392c5c8aa84daa6218e587968019f98ebb64a` (= last published
+commit of the V5.6 series). The Arena workspace had reverted again: local `HEAD` was the grafted
+`e8621136ca73108ae7b590e6baa72fedc1f00835`, `is-shallow-repository = true`, 102 dirty paths, and
+`.venv` was absent. `git ls-remote origin refs/heads/arena/01a0c936-prog-proc` returned
+`180392c…`, the expected baseline.
+
+**DIVERGENCE / RECOVERY.** The 102 dirty paths were inspected *before* any checkout: after
+`git add -A`, `git diff --cached FETCH_HEAD --name-only | wc -l` returned **0**, so the worktree
+already equalled the remote tip and recovery was byte-identical and lossless.
+`merge-base --is-ancestor e862113 FETCH_HEAD` held, so `git checkout FETCH_HEAD -- .` followed by
+`git merge --ff-only FETCH_HEAD` fast-forwarded to `180392c`. Verified: local == remote ==
+`180392c`, `diff_vs_tip = 0`, `dirty = 0`. `.venv` was re-provisioned (`pip install -e ".[dev]"`),
+`alembic heads` → `0012 (head)`. **No reset, rebase, squash or force-push was used.**
+
+**FILES CHANGED:** `src/drilling_intelligence/intelligence/timeline.py` (`TimelineEntry.ordinal`,
+`_entry(ordinal=)`, `entry_comparator` sixth component, `_WELL_EVENTS` enumeration),
+`tests/integration/test_field_intelligence.py` (+3), `tests/integration/test_evidence_package_forensics.py` (+6),
+this document.
+
+**SCHEMA / MIGRATION CHANGES:** none. `ordinal` is a dataclass field with a default, derived at
+read time from the lifecycle definition; it is not persisted. `alembic heads` is still `0012`.
+
+**DEFECTS FOUND (2).**
+
+1. **Timeline comparator is not total** (`intelligence/timeline.py`). *Symptom:* Spud and
+   Completion of one well carry `kind="well"`, `table="well"`, `row_id=well.id` and, when undated
+   or same-dated, no distinguishing instant — so they tied on every component of
+   `entry_comparator`. *Root cause:* the key has no domain ordinal; the `_kind` from
+   `_WELL_EVENTS` is discarded. *Layer:* `intelligence`. *Why tests missed it:* `sorted` is stable,
+   so a fixed builder order gives a fixed answer and every existing assertion reads the list in the
+   order the builder produced it. *Regression:* 3 tests. *Mutations:* `M31-1`, `M31-3` **KILLED**.
+
+2. **Row 22's premise was incorrect** (`evidence/service.py`). *Symptom (claimed):* identical
+   item identities hide a substantive change. *Actual:* `_content_identity` hashes request +
+   `(identity, source_type, record_type, status, current)` + coverage — never wording, provenance
+   or score — so content-level staleness was never promised. *Layer:* contract, not code. *Why
+   tests missed it:* no test pinned the *excluded* direction, so nothing recorded the boundary.
+   *Regression:* 6 tests covering both halves. *Mutations:* `M22-3`, `M22-5` **KILLED**.
+
+**HONEST FINDINGS / LIMITATIONS.** (a) `M31-1` **survived on its first run**: the harness's `-k`
+filter did not name the new test, and the dated comparator branch is unreachable when both dates
+are `NULL`. The same-day test plus a wider filter killed it. (b) `is_current=False` removes a
+lesson from the answer entirely, so it surfaces as `removed`, not `changed`; the first draft of
+that test assumed `changed` and was corrected against the measurement. (c) `M22-3` also killed a
+pre-existing status test, so row 22 was a gap in the delta-class matrix rather than an unguarded
+path. (d) A regression command naming a non-existent `tests/integration/test_evidence_service.py`
+exited 4 and ran nothing; it was caught, the correct files were located
+(`test_evidence_package_forensics.py`, `test_evidence_citation_forensics.py`) and re-run — 92
+tests, 0 failures — against the already-pushed commit.
+
+**CONTRACT CHANGES:** `entry_comparator`'s key gained a sixth component (`ordinal`) and
+`TimelineEntry` a field with a default. No public signature lost an argument; `to_dict()` gained a
+key, which is additive.
+
+**VERIFICATION EXECUTED:** `pytest tests/integration/test_field_intelligence.py` (30 tests, incl.
+the 3 new), `pytest tests/integration/test_evidence_package_forensics.py
+tests/integration/test_evidence_citation_forensics.py` (57, 0 failures), `test_report_integrity.py`
+(5 passed), `ruff check .` clean, `ruff format --check .` clean, `python -m compileall` exit 0,
+`git diff --check` exit 0. Mutations: **5 run, 5 KILLED** (`M31-1`, `M31-3`, `M22-3`, `M22-5` plus
+the corrected re-run of `M31-1`), every mutation read back after application and every restore
+verified byte-identical before recording.
+
+**OPEN LEDGER ROWS AFTER THIS MISSION:** **14** (review current/history matrix), **25** (promotion
+atomicity), **26** (child-row identity), **28** (defensive reads / corruption), **33** (performance
+at 1k/10k). **Not closed in this session, and not claimed:** rows 14, 25, 26, 28 and 33 were not
+reached — Phase B (25/26), Phase C (28) and Phase D (33) remain outstanding. Row 33 in particular
+requires an executed 1k/10k benchmark against the stated performance criteria and has had none.
+
+**PUBLICATION:** three commits pushed to `arena/01a0c936-prog-proc` — `f00f8c4` (row 31),
+`ccc7d84` (row 22), and this ledger/report commit. After each push,
+`git rev-parse HEAD` == `git ls-remote origin refs/heads/arena/01a0c936-prog-proc` and
+`git status --porcelain` was empty. No force-push, rebase or amend.
+
+**FULL SUITE (run after the last source change).** `SUITE_EXIT=0`. Counted mechanically from the
+progress characters (23 progress lines, percentage markers stripped): **1634 passed, 3 skipped,
+1637 total, 0 failed, 0 errors**. Baseline was 1625 passed / 3 skipped / 1628, so the delta is
+**exactly +9 passed, +0 skipped** = the 3 row-31 tests plus the 6 row-22 tests, with no test
+removed, renamed or silently disabled.
+
+**GATE TABLE**
+
+| Gate | Result |
+| --- | --- |
+| Full suite (`pytest -q`) | 1634 passed / 3 skipped / 1637, 0 failed, exit 0 |
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | 234 files already formatted |
+| `python -m compileall -q src tests` | exit 0 |
+| `git diff --check` | exit 0 |
+| `alembic heads` | `0012 (head)` — no new migration |
+| `test_report_integrity.py` | 5 passed |
+| Mutations | 5 run, 5 KILLED, all restores verified byte-identical |
+| `local == origin == ls-remote`, 0 dirty | verified after every push |
