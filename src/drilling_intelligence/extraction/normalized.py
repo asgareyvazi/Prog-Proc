@@ -555,6 +555,15 @@ class NormalizedDocument:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> NormalizedDocument:
+        # Every field below has a default, which makes this method dangerously forgiving: a stored
+        # artefact that is missing its metadata entirely would otherwise come back as a *valid*
+        # empty document (blank sha256, zero pages) rather than as the corruption it is.  Callers
+        # that read persisted state - ``DocumentRegistry.extraction_document`` - already catch
+        # ``KeyError`` and report ``extraction.unreadable``, so requiring the one key that
+        # identifies the document makes that path live instead of decorative.  The rest of the
+        # defaults stay: an extraction that genuinely found no tables is not corrupt.
+        if "metadata" not in payload:
+            raise KeyError("metadata")
         raw_meta = dict(payload.get("metadata") or {})
         known = set(ExtractionMetadata.__dataclass_fields__)
         extra = {k: v for k, v in raw_meta.items() if k not in known}

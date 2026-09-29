@@ -437,3 +437,45 @@ def test_repository_lookup_keys_and_misses(workspace, corpus, ids) -> None:
                 f"{field} must be part of the key"
             )
         assert repository.check_extraction_cache() == []
+
+
+def test_a_corrupt_stored_extraction_is_reported_unreadable_not_repaired(
+    workspace, corpus, ids
+) -> None:
+    """Ledger row 28: the one corruption path the source itself marked ``pragma: no cover``.
+
+    ``DocumentRegistry.extraction_document`` catches a malformed ``document_json`` and answers
+    ``None`` after logging ``extraction.unreadable``.  That is the project's existing convention for
+    "this row cannot be read" - not a silent ``{}``, and not a raised error that would take the
+    caller down.  It had no test, so nothing pinned which of those three it was.
+    """
+    import json as _json
+
+    from sqlalchemy import text as _text
+
+    from drilling_intelligence.documents.registry import DocumentRegistry
+    from drilling_intelligence.extraction.registry import build_default_router
+
+    run_pipeline(workspace, corpus, ids)
+    with workspace.database.session() as session:
+        document = session.scalar(select(Document).where(Document.filename == MUD))
+        assert document is not None
+        document_id = document.id
+
+    with workspace.database.engine.begin() as connection:
+        updated = connection.execute(
+            _text("UPDATE extraction SET document_json = :bad WHERE document_id = :d"),
+            {"bad": _json.dumps({"this": "is not a normalised document"}), "d": document_id},
+        ).rowcount
+    assert updated >= 1, "the corpus must have stored an extraction to corrupt"
+
+    with workspace.database.session() as session:
+        registry = DocumentRegistry(
+            DocumentRepository(session),
+            router=build_default_router(workspace.settings),
+            settings=workspace.settings,
+        )
+        assert registry.extraction_document(document_id) is None, (
+            "a stored artefact that cannot be parsed as a normalised document must be reported "
+            "unreadable, never handed back as an empty or invented document"
+        )
