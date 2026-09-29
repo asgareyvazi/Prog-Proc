@@ -31,8 +31,16 @@ file = ""
 format = "text"          # text | json
 redact_keys = ["api_key", "token", "password", "secret", "authorization"]
 
+# NOT YET WIRED - accepted, not used.
+#
+# This section is the seam ADR-0005 reserves and is deliberately kept: the application is
+# local-first and must stay fully usable with AI disabled, so the knobs are worth preserving for
+# the phase that implements a provider.  But no provider adapter exists in this build - nothing in
+# src/ reads settings.ai, there is no provider or embedding class, and no startup capability probe
+# runs.  Every key below is parsed and validated, then ignored.  `drillintel doctor` reports the
+# section as not wired rather than implying a reachable model.
 [ai]
-provider = "ollama"                 # ollama | openai-compatible | none
+provider = "ollama"                 # accepted, not used: no adapter reads it
 endpoint = "http://127.0.0.1:11434"
 model = "qwen3:8b"
 temperature = 0.0
@@ -49,7 +57,7 @@ require_ai = false
 # retrieval until an embedding provider is reachable.
 embedding_model = "nomic-embed-text"
 embedding_dimensions = 0            # 0 = discover from the provider at runtime
-capability_probe = true               # query /api/tags (or /v1/models) at startup
+capability_probe = true               # accepted, not used: no startup probe is performed
 
 [ai.secrets]
 # We never store credentials in files.  This maps a secret slot to the name of

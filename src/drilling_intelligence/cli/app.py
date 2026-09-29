@@ -909,7 +909,17 @@ def command_doctor(args: argparse.Namespace) -> int:
             f"  index    {workspace.index_database_path}",
             f"schema {migration.current or '(none)'} at head {migration.head or '(unknown)'} - {migration.mode if migration else 'not opened'}",
             f"config  {workspace.settings.summary()['source_path']}",
-            f"ai      {summary['ai']['provider']} / model {summary['ai']['model'] or '(none)'}, required={summary['ai']['require_ai']}",
+            # The AI settings are real configuration but no provider adapter exists in this build,
+            # so the line says so.  Reporting ``provider = ollama`` on its own reads as "a model is
+            # configured and reachable", which is false: nothing in the product talks to Ollama.
+            # An operator who trusted it would go looking for an AI path that was never built.
+            f"ai      {summary['ai']['provider']} / model {summary['ai']['model'] or '(none)'}, "
+            f"required={summary['ai']['require_ai']}"
+            + (
+                ""
+                if summary["ai"].get("implemented")
+                else f" - {summary['ai'].get('note', 'not wired')}"
+            ),
             f"registry {counts['documents']} document(s), {counts['versions']} version(s), {counts['extractions']} artefact(s)",
             f"search   {stats['documents']} document(s), {stats['chunks']} chunk(s), fts5={'yes' if stats['fts_available'] else 'no'}",
             f"types    {', '.join(f'{key}={value}' for key, value in sorted(counts['by_classification'].items())) or 'nothing registered yet'}",

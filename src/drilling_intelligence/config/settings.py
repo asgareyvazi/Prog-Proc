@@ -19,7 +19,7 @@ import os
 import tomllib
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from ..core.errors import ConfigurationError
 
@@ -57,6 +57,26 @@ class LoggingSettings:
     redact_keys: list[str] = field(
         default_factory=lambda: ["api_key", "token", "password", "secret", "authorization"]
     )
+
+
+#: Whether an AI provider adapter actually exists in this build.
+#:
+#: ``[ai]`` is real, validated configuration for the seam ADR-0005 reserves, and it is deliberately
+#: kept: the application is local-first and must stay fully usable with AI disabled, so the knobs
+#: are worth preserving for the phase that implements them.  But no provider adapter has been
+#: written - nothing in ``src/`` reads ``settings.ai``, there is no provider/embedding class, and
+#: the startup capability probe ``capability_probe`` describes (``/api/tags``, ``/v1/models``) is
+#: performed by no code.  So a diagnostic that prints ``provider = ollama`` as though a model were
+#: reachable is telling the operator something false about a build that cannot talk to Ollama.
+#:
+#: This flag is the one place that says so, so diagnostics can report it instead of guessing, and
+#: the phase that lands an adapter flips exactly one constant rather than hunting through callers.
+AI_PROVIDER_IMPLEMENTED: Final[bool] = False
+
+#: Shown wherever the AI settings are summarised, so "configured" is never mistaken for "wired".
+AI_PROVIDER_NOT_WIRED_NOTE: Final[str] = (
+    "no provider adapter exists in this build; these settings are accepted but unused"
+)
 
 
 @dataclass
@@ -424,6 +444,8 @@ class Settings:
                 "api_key_source": ("env:" + self.ai.secrets.get("openai_api_key", "-"))
                 if self.ai.provider == "openai-compatible"
                 else "n/a",
+                "implemented": AI_PROVIDER_IMPLEMENTED,
+                "note": "" if AI_PROVIDER_IMPLEMENTED else AI_PROVIDER_NOT_WIRED_NOTE,
             },
             "mineru": {
                 "mode": self.mineru.mode,

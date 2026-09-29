@@ -293,6 +293,44 @@ def test_doctor_reports_the_new_tables_without_crying_wolf(ready) -> None:
     assert code == 1, (code, payload["findings"])
 
 
+def test_doctor_does_not_advertise_an_ai_provider_that_no_code_can_use(ready) -> None:
+    """`doctor` must not present a configured model as though the build could reach it.
+
+    `[ai]` is real, validated configuration for the seam ADR-0005 reserves, and it stays: the
+    product is local-first and has to work with AI disabled.  But no provider adapter exists - no
+    code in `src/` reads `settings.ai`, there is no provider or embedding class, and the startup
+    capability probe `capability_probe` describes is performed by nothing.  `doctor` nonetheless
+    printed `ai  ollama / model qwen3:8b, required=False` alongside `findings none`, which reads as
+    "a model is configured and reachable" and would send an operator looking for an AI path that was
+    never built.  Reporting the knobs is fine; reporting them as live is a false operational claim.
+    """
+    code, out, _err = _capture(ready, "doctor")
+    payload = json.loads(out)
+    ai = payload["settings"]["ai"]
+
+    # The configuration is still reported - nothing was removed or hidden.
+    assert ai["provider"] == "ollama" and ai["model"] == "qwen3:8b", ai
+
+    # ...but the summary now says plainly whether an adapter exists, on both surfaces.
+    assert ai["implemented"] is False, ai
+    assert ai["note"], "an unwired seam has to explain itself, not just carry a boolean"
+
+    # The human surface is a separate one - `notes` carries only the lines that can affect the exit
+    # code - so the terminal line has to be checked where a person actually reads it.
+    # ``_text`` asserts exit 0, and this fixture's doctor legitimately exits 1 (the index was never
+    # built and two knowledge rows disagree), so the code-tolerant helper is the right one here.
+    _code, text, _err = _capture_text(ready, "doctor")
+    lines = [line for line in text.splitlines() if line.startswith("ai ")]
+    assert lines, text
+    assert "ollama" in lines[0] and "qwen3:8b" in lines[0], lines[0]
+    assert "no provider adapter exists" in lines[0], lines[0]
+
+    # This is a truthful label, not a new failure: it must not manufacture a finding or change the
+    # exit code, and it must not depend on the workspace's own state.
+    assert not [line for line in payload["findings"] if "provider" in line.lower()], payload
+    assert code in (0, 1)
+
+
 def test_doctor_turns_a_broken_cross_well_link_into_a_finding(ready) -> None:
     """A hand-edited database is what `doctor` is for.
 
