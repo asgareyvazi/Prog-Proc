@@ -44,10 +44,29 @@ and Ollama (for optional AI) are both opt-in and absent by default.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-PYTHONPATH=src .venv/bin/python -m pytest            # 1083 passed, 3 optional Qt skips in the V2 certification run
+.venv/bin/python -m pytest                            # the editable install resolves the package; no PYTHONPATH needed
 .venv/bin/ruff check src tests migrations --output-format=concise
 .venv/bin/ruff format --check src tests migrations
+.venv/bin/python -m compileall -q src tests migrations
 ```
+
+The same gates run in CI on both supported runtimes - the CPython 3.11 floor and the 3.14 product
+target named in `docs/DECISIONS.md` ADR-0002 - see `.github/workflows/ci.yml`.  The desktop UI tests
+skip themselves when Qt cannot load, so a headless run reports skips rather than pretending to have
+executed them.
+
+To check the *installed* product rather than this source tree:
+
+```bash
+.venv/bin/python tools/release_smoke.py
+```
+
+That builds the wheel and the sdist, installs each into a fresh virtualenv outside the checkout,
+and drives the installed CLI end to end - workspace creation, schema bootstrap with no `migrations/`
+directory present, a well written and read back, the read surfaces, and `doctor`.  An installed
+wheel bootstraps its schema from the ORM metadata and stamps it at the current revision, because it
+deliberately does not carry the Alembic scripts; `doctor` reports that mode as healthy rather than
+as drift.
 
 Ingest a folder of documents into a workspace (this is the whole point of phase 0, so it
 is worth running once on your own files).  From a terminal, nothing else is required:
