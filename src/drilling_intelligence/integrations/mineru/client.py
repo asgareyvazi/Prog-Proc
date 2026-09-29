@@ -48,6 +48,10 @@ class MinerURun:
     stdout: str = ""
     stderr: str = ""
     duration_ms: float = 0.0
+    #: The external process's exit status.  Part of the audited record because a run can be
+    #: accepted *and* have exited non-zero (see ``_parse_cli``), and "we used the output anyway"
+    #: has to be recoverable from the record rather than only from a stderr tail.
+    returncode: int = 0
     command: list[str] = field(default_factory=list)
     output_dir: Path | None = None
     error: str = ""
@@ -66,6 +70,7 @@ class MinerURun:
             "duration_ms": round(self.duration_ms, 1),
             "command": " ".join(self.command) if self.command else "",
             "artefact": self.artefacts.best if self.artefacts else "",
+            "returncode": self.returncode,
             "error": self.error,
         }
 
@@ -131,7 +136,11 @@ class MinerUClient:
         ]
         run = run_command(command, timeout=self.timeout, cwd=workdir, env=self.extra_env)
         duration = float(run.get("duration_ms") or 0.0)
-        code = int(run.get("returncode", -1) or -1)
+        # Not `run.get("returncode", -1) or -1`: 0 is falsy, so that turned a *successful* exit
+        # into -1.  Every clean run was therefore recorded as a failure, the `code == 0` branch
+        # below could never be taken, and acceptance rested entirely on artefact discovery.
+        raw_code = run.get("returncode", -1)
+        code = -1 if raw_code is None else int(raw_code)
         stdout = str(run.get("stdout") or "")
         stderr = str(run.get("stderr") or "")
         artefacts: MinerURawOutput | None = None
@@ -150,8 +159,19 @@ class MinerUClient:
             error = (
                 f"mineru exited with code {code}: {stderr.strip()[:400] or stdout.strip()[:400]}"
             )
+        elif ok and code != 0:
+            # Tolerating a non-zero exit when usable artefacts were written is deliberate: MinerU
+            # builds do exit non-zero after producing valid output.  What was *not* acceptable is
+            # doing it silently - the run reported ok with an empty error, so a document parsed
+            # from a crash part-way through (say page 1 of 9) was indistinguishable in the record
+            # from a clean full parse.  The tolerance stays; the silence goes.
+            error = (
+                f"mineru exited with code {code} but wrote usable output; "
+                f"the extraction may be incomplete: {stderr.strip()[:300]}"
+            )
         return MinerURun(
             ok=ok,
+            returncode=code,
             mode="cli",
             artefacts=artefacts,
             stdout=stdout[-4000:],
