@@ -58,7 +58,28 @@ jobs:
         # The desktop UI tests skip themselves when Qt cannot load, which is the intended headless
         # behaviour - this job does not install the optional `ui` extra, and a skip is reported as
         # a skip rather than being dressed up as a pass.
-        run: pytest -q
+        run: |
+          set -o pipefail
+          pytest -q 2>&1 | tee pytest-output.txt
+
+      # A red run has to say *what* failed without anyone having to open the raw log, so each
+      # failure is re-emitted as a workflow annotation and a short summary lands on the run page.
+      - name: Surface failures as annotations
+        if: failure()
+        run: |
+          if [ -f pytest-output.txt ]; then
+            grep -E "^(FAILED|ERROR) " pytest-output.txt | head -50 | while read -r line; do
+              echo "::error::${line}"
+            done
+            {
+              echo "### Test failures"
+              echo '```'
+              grep -E "^(FAILED|ERROR) " pytest-output.txt | head -50
+              tail -40 pytest-output.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 1
 
   release-smoke:
     name: clean install smoke
