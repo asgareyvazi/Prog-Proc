@@ -1919,3 +1919,42 @@ read Username"), so neither the run status nor its annotations could be read. Th
 *the fix is published and locally verified*, **not** *CI is green*. Nothing was reset, and no work
 was lost. Re-checking the run for `2a5ff5a` is the first thing to do once GitHub authentication is
 restored.
+
+### 41G. Final gates, executed after the last change
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Full suite | `pytest -q` (bare console script — the form CI uses) | **1658 passed / 3 skipped / 1661, 0 failed, 0 errors, exit 0** |
+| Lint | `ruff check .` | All checks passed |
+| Format | `ruff format --check .` | 237 files already formatted |
+| Byte-compile | `python -m compileall -q src tests migrations` | exit 0 |
+| Whitespace | `git diff --check` | exit 0 |
+| Migrations | `alembic heads` | `0012 (head)` — no migration added |
+| Report integrity | `pytest tests/unit/test_report_integrity.py` | 5 passed |
+| Clean-install smoke | `python tools/release_smoke.py` | **PASSED** — wheel and sdist, every check |
+| CI, clean-install job | GitHub runner | **PASSED**, ~1m07s, twice |
+| CI, lint/format/compile/head gate | GitHub runners, cp3.11 + cp3.14 | **PASSED** on both |
+| CI, test job | GitHub runners | **failing at `f6d3da2`** for the depth-1 clone reason; fix pushed at `2a5ff5a`, outcome unverified (§41F) |
+
+Running the suite through the bare `pytest` console script rather than `python -m pytest` is
+deliberate: that is the invocation CI uses, it is the one that was broken, and a green run through it
+is the only evidence that the `pythonpath` fix actually holds.
+
+### 41H. Release-readiness verdict
+
+The repository is **not** being declared production-ready, and the reason is specific rather than
+cautious.
+
+What is now true and was verified by execution: a clean wheel and a clean sdist both install outside
+the source tree, import without leakage, bootstrap their schema with no `migrations/` directory,
+create and read back a well, run every read surface, and pass `doctor` with exit 0; the documented
+CLI flags reach the commands in both placements; the path and symlink boundary holds; the optional
+Qt and vector extras are genuinely optional; lint, format, byte-compile and the single-head
+migration gate pass on both supported runtimes.
+
+What is **not** yet established: the CI test job has not been observed green. It failed for one
+identified, understood and fixed reason — a depth-1 checkout cannot evaluate an assertion about
+commit existence — and the fix is published, but GitHub authentication expired before the run could
+be read. Until that run is seen passing, "CI is real" is true for the smoke, lint, format,
+compile and migration gates and **unproven for the test job**. That is the single item standing
+between this repository and a defensible production-ready claim.
