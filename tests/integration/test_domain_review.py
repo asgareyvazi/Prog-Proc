@@ -439,3 +439,66 @@ def test_an_unscoped_record_is_not_treated_as_universal(workspace) -> None:
         "a positively field-scoped record really is well-wide, so the contrast is the point: "
         "inheritance comes from a scope that was asserted, not from one that was left empty"
     )
+
+
+def test_the_currentness_matrix_is_table_keyed_not_one_rule_for_all(workspace) -> None:
+    """Ledger row 14: each population's currentness rule is the one its own domain defines.
+
+    Only ``document_version`` carries ``is_current``; every other table answers from status or from
+    its parent's currentness.  Flattening these into one rule would be wrong in both directions -
+    a REJECTED daily report is not historical, and a superseded calculation is.  So this pins each
+    branch of ``_current_for`` separately, using real model instances rather than doubles, and
+    asserts the *reason* the answer differs.
+    """
+    from drilling_intelligence.database.models import (
+        Calculation,
+        DdrReport,
+        DocumentVersion,
+        KnowledgeItem,
+        ProgramTarget,
+        Recommendation,
+        RiskRecord,
+    )
+    from drilling_intelligence.review.service import _current_for
+
+    def current(row, *, superseded=(), programs=()):
+        return _current_for(
+            row, superseded_calculations=set(superseded), current_programs=set(programs)
+        )
+
+    # program_target: currentness is inherited from the governing programme, never from itself.
+    target = ProgramTarget(id="t-1", program_id="p-current")
+    assert current(target, programs={"p-current"}) is True
+    assert current(target, programs={"p-other"}) is False, (
+        "a target of a superseded programme is historical even though the target row says nothing"
+    )
+
+    # document_version: the only table with an explicit currentness column.
+    assert current(DocumentVersion(id="dv-1", is_current=True)) is True
+    assert current(DocumentVersion(id="dv-2", is_current=False)) is False
+
+    # calculation: superseded by lineage *or* by its own status - either is enough.
+    assert current(Calculation(id="c-1", status="APPROVED")) is True
+    assert current(Calculation(id="c-2", status="APPROVED"), superseded={"c-2"}) is False
+    assert current(Calculation(id="c-3", status="SUPERSEDED")) is False
+
+    # knowledge_item: SUPERSEDED and RETIRED are historical; anything else is current.
+    assert current(KnowledgeItem(id="k-1", status="ACTIVE")) is True
+    assert current(KnowledgeItem(id="k-2", status="SUPERSEDED")) is False
+    assert current(KnowledgeItem(id="k-3", status="RETIRED")) is False
+
+    # operational rows: only REJECTED is historical - a DRAFT or CANDIDATE report is still current.
+    assert current(DdrReport(id="d-1", status="DRAFT")) is True
+    assert current(DdrReport(id="d-2", status="REJECTED")) is False
+
+    # risk_record / recommendation: SUPERSEDED only.
+    assert current(RiskRecord(id="r-1", status="OPEN")) is True
+    assert current(RiskRecord(id="r-2", status="SUPERSEDED")) is False
+    assert current(Recommendation(id="rec-1", status="OPEN")) is True
+    assert current(Recommendation(id="rec-2", status="SUPERSEDED")) is False
+
+    # the fallback: a table with no rule of its own is current unless it says otherwise.
+    class _Plain:
+        __tablename__ = "something_else"
+
+    assert current(_Plain()) is True
