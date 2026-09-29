@@ -2338,27 +2338,59 @@ def command_lessons(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------------- parser
 def _common() -> argparse.ArgumentParser:
-    """Options every subcommand accepts, so ``drillintel search x --json`` works as written."""
+    """Options every subcommand accepts, so ``drillintel search x --json`` works as written.
+
+    Every default here is ``argparse.SUPPRESS``, and that is load-bearing.  These options are
+    attached to the top-level parser *and* to every subparser through ``parents=``, and argparse
+    applies a subparser's defaults **over** the namespace the parent already filled.  With ordinary
+    defaults, ``drillintel --workspace W wells list`` parsed ``--workspace W`` at the top level and
+    then had it silently overwritten by the subparser's ``None`` - the command ran against the
+    current folder instead, and ``--json``/``--debug``/``--config`` were lost the same way.
+    ``SUPPRESS`` makes a subparser write the attribute only when its own flag is actually present,
+    so the more specific placement still wins and the global one survives.
+    """
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--config",
+        default=argparse.SUPPRESS,
         help="TOML config file (default: $DRILLINTEL_CONFIG, then ./configs/development.toml)",
     )
-    common.add_argument("--workspace", help="workspace folder (default: the current folder)")
-    common.add_argument("--json", action="store_true", help="machine-readable output")
     common.add_argument(
-        "--debug", action="store_true", help="raise instead of printing an error message"
+        "--workspace",
+        default=argparse.SUPPRESS,
+        help="workspace folder (default: the current folder)",
+    )
+    common.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="machine-readable output",
+    )
+    common.add_argument(
+        "--debug",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="raise instead of printing an error message",
     )
     return common
 
 
 def build_parser() -> argparse.ArgumentParser:
-    common = _common()
+    # The top-level parser gets its *own* instance of the shared options.  ``set_defaults`` does
+    # not merely record a namespace default - it rewrites ``action.default`` on any matching action
+    # object, and ``parents=`` shares those very objects with every parser built from the same
+    # parent.  Reusing one instance here would therefore push the real defaults straight back into
+    # the subparsers and silently undo the ``SUPPRESS`` that keeps them from clobbering a value
+    # given before the subcommand.
     parser = argparse.ArgumentParser(
         prog="drillintel",
         description="Drilling Intelligence - document registry, search and diagnostics (local-first).",
-        parents=[common],
+        parents=[_common()],
     )
+    # The real defaults live here, not in ``_common()`` - see its docstring for why a default there
+    # would be discarded by whichever subparser runs next.
+    parser.set_defaults(config=None, workspace=None, json=False, debug=False)
+    common = _common()
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     sub = parser.add_subparsers(dest="command")
 

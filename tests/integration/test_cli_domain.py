@@ -832,3 +832,47 @@ class TestWellBootstrapFromTheTerminal:
         assert summary["reports"] >= 1
         assert summary["npt"]["rows"] >= 1
         assert summary["planned"]["programs"] >= 1
+
+
+class TestGlobalOptionsSurviveTheSubcommand:
+    """A flag given *before* the subcommand must reach the command, not be silently dropped.
+
+    ``--config``, ``--workspace``, ``--json`` and ``--debug`` are attached to the top-level parser
+    and to every subparser through ``parents=``.  argparse applies a subparser's defaults over the
+    namespace the parent already filled, so ``drillintel --workspace W wells list`` used to run
+    against the **current folder** instead of ``W`` - and ``--json``/``--debug`` vanished the same
+    way, printing human output where machine output was asked for.  Both placements are documented
+    as valid, so this pins them and the precedence between them.
+    """
+
+    @staticmethod
+    def _parse(*argv: str):
+        from drilling_intelligence.cli.app import build_parser
+
+        return build_parser().parse_args(list(argv))
+
+    def test_a_global_workspace_reaches_the_command(self) -> None:
+        assert self._parse("--workspace", "/W", "wells", "list").workspace == "/W"
+
+    def test_a_workspace_after_the_subcommand_still_works(self) -> None:
+        assert self._parse("wells", "list", "--workspace", "/W").workspace == "/W"
+
+    def test_the_more_specific_placement_wins(self) -> None:
+        parsed = self._parse("--workspace", "/global", "wells", "list", "--workspace", "/specific")
+        assert parsed.workspace == "/specific"
+
+    def test_global_json_is_not_lost(self) -> None:
+        assert self._parse("--json", "wells", "list").json is True
+
+    def test_global_debug_and_config_are_not_lost(self) -> None:
+        parsed = self._parse("--debug", "--config", "/c.toml", "doctor")
+        assert parsed.debug is True
+        assert parsed.config == "/c.toml"
+
+    def test_omitting_everything_still_defaults_to_the_current_folder(self) -> None:
+        """The fix must not turn 'not given' into something other than the documented default."""
+        parsed = self._parse("wells", "list")
+        assert parsed.workspace is None
+        assert parsed.json is False
+        assert parsed.debug is False
+        assert parsed.config is None
