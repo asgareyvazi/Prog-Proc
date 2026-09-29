@@ -181,3 +181,39 @@ def test_the_database_url_is_never_baked_into_the_migration_config() -> None:
     assert 'attributes.get("engine")' in env, (
         "ensure_schema() hands over a live engine and env.py must use it"
     )
+
+
+def test_an_installed_package_with_no_migration_scripts_is_not_reported_as_behind(
+    tmp_path, monkeypatch
+) -> None:
+    """A wheel-installed workspace is at the only head it can attest to, and must say so.
+
+    ``find_migrations_dir`` cannot locate ``migrations/`` from ``site-packages`` - the wheel
+    deliberately does not carry it - so ``upgrade`` takes the metadata path.  That path used to
+    return ``head=""``, which makes ``up_to_date`` false permanently, so ``doctor`` told every
+    installed workspace that its schema was behind and advised ``alembic upgrade head``: a command
+    that cannot possibly work without the scripts the wheel does not ship.  A false finding that
+    also exits non-zero is worse than none, because it trains operators to ignore doctor.
+    """
+    from sqlalchemy import create_engine
+
+    from drilling_intelligence.database import migrations as migration_module
+
+    monkeypatch.setattr(migration_module, "find_migrations_dir", lambda start=None: None)
+    engine = create_engine(f"sqlite:///{tmp_path / 'installed.db'}")
+
+    first = ensure_schema(engine)
+    assert first.mode == "stamped-from-metadata"
+    assert first.up_to_date, f"a brand-new installed schema cannot already be behind: {first}"
+
+    # Reopening is the case that used to break: the tables and alembic_version now exist, so the
+    # second call takes the "already stamped, still no scripts" branch.
+    second = ensure_schema(engine)
+    assert second.mode == "stamped-from-metadata"
+    assert second.current == METADATA_REVISION
+    assert second.head == METADATA_REVISION, (
+        "the head an installed package can attest to is the metadata revision its schema was "
+        "built from, not an empty string"
+    )
+    assert second.up_to_date, f"doctor would report a healthy workspace as behind: {second}"
+    assert current_revision(engine) == METADATA_REVISION

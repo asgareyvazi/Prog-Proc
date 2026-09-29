@@ -64,6 +64,10 @@ vec = ["sqlite-vec>=0.1.6,<0.2"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
+    # Only needed by tools/release_smoke.py, which builds the wheel and sdist through the
+    # project's own build backend before installing them into a clean environment.  It is a
+    # dev/CI tool, never imported by the installed package.
+    "build>=1.1",
 ]
 
 [project.scripts]

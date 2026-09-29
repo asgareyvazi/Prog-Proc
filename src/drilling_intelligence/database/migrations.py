@@ -138,12 +138,17 @@ def upgrade(
             )
         return _create_and_stamp(engine, "pre-migration database stamped at head", stamp_only=True)
     if directory is None:
-        head = ""
+        # The head an installed package can attest to is the metadata revision, because that is
+        # exactly what its schema was built from.  Reporting an empty head here made
+        # ``up_to_date`` false forever, so ``doctor`` told every wheel-installed workspace that it
+        # was behind and advised ``alembic upgrade head`` - a command that cannot work without the
+        # migration scripts the wheel deliberately does not carry.  A false alarm that also exits
+        # non-zero is worse than no finding: it trains operators to ignore doctor.
         return MigrationStatus(
             mode="stamped-from-metadata",
             current=current_revision(engine),
-            head=head,
-            detail="migration scripts unavailable",
+            head=METADATA_REVISION,
+            detail="migration scripts unavailable; schema built from ORM metadata",
         )
     return _run_upgrade(engine, directory, revision, allow_downgrade=allow_downgrade)
 
