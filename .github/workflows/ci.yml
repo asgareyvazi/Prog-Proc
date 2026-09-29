@@ -27,7 +27,14 @@ jobs:
         # floor, and this matrix is how that is enforced rather than asserted.
         python-version: ["3.11", "3.14"]
     steps:
+      # Full history, not the default depth-1.  `test_report_integrity` asserts that every
+      # full-length commit SHA cited in the certification reports actually exists in the object
+      # database - a real guarantee against a report naming a commit that was never pushed - and a
+      # shallow clone cannot answer it, so the test failed in CI while passing locally.  The fix
+      # belongs here: the assertion is correct, the checkout was too thin to evaluate it.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
