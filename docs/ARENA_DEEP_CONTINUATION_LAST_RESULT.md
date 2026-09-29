@@ -1875,3 +1875,47 @@ merely record a namespace default — it rewrites `action.default` on any matchi
 `parents=` shares those very objects between parsers, so the real defaults leaked into the
 subparsers and undid the `SUPPRESS`. The failure was found by parsing argv directly and inspecting
 `action.default`, not by re-running the CLI and hoping.
+
+### 41E. What CI actually found — three real gaps, in order
+
+Adding CI was not a formality; it immediately found three things that no local run had ever caught,
+each of them a genuine release-readiness defect rather than a style complaint.
+
+**1. The suite was only runnable one specific way.** `tests/conftest.py` imports
+`tests.fixtures.generate`, so the repository root must be importable. `python -m pytest` puts the
+current directory on `sys.path` and hides that; the bare `pytest` console script does not, and died
+in under a second with `ModuleNotFoundError: No module named 'tests'` — exit 4, before a single test
+ran. Every local invocation in this project's history used the `python -m` form, so nothing had ever
+exercised the documented command. Fixed at the root with `pythonpath = ["."]` in the pytest config
+rather than by changing CI to the `python -m` form, so both invocations are equivalent and neither
+depends on how it was typed. Verified from the repository root *and* from a subdirectory.
+
+**2. The certification reports could not be validated in a normal clone.**
+`test_report_integrity` asserts that every full-length commit SHA cited in the reports exists in the
+object database — a real guard against a report naming a commit that was never pushed.
+`actions/checkout@v4` defaults to `fetch-depth: 1`, so in CI none of the five cited commits were
+present and the test failed, while locally it passed against a deeper fetch. All five were verified
+present in the object database before anything was changed; **the assertion was not weakened**, the
+checkout was too thin to evaluate it. Fixed with `fetch-depth: 0`.
+
+**3. A red run could not say what failed.** Diagnosing #2 required reading the job log, which is
+served from a blob store this environment cannot reach. The workflow now re-emits each
+`FAILED`/`ERROR` line as a run annotation and writes a short summary to the run page, which is how
+#2 was identified at all. That is a durable improvement, not a workaround: a failing job should name
+its failures without anyone opening a raw log.
+
+**Observed CI results.** The clean-install smoke job **passed on a real GitHub runner in ~1m07s**,
+twice. Ruff lint, ruff format, `compileall` over `src tests migrations`, and the single-alembic-head
+gate **passed on both CPython 3.11 and 3.14**. The test job failed at commit `7a3041a` in 20 s
+(gap #1), then at `f6d3da2` after ~18 min with exactly one failing test (gap #2, named by the new
+annotations).
+
+### 41F. Unverified at the time of writing — stated plainly
+
+The `fetch-depth: 0` fix is committed and was **verified pushed** (`local == ls-remote == 2a5ff5a`,
+0 dirty paths). Its CI outcome is **not** known: `GH_TOKEN` expired during the wait
+(`gh auth status` → "authentication failed", and the git HTTPS transport then failed with "could not
+read Username"), so neither the run status nor its annotations could be read. The claim is therefore
+*the fix is published and locally verified*, **not** *CI is green*. Nothing was reset, and no work
+was lost. Re-checking the run for `2a5ff5a` is the first thing to do once GitHub authentication is
+restored.
