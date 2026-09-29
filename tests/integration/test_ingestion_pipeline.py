@@ -495,3 +495,77 @@ def test_extraction_for_version_picks_the_newest_not_an_arbitrary_row(ingested, 
 
         # The per-document reader already gets this right; the two must not disagree.
         assert repo.latest_extraction(doc.id).content_sha256 == "f" * 64
+
+
+def test_equal_timestamp_extractions_are_ordered_deterministically_not_by_luck(
+    ingested, workspace
+) -> None:
+    """The ``id`` tiebreaker in ``extraction_for_version`` is load-bearing, and this proves it.
+
+    Ordering by ``created_at`` alone is not enough: extractions written inside one transaction can
+    share a timestamp at the column's resolution, and an unordered query over equal values returns
+    whatever the engine scans first - which in SQLite is insertion order.  So the adversarial case
+    is one where insertion order and the intended answer *disagree*: the newest row is inserted
+    first, and a scan-order read would return the older one.
+
+    Without the ``id`` tiebreaker this test fails.  With it, the answer does not depend on the
+    order the rows happened to be written in, which is the difference between a contract and a
+    coincidence.
+    """
+    import datetime as dt
+
+    pipeline, corpus, ids = ingested
+    assert run(pipeline, corpus, ids).ok
+
+    from drilling_intelligence.documents.repository import DocumentRepository
+
+    with workspace.database.session() as session:
+        repo = DocumentRepository(session)
+        document = session.scalars(select(Document)).first()
+        assert document is not None
+        version_id = document.current_version_id
+        assert version_id
+
+        baseline = repo.extraction_for_version(version_id)
+        assert baseline is not None
+        # One instant, shared by both rows, so created_at cannot separate them - and later than
+        # the baseline row, so the tie is genuinely the deciding comparison rather than being
+        # settled by the baseline simply being newer.
+        instant = baseline.created_at + dt.timedelta(hours=1)
+
+        # "aaa" sorts *below* "zzz", and it carries the STALE content.  Inserting it first means a
+        # scan-order read finds it first - exactly the wrong answer.
+        session.add(
+            Extraction(
+                id="ext-aaa-stale",
+                document_id=document.id,
+                document_version_id=version_id,
+                content_sha256="a" * 64,
+                extractor=baseline.extractor,
+                extractor_version=baseline.extractor_version,
+                created_at=instant,
+            )
+        )
+        session.add(
+            Extraction(
+                id="ext-zzz-newest",
+                document_id=document.id,
+                document_version_id=version_id,
+                content_sha256="f" * 64,
+                extractor=baseline.extractor,
+                extractor_version=baseline.extractor_version,
+                created_at=instant,
+            )
+        )
+        session.commit()
+
+        chosen = repo.extraction_for_version(version_id)
+        assert chosen is not None
+        assert chosen.id == "ext-zzz-newest", (
+            f"equal timestamps resolved to {chosen.id!r}; the tiebreaker must pick the greatest id "
+            "rather than whichever row the engine scanned first"
+        )
+        assert chosen.content_sha256 == "f" * 64
+
+        # And the two readers must not disagree about which row is newest.
+        assert repo.latest_extraction(document.id).id == "ext-zzz-newest"

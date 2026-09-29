@@ -677,10 +677,18 @@ class DocumentRepository:
         return extraction
 
     def latest_extraction(self, document_id: str) -> Extraction | None:
+        # ``id`` is the tiebreaker, and it is not optional: extractions written inside one
+        # transaction can share a ``created_at`` at the column's resolution, and without a second
+        # key the winner is whichever row SQLite scans first - insertion order, i.e. the older one.
+        # Every other newest-first extraction read in the codebase (operations/promote.py,
+        # operations/service.py, review/service.py) already orders this way; this reader was the
+        # one left inconsistent, so ``latest_extraction`` and ``extraction_for_version`` could
+        # disagree about which row was newest for the same data.  It matters beyond tidiness:
+        # ingestion/planner.py consults this to decide whether a document needs re-extraction.
         return self.session.execute(
             select(Extraction)
             .where(Extraction.document_id == document_id)
-            .order_by(Extraction.created_at.desc())
+            .order_by(Extraction.created_at.desc(), Extraction.id.desc())
             .limit(1)
         ).scalar_one_or_none()
 
