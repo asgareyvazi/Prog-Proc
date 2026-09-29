@@ -86,8 +86,19 @@ because SQLite already gives us both jobs with less to install and less to trust
 output is an *input to validation*, not a result: any proposed label or relation must
 satisfy the same contracts the deterministic path does (e.g.
 `DeterministicClassifier.validate` accepts only taxonomy members) and must carry
-provenance or be discarded. `[ai] provider = "none"` is the default in development
-configuration.
+provenance or be discarded.
+
+**Implementation status (corrected 2026-09-29).** This ADR records a decision, and the decision
+stands; the protocols it names were never written. There is no `LLMProvider`, `EmbeddingProvider`
+or `VectorStore` anywhere in `src/`, nothing reads `settings.ai`, and the startup capability probe
+`[ai] capability_probe` describes is performed by no code. The seam is configuration and error
+types only, so it stays a planned capability rather than an optional feature.
+
+This paragraph also used to state that `[ai] provider = "none"` is the default in development
+configuration. That was wrong and is corrected rather than left to mislead: the shipped
+`configs/development.toml` and the `AiSettings` dataclass both default to `"ollama"`. The value is
+inert - no adapter reads it - and the section is labelled NOT YET WIRED in the shipped file, but
+the honest statement is that the default is a name no code resolves, not that AI is off.
 
 **Consequences.** Model swaps are a config change. Tests never need a model: the suite
 runs the deterministic path and asserts the AI-free result is usable. The cost is that we

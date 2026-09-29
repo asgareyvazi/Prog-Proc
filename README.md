@@ -37,8 +37,12 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Skills, AI providers, and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
-Nothing here needs a GPU, a model download, or a server. `mineru` (for scanned pages)
-and Ollama (for optional AI) are both opt-in and absent by default.
+Nothing here needs a GPU, a model download, or a server. `mineru` (for scanned pages) is a real
+optional integration: install it separately and the router will use it, otherwise the built-in
+extractors carry on. The `[ai]` section is different in kind - it reserves the seam ADR-0005
+describes, but **no AI provider adapter exists in this build**, so nothing reads those settings and
+installing Ollama would change nothing. `drillintel doctor` says so on the `ai` line rather than
+implying a reachable model.
 
 ## Quick start
 
