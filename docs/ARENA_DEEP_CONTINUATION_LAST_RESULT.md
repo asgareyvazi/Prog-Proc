@@ -1958,3 +1958,33 @@ commit existence — and the fix is published, but GitHub authentication expired
 be read. Until that run is seen passing, "CI is real" is true for the smoke, lint, format,
 compile and migration gates and **unproven for the test job**. That is the single item standing
 between this repository and a defensible production-ready claim.
+
+### 41I. Correction — the CI test job is green, and ADR-0002 is now demonstrated
+
+§41F and §41H were written while `GH_TOKEN` was expired, and both said the CI test job's outcome was
+unverified. **That is now resolved, and the earlier hedging is superseded by measurement.**
+
+Authentication returned, the two pending documentation commits were pushed
+(`2a5ff5a..baa6397`, verified `local == ls-remote`, 0 dirty), and run `36559965850` — the run for
+the `fetch-depth: 0` fix — completed **success**:
+
+| Job | Result | Duration |
+| --- | --- | --- |
+| `clean install smoke` | **PASSED** | 1m06s |
+| `test (cp3.11)` — the ADR-0002 floor | **PASSED** | 19m23s |
+| `test (cp3.14)` — the ADR-0002 product target | **PASSED** | 16m29s |
+
+So the `fetch-depth: 0` diagnosis was correct and complete: the depth-1 checkout was the entire
+cause, and no test was weakened to get there. **ADR-0002's claim that "two runtimes are exercised in
+CI as the floor moves" is now true and demonstrated on GitHub runners**, where before this mission
+it had nothing behind it at all.
+
+Two runner advisories are recorded but are not failures and were not acted on: `actions/checkout@v4`
+and `actions/setup-python@v5` are flagged for Node.js 20 deprecation (they are being force-run on
+Node 24 and work), and `ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19. Both are worth a
+deliberate version bump in a later change rather than an opportunistic one now.
+
+**The release-readiness verdict in §41H is therefore upgraded on its one open item:** clean install,
+schema bootstrap, supported-runtime path, CI/reproducibility, public CLI contracts, optional
+integration failure and the filesystem boundary are all verified by execution, and the test suite is
+green in CI on both supported runtimes.
