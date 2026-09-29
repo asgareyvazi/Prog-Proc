@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from drilling_intelligence.core.enums import DocumentClassification
 from drilling_intelligence.operations.contracts import (
@@ -13,7 +14,7 @@ from drilling_intelligence.operations.contracts import (
     contract_registry,
     promotion_contract,
 )
-from drilling_intelligence.operations.promote import PromotionResult
+from drilling_intelligence.operations.promote import PromotionResult, promotion_identity
 
 
 def test_every_taxonomy_member_has_one_explicit_contract() -> None:
@@ -159,3 +160,72 @@ def test_version_outcome_taxonomy_does_not_collapse_refusals_into_empty_success(
     conflict.bump("npt", "conflict")
     assert conflict.finalize() == PromotionOutcome.CONFLICT.value
     assert PromotionResult().finalize() == PromotionOutcome.ELIGIBLE.value
+
+
+class TestChildIdentityIsContentAndLocationNotPosition:
+    """Ledger row 26: child identity comes from the authoritative key, and its contract is explicit.
+
+    ``promotion_identity`` is documented as content-addressed over *what the source said and where
+    it said it* - so ``row_index`` is part of the key by design, not an accident of iteration.  That
+    has a consequence worth pinning rather than discovering later: two children with identical
+    visible payload at different source positions are **different** children, and re-presenting the
+    same rows in a different order yields different keys.  Under a location-addressed contract that
+    is the correct answer, and ``replace=True`` is what keeps the database consistent with it.  What
+    must never happen is the opposite failure - collapsing distinct children because they look alike.
+    """
+
+    @staticmethod
+    def _key(**kwargs: Any) -> str:
+        base = {
+            "version_id": "ver-1",
+            "kind": "operations",
+            "table_id": "tbl-1",
+            "row_index": 3,
+            "well_id": "well-1",
+            "extra": "",
+        }
+        base.update(kwargs)
+        return promotion_identity(**base)
+
+    def test_the_same_line_promoted_twice_is_the_same_child(self) -> None:
+        assert self._key() == self._key(), "re-promotion must be a no-op, not a new row"
+
+    def test_identical_payload_at_different_positions_stays_distinct(self) -> None:
+        first = self._key(row_index=3)
+        second = self._key(row_index=4)
+        assert first != second, (
+            "two children that look identical are still two children when the source states them "
+            "on different lines - collapsing them would silently lose a row"
+        )
+
+    def test_a_moved_value_changes_the_key_because_location_is_part_of_the_contract(self) -> None:
+        """The documented reason row_index is in the key: an extraction that moved is a different
+        statement about the source, and pretending otherwise would hide the move."""
+        assert self._key(row_index=3) != self._key(row_index=9)
+
+    def test_every_component_of_the_key_actually_contributes(self) -> None:
+        """No component may be decorative - a key that ignores well_id would merge two wells."""
+        base = self._key()
+        for field, other in (
+            ("version_id", "ver-2"),
+            ("kind", "mud"),
+            ("table_id", "tbl-2"),
+            ("row_index", 4),
+            ("well_id", "well-2"),
+            ("extra", "x"),
+        ):
+            assert self._key(**{field: other}) != base, f"{field} does not contribute to identity"
+
+    def test_the_per_child_suffix_makes_four_rows_four_identities(self) -> None:
+        """One source line writes up to four child rows; the suffix is what keeps them apart."""
+        line = self._key()
+        keys = {line + suffix for suffix in (":op", ":ev", ":npt", ":problem")}
+        assert len(keys) == 4, "the suffixes must not collide"
+        assert all(key.startswith(line) for key in keys)
+
+    def test_identity_is_not_a_uuid_and_not_a_substring_of_one(self) -> None:
+        key = self._key()
+        assert key.startswith("promote:"), "the prefix names the scheme, so a reader can tell it"
+        body = key.split(":", 1)[1]
+        assert len(body) == 32 and all(c in "0123456789abcdef" for c in body)
+        assert self._key() == key, "a random uuid would not survive a second call"
