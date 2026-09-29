@@ -1988,3 +1988,127 @@ deliberate version bump in a later change rather than an opportunistic one now.
 schema bootstrap, supported-runtime path, CI/reproducibility, public CLI contracts, optional
 integration failure and the filesystem boundary are all verified by execution, and the test suite is
 green in CI on both supported runtimes.
+
+## 42. V6.1 — closing the remaining production-readiness phases
+
+§41H left one item open and §41 left several phases unexamined. This section records what those
+phases produced. Everything below is from execution in this checkout, not from a prior report.
+
+### 42A — a stale extraction was returned after a forced re-extraction
+
+**PRODUCTION BUG FOUND AND FIXED.** `DocumentsRepository.extraction_for_version` read
+
+```
+select(Extraction).where(Extraction.document_version_id == version_id).limit(1)
+```
+
+with **no `ORDER BY`**. A version can legitimately carry more than one extraction, because
+`ingest --force` re-extracts a file whose content has not changed — a documented flag — leaving
+several rows for the same `document_version_id`. With no ordering, SQLite scanned in insertion
+order and returned the **oldest**: precisely the row the forced re-extraction existed to replace,
+with no diagnostic that a choice had been made at all.
+
+Proven against the real pipeline and a real database: after one ingest and one forced re-extract
+carrying different content, the method returned the original extraction. Its sibling
+`latest_extraction` already ordered by `created_at DESC`, so the two readers disagreed about
+"newest" for the same data — the asymmetry is what marks this an oversight rather than a design
+choice.
+
+**Why it is not cosmetic.** This reader sits behind knowledge derivation
+(`knowledge/service.py:407` and `:723`) and the search index (`search/index.py:545`). A stale
+extraction therefore propagates stale text into derived facts and into what search can find: an
+operator forces a re-extract to pick up an extractor fix and silently keeps reading the pre-fix
+content.
+
+**Fixed at the authoritative layer** — newest-first ordering with `id` as a deterministic
+tiebreaker, matching `latest_extraction`. The tiebreaker is load-bearing: rows written inside one
+transaction can share a `created_at` resolution, and an unordered query over equal timestamps
+drifts between runs.
+
+### 42B — the platform advertised a search engine it does not have
+
+**RELEASE GAP FIXED.** The entire `[search]` settings section — `vector_store`,
+`keyword_results`, `semantic_results`, `hybrid_results`, `embedding_cache` — was parsed, validated
+against an allow-list, shipped in `configs/development.toml`, and then **read by nothing**: no code
+outside `settings.py` touches `settings.search`. Meanwhile `docs/DECISIONS.md:577` states there is
+"no second search engine, no second ranking, and no embedding/vector path", and the bounds that
+actually govern search are `MAX_CANDIDATES` and `RETRIEVAL_CAP`.
+
+So an operator could set `search.semantic_results`, install the `vec` extra and believe they had
+hybrid recall. **The absence of vector search is an intentional product boundary and is not called
+a defect**; advertising it through an installable extra and validated knobs is the problem, and is
+classified `UNSAFE_TO_CLAIM`.
+
+`pyproject.toml`'s own dependency rule already forbids this — "a library listed here and not used is
+not free: it is a supply-chain surface … and a promise about a capability the platform does not
+have" — so the never-imported `vec` extra was removed **on the project's own stated grounds**.
+`sqlite-vec` was verified imported nowhere in `src/` or `tests/`. The config keys were kept rather
+than deleted, because `Settings` tolerates unknown keys and an operator TOML must not break; they
+are now labelled in the shipped config as accepted-but-unused, pointing at the bounds that do
+govern search. The shipped config was re-verified to load with no unknown keys reported.
+
+### 42C — the optional-integration boundary had no test at all
+
+**COVERAGE GAP FIXED.** Nothing imported `integrations.mineru` or `integrations.base`;
+`pytest.mark.mineru` and `pytest.mark.network` were declared in `pyproject.toml` and used zero
+times. A regression could have made the prober lie and nothing would have noticed.
+
+Exercised directly, the boundary is sound: with no runtime present, `MinerUProber.available()`
+returns `False` **with a reason** naming both transports it tried
+(`executable 'mineru' not found on PATH`; `no HTTP response from http://127.0.0.1:8000`), each
+carrying its own explanation, plus honest limitations — including that MinerU's output is
+layout-based so cell-level XLSX provenance is unavailable and XLSX stays on the native openpyxl
+extractor. That contract is now pinned. **Absent means named-absent, never silently usable.**
+
+### 42D — ingestion recovery under interruption
+
+**COVERAGE GAP FIXED.** The module already covered first run, second-run no-op, changed file
+becoming a new version, duplicate detection, limited runs and removed files. It did not cover
+stopping part-way. Two contracts are now pinned, both asserting the end state equals the state an
+uninterrupted run produces, compared as exact identity tuples rather than counts — counts would
+hide a churned extraction id behind an unchanged total.
+
+- A run stopped through the **supported `cancel` callback** converges on the next run.
+- A run in which **one file fails** converges too, and the failure is *reported*, not raised: the
+  pipeline converts a per-file failure into a reported failure rather than aborting the scan, so
+  the contract worth pinning is visibility plus convergence, not exception propagation.
+
+Two premises were disproved while writing this, and are recorded so they are not retried: patching
+`workspace_identity` never fires, because `run` passes an explicit `workspace_id` and the pipeline
+only resolves one when the caller omits it; and a re-run over an unchanged corpus never reaches
+`DocumentRegistry.register` at all, which is the documented second-run no-op, so `--force` is
+required to exercise a mid-run fault.
+
+### 42E — domain-expansion readiness (audit only)
+
+**AUDIT — no defect, no feature added.** Domain expansion is governed by
+`operations/contracts.py`, which states its own rule: the registry has no callable plugin
+mechanism, and "adding a new domain writer therefore requires a visible registry entry, a writer,
+and a test/certification update". `CONTRACTS` maps **all 26** `DocumentClassification` members, and
+an import-time guard raises `RuntimeError` naming `missing=` and `extra=` if the registry and the
+enum ever diverge — exercised by `tests/unit/test_promotion_contracts.py` importing it.
+
+Read off the real registry:
+
+| coverage level | count | classifications |
+|---|---|---|
+| `END_TO_END_CERTIFIED` | 8 | DDR, NPT, TIME_BREAKDOWN, DRILLING_PROGRAM, MUD_REPORT, BHA_REPORT, BIT_RECORD, DIRECTIONAL_SURVEY — each with a named handler and real target models |
+| `KNOWLEDGE_SUPPORTED` | 13 | CASING_REPORT, CEMENT_REPORT, COST, WELL_CONTROL, LOGGING, HSE, EOWR, SERVICE_REPORT, PROCEDURE, STANDARD, CONTRACT, TECHNICAL_REFERENCE, LESSON_LEARNED — all `handler=-` |
+| `EXTRACT_ONLY` | 5 | BOOK, INVOICE, LWD_MWD, WIRELINE, OTHER |
+| `CLASSIFY_ONLY` / `DOMAIN_PROMOTABLE` / `REVIEWABLE` / `UNSUPPORTED` | 0 | — |
+
+Every domain §34 named — **COST, CASING, CEMENT, WELL CONTROL, LOGGING** — is already a first-class
+classification that classifies, extracts and feeds knowledge and evidence, but has **no domain
+writer**. That is an explicit boundary, not a silent gap: the module states that classifications
+without a contract "are not guessed into the nearest operational table". Expanding one means a
+registry entry, a `VersionPromoter` writer method, a migration for its target tables, and a
+certification update. `PLANNED FEATURE`, and the framework is ready for it.
+
+### 42F — what remains
+
+No phase of the V6.0 mission is left unexamined. The items deliberately **not** done, and why:
+the dead `SearchSettings` fields were annotated rather than deleted, because `Settings` tolerates
+unknown keys, so removal would be graceful but is a product decision and not a defect fix; the
+`ui`/`network`/`mineru` markers remain declared with almost no users, which is harmless and cheap
+to keep. No test was weakened anywhere in this section: the extraction bug was found by a test
+that first failed for the right reason.
