@@ -51,8 +51,8 @@ jobs:
 
       - name: Alembic has exactly one head
         run: |
-          heads=$(alembic heads | tee /dev/stderr | grep -c "(head)")
-          test "$heads" -eq 1
+          alembic heads
+          test "$(alembic heads | grep -c '(head)')" -eq 1
 
       - name: Test suite
         # The desktop UI tests skip themselves when Qt cannot load, which is the intended headless
