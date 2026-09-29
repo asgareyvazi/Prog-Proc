@@ -89,11 +89,18 @@ ignore_dir_names = [".git", ".drillintel", "node_modules", "__pycache__", ".venv
 ignore_file_patterns = ["~$*", "*.tmp", "*.part", "*.lock", ".DS_Store", "Thumbs.db"]
 supported_extensions = [".pdf", ".xlsx", ".xlsm", ".docx", ".txt", ".md", ".csv", ".tsv"]
 
+# NOT YET WIRED.  Every key in this section is parsed and validated, and then read by nothing:
+# there is no vector store, no embedding cache and no hybrid ranking in the product
+# (docs/DECISIONS.md: "no second search engine, no second ranking, and no embedding/vector path").
+# The bounds that actually govern search are MAX_CANDIDATES and RETRIEVAL_CAP in
+# drilling_intelligence/search/index.py.  The keys are kept so an existing operator TOML does not
+# break, and labelled so nobody tunes them expecting an effect.  Removing them is the right move
+# once - not before - something reads them.
 [search]
-vector_store = "auto"          # auto | sqlite-vec | memory | none
-keyword_results = 40
-semantic_results = 40
-hybrid_results = 20
+vector_store = "auto"          # accepted, not used - no vector path exists
+keyword_results = 40           # accepted, not used
+semantic_results = 40          # accepted, not used - there is no semantic recall
+hybrid_results = 20            # accepted, not used - there is no hybrid ranking
 embedding_cache = true
 
 [authority]

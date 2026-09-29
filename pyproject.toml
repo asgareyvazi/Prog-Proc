@@ -58,9 +58,6 @@ dependencies = [
 # ``drillintel-ui`` loads the toolkit lazily and reports a friendly host-runtime error when Qt
 # cannot initialize.
 ui = ["PySide6-Essentials>=6.6,<7.0"]
-# Optional FTS companion for vector recall.  Extras are kept separate so a headless install never
-# pulls in Qt or vector extensions.
-vec = ["sqlite-vec>=0.1.6,<0.2"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",

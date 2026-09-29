@@ -479,3 +479,35 @@ def test_a_corrupt_stored_extraction_is_reported_unreadable_not_repaired(
             "a stored artefact that cannot be parsed as a normalised document must be reported "
             "unreadable, never handed back as an empty or invented document"
         )
+
+
+def test_an_absent_mineru_is_reported_unavailable_with_a_reason_not_guessed_at() -> None:
+    """The optional-integration boundary: absent means *named* absent, never silently usable.
+
+    MinerU is external and opt-in, so the platform must run without it - but "runs without it" is
+    only safe if the probe says so explicitly and says *why*.  A prober that returned a bare
+    ``False``, or worse an optimistic ``True``, would let the pipeline claim an extraction path it
+    cannot take.  Nothing imported the adapter before, so this contract was unpinned.
+    """
+    from drilling_intelligence.config.settings import Settings
+    from drilling_intelligence.integrations.mineru.discovery import MinerUProber
+
+    prober = MinerUProber(Settings.load())
+    available, reason = prober.available()
+    status = prober.status()
+
+    assert available is False, "this environment has no MinerU runtime; the probe must say so"
+    assert isinstance(reason, str) and reason, "and must give a reason, not just a verdict"
+    assert status.available is False
+    assert status.reason == reason, "the structured status and the tuple must agree"
+
+    # The reason has to name what was actually tried, so an operator can act on it.
+    assert "cli" in status.reason and "http" in status.reason
+    modes = {check["mode"] for check in status.to_dict()["checks"]}
+    assert modes == {"cli", "http"}, f"both transports must be probed and reported, got {modes}"
+    for check in status.to_dict()["checks"]:
+        assert check["available"] is False
+        assert check["reason"], "each transport must explain its own failure"
+
+    # Honesty about what MinerU would and would not provide, so nobody assumes it covers XLSX.
+    assert any("openpyxl" in line for line in status.to_dict()["limitations"])
