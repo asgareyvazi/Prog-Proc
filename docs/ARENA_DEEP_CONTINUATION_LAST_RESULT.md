@@ -397,7 +397,7 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 11 | Migration / ORM parity | fresh `create_all` equals migrated-to-head | `test_migration_0005.py:240` | `BEHAVIOURALLY_PROVEN` |
 | 12 | **Review truncation truthfulness** | a review must not claim a cut it did not make | `review/service.py:1540` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 13 | Review null-well semantics | null must never become an accidental wildcard | `review/service.py:466`, `engineering/repository.py:1081` | `BEHAVIOURALLY_PROVEN` — a record with no scope at all is fetched by nobody and appears in no well's review, while a positively field-scoped record is inherited by its wells; `_for_well`'s null allowance only ever sees rows a scoped query returned |
-| 14 | Review current/history matrix | one definition of currentness per domain | `review/service.py` | `OPEN_NOT_EXERCISED` |
+| 14 | Review current/history matrix | one definition of currentness per domain | `_current_for` is an explicit **table-keyed** matrix, not one rule: `program_target` inherits from the governing programme, `document_version` is the only table with `is_current`, `calculation` is historical by lineage *or* status, `knowledge_item` by SUPERSEDED/RETIRED, the operational tables only by REJECTED (a DRAFT report is still current), risk/recommendation by SUPERSEDED. Differences are intentional and now pinned per branch; M14-1/3/5/6 KILLED | `BEHAVIOURALLY_PROVEN` |
 | 15 | Review read-only proof | a read must not write | `test_domain_review.py` fingerprint | `BEHAVIOURALLY_PROVEN` (existing) |
 | 16 | Search `truncated` semantics | the two bounds must be separately knowable, and exact-bound must not read as exceeded | `search/index.py:696,736`, `search/service.py` | `DEFECT_FOUND_AND_FIXED` — `candidate_capped`/`results_capped` added, `truncated` kept as their OR; states A–E and both 3999/4000/4001 and 15999/16000/16001 walked at the real constants; serialisation proven; M1/M2/M4/M5/M6 killed (§35, §36A) |
 | 17 | FTS vs scan equivalence | the accelerator must not change the answer | `search/index.py` | `DEFECT_FOUND_AND_FIXED` — two divergences found and fixed (scan bounded the table not the candidates, §35B; a shared bind name collapsed multi-term scans to nothing, §36B). Parity proven on ids, order, scores, matched terms, mode, broadened and both cap flags across documents, structured records, mixed populations, phrase and drilling tokens, at and below the bound, plus in-memory; M3/M8/M9 killed |
@@ -408,15 +408,15 @@ Reconstructed from the repository. Replaces §18 and §22 as the single enumerat
 | 22 | Evidence freshness delta | detect every mutation the contract promises | `_content_identity` hashes the request, each item's (identity, source_type, record_type, status, current) and coverage - **not** wording, provenance or score, so the contract never promised content-level staleness; 6 tests pin both halves (fresh/added/removed/changed, order is not a change, an excluded edit is **not** claimed); `is_current=False` surfaces as `removed`, not `changed`; M22-3 + M22-5 KILLED | `BEHAVIOURALLY_PROVEN` |
 | 23 | Citation `NOT_CHECKABLE` | "no citation" ≠ "citation failed" | `evidence/verify.py:59,116` | `BEHAVIOURALLY_PROVEN` (existing tests, see §26B) |
 | 24 | Citation multi-aggregation | the worst citation decides the item | `evidence/verify.py:62,224` | `HYPOTHESIS_DISPROVED` (see §26B) |
-| 25 | Promotion atomicity | late failure leaves no partial rows | `operations/promote.py:635`, `database/session.py:78` | `OPEN_NOT_EXERCISED` — tests written but **not proven sensitive**, see §26G |
-| 26 | Child-row identity | no inference from UUID or row position | `operations/*.py` | `OPEN_NOT_EXERCISED` |
+| 25 | Promotion atomicity | late failure leaves no partial rows | **Boundary now measured, not assumed.** `promote.py` has 13 `flush()` and **zero `commit()`**; the only commits in `src` are the CLI, `unit_of_work` and document savepoints. New tests assert a successful promotion commits **exactly once**, a failed one commits **zero** times, and rollback is checked against a whole-row fingerprint rather than counts. M25-1 (writer commits midway) **KILLED** — the mutation that previously survived. M25-5 (drop the explicit `rollback()`) survived, and so did dropping `rollback()` *and* `close()` together: **proven semantically inert**, because atomicity rests on the absence of intermediate commits, so no partial state is ever visible whether or not rollback runs | `BEHAVIOURALLY_PROVEN` |
+| 26 | Child-row identity | no inference from UUID or row position | `promotion_identity` is content-addressed over *what the source said **and where** it said it*, so `row_index` is in the key **by design**, and the `:op`/`:ev`/`:npt`/`:problem` suffixes keep one line's children apart. 6 tests pin it: re-promotion is a no-op, identical payload at different positions stays distinct, every component contributes, the key is deterministic and not a uuid. M26-1 (position only), M26-2 (drop `row_index`, collapsing by content), M26-3 (random uuid) all KILLED | `BEHAVIOURALLY_PROVEN` |
 | 27 | Scope null hierarchy | unknown ≠ contradictory ≠ unbound | `engineering/repository.py:273` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
-| 28 | Defensive reads / corruption | no silent repair of malformed persisted data | read paths, `doctor` | `OPEN_NOT_EXERCISED` |
+| 28 | Defensive reads / corruption | no silent repair of malformed persisted data | **DEFECT FOUND AND FIXED:** `NormalizedDocument.from_dict` defaulted every field, so a stored artefact missing its metadata came back as a *valid* empty document (blank sha256, zero pages) - the exact corrupt→valid-looking-default this row forbids - and the documented `extraction.unreadable` handler was dead code because `KeyError` never fired. Fixed at the authoritative layer by requiring the one identifying key. Also pinned from measurement: malformed provenance makes the review raise `JSONDecodeError` naming the position with the database byte-identical after; `StrEnumLike.parse` returns `None`, never a default member. M28-1/2/4 KILLED | `DEFECT_FOUND_AND_FIXED` |
 | 29 | Timeline interval semantics | point-in-window over an index of dated facts, not a duration | `intelligence/timeline.py:326,341` | `BEHAVIOURALLY_PROVEN` — documented in §26F, boundary cases verified |
 | 30 | Supplied dates must not become "no date" | a date given must be stored or refused | `operations/repository.py:112,133` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 | 31 | Timeline determinism | a total order on identical timestamps | **DEFECT FOUND AND FIXED:** undated milestones of one well share kind, table and row_id and carry no instant, so they tied on *every* component of `entry_comparator` and the emitted order was merely append order; the same tie hits the dated side when spud and completion share a date. Fixed with an `ordinal` taken from the lifecycle definition (`_WELL_EVENTS`), not the title - alphabetically Completion precedes Spud, which is the wrong way round. 3 tests; M31-1 + M31-3 KILLED | `DEFECT_FOUND_AND_FIXED` |
 | 32 | CLI limit contract | the CLI must not re-implement limit policy | `cli/app.py:663`, `docs/LIMIT_CONTRACTS.md` §3 | `BEHAVIOURALLY_PROVEN` for `--limit 0` and cap disclosure; per-command negative-value handling still unaudited |
-| 33 | Performance at 1k / 10k | bounded, no N+1 | all read paths | `OPEN_NOT_EXERCISED` |
+| 33 | Performance at 1k / 10k | bounded, no N+1 | **Measured on real 1 000 and 10 000-row corpora** through the real service entry points. Review issues **39** SELECTs and timeline **9** at *both* scales - query count constant, no N+1. Bounds stay truthful at scale: at 10 000 the review is cut at `_SAFE_LIMIT` with `truncated=True`; search returns 20 of 10 000 candidates with `results_capped=True`, `candidate_capped=False`. Timings recorded, never asserted against an invented SLA (none exists in the repo). No search query count is published - the index is a separate SQLite file, so the instrumentation would report a misleading 0. M33-1 (per-row SELECT in `list_operations`) KILLED at both scales | `BEHAVIOURALLY_PROVEN` |
 | 34 | System-wide limit audit | one matrix, five distinct bound kinds | `docs/LIMIT_CONTRACTS.md` | `DEFECT_FOUND_AND_FIXED` (V5.4) |
 
 Ledger row 34 is the reason five distinct limits must not be conflated; the constants actually in the
@@ -1634,3 +1634,184 @@ removed, renamed or silently disabled.
 | `test_report_integrity.py` | 5 passed |
 | Mutations | 5 run, 5 KILLED, all restores verified byte-identical |
 | `local == origin == ls-remote`, 0 dirty | verified after every push |
+
+## 40. V5.8 — final zero-open certification closure
+
+### 40A. Starting state and recovery
+
+Expected baseline `57c974a81ad52f98b24989ce89f51571b0199bd4`. The workspace had reverted again:
+local `HEAD` was the grafted `e8621136ca73108ae7b590e6baa72fedc1f00835`, `is-shallow-repository =
+true`, **103 dirty paths**, `.venv` absent. `ls-remote` returned the expected `57c974a`.
+
+The 103 dirty paths were inspected *before* any checkout: `git add -A` then
+`git diff --cached FETCH_HEAD --name-only | wc -l` returned **0**, so the worktree already equalled
+the remote tip and recovery was byte-identical. `merge-base --is-ancestor e862113 FETCH_HEAD` held;
+`git checkout FETCH_HEAD -- .` then `git merge --ff-only FETCH_HEAD` fast-forwarded to `57c974a`.
+Post-recovery: local == `ls-remote` == `57c974a`, `diff_vs_tip = 0`, `dirty = 0`. `.venv`
+re-provisioned; `alembic heads` → `0012 (head)`. **No reset, rebase, squash or force-push.**
+
+### 40B. Row 14 — review current/history — `BEHAVIOURALLY_PROVEN`
+
+The lifecycle model was already explicit; what was missing was a proof that its per-domain
+differences are deliberate. `_current_for` is a table-keyed matrix: `program_target` inherits
+currentness from its governing programme; `document_version` is the **only** table with an
+`is_current` column; `calculation` is historical by lineage *or* by its own `SUPERSEDED` status;
+`knowledge_item` by `SUPERSEDED`/`RETIRED`; the operational tables only by `REJECTED`, so a `DRAFT`
+daily report is still current; `risk_record`/`recommendation` by `SUPERSEDED`. Flattening these
+would be wrong in both directions, so the new test pins each branch on real model instances and
+asserts *why* the answer differs. The service-level gate was already pinned by the existing
+programme/target history test. **M14-1, M14-3, M14-5, M14-6 KILLED.**
+
+### 40C. Row 25 — promotion atomicity — `BEHAVIOURALLY_PROVEN`
+
+**Transaction ownership, measured:** `operations/promote.py` contains 13 `flush()` calls and **zero
+`commit()`**. The only commits anywhere in `src` are the CLI layer, `Database.unit_of_work`, and
+three `savepoint.commit()` calls in `documents/repository.py` (nested savepoints, not real
+commits). So the caller-owns-the-transaction architecture is now a measurement, not a reading.
+
+The previous tests compared **row counts**, which is exactly why a mid-commit mutation survived.
+Three new tests instrument the boundary itself: a successful promotion commits **exactly once**; a
+failed promotion commits **zero** times; and the rollback is asserted against a whole-row
+fingerprint (identities, foreign keys, payloads), not counts. **M25-1 KILLED** — the mutation that
+previously survived.
+
+**Honest inertness result.** M25-5 (delete the explicit `session.rollback()`) **survived**, and so
+did removing `rollback()` *and* `close()` together. That is the architecture, not a test gap:
+because promotion never commits, no partial state is ever visible to another connection whether or
+not rollback runs. The explicit rollback is prompt resource release, not the guarantee. Recorded as
+proven semantically inert rather than forced into a false kill.
+
+### 40D. Row 26 — child identity — `BEHAVIOURALLY_PROVEN`
+
+`promotion_identity` is content-addressed over *what the source said **and where** it said it*, so
+`row_index` is part of the key **by design** — the docstring says an extraction that moved a value
+must produce a different key. Children of one line are separated by the `:op` / `:ev` / `:npt` /
+`:problem` suffixes. Six tests pin the consequences: re-promotion is a no-op; identical payload at
+different positions stays **distinct** (collapsing them would silently lose a row); every component
+contributes, so none is decorative; the key is deterministic and not a uuid. **M26-1, M26-2, M26-3
+KILLED.** End-to-end re-promotion idempotence was already covered by
+`test_promoting_the_whole_workspace_twice_is_stable` and
+`test_records_promote_is_idempotent_from_the_terminal`, so it is cited rather than duplicated.
+
+### 40E. Row 28 — defensive reads / corruption — `DEFECT_FOUND_AND_FIXED`
+
+**A real production defect.** `NormalizedDocument.from_dict` defaulted every field, so a stored
+artefact missing its metadata entirely came back as a **valid-looking empty document** (blank
+`sha256`, `page_count=0`, no diagnostics) instead of as the corruption it is — precisely the
+corrupt → valid-looking-default conversion this row forbids, on a live read path. It also made
+`DocumentRegistry.extraction_document`'s `except (JSONDecodeError, KeyError)` handler **dead code**,
+marked `# pragma: no cover - corrupt store`, because `KeyError` could never fire.
+
+**Fix at the authoritative layer:** `from_dict` now requires the one key that identifies the
+document, raising `KeyError` so the existing documented handler fires and logs
+`extraction.unreadable`. No new abstraction and no new error type — the project's own vocabulary
+simply becomes live. The remaining defaults stay, because an extraction that genuinely found no
+tables is not corrupt. 216 extraction/document/registry tests still pass.
+
+Also pinned **from measurement rather than assumption**: malformed provenance JSON makes the review
+read raise `json.JSONDecodeError` naming the parse position, with the database byte-identical
+afterwards (a read that repairs would be a write in disguise); `StrEnumLike.parse` answers `None`
+for a value the enum does not have, never a default member, and does not silently lowercase; and
+changing a row's recorded provenance changes the review answer. **M28-1, M28-2, M28-4 KILLED.**
+
+### 40F. Row 33 — performance at 1k / 10k — `BEHAVIOURALLY_PROVEN`
+
+The repository defines **no numeric latency SLA**, so the criterion is structural and the test
+asserts only what was measured. Timings are recorded, never compared against an invented threshold.
+
+| surface | workload | rows | queries | returned | runtime (s) | bound state |
+| --- | --- | --- | --- | --- | --- | --- |
+| `DomainReviewService.review` | 1 000 | 2 000 | **39** | 2 000 | 0.220 | `truncated=False` |
+| `DomainReviewService.review` | 10 000 | 20 000 | **39** | 10 000 | 1.961 | `truncated=True` (`_SAFE_LIMIT`) |
+| `build_timeline` | 1 000 | 2 002 | **9** | 2 002 | 0.022 | — |
+| `build_timeline` | 10 000 | 20 002 | **9** | 20 002 | 0.240 | — |
+| `SearchService.search` | 1 000 | 1 000 | n/p | 20 | 0.035 | no cap |
+| `SearchService.search` | 10 000 | 10 000 | n/p | 20 | 0.312 | `results_capped=True`, `candidate_capped=False` |
+
+**Certification finding: query count is constant — 39 for review, 9 for timeline — at both scales.**
+That is the N+1 criterion satisfied by measurement, not by inspection. Bounds remain truthful at
+scale rather than being bypassed for speed: the 10 000-row review is cut at `_SAFE_LIMIT` and says
+so; search reports exactly the state-C distinction (`results_capped` without `candidate_capped`)
+established by the truncation work.
+
+**Two measurement-honesty notes.** (1) `WellOperation` is *not* part of the search index's
+structured population — `WellEvent`, `NptRecord`, `ProblemOccurrence` and `LessonLearned` are — so
+the corpus carries both; measuring search against operations alone returned 0 results and would
+have certified nothing. (2) There is deliberately **no search query count**: the index is its own
+SQLite file with its own engine, so instrumenting `workspace.database.engine` reported a misleading
+`0`. That number is omitted rather than published as a result. **M33-1** (replace the single ordered
+read in `list_operations` with a per-row `SELECT`) **KILLED at both scales.**
+
+### 40G. Cross-row sweep and recent-closed-row smoke
+
+Row 14's matrix change touched no identity code, so row 22's evidence identity contract is
+unaffected; row 25's fingerprint test asserts whole-row identity, so a failed replace cannot leave
+reassigned children (rows 25 × 26); row 28's corruption tests assert the database is byte-identical
+after each read, so a corrupt row cannot quietly alter a package's freshness (rows 28 × 22); row 31's
+ordinal is domain-derived and independent of review retrieval order (rows 31 × 14); and row 33's
+benchmark asserts the *caps still fire* at 10 000 rows, so no optimisation bypassed the semantic
+contracts (row 33 × the rest). Rows 13, 16, 17, 18, 21, 22 and 31 were re-run in the final full
+suite with no failures and none is reopened.
+
+### 40H. Mutations run this mission
+
+**16 mutations, 15 KILLED, 1 proven semantically inert, 0 unexplained survivors.**
+
+| Mutation | Target | Result |
+| --- | --- | --- |
+| M14-1 | target currentness always true | KILLED |
+| M14-3 | superseded calculation admitted as current | KILLED |
+| M14-5 | field inheritance dropped, well-local kept | KILLED |
+| M14-6 | history silently behaves like current | KILLED |
+| M25-1 | repository writer commits mid-promotion | KILLED (previously survived) |
+| M25-5 | explicit `rollback()` removed | survived — **proven inert** |
+| M25-5b | `rollback()` *and* `close()` removed | survived — **proven inert** |
+| M26-1 | identity from position only | KILLED |
+| M26-2 | `row_index` dropped, children collapse by content | KILLED |
+| M26-3 | identity from a random uuid | KILLED |
+| M28-1 | metadata guard removed | KILLED |
+| M28-2 | invalid enum coerced to first member | KILLED |
+| M28-4 | handler returns an empty document, not "unreadable" | KILLED |
+| M33-1 | per-row `SELECT` in `list_operations` | KILLED at 1k and 10k |
+
+Every mutation was applied to a verified-unique anchor, read back after application, and every
+restore verified byte-identical before its result was recorded. Backups were taken **after** each
+fix.
+
+**Two harness faults found and corrected, both recorded because each nearly produced false
+evidence.** (1) M28-4 was first reported `SURVIVED`; the mutation was sound but my `sed` had pointed
+the runner at `test_corrupt_persistence.py` while the killing test lives in
+`test_extraction_cache.py`. Re-run against the correct file it is KILLED. (2) An earlier row-31
+survival had the same cause. A mutation wrongly called *survived* is as misleading as one wrongly
+called killed.
+
+### 40I. Final gates
+
+| Gate | Result |
+| --- | --- |
+| `pytest -q` (full, authoritative) | **1651 passed / 3 skipped / 1654, 0 failed, exit 0** |
+| Test delta vs the 1634/3/1637 baseline | **+17 passed, +0 skipped** — exactly the 17 tests added |
+| `ruff check .` | All checks passed |
+| `ruff format --check .` | 236 files already formatted |
+| `python -m compileall -q src tests` | exit 0 |
+| `git diff --check` | exit 0 |
+| `alembic heads` | `0012 (head)` — no migration added |
+| `test_report_integrity.py` | 5 passed |
+| Recent-closed-row smoke (13, 16, 17, 18, 21, 22, 31) | 97 tests, 0 failed |
+| Mutations | 16 run, 15 KILLED, 1 proven inert, 0 unexplained survivors |
+
+The delta reconciles exactly: 1 (row 14) + 3 (row 25) + 6 (row 26) + 4 (row 28 corruption matrix) +
+1 (row 28 extraction cache) + 2 (row 33, parametrised 1k/10k) = **17**.
+
+One process fault, recorded rather than hidden: the first smoke-suite command named
+`tests/integration/test_search_truncation_boundary.py`, which does not exist, so pytest exited 4 and
+ran nothing. The real files were located (`test_search_index.py`, `test_search_pipeline.py`,
+`test_search_structured_forensics.py`, `test_retrieval_forensics.py`) and the suite re-run — 97
+tests, 0 failures. This is the same mistake made in the previous mission, so the lesson is now
+written down: verify a path exists before citing a result from it.
+
+### 40J. Final ledger
+
+34 rows, 34 distinct numbers, no duplicates. **`BEHAVIOURALLY_PROVEN` 16, `DEFECT_FOUND_AND_FIXED`
+16, `HYPOTHESIS_DISPROVED` 2, `OPEN_NOT_EXERCISED` 0** — summing to 34, counted by splitting the
+table's cells rather than by reading it. No row was deleted and no historical evidence removed.
