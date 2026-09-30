@@ -2112,3 +2112,54 @@ unknown keys, so removal would be graceful but is a product decision and not a d
 `ui`/`network`/`mineru` markers remain declared with almost no users, which is harmless and cheap
 to keep. No test was weakened anywhere in this section: the extraction bug was found by a test
 that first failed for the right reason.
+
+## 43. V6.2 — adversarial runtime-boundary certification
+
+Every statement here comes from execution in this checkout.
+
+### 43A — defects found and fixed
+
+| # | defect | root cause | fix | mutation |
+|---|---|---|---|---|
+| 1 | `doctor` printed `ai  ollama / model qwen3:8b, required=False` with `findings none`, exit 0, on a build that cannot talk to Ollama | `Settings.summary()['ai']` reported the config as though it were wired; nothing in `src/` reads `settings.ai` and no provider class exists | `AI_PROVIDER_IMPLEMENTED` constant drives `implemented`/`note` on both the JSON and text surfaces | killed (flag flipped; CLI suffix dropped) |
+| 2 | A MinerU exit code of 0 was recorded as -1 | `int(run.get("returncode", -1) or -1)` — 0 is falsy | explicit `None` check | M62-1 killed |
+| 3 | Output from a crashed MinerU run was indistinguishable from a clean parse | acceptance on non-zero exit was deliberate but silent; `MinerURun` carried no exit status | `returncode` on the record and in `to_dict()`, an explicit `error` note, an adapter diagnostic | M62-3, M62-4 killed |
+| 4 | A well-formed HTTP response with an empty result became a document with no text, no sections, and a diagnostic claiming "MinerU markdown used" | any dict `results` entry fell through to `normalize_markdown("")` | refused at the external boundary | M62-2 killed |
+| 5 | `latest_extraction` disagreed with `extraction_for_version` about which row was newest | ordered by `created_at DESC` with no tiebreaker; equal timestamps resolve by scan order | `created_at DESC, id DESC`, matching the convention already used in promote/service/review/engineering/lessons | M62-5 killed |
+
+Two documentation claims contradicted the code and were corrected rather than deleted: the README
+grouped Ollama with `mineru` as if both were optional integrations you could switch on, and ADR-0005
+stated that `[ai] provider = "none"` is the development default when the shipped config, the
+dataclass and bare defaults all say `ollama`.
+
+### 43B — a suspected defect that was investigated and rejected
+
+Stamping `0011` onto a database that already carries the `0012` schema makes the upgrade fail on
+`index uq_calculation_one_superseding_revision already exists`. That state is reachable only by
+hand-editing `alembic_version`, so it is a database lying about itself, not a product defect. The
+genuine one-revision-behind case — built by running the real migrations to 0011, verified to have 45
+tables and no 0012 index — upgrades cleanly.
+
+### 43C — boundaries exercised
+
+Ingestion recovery (cancel, per-file failure, force re-extraction, equal-timestamp ordering); MinerU
+discovery in all four modes plus CLI execution across a **real subprocess** and HTTP across a
+transport double; the review workbench's Qt-free controller layer; filesystem and process boundaries
+(symlink escape, hostile filenames, argv construction, environment propagation, malformed
+endpoints); SQLite concurrency under real threads; `doctor` across eight database states; wheel and
+sdist release smoke.
+
+### 43D — explicitly not exercised, and why
+
+The **Qt-present** UI contract could not be exercised: `PySide6-Essentials` installs, but
+`QtWidgets` needs the native `libGL.so.1`, and the sandbox has no route to it (the apt mirrors are
+unreachable). The skip reports the dynamic-linker reason, so it is distinguishable from "Qt not
+installed" and there is no UI-success state. `ReviewController` imports no Qt at all, so the logic
+that decides what the workbench shows and may do is certified in the default headless suite instead.
+
+One real race is recorded rather than fixed: two processes opening a *fresh* workspace
+simultaneously race the one-time schema bootstrap, producing `table alembic_version already exists`
+and a bare `KeyError: 'config'`. It is outside the documented single-operator scope, and the
+outcome is a loud failure rather than corruption or a misleading success. Fixing it would mean
+touching schema bootstrap, the riskiest area in the repository, for a case the architecture does not
+claim to support.
