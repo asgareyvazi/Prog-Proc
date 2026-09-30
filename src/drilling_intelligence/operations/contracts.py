@@ -250,6 +250,30 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
         ),
         contract_revision="v4",
     ),
+    DocumentClassification.COST: PromotionContract(
+        classification=DocumentClassification.COST,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
+        handler="cost",
+        target_models=("cost_item",),
+        required_evidence=(
+            "stored_extraction",
+            "cost_code_column",
+            "description_column",
+            "side_labelled_amount_column",
+            "explicit_currency",
+            "row_provenance",
+        ),
+        review_surface="DomainReviewService",
+        notes=(
+            "A cost line table: a cost code column, a description column and at least one money "
+            "column whose header says whether it is planned-side or actual-side.  The existing "
+            "CostItem record is reused rather than duplicated.  Planned and actual are never "
+            "merged, a currency the source did not state is refused rather than defaulted to USD, "
+            "there is no currency conversion anywhere, and npt_id is set only on an exact stored "
+            "record identity - never from a cost line sitting near an NPT row."
+        ),
+        contract_revision="v7",
+    ),
 }
 
 
@@ -263,7 +287,6 @@ _KNOWLEDGE_SUPPORTED = frozenset(
         DocumentClassification.LOGGING,
         DocumentClassification.SERVICE_REPORT,
         DocumentClassification.HSE,
-        DocumentClassification.COST,
         DocumentClassification.EOWR,
         DocumentClassification.LESSON_LEARNED,
         DocumentClassification.PROCEDURE,

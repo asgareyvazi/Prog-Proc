@@ -24,15 +24,16 @@ entity, filename, folder, search hit or approval stamp is not permission to writ
 | --- | ---: | --- |
 | `DocumentClassification` members | **26** | `core/enums.py` |
 | explicit static contracts | **26** | `contract_registry()` import-time completeness guard |
-| domain handlers | **6** | `program`, `report`, `mud_report`, `bha_report`, `bit_record`, `directional_survey` (DDR/NPT/TIME_BREAKDOWN share the named `report` handler) |
-| `END_TO_END_CERTIFIED` | **8** | drilling program, DDR, NPT, mud report, time breakdown, BHA report, bit record, directional survey |
+| domain handlers | **7** | `program`, `report`, `mud_report`, `bha_report`, `bit_record`, `directional_survey`, `cost` (DDR/NPT/TIME_BREAKDOWN share the named `report` handler) |
+| `END_TO_END_CERTIFIED` | **9** | drilling program, DDR, NPT, mud report, time breakdown, BHA report, bit record, directional survey, cost |
 | `DOMAIN_PROMOTABLE` but not end-to-end certified | **0** | no remaining restricted domain writer |
-| `KNOWLEDGE_SUPPORTED`, no domain writer | **13** | explicit deny-by-no-handler registry entries |
+| `KNOWLEDGE_SUPPORTED`, no domain writer | **12** | explicit deny-by-no-handler registry entries |
 | `EXTRACT_ONLY`, no type-specific knowledge/domain contract | **5** | explicit deny-by-no-handler registry entries |
 | deterministic V4 corpus cases | **14** | `build_v4_forensic_corpus()` and `test_v4_forensic_corpus.py` |
 
 The six handler entries preserve the V2 contract IDs for existing writers. `MUD_REPORT` is revisioned
-`v3`; `BHA_REPORT`, `BIT_RECORD` and `DIRECTIONAL_SURVEY` are revisioned `v4`. No existing contract ID
+`v3`; `BHA_REPORT`, `BIT_RECORD` and `DIRECTIONAL_SURVEY` are revisioned `v4`; `COST` is revisioned
+`v7`. No existing contract ID
 was silently changed: 22 contracts remain `v2`, 1 is `v3`, 3 are `v4`.
 
 ## Capability meanings
@@ -70,7 +71,7 @@ mean a specialized writer exists. **Target models** are the only tables a contra
 | 13 | `SERVICE_REPORT` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no service-job writer is registered. |
 | 14 | `HSE` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no incident/event writer is registered. |
 | 15 | `NPT` | yes | yes | yes | `END_TO_END_CERTIFIED` | `report` -> operational typed rows | yes | Certified; explicit NPT headers/codes and units gate promotion. |
-| 16 | `COST` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no source handler | yes | Manual/governed cost APIs exist; source text is not made into a cost row. |
+| 16 | `COST` | yes | yes | yes | `END_TO_END_CERTIFIED` | `cost` -> `cost_item` | yes | **Admitted V7.** A cost *ledger* is promoted: a cost code column, a description column and a money column whose header states planned-side or actual-side. The existing `CostItem` record is reused, not duplicated. Planned and actual are never merged; a currency the source did not state is refused rather than defaulted to USD; no currency is converted; `npt_id` is set only on an exact stored record identity. |
 | 17 | `INVOICE` | manual/none | yes | no type-specific contract | `EXTRACT_ONLY` | no handler | evidence | No payable parser or writer; monetary prose cannot become cost. |
 | 18 | `TIME_BREAKDOWN` | yes | yes | yes | `END_TO_END_CERTIFIED` | `report` -> `ddr_report`, `well_operation`, `npt_record` | yes | Certified on a standalone real CSV: explicit activity/duration rows, source duration text, row provenance, actual candidate state, NPT-code boundary and idempotence. See [`TIME_BREAKDOWN_CERTIFICATION.md`](TIME_BREAKDOWN_CERTIFICATION.md). |
 | 19 | `EOWR` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retrospective evidence only; no source-owned replacement writer. |

@@ -80,6 +80,7 @@ from ..database.models import (
     WellSection,
 )
 from ..database.serialize import record_to_dict
+from ..engineering.costs import CostRepository
 from ..engineering.repository import EngineeringRepository
 from ..wells.repository import WellRepository
 from .bha import (
@@ -90,6 +91,13 @@ from .bha import (
 )
 from .bit_record import bit_run_entries
 from .contracts import PromotionOutcome, promotion_contract
+from .cost import CostLineEntry as CostEntry
+from .cost import (
+    cost_line_entries,
+    cost_tables,
+    locate_cost_header,
+    unmapped_money_columns,
+)
 from .mud import (
     SummaryEntry,
     daily_entries,
@@ -559,6 +567,7 @@ class VersionPromoter:
         self.wells = WellRepository(session)
         self.records = OperationsRepository(session)
         self.engineering = EngineeringRepository(session)
+        self.costs = CostRepository(session)
         self._wells_by_name: dict[str, Well | None] = {}
 
     @staticmethod
@@ -599,6 +608,16 @@ class VersionPromoter:
             ]
             if missing:
                 return "mud table provenance is missing for: " + ", ".join(missing)
+            return ""
+        if handler == "cost":
+            relevant = [entry.table for entry in cost_line_entries(payload)]
+            missing = [
+                source_table_key(table) or "table"
+                for table in relevant
+                if not isinstance(table.get("provenance"), Mapping)
+            ]
+            if missing:
+                return "cost table provenance is missing for: " + ", ".join(sorted(set(missing)))
             return ""
         if handler in {"bha_report", "bit_record", "directional_survey"}:
             # No recognised table is *not* a provenance failure - the writer reports that as an
@@ -746,6 +765,12 @@ class VersionPromoter:
             return result
         if contract.handler == "directional_survey":
             self._promote_directional_survey(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
+        if contract.handler == "cost":
+            self._promote_cost(
                 payload=payload, document=document, version=version, result=result, replace=replace
             )
             result.finalize()
@@ -2831,6 +2856,219 @@ class VersionPromoter:
             if removed:
                 result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
         return first_run
+
+    # -- cost -----------------------------------------------------------------
+    @staticmethod
+    def _cost_table_provenance(entry: CostEntry) -> list[dict[str, Any]]:
+        """The stored provenance of the table a cost line came from, as a list."""
+        provenance = entry.table.get("provenance")
+        return [dict(provenance)] if isinstance(provenance, Mapping) else []
+
+    @staticmethod
+    def _cost_findings(entry: CostEntry, unmapped: Sequence[str]) -> list[dict[str, Any]]:
+        """Everything this cost line could not carry into a field, reported rather than dropped.
+
+        A money column the contract does not map, an amount it could not read and a currency the
+        source never stated are three different refusals, and a reviewer comparing the row against
+        the sheet needs to be able to tell them apart.  Silence here would look identical to a sheet
+        that never had the column.
+        """
+        findings: list[dict[str, Any]] = []
+        for column in unmapped:
+            findings.append(
+                {
+                    "reason": "UNMAPPED_MONEY_COLUMN",
+                    "detail": (
+                        f"the money column {column!r} is neither planned-side nor actual-side, so it "
+                        "stays evidence; it was not folded into either amount"
+                    ),
+                }
+            )
+        for side, text, value, currency in (
+            ("planned", entry.planned_text, entry.planned_value, entry.planned_currency),
+            ("actual", entry.actual_text, entry.actual_value, entry.actual_currency),
+        ):
+            if not text.strip() or value is not None:
+                continue
+            if not currency:
+                findings.append(
+                    {
+                        "reason": "MISSING_CURRENCY",
+                        "detail": (
+                            f"the {side} amount {text!r} has no currency the source stated, so no "
+                            "value was stored rather than one being filed under the USD default"
+                        ),
+                    }
+                )
+            else:
+                findings.append(
+                    {
+                        "reason": "AMBIGUOUS_AMOUNT",
+                        "detail": (
+                            f"the {side} amount {text!r} is not an unambiguous number (a formula, or "
+                            "a grouping that could be a decimal separator), so no value was stored"
+                        ),
+                    }
+                )
+        return findings
+
+    def _cost_scope(self, *, document: Document) -> dict[str, str]:
+        """The scope a cost line belongs to, taken from the document's own linkage.
+
+        Deliberately not widened: a field-level or programme-level cost sheet is not attached to a
+        well just because the platform could guess one, and a cost line with no scope is still a
+        real cost line with real provenance.  Field and project are left unset even when the linked
+        well has them, because the source did not state that this line is booked to them.
+        """
+        if not document.well_id:
+            return {}
+        well = self.session.get(Well, str(document.well_id))
+        return {"well_id": well.id} if well is not None else {}
+
+    def _cost_npt(self, *, reference: str, scope: Mapping[str, str]) -> tuple[str, str]:
+        """The one NPT record a cost line's reference names exactly, and a diagnostic when it does not.
+
+        ``npt_id`` is an attribution, and the only attribution this platform can make without
+        guessing is an exact match on a stored record's identity.  ``NptRecord`` has no
+        human-readable code column, so a sheet's ``NPT-014`` cannot be resolved to a row at all -
+        and resolving it by proximity to a cost line would be precisely the "cement cost plus an NPT
+        row therefore cement failure" inference the contract forbids.
+        """
+        text = reference.strip()
+        if not text:
+            return "", ""
+        query = select(NptRecord).where(NptRecord.id == text)
+        well_id = scope.get("well_id")
+        if well_id:
+            query = query.where(NptRecord.well_id == well_id)
+        match = self.session.execute(query.limit(1)).scalar_one_or_none()
+        if match is not None:
+            return str(match.id), ""
+        return "", (
+            f"the cost line names NPT reference {text!r}, which matches no stored NPT record; "
+            "the link was left unset rather than guessed"
+        )
+
+    def _promote_cost(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> None:
+        """Promote recognised cost lines onto the platform's existing cost record.
+
+        ``CostItem`` already carries the durable semantics a cost line needs - a code, a description,
+        a planned and an actual amount each with its own unit, a scope, provenance and a
+        content-derived identity - so this writer reuses it instead of adding a second cost table
+        beside it.  Three consequences of that reuse, all deliberate rather than expedient:
+
+        *   **Identity is the content, not the source row.**  ``CostRepository._IDENTITY_KEYS``
+            excludes the description, so re-promoting the same sheet returns the same rows rather
+            than accumulating them, and a line whose figures moved becomes a new row rather than an
+            edit of the old one.  That is the repository's documented philosophy - a changed figure
+            is corrected by whoever owns the cost, not by whoever re-imported the file.
+        *   **It is therefore not version-owned.**  ``CostItem`` has no ``document_version_id``, so
+            ``replace`` has nothing to sweep and no orphan deletion happens here.  A cost row
+            outlives the artefact that produced it, which is what makes it safe for a person to
+            confirm or correct; the BHA/bit/survey rows are the opposite by design.
+        *   **The currency is always explicit.**  ``CostItem`` defaults both unit columns to ``USD``
+            and ``currency_of("")`` folds an empty unit to ``USD`` - both sensible for an engineer
+            typing a line at a terminal and both wrong for a source-derived row, where either would
+            silently restate a NOK amount as USD.  So a value is only stored under a currency the
+            source stated.
+        """
+        entries = cost_line_entries(payload)
+        if not entries:
+            self._no_recognised_table(
+                result,
+                "no stored table has a cost code, a description and a planned- or actual-labelled "
+                "money column, so there is no cost table to promote",
+            )
+            return
+        scope = self._cost_scope(document=document)
+        unmapped: list[str] = []
+        for table in cost_tables(payload):
+            rows = list(table.get("rows") or [])
+            located = locate_cost_header(rows)
+            if located is None:
+                continue
+            _, header_row, headers = located
+            for column in unmapped_money_columns(headers, header_row):
+                if column not in unmapped:
+                    unmapped.append(column)
+        for entry in entries:
+            for finding in self._cost_findings(entry, unmapped):
+                result.skipped.append(finding)
+            if entry.planned_value is None and entry.actual_value is None:
+                # Nothing here is admissible as an amount.  The line stays evidence; writing a row
+                # with two NULL amounts would assert a cost line that has no cost on it.
+                if not entry.planned_text.strip() and not entry.actual_text.strip():
+                    result.skipped.append(
+                        {
+                            "reason": "NO_AMOUNT",
+                            "detail": (
+                                f"the cost line {entry.cbs_code or entry.wbs_code} states no amount "
+                                "in either a planned or an actual column"
+                            ),
+                        }
+                    )
+                continue
+            npt_id, npt_detail = self._cost_npt(reference=entry.npt_reference, scope=scope)
+            if npt_detail:
+                result.skipped.append({"reason": "UNRESOLVED_NPT_REFERENCE", "detail": npt_detail})
+            provenance = self._row_provenance(
+                self._cost_table_provenance(entry), entry.source_row_index
+            )
+            row, created = self.costs.record_item(
+                description=entry.description,
+                category=entry.category_text,
+                cbs_code=entry.cbs_code,
+                wbs_code=entry.wbs_code,
+                # Never derived from the code: a dotted code is kept as the source's cbs_code, and a
+                # display path would be a derived aid with no source behind it.
+                cbs_path="",
+                planned_value=entry.planned_value,
+                planned_unit=entry.planned_currency,
+                actual_value=entry.actual_value,
+                actual_unit=entry.actual_currency,
+                npt_id=npt_id,
+                provenance=provenance,
+                origin=KnowledgeOrigin.DERIVED.value,
+                created_by="promotion",
+                attributes={
+                    "source": {
+                        "table_id": source_table_key(entry.table),
+                        "row_index": entry.source_row_index,
+                        "planned_text": entry.planned_text,
+                        "actual_text": entry.actual_text,
+                        "currency_text": entry.currency_text,
+                        "npt_reference": entry.npt_reference,
+                    }
+                },
+                **scope,
+            )
+            result.identities.add(row.id)
+            # ``bump`` rather than an arithmetic assignment: ``counts`` maps a kind to a
+            # created/unchanged/conflict bucket, and ``finalize`` derives ``PROMOTED`` from
+            # ``wrote_anything``, which reads those buckets.  Writing a bare int here would both
+            # break ``total`` and leave the version reporting no rows written.
+            result.bump("cost_item", "created" if created else "unchanged")
+        if replace and not result.identities:
+            # Documented rather than acted on: CostItem is not version-owned, so a replacement
+            # artefact supersedes nothing and deletes nothing.
+            result.skipped.append(
+                {
+                    "reason": "NOT_VERSION_OWNED",
+                    "detail": (
+                        "cost rows are identified by content and are not owned by a document "
+                        "version, so a replacement artefact adds or matches rows and never deletes "
+                        "them; correcting a figure is a review action"
+                    ),
+                }
+            )
 
     # -- report ---------------------------------------------------------------
     def _promote_report(

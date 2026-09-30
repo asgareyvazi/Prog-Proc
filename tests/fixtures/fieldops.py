@@ -252,3 +252,25 @@ def add_casing_program(workspace, *, well_name: str = "A-3") -> dict[str, Any]:
             )
         session.commit()
         return {"program": program, "section": section, "well": well}
+
+
+def ingest_v7(workspace, *, wells: tuple[str, ...] = ("A-3", "B-11")) -> Path:
+    """The six-file operational corpus plus the three cost sources.
+
+    A separate corpus rather than an addition to :func:`ingest_v4`, so the suites that assert on
+    exact file counts and promotion summaries keep seeing the corpus they were written against.
+    """
+    from tests.fixtures.generate import build_v7_operational_corpus
+
+    hierarchy = register_wells(workspace, wells=wells)
+    root = workspace.root / "corpus"
+    build_v7_operational_corpus(root)
+    pipeline = IngestionPipeline(
+        settings=workspace.settings,
+        workspace_root=workspace.root,
+        database=workspace.database,
+    )
+    result = pipeline.run(root=root, well_id=str(hierarchy["wells"][wells[0]].id))
+    assert result.ok, result.error
+    assert result.failures == 0, [item.error for item in result.failures_report()]
+    return root

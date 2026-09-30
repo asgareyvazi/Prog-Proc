@@ -720,3 +720,120 @@ __all__ = [
     "build_time_breakdown_csv",
     "build_v4_forensic_corpus",
 ]
+
+
+def build_cost_ledger_xlsx(path: Path) -> Path:
+    """A cost ledger: one row per cost line, in NOK, with a column that is neither side.
+
+    Two choices in this fixture are load-bearing for the cost contract:
+
+    *   **The currency is NOK, stated in the header.**  ``CostItem`` defaults both unit columns to
+        ``USD``, so a fixture in USD would pass whether or not the writer read the currency at all.
+        NOK makes the default observable: a row that arrives as USD proves the writer ignored the
+        source.
+    *   **``Forecast`` is present and is not planned or actual.**  It is the column a lazy contract
+        folds into whichever numeric field is free.  Storing it would assert a figure the source
+        labelled as a prediction.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Cost Ledger"
+    sheet["A1"] = "ACME DRILLING - WELL A-3 COST LEDGER"
+    sheet["A2"] = "All amounts in NOK. Rig line is a day rate for the surface section."
+    header = [
+        "CBS",
+        "Description",
+        "Cost Category",
+        "Budget (NOK)",
+        "Actual (NOK)",
+        "Forecast (NOK)",
+    ]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=4, column=column, value=value)
+    rows = [
+        ["1.2.4", "Rig - day rate, surface section", "Rig", 1250000, 1310500, 1300000],
+        ["1.2.5", "Casing rental", "Casing", 480000, 452000, 480000],
+        ["1.2.6", "Cement job - 9 5/8 in", "Cementing", 620000, None, 620000],
+        ["1.2.7", "Mud chemicals", "Drilling fluids", 310000, 298000, 310000],
+    ]
+    for offset, row in enumerate(rows, start=5):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_cost_multi_currency_xlsx(path: Path) -> Path:
+    """One table whose planned side is USD and whose actual side is EUR.
+
+    Two currencies in one table is the case a single ``currency`` field gets wrong, and the case an
+    exchange-rate shortcut would quietly erase.  Neither column states a currency in a separate
+    column: the currency is in each header, which is how real ledgers print it.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "AFE"
+    sheet["A1"] = "WELL A-3 AFE SUMMARY - PROCUREMENT IN EUR, AFE APPROVED IN USD"
+    header = ["CBS", "Description", "Budget (USD)", "Actual (EUR)"]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=3, column=column, value=value)
+    rows = [
+        ["2.1.1", "Directional services", 180000, 165000],
+        ["2.1.2", "Logging run", 95000, 88000],
+    ]
+    for offset, row in enumerate(rows, start=4):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_cost_narrative_xlsx(path: Path) -> Path:
+    """A cost document that mentions money and states no cost table.
+
+    This is the shape the contract must refuse.  It has a sheet with figures in it, and a paragraph
+    quoting an amount, and neither is a cost line: there is no cost code, and the one numeric column
+    is headed ``Amount``, which says nothing about whether the money was planned or spent.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Cost Notes"
+    sheet["A1"] = "WELL A-3 COST NOTES"
+    sheet["A2"] = "The rig day rate ran over budget by about NOK 60 000 on the surface section."
+    header = ["Remarks", "Amount (NOK)", "Notes"]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=4, column=column, value=value)
+    for offset, row in enumerate([["Overspend noted", 60000, "to be reviewed"]], start=5):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+#: The three cost sources.  Kept out of :data:`V4_FORENSIC_BUILDERS` so the corpus the V4 suites
+#: assert on stays exactly nine files.
+V7_COST_BUILDERS = {
+    "cost_ledger_well-a3.xlsx": build_cost_ledger_xlsx,
+    "cost_multi_currency_well-a3.xlsx": build_cost_multi_currency_xlsx,
+    "cost_narrative_well-a3.xlsx": build_cost_narrative_xlsx,
+}
+
+V7_OPERATIONAL_BUILDERS: dict[str, Any] = {**BUILDERS, **V7_COST_BUILDERS}
+
+
+def build_v7_operational_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Path]:
+    """Write the operational corpus plus the three cost sources."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+    for name, builder in V7_OPERATIONAL_BUILDERS.items():
+        if name.startswith("scanned_") and not include_scan:
+            continue
+        written[name] = builder(root / name)
+    return written
