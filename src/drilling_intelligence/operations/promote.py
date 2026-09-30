@@ -71,6 +71,7 @@ from ..database.models import (
     DrillingProgram,
     Extraction,
     Field,
+    HseIncident,
     MudMeasurement,
     MudReport,
     NptRecord,
@@ -78,6 +79,7 @@ from ..database.models import (
     SurveyRun,
     SurveyStation,
     Well,
+    WellControlEvent,
     WellEvent,
     WellOperation,
     WellSection,
@@ -109,6 +111,7 @@ from .cost import (
     locate_cost_header,
     unmapped_money_columns,
 )
+from .hse import HseIncidentEntry, hse_incident_entries
 from .mud import (
     SummaryEntry,
     daily_entries,
@@ -135,6 +138,7 @@ from .tableshape import normalise_label as source_label_key
 from .tableshape import numeric as source_numeric
 from .tableshape import table_key as source_table_key
 from .tableshape import tables
+from .well_control import WellControlEntry, well_control_entries
 
 __all__ = [
     "ACTIVITY_HEADERS",
@@ -631,6 +635,25 @@ class VersionPromoter:
             if missing:
                 return "cost table provenance is missing for: " + ", ".join(sorted(set(missing)))
             return ""
+        if handler in {"well_control", "hse"}:
+            relevant = [
+                entry.table
+                for entry in (
+                    well_control_entries(payload)
+                    if handler == "well_control"
+                    else hse_incident_entries(payload)
+                )
+            ]
+            missing = [
+                source_table_key(table) or "table"
+                for table in relevant
+                if not isinstance(table.get("provenance"), Mapping)
+            ]
+            if missing:
+                return f"{handler} table provenance is missing for: " + ", ".join(
+                    sorted(set(missing))
+                )
+            return ""
         if handler in {"casing", "cement"}:
             relevant = [
                 entry.table
@@ -802,6 +825,18 @@ class VersionPromoter:
             return result
         if contract.handler == "cost":
             self._promote_cost(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
+        if contract.handler == "well_control":
+            self._promote_well_control(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
+        if contract.handler == "hse":
+            self._promote_hse(
                 payload=payload, document=document, version=version, result=result, replace=replace
             )
             result.finalize()
@@ -3652,6 +3687,383 @@ class VersionPromoter:
         if replace and bool(result.identities):
             removed = self._delete_domain_orphans(
                 CementJob, version_id=version.id, kept=result.identities
+            )
+            if removed:
+                result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        return written
+
+    # -- well control and HSE -------------------------------------------------
+    def _supersede_by_document(
+        self, *, model: type, document: Document, version: DocumentVersion
+    ) -> int:
+        """Stand down a previous version's derived rows of one model, keeping every row readable.
+
+        Written rather than reusing :meth:`_supersede_source_versions` because that helper scopes by
+        well, and an HSE incident may have no well at all - a slip on the camp steps or a spill at
+        the mud warehouse belongs to a site, not to a hole.  Scoping by well there would leave the
+        older version current forever.  A document's own rows all carry that document's scope, so
+        the document is the correct boundary for both domains.  A row a person confirmed is never
+        demoted: a later extraction is not evidence that the person misread the source.
+        """
+        previous = list(
+            self.session.execute(
+                select(model)
+                .where(
+                    model.document_id == document.id,
+                    model.document_version_id != version.id,
+                    model.origin == KnowledgeOrigin.DERIVED.value,
+                    model.is_current.is_(True),
+                )
+                .order_by(model.id)
+            ).scalars()
+        )
+        stood_down = 0
+        for row in previous:
+            if str(row.status) == ConfirmationStatus.CONFIRMED.value:
+                continue
+            row.is_current = False
+            stood_down += 1
+        return stood_down
+
+    def _write_well_control_event(
+        self,
+        *,
+        entry: WellControlEntry,
+        well: Well,
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+    ) -> WellControlEvent | None:
+        """One source-described well-control event, with every quantity keeping its stated unit."""
+        identity = promotion_identity(
+            version_id=version.id,
+            kind="well-control-event",
+            table_id=source_table_key(entry.table),
+            row_index=entry.row_index,
+            well_id=well.id,
+            extra=(
+                f"{entry.event_label.strip()}|{entry.occurred_at_text.strip()}"
+                f"|{entry.depth_text.strip()}"
+            ),
+        )
+        result.identities.add(identity)
+        unparsed = [
+            label
+            for label, text, value in (
+                ("SIDPP", entry.sidpp_text, entry.sidpp_value),
+                ("SICP", entry.sicp_text, entry.sicp_value),
+                ("pit gain", entry.pit_gain_text, entry.pit_gain_value),
+                ("depth", entry.depth_text, entry.depth_value),
+            )
+            if text.strip() and value is None
+        ]
+        if unparsed:
+            # Reported rather than dropped.  A pressure the source wrote without a unit is kept as
+            # text with a NULL value: defaulting it to psi would turn someone's reading into a
+            # number in a unit nobody stated, on the one kind of record where that matters most.
+            result.skipped.append(
+                {
+                    "reason": "UNPARSED_VALUE",
+                    "detail": (
+                        f"well-control event {entry.event_label or entry.row_index} states values "
+                        "without a unit this contract may assume: " + ", ".join(unparsed)
+                    ),
+                }
+            )
+        occurred_at, occurred_at_text = self._mud_date(entry.occurred_at_text)
+        content: dict[str, Any] = {
+            "well_id": well.id,
+            "event_label": entry.event_label.strip() or None,
+            # Only what an explicit type column said.  A pit gain is not a kick and a pressure is
+            # not a shut-in state; both are measurements, not classifications.
+            "event_type": entry.event_type or None,
+            "description": entry.description.strip(),
+            "occurred_at": occurred_at,
+            "occurred_at_text": occurred_at_text,
+            "severity": entry.severity.strip() or None,
+            "depth_text": entry.depth_text.strip(),
+            "depth_value": entry.depth_value,
+            "depth_unit": entry.depth_unit,
+            "sidpp_text": entry.sidpp_text.strip(),
+            "sidpp_value": entry.sidpp_value,
+            "sidpp_unit": entry.sidpp_unit,
+            "sicp_text": entry.sicp_text.strip(),
+            "sicp_value": entry.sicp_value,
+            "sicp_unit": entry.sicp_unit,
+            "pit_gain_text": entry.pit_gain_text.strip(),
+            "pit_gain_value": entry.pit_gain_value,
+            "pit_gain_unit": entry.pit_gain_unit,
+            # Only a method the source named.  Never inferred from the order of operations.
+            "kill_method": entry.kill_method.strip() or None,
+            "outcome": entry.outcome.strip() or None,
+            "cause": entry.cause.strip() or None,
+            # CauseStatus.SOURCE_STATED only when the sheet has a cause column with text in it.  A
+            # description that hints at a cause is not one the source stated, and guessing here
+            # would put a diagnosis into the record.
+            "cause_status": (
+                CauseStatus.SOURCE_STATED.value
+                if entry.cause.strip()
+                else CauseStatus.UNKNOWN.value
+            ),
+            "corrective_action": entry.corrective_action.strip() or None,
+            "record_state": RecordState.ACTUAL.value,
+            "status": ConfirmationStatus.CANDIDATE.value,
+        }
+        provenance = self._table_provenance(
+            entry.table,
+            document=document,
+            version=version,
+            row_index=entry.row_index,
+            source_label=entry.event_label or entry.description[:40],
+        )
+        existing, outcome = self._confirm_row(
+            WellControlEvent, identity, content, "well-control event", result
+        )
+        if existing is not None:
+            result.bump("well_control_event", outcome)
+            return existing
+        row = WellControlEvent(
+            id=new_id("wce"),
+            origin=KnowledgeOrigin.DERIVED.value,
+            created_by="promotion",
+            provenance=provenance,
+            identity_key=identity,
+            document_id=document.id,
+            document_version_id=version.id,
+            is_current=True,
+            attributes={"source": {"row_index": entry.row_index}},
+            **content,
+        )
+        self.session.add(row)
+        self.session.flush()
+        result.bump("well_control_event", "created")
+        return row
+
+    def _promote_well_control(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> WellControlEvent | None:
+        """Promote recognised well-control events.
+
+        This writer creates no :class:`NptRecord`, no :class:`ProblemOccurrence` and no
+        :class:`RiskRecord`.  A well-control event is an event; lost time is a separate fact the
+        source states or does not, and a kick that the sheet gives no NPT for creates no NPT row -
+        not zero hours, which would be a duration nobody wrote down.  The stated NPT hours are kept
+        on the event itself for a reviewer to act on, and only an existing ``NptRecord`` the source
+        named by id would ever be linked.
+        """
+        if not document.well_id:
+            result.error = "NO_WELL"
+            result.skipped.append(
+                {"reason": "NO_WELL", "detail": f"{document.filename} is not linked to a well"}
+            )
+            return None
+        well = self.session.get(Well, str(document.well_id))
+        if well is None:
+            result.error = "NO_WELL"
+            result.skipped.append({"reason": "NO_WELL", "detail": "the linked well does not exist"})
+            return None
+        entries = well_control_entries(payload)
+        if not entries:
+            self._no_recognised_table(
+                result,
+                "no stored table has a SIDPP, SICP or pit-gain column alongside a depth, event "
+                "type, date or description column, so there is no well-control event to promote",
+            )
+            return None
+        self._supersede_by_document(model=WellControlEvent, document=document, version=version)
+        written: WellControlEvent | None = None
+        for entry in entries:
+            if self._row_scope_conflict(entry.well_name, well):
+                result.skipped.append(
+                    {
+                        "reason": "WELL_SCOPE_CONFLICT",
+                        "detail": (
+                            f"well-control event {entry.event_label or entry.row_index} names well "
+                            f"{entry.well_name!r}, not this document's well {well.name!r}; row not "
+                            "promoted"
+                        ),
+                    }
+                )
+                continue
+            row = self._write_well_control_event(
+                entry=entry, well=well, document=document, version=version, result=result
+            )
+            if row is not None and written is None:
+                written = row
+        if replace and bool(result.identities):
+            removed = self._delete_domain_orphans(
+                WellControlEvent, version_id=version.id, kept=result.identities
+            )
+            if removed:
+                result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        return written
+
+    def _write_hse_incident(
+        self,
+        *,
+        entry: HseIncidentEntry,
+        well_id: str | None,
+        project_id: str | None,
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+    ) -> HseIncident | None:
+        """One source-reported HSE incident, at the location the source gave."""
+        identity = promotion_identity(
+            version_id=version.id,
+            kind="hse-incident",
+            table_id=source_table_key(entry.table),
+            row_index=entry.row_index,
+            well_id=well_id or "",
+            extra=(
+                f"{entry.incident_reference.strip()}|{entry.occurred_at_text.strip()}"
+                f"|{entry.description.strip()[:60]}"
+            ),
+        )
+        result.identities.add(identity)
+        if entry.spill_volume_text.strip() and entry.spill_volume_value is None:
+            result.skipped.append(
+                {
+                    "reason": "UNPARSED_VALUE",
+                    "detail": (
+                        f"HSE incident {entry.incident_reference or entry.row_index} states a "
+                        f"release quantity ({entry.spill_volume_text!r}) without a unit this "
+                        "contract may assume"
+                    ),
+                }
+            )
+        occurred_at, occurred_at_text = self._mud_date(entry.occurred_at_text)
+        content: dict[str, Any] = {
+            "well_id": well_id,
+            "project_id": project_id,
+            "incident_reference": entry.incident_reference.strip() or None,
+            # Only what an explicit type column said, matched whole against the closed set.
+            "incident_type": entry.incident_type or None,
+            "description": entry.description.strip(),
+            # The source's own words for where it happened.  Never resolved into a well: a camp, a
+            # warehouse and an access road are real locations and none of them is a hole.
+            "location_text": entry.location_text.strip(),
+            "occurred_at": occurred_at,
+            "occurred_at_text": occurred_at_text,
+            # As reported.  Never calculated from a probability and an impact, never defaulted when
+            # the source left it blank, and never converted into a RiskRecord score.
+            "severity": entry.severity.strip() or None,
+            "consequence": entry.consequence.strip() or None,
+            "immediate_cause": entry.immediate_cause.strip() or None,
+            "immediate_cause_status": (
+                CauseStatus.SOURCE_STATED.value
+                if entry.immediate_cause.strip()
+                else CauseStatus.UNKNOWN.value
+            ),
+            "root_cause": entry.root_cause.strip() or None,
+            "root_cause_status": (
+                CauseStatus.SOURCE_STATED.value
+                if entry.root_cause.strip()
+                else CauseStatus.UNKNOWN.value
+            ),
+            "corrective_action": entry.corrective_action.strip() or None,
+            "preventive_action": entry.preventive_action.strip() or None,
+            "record_state": RecordState.ACTUAL.value,
+            "status": ConfirmationStatus.CANDIDATE.value,
+        }
+        attributes: dict[str, Any] = {"source": {"row_index": entry.row_index}}
+        if entry.spill_volume_text.strip():
+            attributes["source"]["spill_volume_text"] = entry.spill_volume_text.strip()
+            attributes["source"]["spill_volume_value"] = entry.spill_volume_value
+            attributes["source"]["spill_volume_unit"] = entry.spill_volume_unit
+        provenance = self._table_provenance(
+            entry.table,
+            document=document,
+            version=version,
+            row_index=entry.row_index,
+            source_label=entry.incident_reference or entry.description[:40],
+        )
+        existing, outcome = self._confirm_row(
+            HseIncident, identity, content, "HSE incident", result
+        )
+        if existing is not None:
+            result.bump("hse_incident", outcome)
+            return existing
+        row = HseIncident(
+            id=new_id("hse"),
+            origin=KnowledgeOrigin.DERIVED.value,
+            created_by="promotion",
+            provenance=provenance,
+            identity_key=identity,
+            document_id=document.id,
+            document_version_id=version.id,
+            is_current=True,
+            attributes=attributes,
+            **content,
+        )
+        self.session.add(row)
+        self.session.flush()
+        result.bump("hse_incident", "created")
+        return row
+
+    def _promote_hse(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> HseIncident | None:
+        """Promote recognised HSE incidents.
+
+        A missing well is not an error here, and that is the whole reason the domain has its own
+        table.  ``WellEvent.well_id`` is ``NOT NULL``, so an HSE report covering a camp, a warehouse
+        or an access road could only have been filed by inventing a well for it.  The document's
+        well is used when it has one and left NULL when it does not, with the document's project
+        carrying the site scope instead.
+
+        Nothing is inferred.  A severity is stored only as reported and is never calculated.  A root
+        cause is stored only when the source states one: "the valve failed" is what happened, and
+        turning it into "poor maintenance" would be a diagnosis this writer does not make.  No
+        :class:`NptRecord`, :class:`ProblemOccurrence` or :class:`RiskRecord` is created - a safety
+        event with no lost time is not NPT, and a reported severity is not a risk score.
+        """
+        well_id: str | None = None
+        if document.well_id:
+            well = self.session.get(Well, str(document.well_id))
+            if well is None:
+                result.error = "NO_WELL"
+                result.skipped.append(
+                    {"reason": "NO_WELL", "detail": "the linked well does not exist"}
+                )
+                return None
+            well_id = well.id
+        entries = hse_incident_entries(payload)
+        if not entries:
+            self._no_recognised_table(
+                result,
+                "no stored table has an incident type or incident reference column alongside a "
+                "description column, so there is no HSE incident to promote",
+            )
+            return None
+        self._supersede_by_document(model=HseIncident, document=document, version=version)
+        written: HseIncident | None = None
+        for entry in entries:
+            row = self._write_hse_incident(
+                entry=entry,
+                well_id=well_id,
+                project_id=str(document.project_id) if document.project_id else None,
+                document=document,
+                version=version,
+                result=result,
+            )
+            if row is not None and written is None:
+                written = row
+        if replace and bool(result.identities):
+            removed = self._delete_domain_orphans(
+                HseIncident, version_id=version.id, kept=result.identities
             )
             if removed:
                 result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}

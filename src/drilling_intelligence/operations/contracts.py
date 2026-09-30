@@ -325,6 +325,59 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
         ),
         contract_revision="v7",
     ),
+    DocumentClassification.WELL_CONTROL: PromotionContract(
+        classification=DocumentClassification.WELL_CONTROL,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
+        handler="well_control",
+        target_models=("well_control_event",),
+        required_evidence=(
+            "stored_extraction",
+            "named_pressure_or_gain_column",
+            "second_event_fact_column",
+            "source_units_preserved",
+            "row_provenance",
+            "well_linkage",
+        ),
+        review_surface="DomainReviewService",
+        notes=(
+            "A well-control event table: a column named SIDPP, SICP or pit gain, alongside at least "
+            "one of depth, event type, date or description.  A generic Pressure/Volume/Time table "
+            "inside a well-control report is not a well-control event.  Every quantity keeps text, "
+            "value and unit as three facts and a value is stored only when its header stated the "
+            "unit - a bare 1200 is not known to be psi, bar or kPa.  Event type comes from an "
+            "explicit type column matched whole, never from a pit gain or a depth.  Cause is "
+            "SOURCE_STATED only when the sheet states one.  No NPT row, no problem occurrence and no "
+            "risk record is created: lost time is a separate fact the source states or does not, and "
+            "no kill method, pressure simulation or diagnosis is ever computed."
+        ),
+        contract_revision="v7",
+    ),
+    DocumentClassification.HSE: PromotionContract(
+        classification=DocumentClassification.HSE,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
+        handler="hse",
+        target_models=("hse_incident",),
+        required_evidence=(
+            "stored_extraction",
+            "incident_type_or_reference_column",
+            "description_column",
+            "row_provenance",
+            "source_severity_verbatim",
+        ),
+        review_surface="DomainReviewService",
+        notes=(
+            "An HSE incident table: a column named as an incident type or an incident reference, "
+            "together with a description column.  A generic Incident/Date/Severity or "
+            "Action/Date/Status table is not an incident register.  Severity is stored exactly as "
+            "reported and is never calculated from a probability and an impact, never defaulted when "
+            "absent, and never converted into a RiskRecord score.  Root cause is stored only when "
+            "the source states one.  well_id is nullable on purpose: a camp, warehouse or access "
+            "road event is filed at its site rather than against an invented well, which is why this "
+            "is not WellEvent(category='safety') - that table's well_id is NOT NULL.  No NPT row is "
+            "created for an event with no stated lost time."
+        ),
+        contract_revision="v7",
+    ),
 }
 
 
@@ -332,10 +385,8 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
 # contracts.  This is an explicit deny list, not an accidental fall-through.
 _KNOWLEDGE_SUPPORTED = frozenset(
     {
-        DocumentClassification.WELL_CONTROL,
         DocumentClassification.LOGGING,
         DocumentClassification.SERVICE_REPORT,
-        DocumentClassification.HSE,
         DocumentClassification.EOWR,
         DocumentClassification.LESSON_LEARNED,
         DocumentClassification.PROCEDURE,

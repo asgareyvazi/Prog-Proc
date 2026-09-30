@@ -82,6 +82,9 @@ LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015
     # pre-0014 file legitimately has neither - and the parity test still says exactly which.
     "casing_run",
     "cement_job",
+    # 0017/0018: the well-control and HSE domain tables.
+    "well_control_event",
+    "hse_incident",
 )
 
 #: The foreign keys ``calculation`` already had; a table rebuild that loses one of these is a data bug.

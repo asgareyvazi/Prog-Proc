@@ -546,6 +546,9 @@ def test_the_downgrade_removes_the_domain_and_keeps_the_workspace(tmp_path) -> N
                 # 0014/0015: the casing and cement domain tables.
                 "casing_run",
                 "cement_job",
+                # 0017/0018: the well-control and HSE domain tables.
+                "well_control_event",
+                "hse_incident",
             )
         ), diff
 

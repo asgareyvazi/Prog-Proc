@@ -38,6 +38,8 @@ LATER_MIGRATION_COLUMNS = (
 LATER_MIGRATION_TABLES = (
     "casing_run",  # 0014
     "cement_job",  # 0015
+    "well_control_event",  # 0017
+    "hse_incident",  # 0018
 )
 
 

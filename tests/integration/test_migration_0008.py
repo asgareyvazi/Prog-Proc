@@ -170,6 +170,9 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
                     # 0014/0015: the casing and cement domain tables.
                     "casing_run",
                     "cement_job",
+                    # 0017/0018: the well-control and HSE domain tables.
+                    "well_control_event",
+                    "hse_incident",
                     "bit_record",
                     "survey_run",
                     "survey_station",

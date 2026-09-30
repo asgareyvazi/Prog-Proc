@@ -2153,6 +2153,170 @@ class CementJob(Base, TimestampMixin):
     attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
 
 
+class WellControlEvent(Base, TimestampMixin):
+    """One well-control event the source says happened, with the measurements the source stated.
+
+    This is deliberately not :class:`WellEvent`.  ``WellEvent`` carries exactly one measurement -
+    ``depth_md_value`` - and no pressure or volume field at all, so a kick record's SIDPP, SICP and
+    pit gain would have had to live in ``attributes``.  That is not a small compromise: three
+    measured quantities, each with its own unit, would sit outside the schema's unit discipline,
+    invisible to a query and to the search projection, and a promoter that stores a pressure without
+    its unit column has nowhere to be stopped from defaulting one.  A JSON field is not a substitute
+    for modelling a real measured quantity, so the quantities get columns.
+
+    Nothing here is inferred:
+
+    *   ``event_type`` is what the source called the event, matched whole against a closed set, and
+        stays NULL when the source did not say.  A pit gain is not automatically a kick; a pressure
+        reading is not automatically a shut-in state.
+    *   Each measurement keeps text, value and unit as three separate facts.  A value is stored only
+        when its header stated the unit, because a bare ``1200`` under a column headed ``Pressure``
+        is not known to be psi, bar or kPa.
+    *   ``cause`` and ``cause_status`` preserve the existing epistemic distinction: a cause the
+        source wrote down is ``SOURCE_STATED``, and one nobody wrote down is ``UNKNOWN`` - never a
+        diagnosis the platform produced from the description.
+    *   ``npt_id`` is set only when the source itself attributed lost time to this event.  A kick is
+        not automatically NPT, and a well-control event with no stated lost time creates no NPT row.
+    """
+
+    __tablename__ = "well_control_event"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_well_control_event_identity"),
+        Index("ix_well_control_event_well", "well_id", "is_current"),
+        Index("ix_well_control_event_version", "document_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    #: The source's own label or reference for the event, kept verbatim.
+    event_label: Mapped[str | None] = mapped_column(String(200))
+    #: What the source called the event - ``kick``, ``influx``, ``loss``, ``shut_in``, ``flow``,
+    #: ``pressure_test``, ``kill`` - and NULL when it did not say.
+    event_type: Mapped[str | None] = mapped_column(String(32))
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime)
+    #: The source's own wording when it wrote a time the platform could not parse.
+    occurred_at_text: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    #: ``Severity`` as the source wrote it, never a computed score.
+    severity: Mapped[str | None] = mapped_column(String(16))
+    depth_text: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    depth_value: Mapped[float | None] = mapped_column(Float)
+    depth_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    #: Shut-in drillpipe pressure - stated by the source or absent.
+    sidpp_text: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    sidpp_value: Mapped[float | None] = mapped_column(Float)
+    sidpp_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    #: Shut-in casing pressure - a different measurement from SIDPP and never interchangeable with it.
+    sicp_text: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    sicp_value: Mapped[float | None] = mapped_column(Float)
+    sicp_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    #: Pit gain as a volume, with the source's unit.  Never defaulted to bbl.
+    pit_gain_text: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    pit_gain_value: Mapped[float | None] = mapped_column(Float)
+    pit_gain_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    #: The kill method the source named, verbatim.  Never inferred from the sequence of operations.
+    kill_method: Mapped[str | None] = mapped_column(String(120))
+    #: What the source said happened to the well - ``controlled``, ``circulated out`` - verbatim.
+    outcome: Mapped[str | None] = mapped_column(String(120))
+    cause: Mapped[str | None] = mapped_column(Text)
+    #: :class:`CauseStatus`; ``UNKNOWN`` rather than a cause read out of the description.
+    cause_status: Mapped[str] = mapped_column(String(16), default="UNKNOWN", nullable=False)
+    corrective_action: Mapped[str | None] = mapped_column(Text)
+    #: The NPT row this event lost time against, only on explicit source attribution.
+    npt_id: Mapped[str | None] = mapped_column(ForeignKey("npt_record.id", ondelete="SET NULL"))
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    identity_key: Mapped[str | None] = mapped_column(String(160), unique=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
+class HseIncident(Base, TimestampMixin):
+    """One HSE event the source reported, at the place the source said it happened.
+
+    This is deliberately not ``WellEvent(category="safety")``.  ``WellEvent.well_id`` is ``NOT NULL``
+    with a cascading foreign key, so every row must belong to a well - and a great many HSE events do
+    not.  A slip on the camp steps, a spill at the mud warehouse, a vehicle incident on the access
+    road and a dropped object in the base laydown area are all reportable HSE events with no well at
+    all.  Filing them against a well would invent a scope the source never stated, and widening
+    ``well_id`` to nullable would change the meaning of every event row the DDR writer already
+    produces.  So ``well_id`` is nullable here, on purpose, and ``location_text`` keeps the source's
+    own wording for where it happened.
+
+    Nothing here is inferred:
+
+    *   ``severity`` is what the source reported.  It is never calculated, never defaulted, and never
+        converted into a :class:`RiskRecord` probability/impact pair - a reported severity is a
+        statement about what happened, and a risk score is a judgement about what might.
+    *   ``root_cause`` is stored only when the source states it, with ``root_cause_status`` recording
+        that it was stated.  "The valve failed" is not a root cause of "poor maintenance" and the
+        writer does not make that leap.
+    *   ``npt_id`` is set only on explicit attribution.  A safety event with no lost time stays a
+        safety event; it does not become zero hours of NPT, which would be a fact nobody stated.
+    """
+
+    __tablename__ = "hse_incident"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_hse_incident_identity"),
+        Index("ix_hse_incident_well", "well_id", "is_current"),
+        Index("ix_hse_incident_version", "document_version_id"),
+        Index("ix_hse_incident_site", "project_id", "field_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    #: Nullable on purpose: an HSE event is not necessarily on a well.  See the class docstring.
+    well_id: Mapped[str | None] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"))
+    #: Site scope for an event the source placed at a camp, base, yard or road rather than a well.
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("project.id", ondelete="SET NULL"))
+    field_id: Mapped[str | None] = mapped_column(ForeignKey("field.id", ondelete="SET NULL"))
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    #: The source's own incident number, kept verbatim and never generated.
+    incident_reference: Mapped[str | None] = mapped_column(String(80))
+    #: What the source called it - ``incident``, ``near_miss``, ``unsafe_act``,
+    #: ``unsafe_condition``, ``environmental``, ``injury``, ``first_aid``, ``property_damage``,
+    #: ``spill``, ``observation`` - matched whole, and NULL when the source did not say.
+    incident_type: Mapped[str | None] = mapped_column(String(32))
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: Where the source said it happened, in the source's own words.  Not resolved to a well.
+    location_text: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime)
+    occurred_at_text: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    #: As reported.  Never calculated, never defaulted, never a risk score.
+    severity: Mapped[str | None] = mapped_column(String(16))
+    consequence: Mapped[str | None] = mapped_column(Text)
+    immediate_cause: Mapped[str | None] = mapped_column(Text)
+    immediate_cause_status: Mapped[str] = mapped_column(
+        String(16), default="UNKNOWN", nullable=False
+    )
+    root_cause: Mapped[str | None] = mapped_column(Text)
+    root_cause_status: Mapped[str] = mapped_column(String(16), default="UNKNOWN", nullable=False)
+    corrective_action: Mapped[str | None] = mapped_column(Text)
+    preventive_action: Mapped[str | None] = mapped_column(Text)
+    #: Lost time only when the source attributed it.  No lost time means no NPT row.
+    npt_id: Mapped[str | None] = mapped_column(ForeignKey("npt_record.id", ondelete="SET NULL"))
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    identity_key: Mapped[str | None] = mapped_column(String(160), unique=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
 class CostItem(Base, TimestampMixin):
     """One line of a cost breakdown structure, planned and actual side by side.
 

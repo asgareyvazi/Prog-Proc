@@ -47,6 +47,11 @@ def test_only_registered_handlers_are_domain_promotable() -> None:
         # means the same thing - a WellSection is a plan, and there was no cement record at all.
         DocumentClassification.CASING_REPORT: "casing",
         DocumentClassification.CEMENT_REPORT: "cement",
+        # V7.2: well control and HSE are event-oriented, and each got its own table for a measured
+        # reason - WellEvent has no pressure or volume column at all, and its well_id is NOT NULL
+        # while an HSE event may have no well.
+        DocumentClassification.WELL_CONTROL: "well_control",
+        DocumentClassification.HSE: "hse",
     }
 
 
@@ -76,18 +81,20 @@ def test_the_v4_writers_are_versioned_rather_than_silently_reattached() -> None:
         DocumentClassification.COST: "v7",
         DocumentClassification.CASING_REPORT: "v7",
         DocumentClassification.CEMENT_REPORT: "v7",
+        DocumentClassification.WELL_CONTROL: "v7",
+        DocumentClassification.HSE: "v7",
     }
-    # Eleven rather than eight: V7 added cost and V7.1 added casing and cement, each both
+    # Thirteen rather than eight: V7 added cost and V7.1 added casing and cement, each both
     # domain-promotable and end-to-end certified.  These counts are deliberately absolute so that
     # admitting a classification cannot happen without a reviewer changing a number here.
-    assert sum(1 for contract in contract_registry() if contract.domain_promotable) == 11
+    assert sum(1 for contract in contract_registry() if contract.domain_promotable) == 13
     assert (
         sum(
             1
             for contract in contract_registry()
             if contract.level == CoverageLevel.END_TO_END_CERTIFIED
         )
-        == 11
+        == 13
     )
 
 

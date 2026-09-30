@@ -100,14 +100,16 @@ def test_fourteen_source_shaped_cases_classify_and_promote_exactly_as_documented
     # bit narratives, and the casing report - CASING_REPORT gained a writer in V7.1, so its narrative
     # artefact moved from "no handler is registered" to "this artefact does not satisfy the writer's
     # source contract", which is the more precise statement and the reason the count is three.
+    # V7.2 added a fourth: the well-control kill sheet, now that WELL_CONTROL has a writer too.
     shape_refusals = [
         item for item in summary["skipped_details"] if item["reason"] == "NO_RECOGNISED_TABLE"
     ]
-    assert len(shape_refusals) == 3
+    assert len(shape_refusals) == 4
     assert {
         "bottom hole assembly" in item["detail"]
         or "bit record" in item["detail"]
         or "casing run" in item["detail"]
+        or "well-control event" in item["detail"]
         for item in shape_refusals
     } == {True}, "every shape refusal names the domain whose table it looked for"
 

@@ -223,15 +223,16 @@
     {
       "filename": "well_control_kill_sheet_well-a3.txt",
       "classification": "WELL_CONTROL",
-      "contract": null,
+      "contract": "document:WELL_CONTROL:promotion:v7",
       "expected": "UNSUPPORTED",
       "domain_models": [],
       "scope": "well A-3 evidence",
       "checks": [
-        "classification-evidence",
-        "stored-extraction",
-        "no-event-writer"
-      ]
+        "same-classification-different-shape",
+        "no-authoritative-row",
+        "explicit-NO_RECOGNISED_TABLE-diagnostic"
+      ],
+      "denied_by": "source-shape"
     }
   ],
   "field_ground_truth": "tests.fixtures.generate.GROUND_TRUTH",
