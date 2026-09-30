@@ -2163,3 +2163,45 @@ and a bare `KeyError: 'config'`. It is outside the documented single-operator sc
 outcome is a loud failure rather than corruption or a misleading success. Fixing it would mean
 touching schema bootstrap, the riskiest area in the repository, for a case the architecture does not
 claim to support.
+
+## 44. V7.0 — cost admitted as a certified domain writer
+
+Every statement here comes from execution in this checkout.
+
+### 44A — recovery, and the closure of the V6.2 publication gap
+
+The workspace came back grafted at `e862113` with the accumulated V4-V6.2 work sitting uncommitted
+on top of it. Staging it showed the tree differed from the remote tip in **exactly one file**: the
+51-line section 43 record. That was the content of the commit that never published, still alive in
+the worktree. The branch was fast-forwarded to `f415991` with the section set aside, then restored
+and committed as `ccdffa3` - no reset, no rebase, no history rewrite, and no attempt to reproduce
+the old SHA.
+
+`f415991` is now confirmed **success** in CI, which closes the one V6.2 item that had only ever been
+observed as `in_progress`.
+
+### 44B — cost: KNOWLEDGE_SUPPORTED to END_TO_END_CERTIFIED
+
+`CostItem` is reused, not duplicated - it already carries a code, a description, planned and actual
+amounts each with their own unit, a scope, provenance and a content-derived identity. No migration.
+
+The contract is narrow: a cost code column, a description column, and a money column whose header
+states planned-side or actual-side. Prose quoting an amount is refused; so is a table headed merely
+`Amount`.
+
+### 44C — defects found and fixed
+
+| # | defect | root cause | fix |
+|---|---|---|---|
+| 1 | The cost writer could never report `PROMOTED`, and `total()` would have raised on it | `result.counts` was assigned a bare int, but it maps a kind to a created/unchanged/conflict bucket and `finalize()` derives `PROMOTED` from `wrote_anything`, which reads those buckets | `result.bump("cost_item", ...)` |
+| 2 | No cost table was ever recognised, so every ledger was `UNSUPPORTED` | The header was assumed to be `rows[0]`. An extractor stores the whole sheet region, including the title and currency note above the column headings, so the title was read as a header and the real table as data | `locate_cost_header` scans the first eight rows, matching the survey and BHA convention |
+
+Defect 2 is worth noting as a class: a parser written against a hand-built payload passes every unit
+test and reads nothing from a real extraction. It was only visible on the real ingest path.
+
+### 44D — explicitly not done
+
+`CASING_REPORT` and `CEMENT_REPORT` remain `KNOWLEDGE_SUPPORTED` with no writer. Neither has a
+model: `WellSection.casing_program` is a 120-character label on a hole-section record, not a casing
+run, and "cement" appears in the codebase only as vocabulary. Both need a new table, a migration
+and a writer. The registry was not touched for them, and no placeholder rows were added.
