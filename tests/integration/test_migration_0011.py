@@ -32,6 +32,12 @@ LATER_MIGRATION_COLUMNS = (
     "cost_item.document_version_id",  # 0013
     "cost_item.is_current",  # 0013
 )
+#: Tables migrations after this one create.  Listed rather than tolerated, so a parity test still
+#: detects a table that went missing rather than one that merely arrived late.
+LATER_MIGRATION_TABLES = (
+    "casing_run",  # 0014
+    "cement_job",  # 0015
+)
 
 
 def build_legacy_database(engine: Engine) -> None:
@@ -60,6 +66,11 @@ def unique_names(engine: Engine, table: str) -> set[str]:
     )
 
 
+#: Tables a rollback past this revision legitimately drops: the ones it creates, plus the ones later
+#: revisions create.  Everything else is exactly what a rollback must leave untouched.
+SNAPSHOT_EXCLUDED = frozenset(NEW_TABLES) | frozenset(LATER_MIGRATION_TABLES) | {"alembic_version"}
+
+
 def snapshot(engine: Engine) -> dict[str, list[tuple]]:
     """Every row of every table the migration must not disturb, in a stable order."""
     with engine.connect() as connection:
@@ -68,7 +79,7 @@ def snapshot(engine: Engine) -> dict[str, list[tuple]]:
                 text(f'select rowid, * from "{table}" order by rowid')  # noqa: S608
             ).fetchall()
             for table in sorted(table_set(engine))
-            if table not in NEW_TABLES and table != "alembic_version"
+            if table not in SNAPSHOT_EXCLUDED
         }
 
 
@@ -99,7 +110,7 @@ def test_the_upgrade_creates_the_five_tables_with_the_columns_the_models_declare
             }, table
         # Nothing else in the schema moved, apart from what later revisions legitimately add.
         assert schema_diff(engine) == {
-            "missing_tables": [],
+            "missing_tables": sorted(LATER_MIGRATION_TABLES),
             "extra_tables": [],
             "missing_columns": sorted(LATER_MIGRATION_COLUMNS),
             "extra_columns": [],

@@ -837,3 +837,192 @@ def build_v7_operational_corpus(root: Path | str, *, include_scan: bool = True) 
             continue
         written[name] = builder(root / name)
     return written
+
+
+def build_casing_tally_xlsx(path: Path) -> Path:
+    """A casing tally: one row per string actually run, in the source's own units.
+
+    Three choices here are load-bearing for the casing contract:
+
+    *   **The type is its own column.**  A writer that inferred ``production`` from ``9 5/8 in``
+        would pass a fixture that only had sizes, so the fixture states the type explicitly and the
+        test also proves that removing the column leaves the type unset rather than guessed.
+    *   **One size is a mixed fraction.**  ``9 5/8`` is how the field writes it and is not an
+        unambiguous number to the parser, so it must survive as text with no derived value.
+    *   **Top and shoe are separate columns.**  Collapsing them would lose the interval.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Casing Tally"
+    sheet["A1"] = "ACME DRILLING - WELL A-3 CASING RUNNING REPORT"
+    sheet["A2"] = "Weight per foot in lb/ft. Grade P-110 and K-55 as run."
+    header = [
+        "Casing",
+        "Type",
+        "Size (in)",
+        "Weight (lb/ft)",
+        "Grade",
+        "Connection",
+        "Top Depth (ft)",
+        "Shoe Depth (ft)",
+        "Run Date",
+    ]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=4, column=column, value=value)
+    rows = [
+        ["Conductor", "Conductor", "30", "94", "X-52", "Big Omega", "0", "150", "2026-03-02"],
+        ["Surface", "Surface", "20", "133", "K-55", "Big Omega", "0", "1800", "2026-03-09"],
+        [
+            "Intermediate",
+            "Intermediate",
+            "9 5/8",
+            "47",
+            "P-110",
+            "BTC",
+            "1800",
+            "9200",
+            "2026-04-10",
+        ],
+        ["Liner", "Liner", "7", "29", "P-110", "BTC", "9000", "12400", "2026-05-01"],
+    ]
+    for offset, row in enumerate(rows, start=5):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_cement_report_xlsx(path: Path) -> Path:
+    """A cement job summary: one row per stage, lead and tail kept apart.
+
+    The fixture states a lead and a tail with *different* densities, a top of cement that is not the
+    shoe depth, and a wait-on-cement wording.  A contract that summed the slurries, read TOC as
+    shoe, or defaulted a volume unit would pass a lazier fixture and fail a real one.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Cement Jobs"
+    sheet["A1"] = "WELL A-3 CEMENT JOB SUMMARY"
+    sheet["A2"] = "Class G blends as pumped. TOC surveyed, not calculated."
+    header = [
+        "Cement Job",
+        "Stage",
+        "Job Type",
+        "Date",
+        "Casing",
+        "Lead Slurry",
+        "Lead Volume (bbl)",
+        "Lead Density (ppg)",
+        "Tail Slurry",
+        "Tail Volume (bbl)",
+        "Tail Density (ppg)",
+        "TOC (ft)",
+        "Shoe Depth (ft)",
+        "WOC",
+    ]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=4, column=column, value=value)
+    rows = [
+        [
+            "CMT-01",
+            "1",
+            "Primary",
+            "2026-03-11",
+            "Surface",
+            "Class G + silica",
+            "240",
+            "15.8",
+            "Class G neat",
+            "180",
+            "16.4",
+            "1200",
+            "1800",
+            "12 hrs",
+        ],
+        [
+            "CMT-02",
+            "2",
+            "Primary",
+            "2026-04-11",
+            "Intermediate",
+            "Class G + silica",
+            "410",
+            "15.8",
+            "Class G neat",
+            "260",
+            "16.4",
+            "4200",
+            "9200",
+            "24 hrs",
+        ],
+        [
+            "CMT-03",
+            "1",
+            "Liner",
+            "2026-05-02",
+            "Liner",
+            "Class G neat",
+            "95",
+            "16.0",
+            "",
+            "",
+            "",
+            "9100",
+            "12400",
+            "8 hrs",
+        ],
+    ]
+    for offset, row in enumerate(rows, start=5):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_cement_total_only_xlsx(path: Path) -> Path:
+    """A cement source that states a total volume and no lead/tail split.
+
+    This is the case where the tempting thing is to write the total into the tail column so the row
+    "has a volume".  It must not: a source that stated one number stated one number.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Cement Totals"
+    sheet["A1"] = "WELL A-3 CEMENT VOLUMES - SUMMARY ONLY"
+    header = ["Cement Job", "Total Cement Volume (bbl)", "TOC (ft)", "Shoe Depth (ft)"]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=3, column=column, value=value)
+    for offset, row in enumerate([["CMT-09", "420", "4100", "9200"]], start=4):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+#: The V7.1 domain sources.  Kept out of the earlier corpora so those suites keep asserting on the
+#: file counts they were written against.
+V71_DOMAIN_BUILDERS = {
+    "casing_report_well-a3.xlsx": build_casing_tally_xlsx,
+    "cement_report_well-a3.xlsx": build_cement_report_xlsx,
+    "cement_total_only_well-a3.xlsx": build_cement_total_only_xlsx,
+}
+
+V71_OPERATIONAL_BUILDERS: dict[str, Any] = {**BUILDERS, **V71_DOMAIN_BUILDERS}
+
+
+def build_v71_operational_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Path]:
+    """Write the operational corpus plus the casing and cement sources."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+    for name, builder in V71_OPERATIONAL_BUILDERS.items():
+        if name.startswith("scanned_") and not include_scan:
+            continue
+        written[name] = builder(root / name)
+    return written

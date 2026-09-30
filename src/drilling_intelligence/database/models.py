@@ -1991,6 +1991,168 @@ class ServiceCompany(Base, TimestampMixin):
     attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
 
 
+class CasingRun(Base, TimestampMixin):
+    """One casing or liner string the source says was run, with the depths it was run to.
+
+    This is an **actual** record and it is deliberately not :class:`WellSection`.  A hole section is
+    the plan - a size, an intended interval, a target - and ``WellSection.casing_program`` is a
+    hundred-and-twenty character label on that plan.  Filing a casing tally into it would overwrite
+    the plan with what happened and leave the two indistinguishable, which is the one thing a
+    plan-versus-actual system exists to keep apart.  So the run gets its own row, linked to a
+    section only when the source names one that resolves exactly.
+
+    Nothing here is inferred:
+
+    *   ``string_type`` is what the source called the string, and stays NULL when it did not.  A
+        9 5/8 in string is not automatically production casing and a deep string is not
+        automatically intermediate; size and depth are measurements, not classifications.
+    *   Every dimension keeps the source's own text, value and unit as three separate facts.  A
+        size the source wrote as ``9 5/8 in`` keeps that text, and its value stays NULL rather than
+        being derived, because a promoter that converts a mixed fraction is a promoter that has
+        decided something the source did not state.
+    *   Top depth and shoe depth are different depths and are never interchangeable.
+    """
+
+    __tablename__ = "casing_run"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_casing_run_identity"),
+        Index("ix_casing_run_well", "well_id", "is_current"),
+        Index("ix_casing_run_version", "document_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    section_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_section.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    #: The source's own name for the string, kept verbatim.
+    string_label: Mapped[str | None] = mapped_column(String(160))
+    #: What the source called the string - ``conductor``, ``surface``, ``intermediate``,
+    #: ``production``, ``liner``, ``tieback``, ``contingency`` - and NULL when it did not say.
+    string_type: Mapped[str | None] = mapped_column(String(32))
+    size_text: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    size_value: Mapped[float | None] = mapped_column(Float)
+    size_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    weight_text: Mapped[str | None] = mapped_column(String(40))
+    weight_value: Mapped[float | None] = mapped_column(Float)
+    weight_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    grade: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    connection: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+    top_depth_text: Mapped[str | None] = mapped_column(String(40))
+    top_depth_value: Mapped[float | None] = mapped_column(Float)
+    top_depth_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    shoe_depth_text: Mapped[str | None] = mapped_column(String(40))
+    shoe_depth_value: Mapped[float | None] = mapped_column(Float)
+    shoe_depth_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    run_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    run_date_text: Mapped[str | None] = mapped_column(String(200))
+    #: How the section was resolved: ``EXPLICIT``, ``NOT_STATED`` or ``AMBIGUOUS``.
+    section_resolution: Mapped[str] = mapped_column(
+        String(24), default="NOT_STATED", nullable=False
+    )
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
+class CementJob(Base, TimestampMixin):
+    """One cement job, or one stage of one, exactly as the source described it.
+
+    Every quantity here is its own semantic thing, and the reason the row is wide is that none of
+    them may be confused with another:
+
+    *   **Top of cement is not shoe depth.**  One is where the slurry ended up, the other is where
+        the string it was pumped behind ends.  They are stored as separate depths and neither is
+        ever derived from the other.
+    *   **Lead volume is not tail volume, and neither is the total.**  A two-stage slurry design is
+        two numbers with different densities; summing them into one anonymous volume would destroy
+        the only thing the job record says about the design.  A source that states only a total
+        gets a total and no lead/tail split.
+    *   **Displacement is not slurry volume.**  One is what was pumped behind the slurry, the other
+        is the slurry.
+    *   **WOC is wording, not a calculation.**  ``woc_text`` holds what the source printed.  There
+        is no wait-on-cement prediction here and no hydrostatic or annular-volume arithmetic
+        anywhere in the platform.
+
+    A value the source did not state is NULL.  Nothing is back-filled from another column, and no
+    unit is defaulted: a volume with no stated unit is stored as text with a NULL value, because
+    guessing ``bbl`` for a number that was ``m3`` is a factor of six.
+    """
+
+    __tablename__ = "cement_job"
+    __table_args__ = (
+        UniqueConstraint("identity_key", name="uq_cement_job_identity"),
+        Index("ix_cement_job_well", "well_id", "is_current"),
+        Index("ix_cement_job_version", "document_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    well_id: Mapped[str] = mapped_column(ForeignKey("well.id", ondelete="CASCADE"), nullable=False)
+    #: Set only when the source names a casing string that resolves to exactly one run.  Depth
+    #: proximity, string size and row order are all refused as a basis for this link.
+    casing_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("casing_run.id", ondelete="SET NULL")
+    )
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    job_label: Mapped[str | None] = mapped_column(String(160))
+    stage_text: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    stage_number: Mapped[int | None] = mapped_column(Integer)
+    job_type: Mapped[str] = mapped_column(String(60), default="", nullable=False)
+    job_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    job_date_text: Mapped[str | None] = mapped_column(String(200))
+    lead_slurry: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    tail_slurry: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    lead_volume_text: Mapped[str | None] = mapped_column(String(40))
+    lead_volume_value: Mapped[float | None] = mapped_column(Float)
+    lead_volume_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    tail_volume_text: Mapped[str | None] = mapped_column(String(40))
+    tail_volume_value: Mapped[float | None] = mapped_column(Float)
+    tail_volume_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    lead_density_text: Mapped[str | None] = mapped_column(String(40))
+    lead_density_value: Mapped[float | None] = mapped_column(Float)
+    lead_density_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    tail_density_text: Mapped[str | None] = mapped_column(String(40))
+    tail_density_value: Mapped[float | None] = mapped_column(Float)
+    tail_density_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    toc_depth_text: Mapped[str | None] = mapped_column(String(40))
+    toc_depth_value: Mapped[float | None] = mapped_column(Float)
+    toc_depth_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    shoe_depth_text: Mapped[str | None] = mapped_column(String(40))
+    shoe_depth_value: Mapped[float | None] = mapped_column(Float)
+    shoe_depth_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    displacement_text: Mapped[str | None] = mapped_column(String(40))
+    displacement_value: Mapped[float | None] = mapped_column(Float)
+    displacement_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    pressure_text: Mapped[str | None] = mapped_column(String(40))
+    pressure_value: Mapped[float | None] = mapped_column(Float)
+    pressure_unit: Mapped[str] = mapped_column(String(12), default="", nullable=False)
+    #: Wait on cement, as the source worded it.  Never a duration this platform computed.
+    woc_text: Mapped[str | None] = mapped_column(String(80))
+    returns_status: Mapped[str] = mapped_column(String(60), default="", nullable=False)
+    #: How the casing association was resolved: ``EXPLICIT``, ``NOT_STATED`` or ``AMBIGUOUS``.
+    casing_resolution: Mapped[str] = mapped_column(String(24), default="NOT_STATED", nullable=False)
+    record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+    created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
+    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+
+
 class CostItem(Base, TimestampMixin):
     """One line of a cost breakdown structure, planned and actual side by side.
 

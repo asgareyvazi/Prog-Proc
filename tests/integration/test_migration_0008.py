@@ -167,6 +167,9 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
                     # 0011: the V4 hardware and geometry domains.
                     "bha_report",
                     "bha_component",
+                    # 0014/0015: the casing and cement domain tables.
+                    "casing_run",
+                    "cement_job",
                     "bit_record",
                     "survey_run",
                     "survey_station",

@@ -43,6 +43,10 @@ def test_only_registered_handlers_are_domain_promotable() -> None:
         # V7: cost is a real writer now, not an evidence-only class.  It targets the existing
         # ``cost_item`` record rather than a new table.
         DocumentClassification.COST: "cost",
+        # V7.1: casing and cement each get their own table, because neither has an existing one that
+        # means the same thing - a WellSection is a plan, and there was no cement record at all.
+        DocumentClassification.CASING_REPORT: "casing",
+        DocumentClassification.CEMENT_REPORT: "cement",
     }
 
 
@@ -70,18 +74,20 @@ def test_the_v4_writers_are_versioned_rather_than_silently_reattached() -> None:
         # A new writer is revisioned rather than reattached to an existing id, so an audit trail
         # citing ``document:COST:promotion:v7`` cannot be read as an earlier certification.
         DocumentClassification.COST: "v7",
+        DocumentClassification.CASING_REPORT: "v7",
+        DocumentClassification.CEMENT_REPORT: "v7",
     }
-    # Nine rather than eight: V7 added cost, which is both domain-promotable and end-to-end
-    # certified.  These counts are deliberately absolute so that admitting a classification cannot
-    # happen without a reviewer changing a number here.
-    assert sum(1 for contract in contract_registry() if contract.domain_promotable) == 9
+    # Eleven rather than eight: V7 added cost and V7.1 added casing and cement, each both
+    # domain-promotable and end-to-end certified.  These counts are deliberately absolute so that
+    # admitting a classification cannot happen without a reviewer changing a number here.
+    assert sum(1 for contract in contract_registry() if contract.domain_promotable) == 11
     assert (
         sum(
             1
             for contract in contract_registry()
             if contract.level == CoverageLevel.END_TO_END_CERTIFIED
         )
-        == 9
+        == 11
     )
 
 

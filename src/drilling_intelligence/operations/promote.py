@@ -62,6 +62,8 @@ from ..database.models import (
     BhaComponent,
     BhaReport,
     BitRecord,
+    CasingRun,
+    CementJob,
     CostItem,
     DdrReport,
     Document,
@@ -90,6 +92,15 @@ from .bha import (
     summary_entries as bha_summary_entries,
 )
 from .bit_record import bit_run_entries
+from .casing import (
+    CasingRunEntry,
+    casing_run_entries,
+    casing_table_is_ambiguous,
+)
+from .cement import (
+    CementJobEntry,
+    cement_job_entries,
+)
 from .contracts import PromotionOutcome, promotion_contract
 from .cost import CostLineEntry as CostEntry
 from .cost import (
@@ -121,7 +132,9 @@ from .survey import (
     summary_entries as survey_summary_entries,
 )
 from .tableshape import normalise_label as source_label_key
+from .tableshape import numeric as source_numeric
 from .tableshape import table_key as source_table_key
+from .tableshape import tables
 
 __all__ = [
     "ACTIVITY_HEADERS",
@@ -618,6 +631,25 @@ class VersionPromoter:
             if missing:
                 return "cost table provenance is missing for: " + ", ".join(sorted(set(missing)))
             return ""
+        if handler in {"casing", "cement"}:
+            relevant = [
+                entry.table
+                for entry in (
+                    casing_run_entries(payload)
+                    if handler == "casing"
+                    else cement_job_entries(payload)
+                )
+            ]
+            missing = [
+                source_table_key(table) or "table"
+                for table in relevant
+                if not isinstance(table.get("provenance"), Mapping)
+            ]
+            if missing:
+                return f"{handler} table provenance is missing for: " + ", ".join(
+                    sorted(set(missing))
+                )
+            return ""
         if handler in {"bha_report", "bit_record", "directional_survey"}:
             # No recognised table is *not* a provenance failure - the writer reports that as an
             # unsupported source shape.  Only tables the contract will actually read are held to the
@@ -770,6 +802,18 @@ class VersionPromoter:
             return result
         if contract.handler == "cost":
             self._promote_cost(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
+        if contract.handler == "casing":
+            self._promote_casing(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
+        if contract.handler == "cement":
+            self._promote_cement(
                 payload=payload, document=document, version=version, result=result, replace=replace
             )
             result.finalize()
@@ -3138,6 +3182,480 @@ class VersionPromoter:
             )
             if removed:
                 result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+
+    # -- casing ---------------------------------------------------------------
+    def _write_casing_run(
+        self,
+        *,
+        entry: CasingRunEntry,
+        well: Well,
+        section_id: str | None,
+        section_resolution: str,
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+    ) -> CasingRun | None:
+        """One source-described casing string, with the source's units kept exactly as printed."""
+        identity = promotion_identity(
+            version_id=version.id,
+            kind="casing-run",
+            table_id=source_table_key(entry.table),
+            row_index=entry.source_row_index,
+            well_id=well.id,
+            extra=(
+                f"{entry.string_label.strip()}|{entry.size_text.strip()}|{entry.shoe_text.strip()}"
+            ),
+        )
+        result.identities.add(identity)
+        unparsed = [
+            (label, text)
+            for label, text, value in (
+                ("size", entry.size_text, entry.size_value),
+                ("shoe depth", entry.shoe_text, entry.shoe_value),
+                ("top depth", entry.top_text, entry.top_value),
+                ("weight", entry.weight_text, entry.weight_value),
+            )
+            if text.strip() and value is None
+        ]
+        if unparsed:
+            # Reported, not silently dropped: "9 5/8 in" keeps its text and a NULL value because a
+            # mixed fraction is not an unambiguous number to this contract, and a reviewer has to be
+            # able to see that the platform declined to convert it rather than having lost it.
+            result.skipped.append(
+                {
+                    "reason": "UNPARSED_VALUE",
+                    "detail": (
+                        f"casing string {entry.string_label or entry.size_text} has values this "
+                        "contract stores as text only: "
+                        + ", ".join(f"{label} {text!r}" for label, text in unparsed)
+                    ),
+                }
+            )
+        run_date, run_date_text = self._mud_date(entry.run_date_text)
+        content = {
+            "well_id": well.id,
+            "section_id": section_id,
+            "string_label": entry.string_label.strip() or None,
+            # Only what an explicit type column said.  Size and depth are measurements, and a
+            # 9 5/8 in string is not automatically production casing.
+            "string_type": entry.string_type or None,
+            "size_text": entry.size_text.strip(),
+            "size_value": entry.size_value,
+            "size_unit": entry.size_unit,
+            "weight_text": entry.weight_text.strip() or None,
+            "weight_value": entry.weight_value,
+            "weight_unit": entry.weight_unit,
+            "grade": entry.grade.strip(),
+            "connection": entry.connection.strip(),
+            "top_depth_text": entry.top_text.strip() or None,
+            "top_depth_value": entry.top_value,
+            "top_depth_unit": entry.top_unit,
+            "shoe_depth_text": entry.shoe_text.strip() or None,
+            "shoe_depth_value": entry.shoe_value,
+            "shoe_depth_unit": entry.shoe_unit,
+            "run_date": run_date,
+            "run_date_text": run_date_text or None,
+            "section_resolution": section_resolution,
+        }
+        provenance = self._table_provenance(
+            entry.table,
+            document=document,
+            version=version,
+            row_index=entry.source_row_index,
+            source_label=entry.string_label or entry.size_text,
+        )
+        existing, outcome = self._confirm_row(CasingRun, identity, content, "casing run", result)
+        if existing is not None:
+            result.bump("casing_run", outcome)
+            return existing
+        row = CasingRun(
+            id=new_id("casing"),
+            record_state=RecordState.ACTUAL.value,
+            status=ConfirmationStatus.CANDIDATE.value,
+            origin=KnowledgeOrigin.DERIVED.value,
+            created_by="promotion",
+            provenance=provenance,
+            identity_key=identity,
+            document_id=document.id,
+            document_version_id=version.id,
+            is_current=True,
+            attributes={"source": {"row_index": entry.source_row_index}},
+            **content,
+        )
+        self.session.add(row)
+        self.session.flush()
+        result.bump("casing_run", "created")
+        return row
+
+    def _promote_casing(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> CasingRun | None:
+        """Promote recognised casing strings as actual runs, leaving every plan untouched.
+
+        This writer never writes :class:`WellSection`, :class:`DrillingProgram` or
+        :class:`ProgramTarget`.  A casing report says what was run; the programme says what was
+        intended; and a writer that used the report to update the plan would leave the two
+        indistinguishable, which is the one thing a plan-versus-actual system exists to prevent.
+        """
+        if not document.well_id:
+            result.error = "NO_WELL"
+            result.skipped.append(
+                {"reason": "NO_WELL", "detail": f"{document.filename} is not linked to a well"}
+            )
+            return None
+        well = self.session.get(Well, str(document.well_id))
+        if well is None:
+            result.error = "NO_WELL"
+            result.skipped.append({"reason": "NO_WELL", "detail": "the linked well does not exist"})
+            return None
+        for table in tables(payload):
+            rows = list(table.get("rows") or [])
+            if casing_table_is_ambiguous(rows):
+                result.skipped.append(
+                    {
+                        "reason": "AMBIGUOUS_PLAN_AND_ACTUAL",
+                        "detail": (
+                            f"table {source_table_key(table) or 'in the source'} states both a "
+                            "planned and an actual shoe depth; this contract writes actual runs "
+                            "only and will not choose a side, so the table was not promoted"
+                        ),
+                    }
+                )
+        entries = casing_run_entries(payload)
+        if not entries:
+            self._no_recognised_table(
+                result,
+                "no stored table has a casing size, a shoe depth and at least one of grade, "
+                "weight, connection or an explicit type column, so there is no casing run to "
+                "promote",
+            )
+            return None
+        higher_current = self._higher_current_exists(
+            CasingRun, document=document, version=version, well=well
+        )
+        self._supersede_source_versions(
+            model=CasingRun, document=document, version=version, well=well
+        )
+        written: CasingRun | None = None
+        for entry in entries:
+            if self._row_scope_conflict(entry.well_name, well):
+                result.skipped.append(
+                    {
+                        "reason": "WELL_SCOPE_CONFLICT",
+                        "detail": (
+                            f"casing string {entry.string_label or entry.size_text} names well "
+                            f"{entry.well_name!r}, not this document's well {well.name!r}; row not "
+                            "promoted"
+                        ),
+                    }
+                )
+                continue
+            # Only a section the source names.  ``hole_size_text`` is deliberately empty: a casing
+            # size is not a hole size, and matching one against the other would attach a string to
+            # a section by a measurement the source never compared.
+            section_id, section_resolution = self._explicit_section(
+                well=well,
+                explicit_id="",
+                explicit_name=entry.section_text,
+                hole_size_text="",
+                result=result,
+                domain="casing run",
+            )
+            row = self._write_casing_run(
+                entry=entry,
+                well=well,
+                section_id=section_id,
+                section_resolution=section_resolution,
+                document=document,
+                version=version,
+                result=result,
+            )
+            if row is not None and written is None and not higher_current:
+                written = row
+        if replace and bool(result.identities):
+            removed = self._delete_domain_orphans(
+                CasingRun, version_id=version.id, kept=result.identities
+            )
+            if removed:
+                result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        return written
+
+    # -- cement ---------------------------------------------------------------
+    def _linked_casing_run(
+        self, *, well: Well, reference: str, result: PromotionResult
+    ) -> tuple[str | None, str]:
+        """The one casing run of this well whose own label the source names, or ``None``.
+
+        Matching is on the source's own string label, exactly and casefolded.  Depth proximity,
+        string size and row order are all refused as a basis for the link: a cement job pumped
+        behind the 9 5/8 in string is not attached to it because 9 5/8 appeared in the row above.
+        More than one candidate, or none, leaves the association unset and says so.
+        """
+        wanted = reference.strip().casefold()
+        if not wanted:
+            return None, "NOT_STATED"
+        rows = list(
+            self.session.execute(
+                select(CasingRun)
+                .where(
+                    CasingRun.well_id == well.id,
+                    CasingRun.is_current.is_(True),
+                )
+                .order_by(CasingRun.id)
+            ).scalars()
+        )
+        matches = [
+            row
+            for row in rows
+            if str(row.string_label or "").strip().casefold() == wanted
+            or str(row.string_type or "").strip().casefold() == wanted
+        ]
+        if len(matches) == 1:
+            return str(matches[0].id), "EXPLICIT"
+        if not matches:
+            result.skipped.append(
+                {
+                    "reason": "UNRESOLVED_CASING_REFERENCE",
+                    "detail": (
+                        f"the cement job names casing {reference.strip()!r}, which matches no "
+                        "current casing run of this well; the association was left unset rather "
+                        "than guessed from size or depth"
+                    ),
+                }
+            )
+            return None, "NOT_STATED"
+        result.skipped.append(
+            {
+                "reason": "AMBIGUOUS_CASING_REFERENCE",
+                "detail": (
+                    f"the cement job names casing {reference.strip()!r}, which matches "
+                    f"{len(matches)} current casing runs of this well; no association was stored"
+                ),
+            }
+        )
+        return None, "AMBIGUOUS"
+
+    def _write_cement_job(
+        self,
+        *,
+        entry: CementJobEntry,
+        well: Well,
+        casing_run_id: str | None,
+        casing_resolution: str,
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+    ) -> CementJob | None:
+        """One cement job or stage, keeping lead and tail - and TOC and shoe - apart."""
+        identity = promotion_identity(
+            version_id=version.id,
+            kind="cement-job",
+            table_id=source_table_key(entry.table),
+            row_index=entry.source_row_index,
+            well_id=well.id,
+            extra=f"{entry.job_label.strip()}|{entry.stage_text.strip()}",
+        )
+        result.identities.add(identity)
+        unparsed = [
+            f"{label} {text!r}"
+            for label, text, value in (
+                ("lead volume", entry.lead_volume_text, entry.lead_volume_value),
+                ("tail volume", entry.tail_volume_text, entry.tail_volume_value),
+                ("total volume", entry.total_volume_text, entry.total_volume_value),
+                ("lead density", entry.lead_density_text, entry.lead_density_value),
+                ("tail density", entry.tail_density_text, entry.tail_density_value),
+                ("top of cement", entry.toc_text, entry.toc_value),
+                ("shoe depth", entry.shoe_text, entry.shoe_value),
+                ("displacement", entry.displacement_text, entry.displacement_value),
+                ("pressure", entry.pressure_text, entry.pressure_value),
+            )
+            if text.strip() and value is None
+        ]
+        if unparsed:
+            result.skipped.append(
+                {
+                    "reason": "UNPARSED_VALUE",
+                    "detail": (
+                        f"the cement job {entry.job_label or entry.stage_text or 'at row ' + str(entry.source_row_index)} "
+                        "has values this contract stores as text only: " + ", ".join(unparsed)
+                    ),
+                }
+            )
+        job_date, job_date_text = self._mud_date(entry.job_date_text)
+        stage_number: int | None = None
+        stage_text = entry.stage_text.strip()
+        if stage_text:
+            # A stage number is stored only when the source's stage cell *is* a number.  "Stage 2"
+            # keeps its wording in ``stage_text`` and leaves the number unset rather than having one
+            # scraped out of it.
+            parsed_stage = source_numeric(stage_text)
+            stage_number = (
+                int(parsed_stage)
+                if parsed_stage is not None and parsed_stage.is_integer()
+                else None
+            )
+        content = {
+            "well_id": well.id,
+            "casing_run_id": casing_run_id,
+            "job_label": entry.job_label.strip() or None,
+            "stage_text": stage_text,
+            "stage_number": stage_number,
+            "job_type": entry.job_type.strip(),
+            "job_date": job_date,
+            "job_date_text": job_date_text or None,
+            "lead_slurry": entry.lead_slurry.strip(),
+            "tail_slurry": entry.tail_slurry.strip(),
+            "lead_volume_text": entry.lead_volume_text.strip() or None,
+            "lead_volume_value": entry.lead_volume_value,
+            "lead_volume_unit": entry.lead_volume_unit,
+            "tail_volume_text": entry.tail_volume_text.strip() or None,
+            "tail_volume_value": entry.tail_volume_value,
+            "tail_volume_unit": entry.tail_volume_unit,
+            "lead_density_text": entry.lead_density_text.strip() or None,
+            "lead_density_value": entry.lead_density_value,
+            "lead_density_unit": entry.lead_density_unit,
+            "tail_density_text": entry.tail_density_text.strip() or None,
+            "tail_density_value": entry.tail_density_value,
+            "tail_density_unit": entry.tail_density_unit,
+            "toc_depth_text": entry.toc_text.strip() or None,
+            "toc_depth_value": entry.toc_value,
+            "toc_depth_unit": entry.toc_unit,
+            "shoe_depth_text": entry.shoe_text.strip() or None,
+            "shoe_depth_value": entry.shoe_value,
+            "shoe_depth_unit": entry.shoe_unit,
+            "displacement_text": entry.displacement_text.strip() or None,
+            "displacement_value": entry.displacement_value,
+            "displacement_unit": entry.displacement_unit,
+            "pressure_text": entry.pressure_text.strip() or None,
+            "pressure_value": entry.pressure_value,
+            "pressure_unit": entry.pressure_unit,
+            "woc_text": entry.woc_text.strip() or None,
+            "returns_status": entry.returns.strip(),
+            "casing_resolution": casing_resolution,
+        }
+        provenance = self._table_provenance(
+            entry.table,
+            document=document,
+            version=version,
+            row_index=entry.source_row_index,
+            source_label=entry.job_label or entry.stage_text,
+        )
+        existing, outcome = self._confirm_row(CementJob, identity, content, "cement job", result)
+        if existing is not None:
+            result.bump("cement_job", outcome)
+            return existing
+        row = CementJob(
+            id=new_id("cement"),
+            record_state=RecordState.ACTUAL.value,
+            status=ConfirmationStatus.CANDIDATE.value,
+            origin=KnowledgeOrigin.DERIVED.value,
+            created_by="promotion",
+            provenance=provenance,
+            identity_key=identity,
+            document_id=document.id,
+            document_version_id=version.id,
+            is_current=True,
+            attributes={
+                "source": {
+                    "row_index": entry.source_row_index,
+                    # Kept apart from lead and tail on purpose: a source that states only a total
+                    # is not a source that stated a split, and inventing one would be a guess.
+                    "total_volume_text": entry.total_volume_text,
+                    "total_volume_value": entry.total_volume_value,
+                    "total_volume_unit": entry.total_volume_unit,
+                }
+            },
+            **content,
+        )
+        self.session.add(row)
+        self.session.flush()
+        result.bump("cement_job", "created")
+        return row
+
+    def _promote_cement(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> CementJob | None:
+        """Promote recognised cement jobs as their own record, not as rows of some other table.
+
+        A cement job is not a daily report line, not a programme target and not a hole section, and
+        none of those tables gains a cement row because their columns happen to be compatible.
+        Nothing here is computed: no annular volume, no excess, no hydrostatic pressure and no
+        displacement arithmetic - a number the source states is stored, and a number it does not
+        stays NULL.
+        """
+        if not document.well_id:
+            result.error = "NO_WELL"
+            result.skipped.append(
+                {"reason": "NO_WELL", "detail": f"{document.filename} is not linked to a well"}
+            )
+            return None
+        well = self.session.get(Well, str(document.well_id))
+        if well is None:
+            result.error = "NO_WELL"
+            result.skipped.append({"reason": "NO_WELL", "detail": "the linked well does not exist"})
+            return None
+        entries = cement_job_entries(payload)
+        if not entries:
+            self._no_recognised_table(
+                result,
+                "no stored table has a cement-specific volume column together with a slurry, top "
+                "of cement, shoe depth, displacement or wait-on-cement column, so there is no "
+                "cement job to promote",
+            )
+            return None
+        higher_current = self._higher_current_exists(
+            CementJob, document=document, version=version, well=well
+        )
+        self._supersede_source_versions(
+            model=CementJob, document=document, version=version, well=well
+        )
+        written: CementJob | None = None
+        for entry in entries:
+            if self._row_scope_conflict(entry.well_name, well):
+                result.skipped.append(
+                    {
+                        "reason": "WELL_SCOPE_CONFLICT",
+                        "detail": (
+                            f"the cement job {entry.job_label or entry.stage_text} names well "
+                            f"{entry.well_name!r}, not this document's well {well.name!r}; row not "
+                            "promoted"
+                        ),
+                    }
+                )
+                continue
+            casing_run_id, casing_resolution = self._linked_casing_run(
+                well=well, reference=entry.casing_reference, result=result
+            )
+            row = self._write_cement_job(
+                entry=entry,
+                well=well,
+                casing_run_id=casing_run_id,
+                casing_resolution=casing_resolution,
+                document=document,
+                version=version,
+                result=result,
+            )
+            if row is not None and written is None and not higher_current:
+                written = row
+        if replace and bool(result.identities):
+            removed = self._delete_domain_orphans(
+                CementJob, version_id=version.id, kept=result.identities
+            )
+            if removed:
+                result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        return written
 
     # -- report ---------------------------------------------------------------
     def _promote_report(

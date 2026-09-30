@@ -74,15 +74,16 @@
     {
       "filename": "casing_report_well-a3.txt",
       "classification": "CASING_REPORT",
-      "contract": null,
+      "contract": "document:CASING_REPORT:promotion:v7",
       "expected": "UNSUPPORTED",
       "domain_models": [],
       "scope": "well A-3 evidence",
       "checks": [
-        "classification-evidence",
-        "stored-extraction",
-        "explicit-denial"
-      ]
+        "same-classification-different-shape",
+        "no-authoritative-row",
+        "explicit-NO_RECOGNISED_TABLE-diagnostic"
+      ],
+      "denied_by": "source-shape"
     },
     {
       "filename": "daily_drilling_report_well-a3.docx",

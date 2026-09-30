@@ -69,7 +69,7 @@ LATER_MIGRATION_COLUMNS = (
     "cost_item.document_version_id",  # 0013
     "cost_item.is_current",  # 0013
 )
-LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011
+LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015
     "problem_definition",
     "mud_report",
     "mud_measurement",
@@ -78,6 +78,10 @@ LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011
     "bit_record",
     "survey_run",
     "survey_station",
+    # 0014/0015: the casing and cement domain tables.  A plan-only schema predates them, so a
+    # pre-0014 file legitimately has neither - and the parity test still says exactly which.
+    "casing_run",
+    "cement_job",
 )
 
 #: The foreign keys ``calculation`` already had; a table rebuild that loses one of these is a data bug.

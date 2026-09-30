@@ -274,3 +274,21 @@ def ingest_v7(workspace, *, wells: tuple[str, ...] = ("A-3", "B-11")) -> Path:
     assert result.ok, result.error
     assert result.failures == 0, [item.error for item in result.failures_report()]
     return root
+
+
+def ingest_v71(workspace, *, wells: tuple[str, ...] = ("A-3", "B-11")) -> Path:
+    """The six-file operational corpus plus the casing and cement sources."""
+    from tests.fixtures.generate import build_v71_operational_corpus
+
+    hierarchy = register_wells(workspace, wells=wells)
+    root = workspace.root / "corpus"
+    build_v71_operational_corpus(root)
+    pipeline = IngestionPipeline(
+        settings=workspace.settings,
+        workspace_root=workspace.root,
+        database=workspace.database,
+    )
+    result = pipeline.run(root=root, well_id=str(hierarchy["wells"][wells[0]].id))
+    assert result.ok, result.error
+    assert result.failures == 0, [item.error for item in result.failures_report()]
+    return root

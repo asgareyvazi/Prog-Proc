@@ -274,6 +274,57 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
         ),
         contract_revision="v7",
     ),
+    DocumentClassification.CASING_REPORT: PromotionContract(
+        classification=DocumentClassification.CASING_REPORT,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
+        handler="casing",
+        target_models=("casing_run",),
+        required_evidence=(
+            "stored_extraction",
+            "casing_size_column",
+            "shoe_depth_column",
+            "string_property_column",
+            "source_units_preserved",
+            "row_provenance",
+            "well_linkage",
+            "explicit_section_or_null",
+        ),
+        review_surface="DomainReviewService",
+        notes=(
+            "A casing tally: a size column, a shoe depth column and at least one of grade, weight, "
+            "connection or an explicit type column.  Writes actual runs only - never a programme, a "
+            "target or a WellSection, so plan and actual stay two truths.  The string type is taken "
+            "from an explicit type column and is never inferred from size or depth; a 9 5/8 in "
+            "string is not automatically production casing.  Every dimension keeps the source's "
+            "text, value and unit as three facts, and nothing is converted."
+        ),
+        contract_revision="v7",
+    ),
+    DocumentClassification.CEMENT_REPORT: PromotionContract(
+        classification=DocumentClassification.CEMENT_REPORT,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
+        handler="cement",
+        target_models=("cement_job",),
+        required_evidence=(
+            "stored_extraction",
+            "cement_volume_column",
+            "cement_datum_column",
+            "source_units_preserved",
+            "row_provenance",
+            "well_linkage",
+        ),
+        review_surface="DomainReviewService",
+        notes=(
+            "A cement job table: a cement-specific volume column (lead, tail or total) together "
+            "with a slurry, top of cement, shoe depth, displacement or wait-on-cement column.  A "
+            "generic Volume/Pressure/Depth table is not a cement job.  Lead and tail are never "
+            "summed, top of cement is never read as shoe depth, and no annular volume, excess, "
+            "hydrostatic or displacement arithmetic exists anywhere in the platform.  A casing "
+            "association is stored only when the source names a string that resolves to exactly one "
+            "current run of the well."
+        ),
+        contract_revision="v7",
+    ),
 }
 
 
@@ -281,8 +332,6 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
 # contracts.  This is an explicit deny list, not an accidental fall-through.
 _KNOWLEDGE_SUPPORTED = frozenset(
     {
-        DocumentClassification.CEMENT_REPORT,
-        DocumentClassification.CASING_REPORT,
         DocumentClassification.WELL_CONTROL,
         DocumentClassification.LOGGING,
         DocumentClassification.SERVICE_REPORT,
