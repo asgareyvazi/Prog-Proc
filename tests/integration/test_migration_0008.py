@@ -50,6 +50,9 @@ LATER_MIGRATION_COLUMNS = (
     "well_section.provenance",  # 0009
     "well_section.document_id",  # 0009
     "well_section.document_version_id",  # 0009
+    "cost_item.document_id",  # 0013
+    "cost_item.document_version_id",  # 0013
+    "cost_item.is_current",  # 0013
 )
 
 #: (subject_key, expected kind, expected id).  Each row is a real shape the platform can hold.

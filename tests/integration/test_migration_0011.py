@@ -25,6 +25,14 @@ ROOT = Path(__file__).resolve().parents[2]
 PREVIOUS_HEAD = "0010"
 NEW_TABLES = ("bha_report", "bha_component", "bit_record", "survey_run", "survey_station")
 
+#: Columns migrations after this one add.  Listed rather than ignored: a schema-parity test that
+#: simply tolerated any drift would stop detecting the kind it exists for.
+LATER_MIGRATION_COLUMNS = (
+    "cost_item.document_id",  # 0013
+    "cost_item.document_version_id",  # 0013
+    "cost_item.is_current",  # 0013
+)
+
 
 def build_legacy_database(engine: Engine) -> None:
     """A 0010 schema, which is where a workspace is before this migration."""
@@ -89,13 +97,23 @@ def test_the_upgrade_creates_the_five_tables_with_the_columns_the_models_declare
             assert columns(engine, table) == {
                 column.name for column in Base.metadata.tables[table].columns
             }, table
-        # And nothing else in the schema moved: a fresh ``create_all`` and this file agree exactly.
+        # Nothing else in the schema moved, apart from what later revisions legitimately add.
+        assert schema_diff(engine) == {
+            "missing_tables": [],
+            "extra_tables": [],
+            "missing_columns": sorted(LATER_MIGRATION_COLUMNS),
+            "extra_columns": [],
+        }, "0011 is intentionally before the later migrations"
+        # The parity claim - a migrated file and a fresh ``create_all`` describe the same schema -
+        # is about the *head* of the chain, not about 0011: a later revision that adds a column
+        # would otherwise be reported here as drift.
+        assert upgrade(engine, heads()[0]).current == heads()[0]
         assert schema_diff(engine) == {
             "missing_tables": [],
             "extra_tables": [],
             "missing_columns": [],
             "extra_columns": [],
-        }
+        }, "a migrated file and a fresh create_all must describe the same schema"
     finally:
         engine.dispose()
 
@@ -185,9 +203,19 @@ def test_a_promoted_corpus_survives_the_upgrade_with_every_row_and_value_intact(
     assert len(fetch(workspace, NptRecord)) == npt_before
     with workspace.database.read_only() as session:
         assert len(list(session.scalars(MudReport.__table__.select()))) == 1
+
+    # The integrity checker is written against the models at head, so it has to run against a
+    # schema at head: it selects every column the model declares, and a column a later revision
+    # added - ``cost_item.is_current`` from 0013, for instance - does not exist in an 0011 schema.
+    # Running it here would report the schema being behind as though it were corrupt data.
+    assert upgrade(workspace.database.engine, heads()[0]).current == heads()[0]
+    with workspace.database.read_only() as session:
         from drilling_intelligence.database.integrity import check_operational_integrity
 
         assert check_operational_integrity(session) == []
+    assert [(row.identity_key, row.value) for row in fetch(workspace, MudMeasurement)] == [
+        (row.identity_key, row.value) for row in mud_before
+    ], "carrying the corpus the rest of the way to head must not change a promoted value either"
 
 
 def test_the_downgrade_removes_exactly_the_new_tables_and_keeps_every_other_row(workspace) -> None:

@@ -221,7 +221,7 @@ def test_an_unresolved_npt_reference_leaves_the_link_unset(workspace) -> None:
     with workspace.database.session() as session:
         promoter = VersionPromoter(session)
 
-        npt_id, detail = promoter._cost_npt(reference="NPT-014", scope={"well_id": well_id})
+        npt_id, detail = promoter._cost_npt(reference="NPT-014", well_id=well_id)
         assert npt_id == ""
         assert "left unset rather than guessed" in detail
 
@@ -235,7 +235,7 @@ def test_an_unresolved_npt_reference_leaves_the_link_unset(workspace) -> None:
         session.add(record)
         session.flush()
 
-        exact, no_detail = promoter._cost_npt(reference=record.id, scope={"well_id": well_id})
+        exact, no_detail = promoter._cost_npt(reference=record.id, well_id=well_id)
         assert exact == record.id
         assert no_detail == ""
 
@@ -248,6 +248,133 @@ def test_an_unresolved_npt_reference_leaves_the_link_unset(workspace) -> None:
         )
         session.add(other)
         session.flush()
-        cross, cross_detail = promoter._cost_npt(reference=other.id, scope={"well_id": well_id})
+        cross, cross_detail = promoter._cost_npt(reference=other.id, well_id=well_id)
         assert cross == ""
         assert cross_detail
+
+
+def _edit_ledger(workspace, cell: str, value: object) -> None:
+    """Change one figure in the corpus ledger, as an operator correcting a sheet would."""
+    from openpyxl import load_workbook
+
+    path = workspace.root / "corpus" / LEDGER
+    workbook = load_workbook(path)
+    workbook.active[cell] = value
+    workbook.save(path)
+
+
+def _current(workspace) -> dict[str, CostItem]:
+    """The current statement of each cost line, which is what a total must be built from."""
+    rows = [row for row in fetch(workspace, CostItem) if row.is_current]
+    return {row.cbs_code or "": row for row in rows}
+
+
+def test_a_corrected_figure_does_not_double_count(workspace) -> None:
+    """The defect this regression exists for: two CURRENT rows for one line, totalling both.
+
+    Before cost rows were source-owned, a changed amount was a different identity and therefore a
+    second row, and both stayed current.  A ledger totalling 2 060 500 in actuals came to 4 060 499
+    after one figure was corrected - four lines, five current rows, one line counted at its old
+    value and its new one.
+    """
+    ingest_v7(workspace)
+    promote_file(workspace, LEDGER)
+    before = _current(workspace)
+    assert sum(row.actual_value or 0 for row in before.values()) == 2060500.0
+
+    _edit_ledger(workspace, "E5", 1999999)  # the actual for CBS 1.2.4
+    reingest(workspace)
+    result = promote_file(workspace, LEDGER)
+    assert result.outcome == "PROMOTED", result.to_dict()
+
+    after = _current(workspace)
+    assert set(after) == {"1.2.4", "1.2.5", "1.2.6", "1.2.7"}, "still four lines, not five"
+    assert after["1.2.4"].actual_value == 1999999.0
+    assert sum(row.actual_value or 0 for row in after.values()) == 2749999.0
+
+
+def test_the_superseded_line_survives_as_history(workspace) -> None:
+    """Standing a row down is not deleting it: the earlier statement stays readable."""
+    ingest_v7(workspace)
+    promote_file(workspace, LEDGER)
+    _edit_ledger(workspace, "E5", 1999999)
+    reingest(workspace)
+    promote_file(workspace, LEDGER)
+
+    every = fetch(workspace, CostItem)
+    current = [row for row in every if row.is_current]
+    superseded = [row for row in every if not row.is_current]
+
+    # The whole previous version stands down, not only the line that changed: a version is one
+    # statement of the ledger, and half-superseding it would leave two partial truths.
+    assert len(current) == 4
+    assert len(superseded) == 4
+    assert {row.document_version_id for row in current}.isdisjoint(
+        {row.document_version_id for row in superseded}
+    )
+
+    original = next(row for row in superseded if row.cbs_code == "1.2.4")
+    assert original.actual_value == 1310500.0, "the original figure is still there"
+    assert original.document_version_id, "history still names the version that produced it"
+    assert original.provenance, "and still points at the source it came from"
+
+
+def test_a_line_the_source_stopped_stating_is_removed_on_replace(workspace) -> None:
+    """Replacement removes only what this source version no longer states."""
+    ingest_v7(workspace)
+    promote_file(workspace, LEDGER)
+    assert set(_current(workspace)) == {"1.2.4", "1.2.5", "1.2.6", "1.2.7"}
+
+    from openpyxl import load_workbook
+
+    path = workspace.root / "corpus" / LEDGER
+    workbook = load_workbook(path)
+    workbook.active.delete_rows(8)  # CBS 1.2.7
+    workbook.save(path)
+    reingest(workspace)
+    promote_file(workspace, LEDGER)
+
+    assert set(_current(workspace)) == {"1.2.4", "1.2.5", "1.2.6"}
+
+
+def test_a_manually_entered_line_is_never_touched_by_promotion(workspace) -> None:
+    """A line a person typed belongs to no artefact, so no artefact may supersede or sweep it."""
+    ingest_v7(workspace)
+    promote_file(workspace, LEDGER)
+
+    from drilling_intelligence.engineering.costs import CostRepository
+
+    with workspace.database.unit_of_work() as session:
+        row, created = CostRepository(session).record_item(
+            description="Manually entered contingency",
+            cbs_code="9.9.9",
+            category="contingency",
+            planned_value=50000,
+            planned_unit="NOK",
+        )
+        assert created
+        manual_id = row.id
+
+    reingest(workspace)
+    promote_file(workspace, LEDGER)
+
+    every = {row.id: row for row in fetch(workspace, CostItem)}
+    assert manual_id in every, "promotion must not delete a manual line"
+    assert every[manual_id].is_current is True, "promotion must not stand a manual line down"
+    assert every[manual_id].origin == "MANUAL"
+    assert _current(workspace)["9.9.9"].planned_value == 50000.0
+
+
+def test_an_exact_rerun_changes_nothing(workspace) -> None:
+    """Promoting the same artefact twice is a no-op, not a second set of rows."""
+    ingest_v7(workspace)
+    promote_file(workspace, LEDGER)
+    first = {row.id for row in fetch(workspace, CostItem)}
+
+    result = promote_file(workspace, LEDGER)
+    second = {row.id for row in fetch(workspace, CostItem)}
+
+    assert second == first
+    assert result.counts["cost_item"]["created"] == 0, result.to_dict()
+    assert result.counts["cost_item"]["unchanged"] == 4, result.to_dict()
+    assert all(row.is_current for row in fetch(workspace, CostItem))

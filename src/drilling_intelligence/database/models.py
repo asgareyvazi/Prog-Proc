@@ -2004,6 +2004,8 @@ class CostItem(Base, TimestampMixin):
     __table_args__ = (
         Index("ix_cost_well_category", "well_id", "category"),
         Index("ix_cost_project_cbs", "project_id", "cbs_code"),
+        Index("ix_cost_well_current", "well_id", "is_current"),
+        Index("ix_cost_version", "document_version_id"),
         UniqueConstraint("identity_key", name="uq_cost_identity"),
     )
 
@@ -2037,6 +2039,16 @@ class CostItem(Base, TimestampMixin):
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     identity_key: Mapped[str | None] = mapped_column(String(160))
     attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    #: Source ownership, added when cost gained a promotion writer.  A manually entered line leaves
+    #: all three empty and is never superseded or swept, because it belongs to no artefact.  A
+    #: derived line belongs to the version that produced it, so a corrected sheet can stand the
+    #: previous version's rows down instead of leaving two ``CURRENT`` statements of one line -
+    #: which is how a cost total came to be counted twice.
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
 
 class FieldPattern(Base, TimestampMixin):

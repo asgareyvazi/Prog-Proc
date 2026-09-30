@@ -94,6 +94,9 @@ class CostRepository:
         origin: str = KnowledgeOrigin.MANUAL.value,
         created_by: str = "system",
         attributes: Mapping[str, Any] | None = None,
+        document_id: str = "",
+        document_version_id: str = "",
+        is_current: bool = True,
         **scope: Any,
     ) -> tuple[CostItem, bool]:
         """One cost line, and whether this call is what created it.
@@ -140,6 +143,9 @@ class CostRepository:
             "planned_unit": currency_of(planned_unit),
             "actual_value": None if actual_value is None else float(actual_value),
             "actual_unit": currency_of(actual_unit),
+            "document_id": str(document_id or "").strip() or None,
+            "document_version_id": str(document_version_id or "").strip() or None,
+            "is_current": bool(is_current),
         }
         identity = self._identity(payload)
         existing = self.session.execute(
@@ -219,6 +225,7 @@ class CostRepository:
         record_state: str = "",
         limit: int = 200,
         scope_wide_only: bool = False,
+        current_only: bool = True,
         **scope: Any,
     ) -> list[CostItem]:
         unknown = sorted(set(scope) - set(COST_SCOPE_KEYS))
@@ -227,6 +234,8 @@ class CostRepository:
                 f"unknown cost scope {', '.join(unknown)}", known=list(COST_SCOPE_KEYS)
             )
         statement = select(CostItem)
+        if current_only:
+            statement = statement.where(CostItem.is_current.is_(True))
         for key, value in scope.items():
             if value:
                 statement = statement.where(getattr(CostItem, key) == str(value))
@@ -273,14 +282,24 @@ class CostRepository:
                 clauses.append(getattr(CostItem, name) == str(scope[name]))
         return clauses
 
-    def _scope_statement(self, scope: Mapping[str, Any]) -> Any:
+    def _scope_statement(self, scope: Mapping[str, Any], *, current_only: bool = True) -> Any:
+        """The rows belonging to a scope, current ones by default.
+
+        ``current_only`` is the difference between a total and a total counted twice.  A corrected
+        cost sheet writes the corrected line as a new row and stands the previous one down rather
+        than editing it, so both exist; only the current one is the statement of the well's cost.
+        The history is not deleted - pass ``current_only=False`` to read it - but a default that
+        included superseded rows would report a well as costing more than its own ledger says.
+        """
         statement = select(CostItem)
+        if current_only:
+            statement = statement.where(CostItem.is_current.is_(True))
         clauses = self._scope_clauses(scope)
         if clauses:
             statement = statement.where(or_(*clauses))
         return statement
 
-    def summary(self, **scope: Any) -> dict[str, Any]:
+    def summary(self, *, current_only: bool = True, **scope: Any) -> dict[str, Any]:
         """Per-currency totals for a scope, with everything unpriced still counted.
 
         ``items`` is never equal to ``priced`` by accident: a programme whose sheet has thirty lines and
@@ -295,7 +314,7 @@ class CostRepository:
         # Nothing is filtered out by record state.  A line marked FORECAST still states a planned figure
         # that belongs in the planned total, and a summary that quietly dropped it would report a cheaper
         # well than the sheet does; ``by_state`` is where a reader separates them.
-        statement = self._scope_statement(scope)
+        statement = self._scope_statement(scope, current_only=current_only)
         rows = list(self.session.execute(statement.order_by(CostItem.id)).scalars())
         by_state: dict[str, int] = {}
         by_currency: dict[str, dict[str, Any]] = {}
