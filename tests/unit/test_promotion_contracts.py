@@ -40,6 +40,9 @@ def test_only_registered_handlers_are_domain_promotable() -> None:
         DocumentClassification.BHA_REPORT: "bha_report",
         DocumentClassification.BIT_RECORD: "bit_record",
         DocumentClassification.DIRECTIONAL_SURVEY: "directional_survey",
+        # V7: cost is a real writer now, not an evidence-only class.  It targets the existing
+        # ``cost_item`` record rather than a new table.
+        DocumentClassification.COST: "cost",
     }
 
 
@@ -64,15 +67,21 @@ def test_the_v4_writers_are_versioned_rather_than_silently_reattached() -> None:
         DocumentClassification.BHA_REPORT: "v4",
         DocumentClassification.BIT_RECORD: "v4",
         DocumentClassification.DIRECTIONAL_SURVEY: "v4",
+        # A new writer is revisioned rather than reattached to an existing id, so an audit trail
+        # citing ``document:COST:promotion:v7`` cannot be read as an earlier certification.
+        DocumentClassification.COST: "v7",
     }
-    assert sum(1 for contract in contract_registry() if contract.domain_promotable) == 8
+    # Nine rather than eight: V7 added cost, which is both domain-promotable and end-to-end
+    # certified.  These counts are deliberately absolute so that admitting a classification cannot
+    # happen without a reviewer changing a number here.
+    assert sum(1 for contract in contract_registry() if contract.domain_promotable) == 9
     assert (
         sum(
             1
             for contract in contract_registry()
             if contract.level == CoverageLevel.END_TO_END_CERTIFIED
         )
-        == 8
+        == 9
     )
 
 
@@ -93,7 +102,9 @@ def test_a_promoted_domain_names_the_tables_it_is_allowed_to_write() -> None:
 
 def test_evidence_only_classes_are_not_a_fallback_domain_writer() -> None:
     for classification in (
-        DocumentClassification.COST,
+        # COST was in this list until V7, when it gained a deterministic writer.  It is
+        # deliberately not replaced here by another classification: the point of the list is that
+        # these specific classes are not a fallback domain writer.
         DocumentClassification.PROCEDURE,
         DocumentClassification.LESSON_LEARNED,
         DocumentClassification.OTHER,
