@@ -126,10 +126,10 @@ contract ID, eligibility, outcome, row-level counts, skip reasons and details.
 
 - Search/index is disposable discovery. Retrieval re-reads authoritative structured rows in bounded
   batches; evidence packages are composed only from retrieval.
-- **The structured index holds top-level records, not child measurements.** Ten record types are
+- **The structured index holds top-level records, not child measurements.** Twelve record types are
   projected (`STRUCTURED_RECORD_TYPES`): `problem_definition`, `problem_occurrence`, `npt_record`,
   `well_event`, `lesson_learned`, `recommendation`, `mud_report`, `bha_report`, `bit_record`,
-  `survey_run`. `bha_component`, `survey_station` and `mud_measurement` are deliberately not indexed
+  `survey_run`, `casing_run`, `cement_job`. `bha_component`, `survey_station` and `mud_measurement` are deliberately not indexed
   as their own units: each is a *measurement inside* a parent's statement rather than an answer to a
   question about a well. They are not hidden - each parent builder folds its children's values into
   the searchable text and carries their own provenance as `component_evidence` /
@@ -145,10 +145,14 @@ contract ID, eligibility, outcome, row-level counts, skip reasons and details.
 - Knowledge extraction reads stored artefacts and cannot become a source writer.
 - Review is read-only until a human action is explicitly submitted; field/project review uses the
   existing review contract, not a second persistence state.
-- The only executable engineering calculation remains the explicit NPT roll-up. Mud, BHA, bit and
-  survey values are not converted or recalculated in promotion, indexing, review, search or
-  staleness: footage, ROP, bit wear, dull grade, TVD, northing, easting, dogleg severity and
-  trajectory are never derived when the source did not state them.
+- The only executable engineering calculation remains the explicit NPT roll-up. Mud, BHA, bit,
+  survey, casing and cement values are not converted or recalculated in promotion, indexing, review,
+  search or staleness: footage, ROP, bit wear, dull grade, TVD, northing, easting, dogleg severity
+  and trajectory are never derived when the source did not state them, and neither are annular
+  volume, hydrostatic pressure, cement displacement, wait-on-cement duration, nor any burst,
+  collapse or tension rating. The index renders a source's own representation rather than a parsed
+  one, so a casing size of `9 5/8` is indexed as `9 5/8` and never as `9.625`, and a cement job's
+  lead and tail appear as two lines and are never summed into one.
 - Approval/status fields are not confirmation: admitted rows start as `CANDIDATE`. `CONFIRMED` requires
   an actor through the existing confirmation lifecycle.
 

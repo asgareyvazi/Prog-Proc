@@ -54,6 +54,8 @@ from ..database.models import (
     BhaComponent,
     BhaReport,
     BitRecord,
+    CasingRun,
+    CementJob,
     LessonLearned,
     MudMeasurement,
     MudReport,
@@ -96,6 +98,8 @@ STRUCTURED_RECORD_TYPES: tuple[str, ...] = (
     "bha_report",
     "bit_record",
     "survey_run",
+    "casing_run",
+    "cement_job",
 )
 
 
@@ -127,10 +131,11 @@ def is_searchable(record: Any) -> bool:
         return True
     if isinstance(record, (ProblemOccurrence, NptRecord, WellEvent)):
         return str(getattr(record, "status", "") or "") != ConfirmationStatus.REJECTED.value
-    if isinstance(record, (MudReport, BhaReport, BitRecord, SurveyRun)):
-        # The source-versioned domains share one rule: an assembly, a bit run or a survey set that a
-        # newer version of the same document replaced is history, not the answer to "what is in the
-        # hole now" - exactly as a superseded document version is not indexed.
+    if isinstance(record, (MudReport, BhaReport, BitRecord, SurveyRun, CasingRun, CementJob)):
+        # The source-versioned domains share one rule: an assembly, a bit run, a survey set, a casing
+        # run or a cement job that a newer version of the same document replaced is history, not the
+        # answer to "what is in the hole now" - exactly as a superseded document version is not
+        # indexed.
         return bool(getattr(record, "is_current", True)) and str(
             getattr(record, "status", "") or ""
         ) not in {"SUPERSEDED", ConfirmationStatus.REJECTED.value}
@@ -1010,6 +1015,165 @@ def _survey_run(row: SurveyRun, scope: _Scope) -> StructuredRecord:
     )
 
 
+def _measured(text: str, value: Any, unit: str) -> str:
+    """A quantity exactly as the source stated it, preferring what it wrote over what it parsed.
+
+    A casing size of ``9 5/8`` has no ``size_value`` - the source's own representation is the
+    meaning, and rendering ``9.625`` instead would advertise a unit change nobody made.  So the
+    text wins whenever there is text; the parsed value and its unit are shown only to complete a
+    row that has nothing else, and a row with neither contributes no line at all.
+    """
+    if text:
+        return text
+    if value is None:
+        return ""
+    return f"{value} {unit}".strip()
+
+
+def _casing_run(row: CasingRun, scope: _Scope) -> StructuredRecord:
+    project_id, field_id, company_id, well_name, project_name, company_name = scope.resolve(
+        row.well_id
+    )
+    text = _emit(
+        [
+            ("casing string", row.string_label or row.id),
+            ("string type", row.string_type),
+            ("size", _measured(row.size_text, row.size_value, row.size_unit)),
+            ("weight", _measured(row.weight_text, row.weight_value, row.weight_unit)),
+            ("grade", row.grade),
+            ("connection", row.connection),
+            ("top depth", _measured(row.top_depth_text, row.top_depth_value, row.top_depth_unit)),
+            (
+                "shoe depth",
+                _measured(row.shoe_depth_text, row.shoe_depth_value, row.shoe_depth_unit),
+            ),
+            ("run date", row.run_date_text or _iso(row.run_date)),
+            ("well", well_name),
+        ]
+    )
+    provenance: dict[str, Any] = {
+        "source_type": "structured",
+        "record_type": "casing_run",
+        "record_id": str(row.id),
+        "well_id": str(row.well_id or ""),
+        "project_id": project_id,
+        "field_id": field_id,
+        "section_id": str(row.section_id or ""),
+        "document_id": str(row.document_id or ""),
+        "document_version_id": str(row.document_version_id or ""),
+        "status": str(row.status or ""),
+        "record_state": str(row.record_state or ""),
+        "origin": str(row.origin or ""),
+        "section_resolution": str(row.section_resolution or ""),
+        "evidence": [dict(entry) for entry in row.provenance or () if isinstance(entry, Mapping)],
+    }
+    provenance = {key: value for key, value in provenance.items() if value not in (None, "", [])}
+    return _unit(
+        record_type="casing_run",
+        source_id=row.id,
+        text=text,
+        provenance=provenance,
+        well_id=str(row.well_id or ""),
+        project_id=project_id,
+        field_id=field_id,
+        company_id=company_id,
+        well_name=well_name,
+        project_name=project_name,
+        company_name=company_name,
+        category="casing",
+        status=str(row.status or ""),
+        record_date=_iso(row.run_date),
+        title=f"Casing run {row.string_label or row.id}",
+        locator_ref=f"casing run {row.id}",
+    )
+
+
+def _cement_job(row: CementJob, scope: _Scope) -> StructuredRecord:
+    project_id, field_id, company_id, well_name, project_name, company_name = scope.resolve(
+        row.well_id
+    )
+    # Lead and tail are emitted as separate lines and never added together: a single "total volume"
+    # line would be a quantity the source never stated, and would be indistinguishable from a real
+    # stated total.
+    text = _emit(
+        [
+            ("cement job", row.job_label or row.id),
+            ("stage", row.stage_text or row.stage_number),
+            ("job type", row.job_type),
+            ("lead slurry", row.lead_slurry),
+            ("tail slurry", row.tail_slurry),
+            (
+                "lead volume",
+                _measured(row.lead_volume_text, row.lead_volume_value, row.lead_volume_unit),
+            ),
+            (
+                "tail volume",
+                _measured(row.tail_volume_text, row.tail_volume_value, row.tail_volume_unit),
+            ),
+            (
+                "lead density",
+                _measured(row.lead_density_text, row.lead_density_value, row.lead_density_unit),
+            ),
+            (
+                "tail density",
+                _measured(row.tail_density_text, row.tail_density_value, row.tail_density_unit),
+            ),
+            (
+                "top of cement",
+                _measured(row.toc_depth_text, row.toc_depth_value, row.toc_depth_unit),
+            ),
+            (
+                "shoe depth",
+                _measured(row.shoe_depth_text, row.shoe_depth_value, row.shoe_depth_unit),
+            ),
+            (
+                "displacement",
+                _measured(row.displacement_text, row.displacement_value, row.displacement_unit),
+            ),
+            ("pressure", _measured(row.pressure_text, row.pressure_value, row.pressure_unit)),
+            ("wait on cement", row.woc_text),
+            ("returns", row.returns_status),
+            ("job date", row.job_date_text or _iso(row.job_date)),
+            ("well", well_name),
+        ]
+    )
+    provenance: dict[str, Any] = {
+        "source_type": "structured",
+        "record_type": "cement_job",
+        "record_id": str(row.id),
+        "well_id": str(row.well_id or ""),
+        "project_id": project_id,
+        "field_id": field_id,
+        "casing_run_id": str(row.casing_run_id or ""),
+        "document_id": str(row.document_id or ""),
+        "document_version_id": str(row.document_version_id or ""),
+        "status": str(row.status or ""),
+        "record_state": str(row.record_state or ""),
+        "origin": str(row.origin or ""),
+        "casing_resolution": str(row.casing_resolution or ""),
+        "evidence": [dict(entry) for entry in row.provenance or () if isinstance(entry, Mapping)],
+    }
+    provenance = {key: value for key, value in provenance.items() if value not in (None, "", [])}
+    return _unit(
+        record_type="cement_job",
+        source_id=row.id,
+        text=text,
+        provenance=provenance,
+        well_id=str(row.well_id or ""),
+        project_id=project_id,
+        field_id=field_id,
+        company_id=company_id,
+        well_name=well_name,
+        project_name=project_name,
+        company_name=company_name,
+        category="cement",
+        status=str(row.status or ""),
+        record_date=_iso(row.job_date),
+        title=f"Cement job {row.job_label or row.id}",
+        locator_ref=f"cement job {row.id}",
+    )
+
+
 _BUILDERS = {
     "problem_definition": _problem_definition,
     "problem_occurrence": _problem_occurrence,
@@ -1021,6 +1185,8 @@ _BUILDERS = {
     "bha_report": _bha_report,
     "bit_record": _bit_record,
     "survey_run": _survey_run,
+    "casing_run": _casing_run,
+    "cement_job": _cement_job,
 }
 
 #: The model each record type is read from, and a deterministic order for its rows.
@@ -1035,6 +1201,8 @@ _RECORD_SOURCES: tuple[tuple[type, str, tuple[str, ...]], ...] = (
     (BhaReport, "bha_report", ("report_date", "id")),
     (BitRecord, "bit_record", ("run_date", "id")),
     (SurveyRun, "survey_run", ("survey_date", "id")),
+    (CasingRun, "casing_run", ("shoe_depth_value", "id")),
+    (CementJob, "cement_job", ("job_date", "id")),
 )
 
 
