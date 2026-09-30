@@ -2215,8 +2215,8 @@ and a writer. The registry was not touched for them, and no placeholder rows wer
 | repo | `asgareyvazi/Prog-Proc` |
 | branch | `arena/01a0c936-prog-proc` |
 | HEAD at session start | `b0f774d` |
-| HEAD at report time | `c2d82d8` + this documentation commit |
-| commits added | `0530718`, `ce935c8`, `9264721`, `c2d82d8` |
+| HEAD at report time | `14f6303`, pushed — `git ls-remote` agrees |
+| commits added | `0530718`, `ce935c8`, `9264721`, `c2d82d8`, `14f6303` |
 | shallow | false |
 | resets, rebases, force-pushes | none |
 
@@ -2297,6 +2297,7 @@ roll-up is still the only executable engineering calculation.
 |---|---|
 | full suite at `9264721` | **1747 passed, 3 skipped**, exit 0, 24m14s |
 | full suite at `c2d82d8` | **1757 passed, 3 skipped**, exit 0, 25m33s |
+| CI at `14f6303` | **success** — `test (cp3.11)`, `test (cp3.14)`, `clean install smoke` |
 | `tests/integration/test_casing_promotion_v71.py` | 13 passed |
 | `tests/integration/test_cement_promotion_v71.py` | 14 passed |
 | `tests/integration/test_search_casing_cement_v71.py` | 10 passed |
@@ -2314,13 +2315,20 @@ unresolvable casing reference, superseded-row removal from the index.
 
 ### 45.8 CI status
 
-CI was not observed for `0530718`, `ce935c8`, `9264721` or `c2d82d8`. No CI result is claimed for
-any of them. The gates above were run locally and are the evidence offered.
+CI **passed** for `14f6303`: run `36701649927`, conclusion `success`, all three jobs green —
+`test (cp3.11)`, `test (cp3.14)` and `clean install smoke`. This is observed, not inferred.
+
+The two preceding pushes failed CI and are reported as failures: `0530718` (run `36679934618`) and
+`72c06d7` (run `36686863607`), both `failure` after roughly 19m40s. Both carried the six defects
+described in 45.4 and 45.7 — the `cost_item` foreign-key drift and the five stale assertions — and
+`14f6303` is the first commit in this wave that fixes all of them. An earlier report in this session
+described `72c06d7`'s CI as never observed; it has now been observed, and it failed.
 
 ### 45.9 Git publication chain
 
 `98b63e3` → `3623561` → `f415991` → `ccdffa3` → `72c06d7` → `b0f774d` → `0530718` → `ce935c8` →
-`9264721` → `c2d82d8`. Never reset, rebased or force-pushed.
+`9264721` → `c2d82d8` → `14f6303`. Never reset, rebased or force-pushed. Local and remote agree at
+`14f6303`, verified by `git ls-remote`.
 
 ### 45.10 Final domain registry matrix
 
