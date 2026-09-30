@@ -95,16 +95,21 @@ def test_fourteen_source_shaped_cases_classify_and_promote_exactly_as_documented
     assert summary["counts"]["survey_station"]["created"] == 5
     assert summary["counts"]["mud_report"]["created"] == 1
 
-    # The two prose files are refused by shape, and the refusal says why rather than reporting a
-    # generic "unsupported classification" for a class that does have a writer.
+    # The prose files are refused by shape, and the refusal says why rather than reporting a generic
+    # "unsupported classification" for a class that does have a writer.  Three of them: the BHA and
+    # bit narratives, and the casing report - CASING_REPORT gained a writer in V7.1, so its narrative
+    # artefact moved from "no handler is registered" to "this artefact does not satisfy the writer's
+    # source contract", which is the more precise statement and the reason the count is three.
     shape_refusals = [
         item for item in summary["skipped_details"] if item["reason"] == "NO_RECOGNISED_TABLE"
     ]
-    assert len(shape_refusals) == 2
+    assert len(shape_refusals) == 3
     assert {
-        "bottom hole assembly" in item["detail"] or "bit record" in item["detail"]
+        "bottom hole assembly" in item["detail"]
+        or "bit record" in item["detail"]
+        or "casing run" in item["detail"]
         for item in shape_refusals
-    } == {True}
+    } == {True}, "every shape refusal names the domain whose table it looked for"
 
 
 def test_no_row_is_written_for_a_refused_source_shape(workspace) -> None:

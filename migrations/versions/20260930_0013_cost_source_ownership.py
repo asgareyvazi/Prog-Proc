@@ -21,16 +21,16 @@ version that produced it, a newer version stands the previous one down, and the 
 in the database as history rather than being edited.  So this adds source ownership to the table
 rather than inventing a cost-specific rule.
 
-One thing this migration deliberately does not do: add the two foreign keys.  SQLite cannot add a
-constraint to an existing table without rebuilding it, and a rebuild needs a live connection to
-reflect the table - which breaks ``alembic upgrade head --sql``.  Rendering a migration to SQL before
-applying it is how an operator reviews what is about to happen to their file, and this repository
-tests that the whole chain still renders, so the invariant wins.  The columns and their indexes are
-added with operations that render offline.  The consequence is stated plainly rather than buried: a
-database migrated up from 0012 carries ``cost_item.document_id`` and ``document_version_id`` without
-a database-level constraint, while a workspace built fresh by ``create_all`` has them.  Both are
-written only from a document and version the writer has just read, and ``ondelete="SET NULL"`` on a
-provenance link is a convenience rather than an integrity guarantee.
+This migration adds the columns and their indexes but not the two foreign keys, and that gap is
+closed by 0016 rather than left open.  The reasoning here at the time was that SQLite cannot add a
+constraint to an existing table without rebuilding it, that a rebuild needs a live connection to
+reflect the table, and that reflection breaks ``alembic upgrade head --sql`` - an invariant this
+repository tests, so it won.  The middle step was the wrong one: alembic only reflects when nobody
+tells it the destination schema, and supplying ``copy_from`` makes the rebuild render offline.  So
+the constraint could have been attached after all, and 0016 attaches it.  Until 0016 runs, a
+database migrated up from 0012 carries ``cost_item.document_id`` and ``document_version_id``
+without a database-level constraint while a workspace built fresh by ``create_all`` has them -
+which is exactly the divergence ``test_migration_0004.py`` compares for and reported.
 
 Existing rows are backfilled ``is_current = 1``.  Every row written before this migration was the
 only statement of its line, so marking it current is what the data already meant, and no row's

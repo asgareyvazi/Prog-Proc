@@ -9,6 +9,7 @@ applied to somebody's file.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from sqlalchemy import create_engine, inspect, text
@@ -349,4 +350,14 @@ def test_offline_sql_for_this_migration_is_renderable(tmp_path) -> None:
     assert completed.returncode == 0, completed.stderr
     for table in NEW_TABLES:
         assert f"CREATE TABLE {table}" in completed.stdout, table
-    assert "DROP TABLE" not in completed.stdout
+    # No table may disappear.  A blanket "no DROP TABLE" would be wrong now that 0016 rebuilds
+    # ``cost_item`` to attach the two foreign keys 0013 could not add - SQLite cannot add a
+    # constraint in place, so a rebuild is the only way, and a rebuild creates the replacement
+    # under an ``_alembic_tmp_`` name, copies the rows, drops the old table and renames.  What must
+    # hold is the thing this check is really about: every table dropped here is recreated here.
+    sql = completed.stdout
+    dropped = set(re.findall(r"DROP TABLE (?:IF EXISTS )?(\S+?)[;(]", sql))
+    created = {
+        name.removeprefix("_alembic_tmp_") for name in re.findall(r"CREATE TABLE (\S+?) \(", sql)
+    }
+    assert dropped <= created, sorted(dropped - created)

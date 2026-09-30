@@ -543,6 +543,9 @@ def test_the_downgrade_removes_the_domain_and_keeps_the_workspace(tmp_path) -> N
                 "bit_record",
                 "survey_run",
                 "survey_station",
+                # 0014/0015: the casing and cement domain tables.
+                "casing_run",
+                "cement_job",
             )
         ), diff
 

@@ -24,17 +24,19 @@ entity, filename, folder, search hit or approval stamp is not permission to writ
 | --- | ---: | --- |
 | `DocumentClassification` members | **26** | `core/enums.py` |
 | explicit static contracts | **26** | `contract_registry()` import-time completeness guard |
-| domain handlers | **7** | `program`, `report`, `mud_report`, `bha_report`, `bit_record`, `directional_survey`, `cost` (DDR/NPT/TIME_BREAKDOWN share the named `report` handler) |
-| `END_TO_END_CERTIFIED` | **9** | drilling program, DDR, NPT, mud report, time breakdown, BHA report, bit record, directional survey, cost |
+| domain handlers | **9** | `program`, `report`, `mud_report`, `bha_report`, `bit_record`, `directional_survey`, `cost`, `casing`, `cement` (DDR/NPT/TIME_BREAKDOWN share the named `report` handler) |
+| `END_TO_END_CERTIFIED` | **11** | drilling program, DDR, NPT, mud report, time breakdown, BHA report, bit record, directional survey, cost, casing report, cement report |
 | `DOMAIN_PROMOTABLE` but not end-to-end certified | **0** | no remaining restricted domain writer |
-| `KNOWLEDGE_SUPPORTED`, no domain writer | **12** | explicit deny-by-no-handler registry entries |
+| `KNOWLEDGE_SUPPORTED`, no domain writer | **10** | explicit deny-by-no-handler registry entries |
 | `EXTRACT_ONLY`, no type-specific knowledge/domain contract | **5** | explicit deny-by-no-handler registry entries |
 | deterministic V4 corpus cases | **14** | `build_v4_forensic_corpus()` and `test_v4_forensic_corpus.py` |
 
-The six handler entries preserve the V2 contract IDs for existing writers. `MUD_REPORT` is revisioned
-`v3`; `BHA_REPORT`, `BIT_RECORD` and `DIRECTIONAL_SURVEY` are revisioned `v4`; `COST` is revisioned
+The handler entries preserve the V2 contract IDs for existing writers. `MUD_REPORT` is revisioned
+`v3`; `BHA_REPORT`, `BIT_RECORD` and `DIRECTIONAL_SURVEY` are revisioned `v4`; `COST`,
+`CASING_REPORT` and `CEMENT_REPORT` are revisioned
 `v7`. No existing contract ID
-was silently changed: 22 contracts remain `v2`, 1 is `v3`, 3 are `v4`.
+was silently changed: 19 contracts remain `v2`, 1 is `v3`, 3 are `v4` and 3 are `v7` - 26 in total,
+matching the 26 classifications.
 
 ## Capability meanings
 
@@ -62,8 +64,8 @@ mean a specialized writer exists. **Target models** are the only tables a contra
 | 4 | `BHA_REPORT` | yes | yes | yes | `END_TO_END_CERTIFIED` | `bha_report` -> `bha_report`, `bha_component` | yes | **Admitted V4.** A component *tally* is promoted; a prose BHA narrative carries the same classification but is refused by shape. No inferred component type beyond the closed alias set. |
 | 5 | `BIT_RECORD` | yes | yes | yes | `END_TO_END_CERTIFIED` | `bit_record` -> `bit_record` | yes | **Admitted V4.** Source-stated bit runs only; a BHA link is made only on an exact, unambiguous same-well number, else left NULL and reported. No footage/ROP/wear calculation. |
 | 6 | `DIRECTIONAL_SURVEY` | yes | yes | yes | `END_TO_END_CERTIFIED` | `directional_survey` -> `survey_run`, `survey_station` | yes | **Admitted V4.** Stations are stored as reported. TVD/northing/easting/DLS are preserved only when the source states them; no trajectory mathematics or interpolation. |
-| 7 | `CEMENT_REPORT` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no cement-job writer is registered. |
-| 8 | `CASING_REPORT` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no casing-run writer is registered. |
+| 7 | `CEMENT_REPORT` | yes | yes | yes | `END_TO_END_CERTIFIED` | `cement` -> `cement_job` | yes | **Admitted V7.1.** Source-stated cement jobs only. Lead and tail stay separate quantities and are never summed; a total-only source records the total and leaves both stages NULL. Top of cement and shoe depth are distinct and never interchangeable. A casing link is made only on an exact, unambiguous same-well string reference, else left NULL and reported. No annular volume, hydrostatic, displacement or WOC calculation. |
+| 8 | `CASING_REPORT` | yes | yes | yes | `END_TO_END_CERTIFIED` | `casing` -> `casing_run` | yes | **Admitted V7.1.** A run is an actual record in its own table; the plan in `well_section` and `program_target` is never touched. String type is never inferred from size, a fraction stays as written, and a table stating both planned and actual shoe depths is refused rather than read from one side. No burst/collapse/tension design calculation. |
 | 9 | `WELL_CONTROL` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no automatic well-control event writer is registered. |
 | 10 | `LOGGING` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Retained/citable; no log-curve/measurement writer is registered. |
 | 11 | `WIRELINE` | manual/none | yes | no type-specific contract | `EXTRACT_ONLY` | no handler | evidence | No dedicated signature; never silently aliased to logging. |

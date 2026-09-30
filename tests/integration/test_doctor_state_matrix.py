@@ -23,6 +23,9 @@ from pathlib import Path
 import pytest
 
 from drilling_intelligence.cli.app import main
+from drilling_intelligence.database.migrations import (
+    METADATA_REVISION,
+)
 
 DB_RELATIVE = Path(".drillintel/database/drilling_intelligence.db")
 
@@ -85,7 +88,7 @@ def test_a_healthy_workspace_reports_no_findings_and_exits_zero(workspace) -> No
     code, payload, _text = _doctor(workspace)
     assert code == 0
     assert payload["schema"]["up_to_date"] is True
-    assert payload["schema"]["current"] == "0012"
+    assert payload["schema"]["current"] == METADATA_REVISION
     assert payload["findings"] == []
 
 
@@ -125,8 +128,8 @@ def test_a_genuine_one_revision_behind_database_upgrades_cleanly(workspace) -> N
     code, payload, _text = _doctor(workspace)
     assert code == 0
     assert payload["schema"]["up_to_date"] is True
-    assert payload["schema"]["current"] == "0012"
-    assert _stamp(workspace) == "0012", "the upgrade must actually have been applied"
+    assert payload["schema"]["current"] == METADATA_REVISION
+    assert _stamp(workspace) == METADATA_REVISION, "the upgrade must actually have been applied"
 
 
 def test_a_database_whose_version_table_was_dropped_is_repaired_not_condemned(workspace) -> None:
@@ -189,4 +192,4 @@ def test_an_empty_database_is_bootstrapped_rather_than_reported_broken(workspace
 
     assert code == 0
     assert payload["schema"]["mode"] == "migrated"
-    assert payload["schema"]["current"] == "0012"
+    assert payload["schema"]["current"] == METADATA_REVISION
