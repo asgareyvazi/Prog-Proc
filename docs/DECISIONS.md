@@ -1452,3 +1452,56 @@ caller asking a different question.
 No migration. The column was already there and already nullable for a reason; the fix is that the
 application stopped leaving it empty. Adding `NOT NULL` would be wrong while the schema's own
 cascade produces NULLs on purpose.
+
+## ADR-0026 — An actual casing run and a cement job get their own tables; the plan does not stand in for them
+
+**Status:** accepted (2026-09-30)
+
+**Context.** V7.1 admitted two more classifications to end-to-end promotion. Both had an obvious
+place to go that would have been wrong.
+
+For casing, `well_section.casing_program` and `program_target.casing_program` already existed. A
+casing report names a string, a size, a grade, a weight, a connection and a shoe depth, and those
+columns are a near match — so the tempting writer stores the run by updating the section it
+"belongs" to. That would have overwritten design intent with field outcome, in the one place the
+two are supposed to stay distinguishable. A plan that says 9 5/8 in at 9 200 ft and a report that
+says 9 5/8 in ran to 9 350 ft are two statements by two different people at two different times,
+and a single column can only hold one of them.
+
+For cement there was no table at all, so the temptation ran the other way: put the numbers in
+`attributes` on a document, or fold a two-stage job into one volume.
+
+**Decision.** `casing_run` (migration 0014) and `cement_job` (migration 0015) are new tables,
+version-owned like every other promoted domain. The casing writer never writes `well_section`,
+`drilling_program` or `program_target`, and passes an empty hole size to section resolution because
+a casing size is not a hole size.
+
+Three consequences are load-bearing rather than incidental:
+
+*A string's type is never inferred from its size.* A 9 5/8 in string is commonly intermediate and
+commonly production; which one it is here is a fact about this well, not about the diameter. Only
+an explicit type column counts, matched whole against a closed set, and a sheet without one stores
+the string with no type.
+
+*The source's own representation is the value.* `9 5/8` is stored as text with no numeric value.
+Writing 9.625 instead would be a unit change nobody asked for, and it would be indistinguishable
+from a source that had genuinely stated 9.625.
+
+*Lead and tail are two quantities and top of cement is not shoe depth.* A two-stage job summed into
+one volume is a number no source ever stated, and it destroys the only thing that made the record
+useful. A source that states a total and no split records the total and leaves both stages unset.
+
+A table that states both a planned and an actual shoe depth is refused outright rather than read
+from whichever column looks authoritative.
+
+**What this does not add.** No casing design and no burst, collapse or tension calculation; no
+cement design and no annular volume, excess, hydrostatic, displacement, wait-on-cement or pressure
+calculation. ADR-0024 stands: the NPT roll-up is still the only executable engineering calculation.
+Every number in these two tables was stated by a source.
+
+**Consequences.** Twenty-six classifications, eleven end-to-end certified, nine handlers. Both new
+domains are projected into the structured index (ADR-0003's disposable half) under their own record
+types. `CEMENT_REPORT`'s casing association is resolved only on an exact, unambiguous match against
+the well's current runs; anything else leaves the link NULL with a diagnostic, because guessing
+which string a cement job went behind is the kind of inference that turns a provenance chain into a
+narrative.

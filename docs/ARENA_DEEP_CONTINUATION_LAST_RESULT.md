@@ -2205,3 +2205,135 @@ test and reads nothing from a real extraction. It was only visible on the real i
 model: `WellSection.casing_program` is a 120-character label on a hole-section record, not a casing
 run, and "cement" appears in the codebase only as vocabulary. Both need a new table, a migration
 and a writer. The registry was not touched for them, and no placeholder rows were added.
+
+## 45. V7.1 — casing and cement admitted as certified domain writers
+
+### 45.1 Exact repository state
+
+| fact | value |
+|---|---|
+| repo | `asgareyvazi/Prog-Proc` |
+| branch | `arena/01a0c936-prog-proc` |
+| HEAD at session start | `b0f774d` |
+| HEAD at report time | `c2d82d8` + this documentation commit |
+| commits added | `0530718`, `ce935c8`, `9264721`, `c2d82d8` |
+| shallow | false |
+| resets, rebases, force-pushes | none |
+
+### 45.2 V6.2 publication closure
+
+`f415991`, `ccdffa3`, `72c06d7` and `b0f774d` are present locally and were pushed. `a9ee1af` and
+`da8077b` do not exist as objects in this repository and were **not** recreated; no SHA for either
+was invented or cited as published. The two claims a previous report made about them are treated as
+untrusted and are not repeated here.
+
+### 45.3 Domain inventory
+
+| domain | model before | reused or new | migration | handler | contract rev | level |
+|---|---|---|---|---|---|---|
+| `COST` | `CostItem` | reused, +3 columns | `0013`, `0016` | `cost` | v7 | `END_TO_END_CERTIFIED` |
+| `CASING_REPORT` | none (`WellSection` is a plan) | new `CasingRun`, 34 columns | `0014` | `casing` | v7 | `END_TO_END_CERTIFIED` |
+| `CEMENT_REPORT` | none | new `CementJob`, 50 columns | `0015` | `cement` | v7 | `END_TO_END_CERTIFIED` |
+
+`CostRecord`, `CostLine` and `CostActual` were not created: `CostItem` was semantically adequate and
+needed source ownership, not a second table. Nothing unrelated was pushed into it either.
+
+### 45.4 Real defects found
+
+Four in COST (recorded at `0530718`) and one in the migration chain:
+
+1. **Cost double-count.** `CostItem` was not version-owned, so a corrected sheet left two `CURRENT`
+   rows. Measured on the real path: a ledger totalling NOK 2 060 500 became **4 060 499** across five
+   rows after one figure was corrected and the file re-imported. Fixed by source ownership; the
+   corrected version now totals 2 749 999 across four `is_current` rows and the superseded version
+   stays readable.
+2. **`result.identities.add(row.id)`** instead of the identity key — orphan sweeping would have
+   deleted every promoted cost row.
+3. **Import cycle** between `engineering.costs` and `operations.promote`, hidden by the full suite
+   because it only appeared when `engineering.costs` was imported first.
+4. **`UNMAPPED_MONEY_COLUMN` reported per row** instead of once per table.
+5. **`cost_item` foreign-key drift at head.** A workspace built by `create_all` carried
+   `fk_cost_item_document_id_document` and `fk_cost_item_document_version_id_document_version`; a
+   migrated one did not. Root cause: 0013's stated reasoning that a table rebuild requires
+   reflection and therefore breaks offline SQL rendering. The middle step was false — `copy_from`
+   supplies the destination schema, so no reflection occurs. Fixed by `0016`, which rebuilds the
+   table to the models' own definition. Verified both directions: 5 FKs at 0015, 7 at head, row
+   content and `status`/`origin`/`identity_key`/`is_current` preserved, all four indexes intact,
+   downgrade returns to 5, and `alembic upgrade head --sql` still renders.
+
+Defect 5 is reported as a defect and not as implementation work because the schema genuinely
+differed between two ways of creating the same workspace, and the repository's own parity test
+detected it.
+
+### 45.5 New domain behaviour
+
+Casing: accepted only with a size column, a shoe-depth column and at least one string property.
+Type is never inferred from size. `9 5/8` stays text with no numeric value. A table stating both
+planned and actual shoe depths is refused, not read from one side. The writer never touches
+`well_section`, `drilling_program` or `program_target`, and passes an empty hole size to section
+resolution because a casing size is not a hole size.
+
+Cement: accepted only with a cement-specific volume column and a cement-specific datum, so a generic
+`Volume | Pressure | Depth` table yields nothing. Lead and tail are never summed. A total-only
+source records the total and leaves both stages NULL. Top of cement and shoe depth are separate
+fields. A casing association is made only on an exact, unambiguous match against the well's current
+runs; otherwise the link is NULL with a diagnostic.
+
+Both are projected into the structured index under their own record types — twelve types now — and
+both follow the source-versioned rule, so a superseded run leaves the index while staying readable.
+The projection renders the source's representation, so `9 5/8` is never indexed as `9.625`.
+
+### 45.6 Engineering non-goals held
+
+No casing design and no burst, collapse or tension calculation. No cement design and no annular
+volume, excess, hydrostatic, displacement, wait-on-cement or pressure calculation. No FX or currency
+conversion. No invoice writer — `INVOICE` remains `EXTRACT_ONLY`. No vector store, no RAG, no AI in
+any writer, no agent or plugin framework, no automatic risk scoring. ADR-0024 stands: the NPT
+roll-up is still the only executable engineering calculation.
+
+### 45.7 Measured test matrix
+
+| gate | result |
+|---|---|
+| full suite at `9264721` | **1747 passed, 3 skipped**, exit 0, 24m14s |
+| full suite at `c2d82d8` | **1757 passed, 3 skipped**, exit 0, 25m33s |
+| `tests/integration/test_casing_promotion_v71.py` | 13 passed |
+| `tests/integration/test_cement_promotion_v71.py` | 14 passed |
+| `tests/integration/test_search_casing_cement_v71.py` | 10 passed |
+| migration tests 0004/0005/0008/0011/chain | passed, incl. the 0016 round-trip |
+| `ruff check .` | clean, 246 files |
+| release smoke (wheel **and** sdist) | **48 PASS, 0 FAIL**, `RELEASE SMOKE PASSED` |
+| clean-install schema | 47 tables, `alembic_version` = `0016`, `casing_run` 34 columns, `cement_job` 50 columns |
+| models vs. migrated schema | identical, including `cost_item`'s seven foreign keys |
+
+Adversarial cases actually executed, not asserted: mixed planned/actual refusal, tubular-inventory
+rejection, hole-section-plan rejection, no-type-from-size, metric preservation, unlabelled-unit
+refusal, inventory and prose refusal, ambiguity, idempotence, shoe-depth correction supersession,
+dropped-row removal, no-table refusal, lead/tail non-summation, TOC/shoe distinctness, total-only,
+unresolvable casing reference, superseded-row removal from the index.
+
+### 45.8 CI status
+
+CI was not observed for `0530718`, `ce935c8`, `9264721` or `c2d82d8`. No CI result is claimed for
+any of them. The gates above were run locally and are the evidence offered.
+
+### 45.9 Git publication chain
+
+`98b63e3` → `3623561` → `f415991` → `ccdffa3` → `72c06d7` → `b0f774d` → `0530718` → `ce935c8` →
+`9264721` → `c2d82d8`. Never reset, rebased or force-pushed.
+
+### 45.10 Final domain registry matrix
+
+26 classifications, guard holds. **11 `END_TO_END_CERTIFIED`**: `DRILLING_PROGRAM`, `DDR`, `NPT`,
+`MUD_REPORT`, `TIME_BREAKDOWN`, `BHA_REPORT`, `BIT_RECORD`, `DIRECTIONAL_SURVEY`, `COST`,
+`CASING_REPORT`, `CEMENT_REPORT`. **10 `KNOWLEDGE_SUPPORTED`**: `WELL_CONTROL`, `LOGGING`,
+`SERVICE_REPORT`, `HSE`, `EOWR`, `PROCEDURE`, `STANDARD`, `CONTRACT`, `TECHNICAL_REFERENCE`,
+`LESSON_LEARNED`. **5 `EXTRACT_ONLY`**: including `INVOICE`. Contract revisions: 19 at `v2`, 1 at
+`v3`, 3 at `v4`, 3 at `v7`.
+
+### 45.11 Verdict
+
+**`DOMAIN-WAVE-COMPLETE-WITH-EXPLICIT-DEFERRED-SCOPE`**
+
+Deferred explicitly, not silently: the eleven remaining classifications; any casing or cement design
+calculation; FX and currency conversion; an invoice writer; and bit-performance ranking.
