@@ -84,6 +84,8 @@ HSE_ALIASES: dict[str, tuple[str, ...]] = {
     # Discriminator columns: one of these must be present for the table to be an HSE table.
     "incident_type": ("incident type", "event type", "type of incident", "classification", "type"),
     "incident_reference": (
+        "incident report number",
+        "incident report no",
         "incident number",
         "incident ref",
         "incident no",
@@ -102,7 +104,17 @@ HSE_ALIASES: dict[str, tuple[str, ...]] = {
         "narrative",
     ),
     # Supporting facts.
-    "occurred_at": ("date", "time", "date/time", "date of incident", "incident date", "occurred"),
+    "occurred_at": (
+        "date",
+        "time",
+        "date/time",
+        # Real logs write the separator spaced out; ``normalise_label`` keeps the slash, so the
+        # spaced spelling has to be listed on its own or the whole date column is missed.
+        "date / time",
+        "date of incident",
+        "incident date",
+        "occurred",
+    ),
     "location": ("location", "place", "site", "where", "area", "location of incident"),
     "severity": ("severity", "severity rating", "potential severity", "risk rating"),
     "consequence": ("consequence", "consequences", "outcome", "result", "impact"),

@@ -1026,3 +1026,434 @@ def build_v71_operational_corpus(root: Path | str, *, include_scan: bool = True)
             continue
         written[name] = builder(root / name)
     return written
+
+
+def build_well_control_log_xlsx(path: Path) -> Path:
+    """A well-control event log, one row per event, in the source's own units.
+
+    Five choices here are load-bearing for the well-control contract:
+
+    *   **Row 1 is fully stated** - explicit ``kick``, an explicit depth, SIDPP and SICP each with
+        ``psi``, and a pit gain with ``bbl``.  It is the positive case the certification runs on.
+    *   **Row 2 leaves SIDPP and the pit gain blank.**  A missing measurement must stay NULL rather
+        than become zero.  The no-unit case is a separate fixture - ``well_control_no_units`` -
+        because this sheet states ``psi`` and ``bbl`` in its headers and so cannot test a column
+        that states nothing.
+    *   **Row 3 states an event type the contract does not recognise.**  It must stay NULL rather
+        than being bent into the nearest known type.
+    *   **Row 4 has a pit gain and no event type at all.**  A pit gain is a measurement, not a
+        classification, so the type must stay NULL - this row is what proves the writer does not
+        read a gain as a kick.
+    *   **Row 5 has a stated cause and a stated kill method**, so ``SOURCE_STATED`` is reachable,
+        while rows 1-4 leave the cause ``UNKNOWN``.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Well Control Log"
+    sheet["A1"] = "ACME DRILLING - WELL A-3 WELL CONTROL EVENT LOG"
+    sheet["A2"] = "Pressures as read at the gauge. Pit volumes in bbl."
+    header = [
+        "Event Ref",
+        "Event Type",
+        "Date / Time",
+        "Depth (ft)",
+        "SIDPP (psi)",
+        "SICP (psi)",
+        "Pit Gain (bbl)",
+        "Severity",
+        "Description",
+        "Cause",
+        "Kill Method",
+        "Outcome",
+        "NPT Hours",
+    ]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=4, column=column, value=value)
+    rows = [
+        # Fully stated: the positive certification row.
+        [
+            "WC-01",
+            "kick",
+            "2026-03-14",
+            9200,
+            1200,
+            1450,
+            28,
+            "High",
+            "Gas influx while tripping, well shut in",
+            "",
+            "",
+            "",
+            4.5,
+        ],
+        # Bare pressure, no unit stated anywhere in the column: text must survive, value must not.
+        [
+            "WC-02",
+            "influx",
+            "2026-03-22",
+            10400,
+            "1200",
+            "",
+            "",
+            "Medium",
+            "Connection gas observed on bottoms up",
+            "",
+            "",
+            "",
+            "",
+        ],
+        # An event type the closed set does not contain: stays NULL, never bent to a known type.
+        [
+            "WC-03",
+            "shuddering flow",
+            "2026-04-01",
+            11200,
+            "",
+            "",
+            "",
+            "",
+            "Unsteady returns at the shakers",
+            "",
+            "",
+            "",
+            "",
+        ],
+        # A pit gain with no event type: proves a gain is not read as a kick.
+        [
+            "WC-04",
+            "",
+            "2026-04-09",
+            11800,
+            "",
+            "",
+            12,
+            "",
+            "Pit volume rose over two stands",
+            "",
+            "",
+            "",
+            "",
+        ],
+        # Stated cause and stated kill method: the only row where SOURCE_STATED is reachable.
+        [
+            "WC-05",
+            "loss",
+            "2026-04-18",
+            12400,
+            800,
+            950,
+            -40,
+            "Low",
+            "Severe lost circulation in a fractured zone",
+            "Fractured carbonate formation",
+            "Wait and Weight",
+            "Controlled",
+            "",
+        ],
+    ]
+    for offset, row in enumerate(rows, start=5):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_well_control_generic_xlsx(path: Path) -> Path:
+    """A pressure table inside a well-control report that is *not* a well-control event table.
+
+    The classification of the file is ``WELL_CONTROL`` - the words are all there - but nothing in
+    these headers says which pressure or which volume the numbers are.  A classification is not
+    permission to write a row, so this must promote nothing and say why.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Pressures"
+    sheet["A1"] = "WELL CONTROL - PRESSURE AND VOLUME READINGS"
+    for column, value in enumerate(["Pressure", "Volume", "Time"], start=1):
+        sheet.cell(row=3, column=column, value=value)
+    for offset, row in enumerate([[1200, 10, "14:00"], [1150, 12, "15:00"]], start=4):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_hse_register_xlsx(path: Path) -> Path:
+    """An HSE incident register for one well, with the fields the contract can defend.
+
+    *   **Severity is a reported word, never a number.**  ``Low``/``Medium``/``High`` are stored
+        verbatim; there is no probability or impact column here on purpose, so nothing invites a
+        writer to multiply two numbers into a score.
+    *   **One row states a root cause and one does not.**  The row that does not must stay
+        ``UNKNOWN``: "the drum was cracked" describes what happened and is not a diagnosis.
+    *   **One row states a spill volume with an explicit unit**, which is the case the typed
+        ``spill_volume_*`` columns exist for.
+    *   **One row mentions lost time** and must still produce no NPT row: a duration in a column is
+        not an NPT record, and only an explicit link to one is.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "HSE Register"
+    sheet["A1"] = "ACME DRILLING - WELL A-3 HSE INCIDENT REPORT REGISTER"
+    header = [
+        "Incident Report No",
+        "Incident Type",
+        "Incident Description",
+        "Location",
+        "Date / Time",
+        "Severity",
+        "Immediate Cause",
+        "Root Cause",
+        "Consequence",
+        "Corrective Action",
+        "Preventive Action",
+        "Spill Volume (bbl)",
+        "Lost Time (hr)",
+    ]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=3, column=column, value=value)
+    rows = [
+        [
+            "HSE-101",
+            "near miss",
+            "Wet floor near the mud pits, no slip occurred",
+            "Rig floor",
+            "2026-03-20",
+            "Low",
+            "Spill not cleaned up",
+            "Housekeeping round not signed off",
+            "None",
+            "Area cleaned and cordoned",
+            "Add housekeeping to the tour sheet",
+            "",
+            "",
+        ],
+        [
+            "HSE-102",
+            "spill",
+            "Diesel released from a cracked transfer drum",
+            "Mud warehouse",
+            "2026-04-11",
+            "Medium",
+            "Cracked drum",
+            "",
+            "Soil contamination at the bund",
+            "Containment deployed, drum replaced",
+            "Inspect drums before transfer",
+            3.5,
+            6.5,
+        ],
+        [
+            "HSE-103",
+            "first aid",
+            "Minor hand cut while changing a shaker screen",
+            "Shaker house",
+            "2026-05-02",
+            "Low",
+            "",
+            "",
+            "First aid case, no lost time",
+            "Wound dressed on site",
+            "Glove specification reviewed",
+            "",
+            "",
+        ],
+    ]
+    for offset, row in enumerate(rows, start=4):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_well_control_no_units_xlsx(path: Path) -> Path:
+    """A well-control table that states every number with no unit at all.
+
+    The columns are unambiguously well-control columns - SIDPP, SICP, pit gain, depth - so the table
+    is accepted, but no header says what any of the numbers are in.  ``1200`` under ``SIDPP`` is not
+    known to be psi, bar or kPa, so every value must stay text with a NULL number and an empty unit.
+    This is the fixture that would fail a writer which defaulted a pressure to psi.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Readings"
+    sheet["A1"] = "ACME DRILLING - WELL A-3 WELL CONTROL READINGS (UNITS NOT STATED)"
+    header = [
+        "Event Ref",
+        "Event Type",
+        "Date / Time",
+        "Depth",
+        "SIDPP",
+        "SICP",
+        "Pit Gain",
+        "Description",
+    ]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=3, column=column, value=value)
+    rows = [
+        [
+            "WC-N1",
+            "kick",
+            "2026-05-11",
+            "9800",
+            "1200",
+            "1500",
+            "31",
+            "Influx on a flow check",
+        ],
+        [
+            "WC-N2",
+            "",
+            "later that tour",
+            "10100",
+            "1180",
+            "",
+            "29",
+            "Second reading, no type stated",
+        ],
+    ]
+    for offset, row in enumerate(rows, start=4):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_hse_site_register_xlsx(path: Path) -> Path:
+    """An HSE register for a site with no well at all.
+
+    These incidents are real and reportable and none of them happened at a hole: a slip on the camp
+    steps, a vehicle incident on the access road, a dropped object in the base laydown area.  The
+    promoted rows must keep ``well_id`` NULL and carry the site scope instead, because
+    ``WellEvent.well_id`` is ``NOT NULL`` and filing these against A-3 would invent a scope the
+    source never stated.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Site HSE"
+    sheet["A1"] = "ACME DRILLING - SITE HSE INCIDENT REPORT REGISTER - NO WELL ASSOCIATED"
+    header = [
+        "Incident Report No",
+        "Incident Type",
+        "Incident Description",
+        "Location",
+        "Date / Time",
+        "Severity",
+        "Consequence",
+        "Corrective Action",
+    ]
+    for column, value in enumerate(header, start=1):
+        sheet.cell(row=3, column=column, value=value)
+    rows = [
+        [
+            "SITE-01",
+            "unsafe condition",
+            "Unlit stairwell at the camp accommodation block",
+            "Camp",
+            "2026-03-05",
+            "Medium",
+            "None",
+            "Lighting repaired the same night",
+        ],
+        [
+            "SITE-02",
+            "vehicle",
+            "Light vehicle left the access road in soft shoulder",
+            "Access road",
+            "2026-04-02",
+            "High",
+            "Vehicle damage, no injury",
+            "Vehicle recovered, road graded",
+        ],
+        [
+            "SITE-03",
+            "dropped object",
+            "Sling released a joint in the laydown area",
+            "Base laydown area",
+            "2026-04-27",
+            "Critical",
+            "Joint damaged, exclusion zone held",
+            "Sling inspected and condemned",
+        ],
+    ]
+    for offset, row in enumerate(rows, start=4):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_hse_generic_xlsx(path: Path) -> Path:
+    """A table inside an HSE report that is not an incident register.
+
+    It has the word ``Incident`` in a header and a severity, which is exactly the shape a broad
+    alias would swallow.  There is no incident type or reference column and no description column,
+    so nothing in it says what happened to whom where - and it must promote nothing.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Summary"
+    sheet["A1"] = "MONTHLY PERFORMANCE SUMMARY - COUNTS ONLY"
+    for column, value in enumerate(["Incident", "Date", "Severity"], start=1):
+        sheet.cell(row=3, column=column, value=value)
+    for offset, row in enumerate(
+        [["Slip", "2026-01-04", "High"], ["Pump leak", "2026-01-19", "Low"]], start=4
+    ):
+        for column, value in enumerate(row, start=1):
+            sheet.cell(row=offset, column=column, value=value)
+    workbook.save(path)
+    return path
+
+
+V72_DOMAIN_BUILDERS = {
+    "well_control_log_well-a3.xlsx": build_well_control_log_xlsx,
+    "hse_register_well-a3.xlsx": build_hse_register_xlsx,
+}
+
+#: The same-classification negative fixtures: real files whose shape the contract refuses.
+V72_NEGATIVE_BUILDERS = {
+    "well_control_pressure_readings_well-a3.xlsx": build_well_control_generic_xlsx,
+    "well_control_no_units_well-a3.xlsx": build_well_control_no_units_xlsx,
+    "hse_summary_well-a3.xlsx": build_hse_generic_xlsx,
+}
+
+#: Site-scoped HSE is ingested in its own run with no well, because a single ingestion run carries
+#: one well id and these incidents must not inherit one.
+V72_SITE_BUILDERS = {"hse_site_register.xlsx": build_hse_site_register_xlsx}
+
+V72_OPERATIONAL_BUILDERS: dict[str, Any] = {
+    **V71_OPERATIONAL_BUILDERS,
+    **V72_DOMAIN_BUILDERS,
+    **V72_NEGATIVE_BUILDERS,
+}
+
+
+def build_v72_operational_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Path]:
+    """The V7.1 operational corpus plus the well-control, HSE and negative V7.2 sources."""
+    target = Path(root)
+    target.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+    for name, builder in V72_OPERATIONAL_BUILDERS.items():
+        written[name] = builder(target / name)
+    if include_scan:
+        (target / ".scan-marker").write_text("v7.2\n", encoding="utf-8")
+    return written
+
+
+def build_v72_site_corpus(root: Path | str) -> dict[str, Path]:
+    """The site-scoped HSE register, on its own so it carries no well."""
+    target = Path(root)
+    target.mkdir(parents=True, exist_ok=True)
+    return {name: builder(target / name) for name, builder in V72_SITE_BUILDERS.items()}

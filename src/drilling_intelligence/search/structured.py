@@ -56,6 +56,7 @@ from ..database.models import (
     BitRecord,
     CasingRun,
     CementJob,
+    HseIncident,
     LessonLearned,
     MudMeasurement,
     MudReport,
@@ -65,6 +66,7 @@ from ..database.models import (
     Recommendation,
     SurveyRun,
     SurveyStation,
+    WellControlEvent,
     WellEvent,
 )
 from .tokenize import term_counts
@@ -100,6 +102,8 @@ STRUCTURED_RECORD_TYPES: tuple[str, ...] = (
     "survey_run",
     "casing_run",
     "cement_job",
+    "well_control_event",
+    "hse_incident",
 )
 
 
@@ -131,11 +135,24 @@ def is_searchable(record: Any) -> bool:
         return True
     if isinstance(record, (ProblemOccurrence, NptRecord, WellEvent)):
         return str(getattr(record, "status", "") or "") != ConfirmationStatus.REJECTED.value
-    if isinstance(record, (MudReport, BhaReport, BitRecord, SurveyRun, CasingRun, CementJob)):
+    if isinstance(
+        record,
+        (
+            MudReport,
+            BhaReport,
+            BitRecord,
+            SurveyRun,
+            CasingRun,
+            CementJob,
+            WellControlEvent,
+            HseIncident,
+        ),
+    ):
         # The source-versioned domains share one rule: an assembly, a bit run, a survey set, a casing
-        # run or a cement job that a newer version of the same document replaced is history, not the
-        # answer to "what is in the hole now" - exactly as a superseded document version is not
-        # indexed.
+        # run, a cement job, a well-control event or an HSE incident that a newer version of the same
+        # document replaced is history, not the answer to "what is in the hole now" - exactly as a
+        # superseded document version is not indexed.  A rejected row is not searchable either: it is
+        # evidence that the source claims something the field did not see, not something to act on.
         return bool(getattr(record, "is_current", True)) and str(
             getattr(record, "status", "") or ""
         ) not in {"SUPERSEDED", ConfirmationStatus.REJECTED.value}
@@ -1174,6 +1191,125 @@ def _cement_job(row: CementJob, scope: _Scope) -> StructuredRecord:
     )
 
 
+def _well_control_event(row: WellControlEvent, scope: _Scope) -> StructuredRecord:
+    project_id, field_id, company_id, well_name, project_name, company_name = scope.resolve(
+        row.well_id
+    )
+    text = _emit(
+        [
+            ("well control event", row.event_label or row.id),
+            ("event type", row.event_type),
+            ("description", row.description),
+            ("depth", _measured(row.depth_text, row.depth_value, row.depth_unit)),
+            ("SIDPP", _measured(row.sidpp_text, row.sidpp_value, row.sidpp_unit)),
+            ("SICP", _measured(row.sicp_text, row.sicp_value, row.sicp_unit)),
+            ("pit gain", _measured(row.pit_gain_text, row.pit_gain_value, row.pit_gain_unit)),
+            ("severity", row.severity),
+            ("cause", row.cause),
+            ("kill method", row.kill_method),
+            ("outcome", row.outcome),
+            ("corrective action", row.corrective_action),
+            ("date", row.occurred_at_text or _iso(row.occurred_at)),
+            ("well", well_name),
+        ]
+    )
+    provenance: dict[str, Any] = {
+        "source_type": "structured",
+        "record_type": "well_control_event",
+        "record_id": str(row.id),
+        "well_id": str(row.well_id or ""),
+        "project_id": project_id,
+        "field_id": field_id,
+        "section_id": str(row.section_id or ""),
+        "document_id": str(row.document_id or ""),
+        "document_version_id": str(row.document_version_id or ""),
+        "status": str(row.status or ""),
+        "record_state": str(row.record_state or ""),
+        "origin": str(row.origin or ""),
+        "cause_status": str(row.cause_status or ""),
+        "evidence": [dict(entry) for entry in row.provenance or () if isinstance(entry, Mapping)],
+    }
+    provenance = {key: value for key, value in provenance.items() if value not in (None, "", [])}
+    return _unit(
+        record_type="well_control_event",
+        source_id=row.id,
+        text=text,
+        provenance=provenance,
+        well_id=str(row.well_id or ""),
+        project_id=project_id,
+        field_id=field_id,
+        company_id=company_id,
+        well_name=well_name,
+        project_name=project_name,
+        company_name=company_name,
+        category="well_control",
+        status=str(row.status or ""),
+        record_date=_iso(row.occurred_at),
+        title=f"Well control event {row.event_label or row.id}",
+        locator_ref=f"well control event {row.id}",
+    )
+
+
+def _hse_incident(row: HseIncident, scope: _Scope) -> StructuredRecord:
+    project_id, field_id, company_id, well_name, project_name, company_name = scope.resolve(
+        row.well_id
+    )
+    # A site-scoped incident has no well and gains none here: scope.resolve("") yields empty scope,
+    # and the project the document belongs to is carried instead.  Filing a camp slip against a well
+    # would make it findable only by asking about a hole it never happened at.
+    text = _emit(
+        [
+            ("HSE incident", row.incident_reference or row.id),
+            ("incident type", row.incident_type),
+            ("description", row.description),
+            ("location", row.location_text),
+            ("date", row.occurred_at_text or _iso(row.occurred_at)),
+            ("severity", row.severity),
+            ("consequence", row.consequence),
+            ("immediate cause", row.immediate_cause),
+            ("root cause", row.root_cause),
+            ("corrective action", row.corrective_action),
+            ("preventive action", row.preventive_action),
+            ("well", well_name),
+        ]
+    )
+    provenance: dict[str, Any] = {
+        "source_type": "structured",
+        "record_type": "hse_incident",
+        "record_id": str(row.id),
+        "well_id": str(row.well_id or ""),
+        "project_id": project_id or str(row.project_id or ""),
+        "field_id": field_id or str(row.field_id or ""),
+        "document_id": str(row.document_id or ""),
+        "document_version_id": str(row.document_version_id or ""),
+        "status": str(row.status or ""),
+        "record_state": str(row.record_state or ""),
+        "origin": str(row.origin or ""),
+        "immediate_cause_status": str(row.immediate_cause_status or ""),
+        "root_cause_status": str(row.root_cause_status or ""),
+        "evidence": [dict(entry) for entry in row.provenance or () if isinstance(entry, Mapping)],
+    }
+    provenance = {key: value for key, value in provenance.items() if value not in (None, "", [])}
+    return _unit(
+        record_type="hse_incident",
+        source_id=row.id,
+        text=text,
+        provenance=provenance,
+        well_id=str(row.well_id or ""),
+        project_id=project_id or str(row.project_id or ""),
+        field_id=field_id or str(row.field_id or ""),
+        company_id=company_id,
+        well_name=well_name,
+        project_name=project_name,
+        company_name=company_name,
+        category="hse",
+        status=str(row.status or ""),
+        record_date=_iso(row.occurred_at),
+        title=f"HSE incident {row.incident_reference or row.id}",
+        locator_ref=f"HSE incident {row.id}",
+    )
+
+
 _BUILDERS = {
     "problem_definition": _problem_definition,
     "problem_occurrence": _problem_occurrence,
@@ -1187,6 +1323,8 @@ _BUILDERS = {
     "survey_run": _survey_run,
     "casing_run": _casing_run,
     "cement_job": _cement_job,
+    "well_control_event": _well_control_event,
+    "hse_incident": _hse_incident,
 }
 
 #: The model each record type is read from, and a deterministic order for its rows.
@@ -1203,6 +1341,8 @@ _RECORD_SOURCES: tuple[tuple[type, str, tuple[str, ...]], ...] = (
     (SurveyRun, "survey_run", ("survey_date", "id")),
     (CasingRun, "casing_run", ("shoe_depth_value", "id")),
     (CementJob, "cement_job", ("job_date", "id")),
+    (WellControlEvent, "well_control_event", ("occurred_at", "id")),
+    (HseIncident, "hse_incident", ("occurred_at", "id")),
 )
 
 

@@ -1505,3 +1505,58 @@ types. `CEMENT_REPORT`'s casing association is resolved only on an exact, unambi
 the well's current runs; anything else leaves the link NULL with a diagnostic, because guessing
 which string a cement job went behind is the kind of inference that turns a provenance chain into a
 narrative.
+
+## ADR-27 — Well control is its own record type, not a `WellEvent`
+
+`WellEvent` carries exactly one measured quantity: `depth_md_value` + `depth_md_unit`. It has no
+pressure column and no volume column at all. A well-control row states SIDPP, SICP, pit gain and a
+depth, each with its own unit; routing it through `WellEvent` would push three of those four into
+`attributes`, outside the schema's unit discipline, and a value with no stated unit would become
+indistinguishable from one that had one. `well_control_event` therefore exists as its own
+`origin=DERIVED`, version-owned table, and a well-control row is never written as a `WellEvent`.
+
+## ADR-28 — HSE is its own record type, not `WellEvent(category="safety")`
+
+`WellEvent.well_id` is `NOT NULL` with `ON DELETE CASCADE`. An incident at a camp, a warehouse or an
+access road has no well, so the only ways to file it as a `WellEvent` are to invent a well or to make
+the column nullable — and making it nullable would silently change the meaning of every existing
+event row. `hse_incident` therefore carries a nullable `well_id` plus `project_id`/`field_id`/
+`location_text`. A site incident keeps `well_id` NULL; `NULL` is not read as "no scope", it is read as
+"not well-scoped", and the row remains findable by incident, location, project and field.
+
+## ADR-29 — Spill volume and NPT hours are parsed but not stored, and that is an open decision
+
+`HseIncidentEntry` parses `spill_volume_text/value/unit` and `npt_hours_text/value`, but
+`hse_incident` has no `spill_volume_*` or `npt_hours_*` column, so both parsed values are currently
+dropped on the way to the database. This is a **half-typed shape** and it is recorded here rather
+than left implicit. It is *not* certified behaviour. The safe half holds today and is tested: a
+`Lost Time (hr) = 6.5` cell never creates an `NptRecord`, and `npt_id` stays NULL on every row. The
+two legitimate resolutions are (A) model the columns in a migration, or (B) stop parsing them and
+keep only source text. Neither has been chosen; the decision is deferred, and no migration has been
+written for either.
+
+## ADR-30 — Known open gaps in the HSE well-scope rule
+
+`_promote_well_control` refuses a row whose stated well contradicts its document
+(`WELL_SCOPE_CONFLICT`). `_promote_hse` has no such check, because `HseIncidentEntry` has no
+`well_name` field — the HSE table contract does not read a "Well" column at all. A row that names a
+contradicting well is therefore not detected; it inherits the document's well. This is asserted as
+the current truth in `tests/integration/test_hse_promotion_v72.py`, with a comment saying which
+assertion to flip when the gap is closed. It is not certified.
+
+## ADR-31 — Dates are parsed only from ISO-8601 dates, and unparseable wording is preserved
+
+`_iso` deliberately accepts date-only ISO-8601 and nothing else, so that a timeline's holes are
+visible instead of silent. Two consequences were found and fixed this session:
+
+* `Date / Time` — the standard spelling on a real well-control log — was missing from both alias
+  contracts (`normalise_label` keeps the slash, so `date/time` does not match `date / time`). Until
+  it was added, **every** well-control and HSE row had `occurred_at = NULL` and `occurred_at_text =
+  ''`. The spaced spelling is now an explicit alias in both modules.
+* When `_mud_date` cannot parse, it returned empty wording and threw away the only evidence of *when*
+  the source said something happened. Both V7.2 writers now keep the source's own wording verbatim
+  in `occurred_at_text` and leave `occurred_at` NULL.
+
+Fixtures state dates as date-only ISO accordingly. A clock time such as `08:20` is not parsed; it
+survives as source text. That is a real limitation of the shared contract, not a defect in these
+domains, and widening `_iso` would silently change every domain's behaviour.

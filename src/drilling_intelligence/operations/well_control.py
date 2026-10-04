@@ -111,6 +111,7 @@ WELL_CONTROL_ALIASES: dict[str, tuple[str, ...]] = {
         "date",
         "time",
         "date/time",
+        "date / time",
         "date & time",
         "occurred",
         "event date",

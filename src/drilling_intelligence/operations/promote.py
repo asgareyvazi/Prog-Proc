@@ -924,8 +924,21 @@ class VersionPromoter:
         removed = 0
         # Children before parents, one flush at a time: the record tables point at each other by
         # ordinary foreign keys, and SQLite enforces only what it is given, in the order it is given.
+        #
+        # This list is the promoter's whole output surface, and it has to stay that way.  It grew
+        # silently incomplete once: V7 added cost, casing and cement and V7.2 added well control and
+        # HSE, and none of the five reached this tuple, so "un-derive this file" left exactly the
+        # newest domains behind - the rows most likely to be the ones somebody wants gone.  A
+        # regression test now derives the expected set from the schema and fails on any derived,
+        # version-owned model that is missing here, so the next domain cannot be forgotten the same
+        # way.  Order is constrained by the foreign keys: problem occurrences and the NPT-referencing
+        # domains go first, ``npt_record`` next, then the cement/casing pair in that order because
+        # ``cement_job.casing_run_id`` points at ``casing_run``.
         for model in (
             ProblemOccurrence,
+            WellControlEvent,
+            HseIncident,
+            CostItem,
             NptRecord,
             WellEvent,
             WellOperation,
@@ -937,6 +950,8 @@ class VersionPromoter:
             SurveyStation,
             SurveyRun,
             BitRecord,
+            CementJob,
+            CasingRun,
         ):
             statement = (
                 select(model)
@@ -3771,6 +3786,12 @@ class VersionPromoter:
                 }
             )
         occurred_at, occurred_at_text = self._mud_date(entry.occurred_at_text)
+        if not occurred_at_text:
+            # ``_mud_date`` yields empty wording when it cannot parse, which would throw away the
+            # only evidence of *when* the source said this happened.  The source's own wording is
+            # kept verbatim and ``occurred_at`` stays NULL - an unparsable date is an unknown date,
+            # never a guessed one.
+            occurred_at_text = entry.occurred_at_text
         content: dict[str, Any] = {
             "well_id": well.id,
             "event_label": entry.event_label.strip() or None,
@@ -3797,13 +3818,12 @@ class VersionPromoter:
             "kill_method": entry.kill_method.strip() or None,
             "outcome": entry.outcome.strip() or None,
             "cause": entry.cause.strip() or None,
-            # CauseStatus.SOURCE_STATED only when the sheet has a cause column with text in it.  A
-            # description that hints at a cause is not one the source stated, and guessing here
-            # would put a diagnosis into the record.
+            # CauseStatus.KNOWN only when the sheet has a cause column with text in it: the source
+            # said why.  A description that hints at a cause is not one the source stated.
+            # CauseStatus.INFERRED is deliberately never produced here - a deterministic writer has
+            # nothing to infer from, and writing INFERRED would be a diagnosis in a domain row.
             "cause_status": (
-                CauseStatus.SOURCE_STATED.value
-                if entry.cause.strip()
-                else CauseStatus.UNKNOWN.value
+                CauseStatus.KNOWN.value if entry.cause.strip() else CauseStatus.UNKNOWN.value
             ),
             "corrective_action": entry.corrective_action.strip() or None,
             "record_state": RecordState.ACTUAL.value,
@@ -3939,6 +3959,12 @@ class VersionPromoter:
                 }
             )
         occurred_at, occurred_at_text = self._mud_date(entry.occurred_at_text)
+        if not occurred_at_text:
+            # ``_mud_date`` yields empty wording when it cannot parse, which would throw away the
+            # only evidence of *when* the source said this happened.  The source's own wording is
+            # kept verbatim and ``occurred_at`` stays NULL - an unparsable date is an unknown date,
+            # never a guessed one.
+            occurred_at_text = entry.occurred_at_text
         content: dict[str, Any] = {
             "well_id": well_id,
             "project_id": project_id,
@@ -3957,15 +3983,13 @@ class VersionPromoter:
             "consequence": entry.consequence.strip() or None,
             "immediate_cause": entry.immediate_cause.strip() or None,
             "immediate_cause_status": (
-                CauseStatus.SOURCE_STATED.value
+                CauseStatus.KNOWN.value
                 if entry.immediate_cause.strip()
                 else CauseStatus.UNKNOWN.value
             ),
             "root_cause": entry.root_cause.strip() or None,
             "root_cause_status": (
-                CauseStatus.SOURCE_STATED.value
-                if entry.root_cause.strip()
-                else CauseStatus.UNKNOWN.value
+                CauseStatus.KNOWN.value if entry.root_cause.strip() else CauseStatus.UNKNOWN.value
             ),
             "corrective_action": entry.corrective_action.strip() or None,
             "preventive_action": entry.preventive_action.strip() or None,

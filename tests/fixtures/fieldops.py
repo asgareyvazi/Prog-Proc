@@ -292,3 +292,38 @@ def ingest_v71(workspace, *, wells: tuple[str, ...] = ("A-3", "B-11")) -> Path:
     assert result.ok, result.error
     assert result.failures == 0, [item.error for item in result.failures_report()]
     return root
+
+
+def ingest_v72(workspace, *, wells: tuple[str, ...] = ("A-3", "B-11")) -> Path:
+    """The V7.1 operational corpus plus the V7.2 well-control, HSE and negative sources.
+
+    Two ingestion runs, deliberately.  The first carries well A-3 and holds everything that belongs
+    to a well, including the two same-classification negative fixtures.  The second carries **no**
+    well and holds only the site HSE register, because one run has one well id and a camp slip or an
+    access-road vehicle incident must not inherit one merely by sharing a workspace.
+    """
+    from tests.fixtures.generate import build_v72_operational_corpus, build_v72_site_corpus
+
+    hierarchy = register_wells(workspace, wells=wells)
+    root = workspace.root / "corpus"
+    build_v72_operational_corpus(root)
+    pipeline = IngestionPipeline(
+        settings=workspace.settings,
+        workspace_root=workspace.root,
+        database=workspace.database,
+    )
+    result = pipeline.run(root=root, well_id=str(hierarchy["wells"][wells[0]].id))
+    assert result.ok, result.error
+    assert result.failures == 0, [item.error for item in result.failures_report()]
+
+    site_root = workspace.root / "site"
+    build_v72_site_corpus(site_root)
+    # No well, but a real project: these incidents belong to a site, and the site has a project.
+    # Passing the project rather than leaving it empty is what makes "site-scoped" a scope the
+    # platform can actually filter on, instead of a row with nothing attached at all.
+    site_result = pipeline.run(
+        root=site_root, well_id=None, project_id=str(hierarchy["project"].id)
+    )
+    assert site_result.ok, site_result.error
+    assert site_result.failures == 0, [item.error for item in site_result.failures_report()]
+    return root
