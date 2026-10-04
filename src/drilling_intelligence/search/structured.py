@@ -1270,6 +1270,11 @@ def _hse_incident(row: HseIncident, scope: _Scope) -> StructuredRecord:
             ("root cause", row.root_cause),
             ("corrective action", row.corrective_action),
             ("preventive action", row.preventive_action),
+            # A measured fact, projected with the unit the source stated and nothing calculated.
+            (
+                "spill volume",
+                _measured(row.spill_volume_text, row.spill_volume_value, row.spill_volume_unit),
+            ),
             ("well", well_name),
         ]
     )

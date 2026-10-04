@@ -3826,6 +3826,8 @@ class VersionPromoter:
                 CauseStatus.KNOWN.value if entry.cause.strip() else CauseStatus.UNKNOWN.value
             ),
             "corrective_action": entry.corrective_action.strip() or None,
+            # The source's own lost-time wording.  Stored as words, never as a duration: see ADR-32.
+            "npt_hours_text": entry.npt_hours_text.strip() or None,
             "record_state": RecordState.ACTUAL.value,
             "status": ConfirmationStatus.CANDIDATE.value,
         }
@@ -3993,14 +3995,17 @@ class VersionPromoter:
             ),
             "corrective_action": entry.corrective_action.strip() or None,
             "preventive_action": entry.preventive_action.strip() or None,
+            # Spill volume is a typed fact now, not a JSON side-channel.  The value exists only where
+            # the header stated a unit; otherwise the source's wording survives on its own.
+            "spill_volume_text": entry.spill_volume_text.strip() or None,
+            "spill_volume_value": entry.spill_volume_value,
+            "spill_volume_unit": entry.spill_volume_unit,
+            # Lost time stays words: a duration neither creates nor identifies an NPT row (ADR-32).
+            "npt_hours_text": entry.npt_hours_text.strip() or None,
             "record_state": RecordState.ACTUAL.value,
             "status": ConfirmationStatus.CANDIDATE.value,
         }
         attributes: dict[str, Any] = {"source": {"row_index": entry.row_index}}
-        if entry.spill_volume_text.strip():
-            attributes["source"]["spill_volume_text"] = entry.spill_volume_text.strip()
-            attributes["source"]["spill_volume_value"] = entry.spill_volume_value
-            attributes["source"]["spill_volume_unit"] = entry.spill_volume_unit
         provenance = self._table_provenance(
             entry.table,
             document=document,
@@ -4048,13 +4053,20 @@ class VersionPromoter:
         well is used when it has one and left NULL when it does not, with the document's project
         carrying the site scope instead.
 
+        That inheritance is deliberate and one-directional.  A document attached to A-3 states that
+        scope authoritatively, so a row which says nothing about a well is filed under A-3.  A row
+        which *contradicts* the document is never overwritten by it - it is refused with
+        ``WELL_SCOPE_CONFLICT``.  And a row which asks for a well inside a site-scoped document is
+        refused with ``UNRESOLVED_WELL_REFERENCE``, because there is no document scope to confirm it
+        against and picking one by name would be a guess.
+
         Nothing is inferred.  A severity is stored only as reported and is never calculated.  A root
         cause is stored only when the source states one: "the valve failed" is what happened, and
         turning it into "poor maintenance" would be a diagnosis this writer does not make.  No
         :class:`NptRecord`, :class:`ProblemOccurrence` or :class:`RiskRecord` is created - a safety
         event with no lost time is not NPT, and a reported severity is not a risk score.
         """
-        well_id: str | None = None
+        well: Well | None = None
         if document.well_id:
             well = self.session.get(Well, str(document.well_id))
             if well is None:
@@ -4063,7 +4075,6 @@ class VersionPromoter:
                     {"reason": "NO_WELL", "detail": "the linked well does not exist"}
                 )
                 return None
-            well_id = well.id
         entries = hse_incident_entries(payload)
         if not entries:
             self._no_recognised_table(
@@ -4075,9 +4086,41 @@ class VersionPromoter:
         self._supersede_by_document(model=HseIncident, document=document, version=version)
         written: HseIncident | None = None
         for entry in entries:
+            stated = entry.well_name.strip()
+            if well is not None:
+                # A row that names a well this document is not attached to is a conflict, not a
+                # detail: filing a B-11 spill under A-3 would put someone else's incident in this
+                # well's history.  An *unknown* well name is refused by the same rule - resolving it
+                # would mean guessing across every well in the workspace by free-text name.
+                if self._row_scope_conflict(stated, well):
+                    result.skipped.append(
+                        {
+                            "reason": "WELL_SCOPE_CONFLICT",
+                            "detail": (
+                                f"HSE incident {entry.incident_reference or entry.row_index} names "
+                                f"well {stated!r}, not this document's well {well.name!r}; row not "
+                                "promoted"
+                            ),
+                        }
+                    )
+                    continue
+            elif stated:
+                # The document is site-scoped, so it cannot confer a well on a row that asks for one.
+                # Refusing keeps the row out rather than inventing scope it did not earn.
+                result.skipped.append(
+                    {
+                        "reason": "UNRESOLVED_WELL_REFERENCE",
+                        "detail": (
+                            f"HSE incident {entry.incident_reference or entry.row_index} names well "
+                            f"{stated!r}, but {document.filename} is not attached to any well, so "
+                            "there is no scope to confirm it against; row not promoted"
+                        ),
+                    }
+                )
+                continue
             row = self._write_hse_incident(
                 entry=entry,
-                well_id=well_id,
+                well_id=well.id if well is not None else None,
                 project_id=str(document.project_id) if document.project_id else None,
                 document=document,
                 version=version,

@@ -113,6 +113,7 @@ WELL_CONTROL_ALIASES: dict[str, tuple[str, ...]] = {
         "date/time",
         "date / time",
         "date & time",
+        "date-time",
         "occurred",
         "event date",
         "event time",
@@ -126,7 +127,8 @@ WELL_CONTROL_ALIASES: dict[str, tuple[str, ...]] = {
     "label": ("event label", "event ref", "reference", "event no", "event number", "label", "id"),
     "npt_hours": ("npt", "npt hours", "npt (hr)", "npt hr", "lost time", "lost time hours"),
     #: A sheet that names a well is refused for any other well; a sheet that names none is not.
-    "well_name": ("well", "well name", "well no", "wellbore"),
+    # Exact-match aliases only, so "wellness" or "wellbeing" can never name a well.
+    "well_name": ("well", "well name", "well no", "well number", "wellbore", "well id"),
 }
 
 
@@ -157,8 +159,8 @@ class WellControlEntry:
     outcome: str
     cause: str
     corrective_action: str
+    #: Raw source wording for lost time.  Deliberately untyped: see ADR-32.
     npt_hours_text: str
-    npt_hours_value: float | None
     #: The well the row names, when it names one.  Empty means the row said nothing about scope.
     well_name: str
 
@@ -277,7 +279,6 @@ def well_control_entries(payload: Mapping[str, Any]) -> list[WellControlEntry]:
                     cause=_cell(row, columns, "cause"),
                     corrective_action=_cell(row, columns, "corrective_action"),
                     npt_hours_text=npt_text,
-                    npt_hours_value=numeric(npt_text, ("hr", "hrs", "hour", "hours", "h")),
                     well_name=_cell(row, columns, "well_name"),
                 )
             )

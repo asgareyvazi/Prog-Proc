@@ -35,11 +35,13 @@ from ..core.lifecycle import (
 from ..database.models import (
     DdrReport,
     FieldPattern,
+    HseIncident,
     KnowledgeConflict,
     MudMeasurement,
     MudReport,
     NptRecord,
     ProblemOccurrence,
+    WellControlEvent,
     WellEvent,
     WellOperation,
 )
@@ -81,6 +83,8 @@ _RECORD_ALIASES = {
     "risk": "risk_record",
     "recommendation": "recommendation",
     "cost": "cost_item",
+    "well_control": "well_control_event",
+    "hse": "hse_incident",
     "conflict": "knowledge_conflict",
 }
 
@@ -94,6 +98,11 @@ _OPERATIONAL_MODELS: dict[str, type] = {
         ProblemOccurrence,
         MudMeasurement,
         MudReport,
+        # V7.2: a well-control event and an HSE incident are reviewed as their own records, with the
+        # same confirm/reject lifecycle as the other source-derived operational rows.  Neither is
+        # reviewed as a WellEvent or an NptRecord, because neither is one.
+        WellControlEvent,
+        HseIncident,
     )
 }
 

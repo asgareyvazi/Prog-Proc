@@ -2173,7 +2173,7 @@ class WellControlEvent(Base, TimestampMixin):
         when its header stated the unit, because a bare ``1200`` under a column headed ``Pressure``
         is not known to be psi, bar or kPa.
     *   ``cause`` and ``cause_status`` preserve the existing epistemic distinction: a cause the
-        source wrote down is ``SOURCE_STATED``, and one nobody wrote down is ``UNKNOWN`` - never a
+        source wrote down is ``KNOWN``, and one nobody wrote down is ``UNKNOWN`` - never a
         diagnosis the platform produced from the description.
     *   ``npt_id`` is set only when the source itself attributed lost time to this event.  A kick is
         not automatically NPT, and a well-control event with no stated lost time creates no NPT row.
@@ -2231,6 +2231,11 @@ class WellControlEvent(Base, TimestampMixin):
     corrective_action: Mapped[str | None] = mapped_column(Text)
     #: The NPT row this event lost time against, only on explicit source attribution.
     npt_id: Mapped[str | None] = mapped_column(ForeignKey("npt_record.id", ondelete="SET NULL"))
+    #: The lost-time wording the source itself wrote, kept verbatim and deliberately **not** a typed
+    #: quantity.  ``NPT Hours = 6.5`` states a duration; it does not authorise an :class:`NptRecord`,
+    #: and it does not identify one either - see ADR-32.  So the words survive as evidence while
+    #: ``npt_id`` stays NULL unless the source named an actual NPT row.
+    npt_hours_text: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
     provenance: Mapped[list | None] = mapped_column(JSON, default=list)
@@ -2305,8 +2310,19 @@ class HseIncident(Base, TimestampMixin):
     root_cause_status: Mapped[str] = mapped_column(String(16), default="UNKNOWN", nullable=False)
     corrective_action: Mapped[str | None] = mapped_column(Text)
     preventive_action: Mapped[str | None] = mapped_column(Text)
+    #: How much was released, as the source stated it.  The value exists only where the header also
+    #: stated a unit - ``Spill Volume = 3`` with no unit stays text, because guessing bbl for an
+    #: environmental quantity is exactly the guess that gets reported in m3 downstream.
+    spill_volume_text: Mapped[str | None] = mapped_column(Text)
+    spill_volume_value: Mapped[float | None] = mapped_column(Float)
+    spill_volume_unit: Mapped[str] = mapped_column(String(24), default="", nullable=False)
     #: Lost time only when the source attributed it.  No lost time means no NPT row.
     npt_id: Mapped[str | None] = mapped_column(ForeignKey("npt_record.id", ondelete="SET NULL"))
+    #: The lost-time wording the source itself wrote, kept verbatim and deliberately **not** a typed
+    #: quantity.  ``NPT Hours = 6.5`` states a duration; it does not authorise an :class:`NptRecord`,
+    #: and it does not identify one either - see ADR-32.  So the words survive as evidence while
+    #: ``npt_id`` stays NULL unless the source named an actual NPT row.
+    npt_hours_text: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
     provenance: Mapped[list | None] = mapped_column(JSON, default=list)

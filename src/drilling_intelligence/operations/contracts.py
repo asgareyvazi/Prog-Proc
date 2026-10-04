@@ -346,7 +346,7 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
             "value and unit as three facts and a value is stored only when its header stated the "
             "unit - a bare 1200 is not known to be psi, bar or kPa.  Event type comes from an "
             "explicit type column matched whole, never from a pit gain or a depth.  Cause is "
-            "SOURCE_STATED only when the sheet states one.  No NPT row, no problem occurrence and no "
+            "KNOWN only when the sheet states one.  No NPT row, no problem occurrence and no "
             "risk record is created: lost time is a separate fact the source states or does not, and "
             "no kill method, pressure simulation or diagnosis is ever computed."
         ),

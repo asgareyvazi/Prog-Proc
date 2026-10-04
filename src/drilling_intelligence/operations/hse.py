@@ -111,6 +111,8 @@ HSE_ALIASES: dict[str, tuple[str, ...]] = {
         # Real logs write the separator spaced out; ``normalise_label`` keeps the slash, so the
         # spaced spelling has to be listed on its own or the whole date column is missed.
         "date / time",
+        "date-time",
+        "date & time",
         "date of incident",
         "incident date",
         "occurred",
@@ -122,6 +124,8 @@ HSE_ALIASES: dict[str, tuple[str, ...]] = {
     "root_cause": ("root cause", "basic cause", "underlying cause"),
     "corrective_action": ("corrective action", "action taken", "immediate action"),
     "preventive_action": ("preventive action", "preventative action", "recommended action"),
+    # Exact-match aliases only, so "wellness" or "wellbeing" can never name a well.
+    "well_name": ("well", "well name", "well no", "well number", "wellbore", "well id"),
     "spill_volume": ("spill volume", "release volume", "quantity released", "volume released"),
     "npt_hours": ("npt", "npt hours", "lost time", "lost time hours", "downtime"),
 }
@@ -137,6 +141,11 @@ class HseIncidentEntry:
     incident_type: str
     description: str
     location_text: str
+    # Which well the *row* states, as opposed to the well the document is filed under.  The two can
+    # disagree: a multi-well incident register is a real shape, and silently filing every row under
+    # the document's well would attach a B-11 spill to A-3.  Empty means the row said nothing, which
+    # is a site-scoped row, not a conflict.
+    well_name: str
     occurred_at_text: str
     severity: str
     consequence: str
@@ -147,8 +156,8 @@ class HseIncidentEntry:
     spill_volume_text: str
     spill_volume_value: float | None
     spill_volume_unit: str
+    #: Raw source wording for lost time.  Deliberately untyped: see ADR-32.
     npt_hours_text: str
-    npt_hours_value: float | None
 
 
 def _cell(row: Sequence[Any], columns: Mapping[str, int], name: str) -> str:
@@ -234,6 +243,7 @@ def hse_incident_entries(payload: Mapping[str, Any]) -> list[HseIncidentEntry]:
                     incident_type=incident_type,
                     description=description,
                     location_text=_cell(row, columns, "location"),
+                    well_name=_cell(row, columns, "well_name"),
                     occurred_at_text=_cell(row, columns, "occurred_at"),
                     severity=_cell(row, columns, "severity"),
                     consequence=_cell(row, columns, "consequence"),
@@ -245,7 +255,6 @@ def hse_incident_entries(payload: Mapping[str, Any]) -> list[HseIncidentEntry]:
                     spill_volume_value=spill[1],
                     spill_volume_unit=spill[2],
                     npt_hours_text=npt_text,
-                    npt_hours_value=numeric(npt_text, ("hr", "hrs", "hour", "hours", "h")),
                 )
             )
     return found

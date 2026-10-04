@@ -40,6 +40,7 @@ def test_a_well_incident_register_is_classified_and_promoted(workspace) -> None:
     ingest_v72(workspace)
     result = promote_file(workspace, WELL)
     assert result.outcome == "PROMOTED", result.to_dict()
+    # Four rows in the register; HSE-104 names B-11 and is refused.
     assert result.counts["hse_incident"]["created"] == 3, result.to_dict()
     assert set(_incidents(workspace)) == {"HSE-101", "HSE-102", "HSE-103"}
 
@@ -84,7 +85,7 @@ def test_a_site_incident_keeps_well_id_null(workspace) -> None:
     ingest_v72(workspace)
     promote_file(workspace, SITE)
     rows = _incidents(workspace)
-    assert set(rows) == {"SITE-01", "SITE-02", "SITE-03"}, rows.keys()
+    assert set(rows) == {"SITE-01", "SITE-02", "SITE-03"}, rows
     for label, row in rows.items():
         assert row.well_id is None, f"{label}: a camp/road/laydown incident has no well"
         assert row.location_text, f"{label}: the site it did happen at is kept"
@@ -152,7 +153,29 @@ def test_prose_mentioning_incident_words_creates_nothing(workspace) -> None:
     assert hse_incident_entries({"tables": [{"table_id": "t", "sheet": "S", "rows": rows}]}) == []
 
 
-def test_a_row_naming_another_well_is_skipped_not_reassigned(workspace) -> None:
+def test_a_row_naming_another_well_is_refused_not_reassigned(workspace) -> None:
+    """The document is A-3's; a row that says B-11 is not filed under A-3 to be helpful.
+
+    This runs on the real workbook: ``HSE-104`` states ``B-11`` in its own Well column inside a
+    register filed under A-3.  Filing it under A-3 would put another well's spill in this well's
+    history, so the row is refused and the other three are unaffected.
+    """
+    ingest_v72(workspace)
+    result = promote_file(workspace, WELL)
+
+    conflicts = [item for item in result.skipped if item.get("reason") == "WELL_SCOPE_CONFLICT"]
+    assert len(conflicts) == 1, result.to_dict()
+    assert "B-11" in conflicts[0]["detail"], conflicts[0]
+
+    rows = _incidents(workspace)
+    assert set(rows) == {"HSE-101", "HSE-102", "HSE-103"}, (
+        "the conflicting row was not written, and its three siblings were"
+    )
+    assert all(row.well_id for row in rows.values())
+
+
+def test_an_unknown_well_is_refused_by_the_same_rule(workspace) -> None:
+    """A name that matches no well is a conflict too - resolving it would mean guessing by name."""
     from sqlalchemy import select
 
     from drilling_intelligence.database.models import Document, DocumentVersion
@@ -160,20 +183,15 @@ def test_a_row_naming_another_well_is_skipped_not_reassigned(workspace) -> None:
 
     ingest_v72(workspace)
     promote_file(workspace, WELL)
-
     rows = [
-        ["Incident Ref", "Well", "Incident Type", "Date", "Severity", "Description"],
-        # KNOWN GAP: ``HseIncidentEntry`` has no ``well_name`` - the HSE table contract reads no
-        # "Well" column, so a row naming a well that contradicts its document cannot be detected.
-        # ``_promote_well_control`` checks this; ``_promote_hse`` does not.  Recorded as open.
-        ["HSE-CONFLICT", "B-11", "spill", "2026-02-01", "High", "Diesel released at the wellsite"],
+        ["Incident Ref", "Well", "Incident Type", "Description"],
+        ["HSE-XX", "ZZ-99", "spill", "Names a well that does not exist"],
     ]
     with workspace.database.read_only() as session:
         document = session.scalars(select(Document).where(Document.filename == WELL)).first()
         version = session.get(DocumentVersion, str(document.current_version_id))
         promoter = VersionPromoter(session)
         result = PromotionResult(document_id=document.id, version_id=version.id)
-        before = len(fetch(workspace, HseIncident))
         promoter._promote_hse(
             payload={
                 "tables": [
@@ -185,12 +203,68 @@ def test_a_row_naming_another_well_is_skipped_not_reassigned(workspace) -> None:
             result=result,
             replace=False,
         )
-    assert [item.get("reason") for item in result.skipped] == [], (
-        "the conflict is currently invisible - flip this assertion when the gap is closed"
+    assert "WELL_SCOPE_CONFLICT" in [i.get("reason") for i in result.skipped], result.to_dict()
+
+
+def test_a_site_document_cannot_confer_a_well_on_a_row_that_asks_for_one(workspace) -> None:
+    """The inverse refusal: a site register has no scope to confirm a row's well against."""
+    from sqlalchemy import select
+
+    from drilling_intelligence.database.models import Document, DocumentVersion
+    from drilling_intelligence.operations.promote import PromotionResult, VersionPromoter
+
+    ingest_v72(workspace)
+    promote_file(workspace, SITE)
+    rows = [
+        ["Incident Ref", "Well", "Incident Type", "Description"],
+        ["S-XX", "A-3", "spill", "Names a well in a site-scoped register"],
+    ]
+    with workspace.database.read_only() as session:
+        document = session.scalars(select(Document).where(Document.filename == SITE)).first()
+        version = session.get(DocumentVersion, str(document.current_version_id))
+        promoter = VersionPromoter(session)
+        result = PromotionResult(document_id=document.id, version_id=version.id)
+        promoter._promote_hse(
+            payload={
+                "tables": [
+                    {"table_id": "t", "sheet": "S", "rows": rows, "provenance": {"sheet": "S"}}
+                ]
+            },
+            document=document,
+            version=version,
+            result=result,
+            replace=False,
+        )
+    assert "UNRESOLVED_WELL_REFERENCE" in [i.get("reason") for i in result.skipped], (
+        result.to_dict()
     )
-    assert len(fetch(workspace, HseIncident)) == before + 1, (
-        "so the row is written under the document's well instead of being refused"
+
+
+def test_spill_volume_is_a_typed_fact_with_the_source_unit(workspace) -> None:
+    """Option A: the release quantity is a first-class measurement, not a JSON side-channel."""
+    ingest_v72(workspace)
+    promote_file(workspace, WELL)
+    row = _incidents(workspace)["HSE-102"]
+    assert (row.spill_volume_text, row.spill_volume_value, row.spill_volume_unit) == (
+        "3.5",
+        3.5,
+        "bbl",
     )
+    # A row that states no release keeps no value; the unit is the column's, not a measurement.
+    empty = _incidents(workspace)["HSE-101"]
+    assert empty.spill_volume_value is None
+    assert empty.spill_volume_text is None
+
+
+def test_lost_time_is_stored_as_wording_and_creates_no_npt(workspace) -> None:
+    """Option B: ``Lost Time (hr) = 6.5`` survives as text and implies nothing."""
+    ingest_v72(workspace)
+    promote_file(workspace, WELL)
+    rows = _incidents(workspace)
+    assert rows["HSE-102"].npt_hours_text == "6.5"
+    assert rows["HSE-101"].npt_hours_text is None
+    assert all(row.npt_id is None for row in rows.values())
+    assert fetch(workspace, NptRecord) == []
 
 
 def test_absence_of_a_well_column_leaves_rows_site_scoped(workspace) -> None:
@@ -201,9 +275,8 @@ def test_absence_of_a_well_column_leaves_rows_site_scoped(workspace) -> None:
     ]
     entries = hse_incident_entries({"tables": [{"table_id": "t", "sheet": "S", "rows": rows}]})
     assert len(entries) == 1
-    assert not hasattr(entries[0], "well_name"), (
-        "the HSE contract reads no Well column, so absence is structural rather than a value"
-    )
+    assert entries[0].well_name == "", "a table with no Well column leaves every row site-scoped"
+    assert entries[0].location_text == "Base laydown area"
 
 
 # --------------------------------------------------------------------- history and identity
@@ -252,7 +325,14 @@ def test_an_incident_the_source_stopped_stating_is_removed(workspace) -> None:
 
     path = workspace.root / "corpus" / WELL
     workbook = load_workbook(path)
-    workbook.active.delete_rows(workbook.active.max_row)
+    # Delete the row that actually holds HSE-103.  The last row of the sheet is HSE-104, which is
+    # refused for a scope conflict and was never promoted, so deleting it would prove nothing.
+    target = next(
+        row[0].row
+        for row in workbook.active.iter_rows(min_col=1, max_col=1)
+        if row[0].value == "HSE-103"
+    )
+    workbook.active.delete_rows(target)
     workbook.save(path)
     reingest(workspace)
     promote_file(workspace, WELL)

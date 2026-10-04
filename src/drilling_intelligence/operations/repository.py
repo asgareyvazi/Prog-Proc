@@ -61,6 +61,7 @@ from ..database.models import (
     Document,
     DocumentVersion,
     DrillingProgram,
+    HseIncident,
     MudMeasurement,
     MudReport,
     NptRecord,
@@ -70,6 +71,7 @@ from ..database.models import (
     SurveyRun,
     SurveyStation,
     Well,
+    WellControlEvent,
     WellEvent,
     WellOperation,
     WellSection,
@@ -106,6 +108,10 @@ CONFIRMABLE_MODELS: tuple[type, ...] = (
     BitRecord,
     SurveyRun,
     SurveyStation,
+    # V7.2: both carry ``ConfirmationStatus``, so a reviewer can confirm or reject a well-control
+    # event and an HSE incident exactly as they already can a mud measurement or an NPT row.
+    WellControlEvent,
+    HseIncident,
 )
 
 

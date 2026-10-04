@@ -35,11 +35,13 @@ from ..core.errors import ValidationError
 from ..database.models import (
     DdrReport,
     DrillingProgram,
+    HseIncident,
     LessonLearned,
     NptRecord,
     ProblemOccurrence,
     ProcedureRecord,
     Well,
+    WellControlEvent,
     WellEvent,
     WellOperation,
 )
@@ -94,6 +96,8 @@ TIMELINE_KINDS: tuple[str, ...] = (
     "report",
     "operation",
     "event",
+    "well_control",
+    "hse",
     "npt",
     "problem",
     "lesson",
@@ -549,6 +553,113 @@ def build_timeline(
                     )
                 )
 
+    if "well_control" in wanted:
+        statement = select(
+            WellControlEvent.id,
+            WellControlEvent.well_id,
+            WellControlEvent.event_label,
+            WellControlEvent.event_type,
+            WellControlEvent.description,
+            WellControlEvent.severity,
+            WellControlEvent.occurred_at,
+            WellControlEvent.occurred_at_text,
+            WellControlEvent.is_current,
+            WellControlEvent.document_version_id,
+            WellControlEvent.provenance,
+        )
+        rows = session.execute(
+            _scope(
+                statement,
+                WellControlEvent,
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+            )
+        )
+        for (
+            row_id,
+            row_well,
+            label,
+            event_type,
+            description,
+            severity,
+            at,
+            at_text,
+            current,
+            version,
+            source,
+        ) in rows:
+            entries.append(
+                _entry(
+                    kind="well_control",
+                    table="well_control_event",
+                    row_id=str(row_id),
+                    well_id=row_well or "",
+                    # The source's own wording is the label; nothing is summarised or inferred.
+                    title=_join(label or "", event_type or "") or "Well control event",
+                    detail=str(description or "")[:200],
+                    at=at,
+                    # An unparsable date keeps its wording and sorts undated rather than guessed.
+                    text=str(at_text or "") if at is None else _join(severity or ""),
+                    document_version_id=version or "",
+                    provenance=source,
+                    ordinal=0 if current else 1,
+                )
+            )
+
+    if "hse" in wanted:
+        statement = select(
+            HseIncident.id,
+            HseIncident.well_id,
+            HseIncident.incident_reference,
+            HseIncident.incident_type,
+            HseIncident.location_text,
+            HseIncident.description,
+            HseIncident.severity,
+            HseIncident.occurred_at,
+            HseIncident.occurred_at_text,
+            HseIncident.is_current,
+            HseIncident.document_version_id,
+            HseIncident.provenance,
+        )
+        rows = session.execute(
+            _scope_hse(statement, well_id=well_id, field_id=field_id, project_id=project_id)
+        )
+        for (
+            row_id,
+            row_well,
+            reference,
+            incident_type,
+            location,
+            description,
+            severity,
+            at,
+            at_text,
+            current,
+            version,
+            source,
+        ) in rows:
+            entries.append(
+                _entry(
+                    kind="hse",
+                    table="hse_incident",
+                    row_id=str(row_id),
+                    # A site-scoped incident keeps well_id empty.  It is not given the well of the
+                    # document that happened to carry it, and it is not hidden from a project
+                    # timeline either.
+                    well_id=row_well or "",
+                    title=_join(reference or "", incident_type or "") or "HSE incident",
+                    detail=str(description or "")[:200],
+                    at=at,
+                    text=str(at_text or "")
+                    if at is None
+                    else _join(location or "", severity or ""),
+                    document_version_id=version or "",
+                    provenance=source,
+                    ordinal=0 if current else 1,
+                )
+            )
+
     if "program" in wanted or "procedure" in wanted:
         entries.extend(
             _revision_entries(
@@ -675,6 +786,38 @@ def _scope_lesson(statement: Any, *, well_id: str, field_id: str, project_id: st
             [
                 LessonLearned.project_id == project_id,
                 LessonLearned.well_id.in_(select(Well.id).where(Well.project_id == project_id)),
+            ]
+        )
+    if not scopes:
+        raise ValidationError(
+            "a timeline needs a scope", hint="pass well_id, field_id or project_id"
+        )
+    return statement.where(or_(*scopes))
+
+
+def _scope_hse(statement: Any, *, well_id: str, field_id: str, project_id: str) -> Any:
+    """HSE scope, which is not the same shape as every other domain's.
+
+    ``hse_incident.well_id`` is nullable, so a camp slip or a laydown-area dropped object has no well
+    to join through.  Asking for a project timeline must still return those rows, using the project
+    and field columns the table carries, and asking for one well must return that well's incidents
+    without dragging the site's in.  An HSE row is never assigned a well it did not state.
+    """
+    if well_id:
+        return statement.where(HseIncident.well_id == well_id)
+    scopes = []
+    if field_id:
+        scopes.extend(
+            [
+                HseIncident.field_id == field_id,
+                HseIncident.well_id.in_(select(Well.id).where(Well.field_id == field_id)),
+            ]
+        )
+    if project_id:
+        scopes.extend(
+            [
+                HseIncident.project_id == project_id,
+                HseIncident.well_id.in_(select(Well.id).where(Well.project_id == project_id)),
             ]
         )
     if not scopes:

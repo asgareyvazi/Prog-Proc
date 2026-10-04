@@ -1044,7 +1044,7 @@ def build_well_control_log_xlsx(path: Path) -> Path:
     *   **Row 4 has a pit gain and no event type at all.**  A pit gain is a measurement, not a
         classification, so the type must stay NULL - this row is what proves the writer does not
         read a gain as a kick.
-    *   **Row 5 has a stated cause and a stated kill method**, so ``SOURCE_STATED`` is reachable,
+    *   **Row 5 has a stated cause and a stated kill method**, so ``KNOWN`` is reachable,
         while rows 1-4 leave the cause ``UNKNOWN``.
     """
     from openpyxl import Workbook
@@ -1136,7 +1136,7 @@ def build_well_control_log_xlsx(path: Path) -> Path:
             "",
             "",
         ],
-        # Stated cause and stated kill method: the only row where SOURCE_STATED is reachable.
+        # Stated cause and stated kill method: the only row where KNOWN is reachable.
         [
             "WC-05",
             "loss",
@@ -1203,6 +1203,7 @@ def build_hse_register_xlsx(path: Path) -> Path:
     sheet["A1"] = "ACME DRILLING - WELL A-3 HSE INCIDENT REPORT REGISTER"
     header = [
         "Incident Report No",
+        "Well",
         "Incident Type",
         "Incident Description",
         "Location",
@@ -1221,6 +1222,7 @@ def build_hse_register_xlsx(path: Path) -> Path:
     rows = [
         [
             "HSE-101",
+            "A-3",
             "near miss",
             "Wet floor near the mud pits, no slip occurred",
             "Rig floor",
@@ -1236,6 +1238,7 @@ def build_hse_register_xlsx(path: Path) -> Path:
         ],
         [
             "HSE-102",
+            "A-3",
             "spill",
             "Diesel released from a cracked transfer drum",
             "Mud warehouse",
@@ -1251,6 +1254,7 @@ def build_hse_register_xlsx(path: Path) -> Path:
         ],
         [
             "HSE-103",
+            "A-3",
             "first aid",
             "Minor hand cut while changing a shaker screen",
             "Shaker house",
@@ -1262,6 +1266,25 @@ def build_hse_register_xlsx(path: Path) -> Path:
             "Wound dressed on site",
             "Glove specification reviewed",
             "",
+            "",
+        ],
+        # A register is not always single-well, and this row is the point: the document is filed
+        # under A-3 but the row says B-11.  It must be refused - not quietly filed under A-3, and not
+        # guessed at from the document either.
+        [
+            "HSE-104",
+            "B-11",
+            "spill",
+            "Hydraulic oil released while replacing a BOP hose",
+            "B-11 cellar deck",
+            "2026-05-19",
+            "High",
+            "Failed hose",
+            "",
+            "Cellar deck contamination",
+            "Absorbent deployed, hose replaced",
+            "Hose inspection interval shortened",
+            1.0,
             "",
         ],
     ]
