@@ -59,6 +59,27 @@ def test_identity_is_structured_type_row_and_matches_the_database(workspace) -> 
     assert any(f"structured:well_control_event:{row_id}" in ids for row_id in wc_ids)
 
 
+def test_lost_time_wording_is_searchable_without_implying_a_duration(workspace) -> None:
+    """The wording the source wrote is discoverable; there is still no NPT row behind it."""
+    ingest_v72(workspace)
+    promote_file(workspace, "well_control_log_well-a3.xlsx")
+    promote_file(workspace, "hse_register_well-a3.xlsx")
+    hits = [hit for hit in _search(workspace, "lost time") if hit.source_type == "structured"]
+    kinds = {hit.provenance["record_type"] for hit in hits}
+    assert kinds == {"well_control_event", "hse_incident"}, kinds
+    from drilling_intelligence.database.models import NptRecord
+
+    assert fetch(workspace, NptRecord) == [], "no NPT row exists to be found"
+
+
+def test_a_stated_spill_volume_is_findable_by_its_own_number(workspace) -> None:
+    ingest_v72(workspace)
+    promote_file(workspace, "hse_register_well-a3.xlsx")
+    hits = [hit for hit in _search(workspace, "3.5") if hit.source_type == "structured"]
+    assert hits, "the source states 3.5 bbl; it must be findable"
+    assert all(hit.provenance["record_type"] == "hse_incident" for hit in hits)
+
+
 def test_a_rebuild_is_deterministic_and_leaves_no_duplicates(workspace) -> None:
     ingest_v72(workspace)
     promote_file(workspace, "well_control_log_well-a3.xlsx")

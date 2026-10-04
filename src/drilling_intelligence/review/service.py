@@ -38,6 +38,7 @@ from ..database.models import (
     DrillingProgram,
     Extraction,
     Field,
+    HseIncident,
     KnowledgeRelation,
     MudMeasurement,
     MudReport,
@@ -48,6 +49,7 @@ from ..database.models import (
     SurveyRun,
     SurveyStation,
     Well,
+    WellControlEvent,
 )
 from ..database.serialize import record_to_dict
 from ..documents.repository import DocumentRepository
@@ -102,6 +104,10 @@ _OPERATIONAL_TABLES = frozenset(
         "npt_record",
         "problem_occurrence",
         "field_pattern",
+        # V7.2: both carry ConfirmationStatus, so both follow the same rule - a rejected row is not
+        # part of a review, and a superseded one is history rather than the current answer.
+        "well_control_event",
+        "hse_incident",
     }
 )
 _CANDIDATE_STATUSES = frozenset({"CANDIDATE", "DRAFT", "PROPOSED", "UNVERIFIED"})
@@ -950,6 +956,26 @@ class DomainReviewService:
         add_bounded(bit_records)
         survey_runs = list(session.execute(survey_statement.limit(limit)).scalars())
         add_bounded(survey_runs)
+        # V7.2: a well-control event and a well-scoped HSE incident belong to this well's review.
+        # Neither is folded into ``well_event`` - a kick states pressures and volumes that
+        # ``WellEvent`` has no column for, and an HSE incident may have no well at all.  The HSE
+        # query filters on ``well_id``, so a site-only incident (``well_id`` NULL) is excluded by the
+        # scope itself rather than by a special case: it is a project record, not this well's.
+        wc_statement = (
+            select(WellControlEvent)
+            .where(WellControlEvent.well_id == well.id)
+            .order_by(WellControlEvent.occurred_at.asc().nulls_last(), WellControlEvent.id)
+        )
+        hse_statement = (
+            select(HseIncident)
+            .where(HseIncident.well_id == well.id)
+            .order_by(HseIncident.occurred_at.asc().nulls_last(), HseIncident.id)
+        )
+        if request.lifecycle == REVIEW_CURRENT:
+            wc_statement = wc_statement.where(WellControlEvent.is_current.is_(True))
+            hse_statement = hse_statement.where(HseIncident.is_current.is_(True))
+        add_bounded(list(session.execute(wc_statement.limit(limit)).scalars()))
+        add_bounded(list(session.execute(hse_statement.limit(limit)).scalars()))
         bha_report_ids = [str(row.id) for row in bha_reports]
         components_by_report: dict[str, list[BhaComponent]] = defaultdict(list)
         if bha_report_ids:

@@ -1210,6 +1210,9 @@ def _well_control_event(row: WellControlEvent, scope: _Scope) -> StructuredRecor
             ("outcome", row.outcome),
             ("corrective action", row.corrective_action),
             ("date", row.occurred_at_text or _iso(row.occurred_at)),
+            # The lost-time wording the source wrote.  Wording only - there is no typed duration and
+            # no NPT row behind it, and the projection must not imply one.
+            ("lost time", row.npt_hours_text),
             ("well", well_name),
         ]
     )
@@ -1275,6 +1278,7 @@ def _hse_incident(row: HseIncident, scope: _Scope) -> StructuredRecord:
                 "spill volume",
                 _measured(row.spill_volume_text, row.spill_volume_value, row.spill_volume_unit),
             ),
+            ("lost time", row.npt_hours_text),
             ("well", well_name),
         ]
     )

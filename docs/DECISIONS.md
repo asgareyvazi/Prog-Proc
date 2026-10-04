@@ -1560,3 +1560,51 @@ visible instead of silent. Two consequences were found and fixed this session:
 Fixtures state dates as date-only ISO accordingly. A clock time such as `08:20` is not parsed; it
 survives as source text. That is a real limitation of the shared contract, not a defect in these
 domains, and widening `_iso` would silently change every domain's behaviour.
+
+## ADR-32 — V7.2 closure: what is a fact, what is wording, and who owns the scope
+
+This resolves the two gaps ADR-29 and ADR-30 recorded as open. Those ADRs stand as the historical
+record of what was found; this one is the decision.
+
+**Spill volume is a first-class typed quantity.** `hse_incident` carries `spill_volume_text`,
+`spill_volume_value` and `spill_volume_unit` (migration `0019`). The value is populated only where the
+header also stated a unit, so `Spill Volume = 3` under a unitless header stays text with an empty
+unit - guessing bbl for an environmental quantity is the guess that gets reported downstream in m3.
+No conversion is applied. The value had previously been copied into a JSON `attributes`
+side-channel, which made it look authoritative without being queryable; that copy is gone.
+
+**Lost time is wording, not a quantity.** Both parsers keep `npt_hours_text` and neither has an
+`npt_hours_value` any more. `NPT Hours = 6.5` states a duration; it does not authorise an
+`NptRecord` - NPT is a classified record with its own contract, code and problem definition - and it
+does not identify one either, because nothing in the cell names a row. `npt_id` stays NULL unless the
+source named an actual NPT row. Storing a bare number with no unit discipline and no relationship to
+keep would only invite someone to read it as one.
+
+**HSE well scope is a row-level contract.** `HseIncidentEntry` carries `well_name`, so "the row said
+nothing about a well" and "the row named a different well" are distinguishable. Six cases, all
+exercised:
+
+| document | row states | outcome |
+| --- | --- | --- |
+| site | nothing | promoted, `well_id` NULL |
+| A-3 | nothing | promoted, inherits A-3 (the document's scope is authoritative) |
+| A-3 | A-3 | promoted |
+| A-3 | B-11 | `WELL_SCOPE_CONFLICT`, row not promoted |
+| A-3 | ZZ-99 (no such well) | `WELL_SCOPE_CONFLICT`, row not promoted |
+| site | A-3 | `UNRESOLVED_WELL_REFERENCE`, row not promoted |
+
+An unknown name is refused by the same rule rather than resolved: matching a free-text well name
+across a workspace is a guess, and a wrong guess files one well's spill in another well's history.
+The well aliases are exact-match only, so `Wellness` or `Wellbeing` can never name a well.
+
+**Date aliases are explicit, and source wording is evidence.** `Date`, `Time`, `Date/Time`,
+`Date / Time`, `Date-Time`, `Date & Time`, `Event Date` and `Incident Date` are listed per domain
+rather than handled by a normalisation rule that would let arbitrary headers collide -
+`normalise_label` deliberately keeps the slash, which is why the spaced and dashed spellings had to
+be listed on their own. A date that parses populates `occurred_at` and keeps the source wording in
+`occurred_at_text`; a date that does not parse leaves `occurred_at` NULL and keeps the wording
+verbatim. No timestamp is ever taken from a filename, an mtime, a report title or a neighbouring row.
+
+**No inference anywhere in this.** No AI, RAG, embeddings, vector search or LLM is involved in any
+V7.2 decision. Every field is either the source's own text, a number the source stated under a unit
+the source stated, or NULL.

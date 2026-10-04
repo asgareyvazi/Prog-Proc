@@ -336,19 +336,30 @@ which is Apache-2.0 with additional conditions (attribution if it is ever offere
 third parties as an online service), and is not vendored or required by this repository.
 `wellpathpy` (LGPL) is planned for a later phase behind a wrapper, per `docs/DECISIONS.md`.
 
-## Production ingestion & domain promotion V2
+## Production ingestion & domain promotion
 
-V2 makes the boundary from evidence to domain rows inspectable. The authoritative matrix is
+The boundary from evidence to domain rows is inspectable. The authoritative matrix is
 [`docs/DOCUMENT_DOMAIN_COVERAGE.md`](docs/DOCUMENT_DOMAIN_COVERAGE.md), and the machine-readable
 registry is `drilling_intelligence.operations.contracts`. The registry covers every
-`DocumentClassification`, but only these static handlers can write source-derived domain rows:
+`DocumentClassification`, and these are the handlers that can currently write source-derived domain
+rows:
 
 ```text
-DRILLING_PROGRAM -> program
-DDR              -> report
-NPT              -> report
-TIME_BREAKDOWN   -> report
+DRILLING_PROGRAM   -> program
+DDR / NPT / TIME_BREAKDOWN -> report
+MUD_REPORT         -> mud_report
+BHA_REPORT         -> bha_report
+BIT_RECORD         -> bit_record
+DIRECTIONAL_SURVEY -> directional_survey
+COST               -> cost
+CASING_REPORT      -> casing
+CEMENT_REPORT      -> cement
+WELL_CONTROL       -> well_control   (V7.2)
+HSE                -> hse            (V7.2)
 ```
+
+That is 11 named handlers across 13 `END_TO_END_CERTIFIED` classifications out of 26. The V2 wave
+shipped only the first four of these; the list above is the current state, not the V2 state.
 
 No other classification is promoted merely because its file has a table, its filename contains a
 keyword, a search hit exists, or an enum/knowledge entity exists. Evidence-only classes remain

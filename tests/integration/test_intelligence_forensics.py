@@ -1531,6 +1531,11 @@ def test_kinds_filter_narrows_the_tables_visited(world, service) -> None:
     assert {entry.row_id for entry in npt_only} == {"npt-a1a", "npt-a1b", "npt-a1u", "npt-a1x"}
     with pytest.raises(ValidationError, match="kind"):
         service.timeline(well_id="well-a1", kinds=("horoscope",))
+    # Pinned so a new kind is a deliberate act.  ``well_control`` and ``hse`` are their own kinds
+    # rather than more ``event`` rows: a reader filtering for what went wrong has to be able to ask
+    # for a kick without also getting every routine event, and neither domain can be filed as a
+    # ``WellEvent`` in the first place - one has no pressure or volume column, the other requires a
+    # well that a camp incident does not have.
     assert set(TIMELINE_KINDS) == {
         "well",
         "program",
@@ -1538,6 +1543,8 @@ def test_kinds_filter_narrows_the_tables_visited(world, service) -> None:
         "report",
         "operation",
         "event",
+        "well_control",
+        "hse",
         "npt",
         "problem",
         "lesson",

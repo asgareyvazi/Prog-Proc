@@ -145,12 +145,18 @@ def test_scale_shape_is_recorded(rows, workspace) -> None:
     print(f"\nSCALE rows={rows} {measured}")
 
     # --- the N+1 criterion: query count does not grow with row count ----------------
-    assert measured["review_queries"] == 39, (
-        f"review issued {measured['review_queries']} SELECTs for {rows} rows; it issued 39 for "
+    # 41, not 39: V7.2 added two bounded reads to the review (well-control events and well-scoped
+    # HSE incidents), one query each.  The invariant this guards is scale-invariance, and it holds -
+    # the count is 41 at 1 000 rows and 41 at 10 000, so neither read is per-row.  Had either been
+    # written as a loop over parents the number would have grown with the corpus and failed here.
+    assert measured["review_queries"] == 41, (
+        f"review issued {measured['review_queries']} SELECTs for {rows} rows; it issued 41 for "
         "1 000 too, so any other number means a per-row read was introduced"
     )
-    assert measured["timeline_queries"] == 9, (
-        f"timeline issued {measured['timeline_queries']} SELECTs for {rows} rows; 9 at 1 000 too"
+    # 11, not 9, for the same reason: the ``well_control`` and ``hse`` kinds each cost one bounded
+    # query.  11 at 1 000 rows and 11 at 10 000, so neither is per-row.
+    assert measured["timeline_queries"] == 11, (
+        f"timeline issued {measured['timeline_queries']} SELECTs for {rows} rows; 11 at 1 000 too"
     )
 
     # --- reads return the corpus, and say so when a bound cuts them -------------------
