@@ -34,12 +34,14 @@ from ..core.errors import ValidationError
 from ..database.models import (
     DdrReport,
     Field,
+    HseIncident,
     LessonLearned,
     MudMeasurement,
     MudReport,
     NptRecord,
     ProblemOccurrence,
     Well,
+    WellControlEvent,
     WellEvent,
     WellSection,
 )
@@ -570,6 +572,225 @@ class FieldIntelligence:
             "by_well": {str(well): int(count or 0) for well, count in by_well_rows},
         }
 
+    def well_control(
+        self,
+        *,
+        field_id: str = "",
+        project_id: str = "",
+        well_id: str = "",
+        since: object = None,
+        until: object = None,
+    ) -> dict[str, Any]:
+        """Well-control events in scope, counted by SQLite rather than read into Python.
+
+        Every number here is a count of what the source stated.  ``with_pit_gain`` means the row
+        carries a source-stated pit gain - it does **not** mean the event was a kick, and
+        ``with_sidpp`` does not mean the well was shut in.  Measurements are never summed: SIDPP in
+        psi and SIDPP in bar are two populations with no certified conversion between them, so the
+        pressure and volume columns appear only as presence counts.
+
+        Current rows only, consistent with the rest of this class: a superseded reading stays
+        readable as history and must not be counted a second time in a live field answer.
+        """
+        scope_meta = {
+            "field_id": field_id or None,
+            "project_id": project_id or None,
+            "well_id": well_id or None,
+            "since": _iso(since),
+            "until": _iso(until),
+        }
+        if not inspect(self.session.get_bind()).has_table(WellControlEvent.__tablename__):
+            return {
+                "scope": scope_meta,
+                "events": 0,
+                "wells": 0,
+                "by_event_type": {},
+                "by_severity": {},
+                "by_well": {},
+                "first_seen_at": None,
+                "last_seen_at": None,
+                "undated": 0,
+                "with_sidpp": 0,
+                "with_sicp": 0,
+                "with_pit_gain": 0,
+                "with_depth": 0,
+                "with_explicit_cause": 0,
+                "with_npt_wording": 0,
+            }
+        wells = self._wells(field_id=field_id, project_id=project_id, well_id=well_id)
+        filters: list[Any] = [
+            WellControlEvent.well_id.in_(wells),
+            WellControlEvent.is_current.is_(True),
+        ]
+        filters.extend(self._window(WellControlEvent.occurred_at, since, until))
+
+        # One grouped pass produces the totals, the presence counts and the extremes together, so
+        # the aggregate costs a constant number of queries whatever the corpus size.
+        present = lambda column: func.sum(case((column.isnot(None), 1), else_=0))  # noqa: E731
+        totals = self.session.execute(
+            select(
+                func.count(WellControlEvent.id),
+                func.count(func.distinct(WellControlEvent.well_id)),
+                func.min(WellControlEvent.occurred_at),
+                func.max(WellControlEvent.occurred_at),
+                present(WellControlEvent.sidpp_text),
+                present(WellControlEvent.sicp_text),
+                present(WellControlEvent.pit_gain_text),
+                present(WellControlEvent.depth_text),
+                present(WellControlEvent.cause),
+                present(WellControlEvent.npt_hours_text),
+            )
+            .select_from(WellControlEvent)
+            .where(*filters)
+        ).one()
+        by_event_type = self._grouped(WellControlEvent, WellControlEvent.event_type, filters)
+        by_severity = self._grouped(WellControlEvent, WellControlEvent.severity, filters)
+        by_well = self._grouped(WellControlEvent, WellControlEvent.well_id, filters)
+        return {
+            "scope": scope_meta,
+            "events": int(totals[0] or 0),
+            "wells": int(totals[1] or 0),
+            "by_event_type": by_event_type,
+            "by_severity": by_severity,
+            "by_well": by_well,
+            "first_seen_at": _iso(totals[2]),
+            "last_seen_at": _iso(totals[3]),
+            "undated": self._undated(
+                select(WellControlEvent.id)
+                .select_from(WellControlEvent)
+                .where(*[f for f in filters if f is not None]),
+                WellControlEvent.occurred_at,
+            ),
+            "with_sidpp": int(totals[4] or 0),
+            "with_sicp": int(totals[5] or 0),
+            "with_pit_gain": int(totals[6] or 0),
+            "with_depth": int(totals[7] or 0),
+            "with_explicit_cause": int(totals[8] or 0),
+            "with_npt_wording": int(totals[9] or 0),
+        }
+
+    def hse(
+        self,
+        *,
+        field_id: str = "",
+        project_id: str = "",
+        well_id: str = "",
+        since: object = None,
+        until: object = None,
+    ) -> dict[str, Any]:
+        """HSE incidents in scope, keeping well scope and site scope visibly distinct.
+
+        ``well_id`` NULL means *site-scoped*, not "every well".  So a well scope returns only that
+        well's own incidents and never picks up a camp or laydown-area incident whose document
+        merely belonged to the same project - that would file someone's slip against a hole it never
+        happened at.  A field or project scope does include those rows, because that is exactly the
+        scope they belong to, and reports them separately as ``site_scoped_incidents`` so a caller
+        can see the two populations were not merged.
+
+        ``with_lost_time_wording`` counts rows where the source wrote a lost-time figure.  It is not
+        an NPT total and it must not be summed: ADR-32 keeps that wording as evidence precisely
+        because a duration in a cell neither creates nor identifies an :class:`NptRecord`.
+        """
+        scope_meta = {
+            "field_id": field_id or None,
+            "project_id": project_id or None,
+            "well_id": well_id or None,
+            "since": _iso(since),
+            "until": _iso(until),
+        }
+        empty = {
+            "scope": scope_meta,
+            "incidents": 0,
+            "well_scoped_incidents": 0,
+            "site_scoped_incidents": 0,
+            "by_incident_type": {},
+            "by_severity": {},
+            "by_well": {},
+            "by_location": {},
+            "with_spill_volume": 0,
+            "with_lost_time_wording": 0,
+            "with_root_cause": 0,
+            "with_immediate_cause": 0,
+            "first_seen_at": None,
+            "last_seen_at": None,
+            "undated": 0,
+        }
+        if not inspect(self.session.get_bind()).has_table(HseIncident.__tablename__):
+            return empty
+        if not (field_id or project_id or well_id):
+            raise ValidationError(
+                "an HSE aggregation needs a scope",
+                hint="pass field_id, project_id or well_id",
+            )
+
+        # Site-scoped rows have no well to join through, so scope is decided on the incident's own
+        # columns as well as on its well - the same reasoning the timeline's HSE scope uses.
+        if well_id:
+            scope_clause: Any = HseIncident.well_id == well_id
+        else:
+            wells = self._wells(field_id=field_id, project_id=project_id)
+            parts: list[Any] = [HseIncident.well_id.in_(wells)]
+            if field_id:
+                parts.append(HseIncident.field_id == field_id)
+            if project_id:
+                parts.append(HseIncident.project_id == project_id)
+            scope_clause = or_(*parts)
+
+        filters: list[Any] = [scope_clause, HseIncident.is_current.is_(True)]
+        filters.extend(self._window(HseIncident.occurred_at, since, until))
+
+        present = lambda column: func.sum(case((column.isnot(None), 1), else_=0))  # noqa: E731
+        totals = self.session.execute(
+            select(
+                func.count(HseIncident.id),
+                func.sum(case((HseIncident.well_id.isnot(None), 1), else_=0)),
+                func.sum(case((HseIncident.well_id.is_(None), 1), else_=0)),
+                func.min(HseIncident.occurred_at),
+                func.max(HseIncident.occurred_at),
+                present(HseIncident.spill_volume_text),
+                present(HseIncident.npt_hours_text),
+                present(HseIncident.root_cause),
+                present(HseIncident.immediate_cause),
+            )
+            .select_from(HseIncident)
+            .where(*filters)
+        ).one()
+        return {
+            "scope": scope_meta,
+            "incidents": int(totals[0] or 0),
+            "well_scoped_incidents": int(totals[1] or 0),
+            "site_scoped_incidents": int(totals[2] or 0),
+            "by_incident_type": self._grouped(HseIncident, HseIncident.incident_type, filters),
+            "by_severity": self._grouped(HseIncident, HseIncident.severity, filters),
+            "by_well": self._grouped(HseIncident, HseIncident.well_id, filters),
+            "by_location": self._grouped(HseIncident, HseIncident.location_text, filters),
+            "with_spill_volume": int(totals[5] or 0),
+            "with_lost_time_wording": int(totals[6] or 0),
+            "with_root_cause": int(totals[7] or 0),
+            "with_immediate_cause": int(totals[8] or 0),
+            "first_seen_at": _iso(totals[3]),
+            "last_seen_at": _iso(totals[4]),
+            "undated": self._undated(
+                select(HseIncident.id).select_from(HseIncident).where(*filters),
+                HseIncident.occurred_at,
+            ),
+        }
+
+    def _grouped(self, model: Any, column: Any, filters: Sequence[Any]) -> dict[str, int]:
+        """One GROUP BY, deterministically ordered, with NULL folded to an empty-string key.
+
+        A grouped count is the safe aggregation across mixed units: how many rows stated a thing is
+        a fact, while a total over their values would silently add psi to bar.
+        """
+        rows = self.session.execute(
+            select(column, func.count())
+            .select_from(model)
+            .where(*filters)
+            .group_by(column)
+            .order_by(column)
+        ).all()
+        return {str(key if key is not None else ""): int(count or 0) for key, count in rows}
+
     def problems(
         self,
         *,
@@ -966,6 +1187,14 @@ class FieldIntelligence:
         # One pair of queries for every candidate well, not one per well: the signatures are the
         # problems of the whole candidate set in a single select, with the hours summed per problem
         # in the grouped subquery beside it.  A field of sixty wells is two round trips, not sixty.
+        profiles = self._operational_profiles(
+            [
+                str(value)
+                for value in self.session.execute(
+                    select(Well.id).where(Well.id != str(well.id))
+                ).scalars()
+            ]
+        )
         signatures = self._problem_signatures(
             [str(well.id), *[str(other_id) for other_id, _ in candidates]]
         )
@@ -989,6 +1218,11 @@ class FieldIntelligence:
                     "npt_hours": theirs["hours"],
                     "first_seen_at": theirs["first"],
                     "last_seen_at": theirs["last"],
+                    # Descriptive profile, deliberately *not* part of the match above.  Two wells are
+                    # offsets because they share problem types and hole sizes; what else an offset
+                    # recorded is context for the reader, never a reason to rank it.  Nothing here
+                    # says an offset is "safer" - a count of recorded incidents is not a risk score.
+                    "profile": profiles.get(str(other_id), {}),
                 }
             )
         payload.sort(
@@ -1000,6 +1234,64 @@ class FieldIntelligence:
             )
         )
         return payload if not (limit and limit > 0) else payload[: int(limit)]
+
+    def _operational_profiles(self, well_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """What each well recorded, in a constant number of grouped queries.
+
+        Three GROUP BYs answer this for every well at once.  A per-well loop would turn a
+        twenty-well comparison into sixty round trips for numbers SQLite can produce in three, and
+        the profile is descriptive only - it never selects or ranks a candidate.
+        """
+        ids = [str(value) for value in well_ids if value]
+        if not ids:
+            return {}
+        profiles: dict[str, dict[str, Any]] = {}
+
+        def bucket(well: Any) -> dict[str, Any]:
+            return profiles.setdefault(
+                str(well),
+                {
+                    "well_control_events": 0,
+                    "well_control_by_type": {},
+                    "hse_incidents": 0,
+                    "hse_by_type": {},
+                    "hse_by_severity": {},
+                },
+            )
+
+        for model, type_column, count_key, group_key in (
+            (
+                WellControlEvent,
+                WellControlEvent.event_type,
+                "well_control_events",
+                "well_control_by_type",
+            ),
+            (HseIncident, HseIncident.incident_type, "hse_incidents", "hse_by_type"),
+        ):
+            rows = self.session.execute(
+                select(model.well_id, type_column, func.count(model.id))
+                .where(model.well_id.in_(ids), model.is_current.is_(True))
+                .group_by(model.well_id, type_column)
+                .order_by(model.well_id, type_column)
+            ).all()
+            for well, kind, count in rows:
+                entry = bucket(well)
+                entry[count_key] += int(count or 0)
+                label = str(kind or "")
+                entry[group_key][label] = entry[group_key].get(label, 0) + int(count or 0)
+        rows = self.session.execute(
+            select(HseIncident.well_id, HseIncident.severity, func.count(HseIncident.id))
+            .where(HseIncident.well_id.in_(ids), HseIncident.is_current.is_(True))
+            .group_by(HseIncident.well_id, HseIncident.severity)
+            .order_by(HseIncident.well_id, HseIncident.severity)
+        ).all()
+        for well, severity, count in rows:
+            entry = bucket(well)
+            label = str(severity or "")
+            entry["hse_by_severity"][label] = entry["hse_by_severity"].get(label, 0) + int(
+                count or 0
+            )
+        return profiles
 
     @staticmethod
     def _empty_signature() -> dict[str, Any]:
@@ -1084,6 +1376,10 @@ class FieldIntelligence:
         events = self.events(field_id=field_id, project_id=project_id, since=since, until=until)
         lessons = self.lessons(field_id=field_id, project_id=project_id, approved_only=False)
         mud = self.mud(field_id=field_id, project_id=project_id, since=since, until=until)
+        well_control = self.well_control(
+            field_id=field_id, project_id=project_id, since=since, until=until
+        )
+        hse = self.hse(field_id=field_id, project_id=project_id, since=since, until=until)
         field_row: Field | None = None
         if field_id:
             field_row = self.session.get(Field, field_id)
@@ -1120,4 +1416,18 @@ class FieldIntelligence:
             "mud_reports": mud["reports"],
             "mud_measurements": mud["measurements"],
             "mud_by_property": mud["by_property"],
+            # V7.3A: the two V7.2 domains join the field snapshot.  Every key above is unchanged -
+            # a CLI consumer reading ``npt_hours`` or ``mud_reports`` keeps working - and the new
+            # domains arrive as their own sections rather than being folded into ``events``,
+            # because a kick and a near miss are not generic well events.
+            "well_control_events": well_control["events"],
+            "well_control_by_event_type": dict(well_control["by_event_type"]),
+            "well_control_undated": well_control["undated"],
+            "hse_incidents": hse["incidents"],
+            "hse_well_scoped": hse["well_scoped_incidents"],
+            "hse_site_scoped": hse["site_scoped_incidents"],
+            "hse_by_incident_type": dict(hse["by_incident_type"]),
+            "hse_undated": hse["undated"],
+            "well_control": well_control,
+            "hse": hse,
         }

@@ -1384,7 +1384,45 @@ def test_offsets_is_not_one_query_per_candidate(world, service) -> None:
     finally:
         event.remove(service.database.engine, "before_cursor_execute", _count)
     assert len(rows) == 21, "A-2 and the twenty O-wells, all in Field A"
-    assert counts["n"] <= 5, f"the candidates are one batch, not one round trip per well: {counts}"
+    # The bound that matters is that this number does not move when the candidate count does.
+    # V7.3A added a descriptive operational profile to each candidate (well-control and HSE counts),
+    # read as one GROUP BY per breakdown for *every* candidate at once - so the constant rose from 5
+    # to 7 while staying O(1).  Pinning the constant alone would not prove that, so measure it twice.
+    assert counts["n"] <= 7, f"the candidates are one batch, not one round trip per well: {counts}"
+
+    for index in range(20, 40):
+        session.add(
+            Well(
+                id=f"well-o{index:02d}",
+                name=f"O-{index:02d}",
+                field_id="fld-a",
+                project_id="proj-alpha",
+            )
+        )
+        session.flush()
+        session.add(
+            ProblemOccurrence(
+                id=f"prob-o{index:02d}",
+                well_id=f"well-o{index:02d}",
+                problem_definition_id="pdef-stuck_pipe",
+                problem_type="stuck_pipe",
+                hole_size_in=8.5,
+                occurred_at=datetime(2025, 7, 1, 1, index % 60),
+            )
+        )
+    session.commit()
+
+    counts["n"] = 0
+    event.listen(service.database.engine, "before_cursor_execute", _count)
+    try:
+        doubled = service.offsets("well-a1", same_field_only=True, limit=0)
+    finally:
+        event.remove(service.database.engine, "before_cursor_execute", _count)
+    assert len(doubled) == 41
+    assert counts["n"] <= 7, (
+        f"doubling the candidates must not add queries: {counts} - the profile is grouped, "
+        "not one round trip per well"
+    )
 
 
 # -- output contract / edge cases -----------------------------------------------------------

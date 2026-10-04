@@ -145,6 +145,46 @@ class IntelligenceService:
                 until=until,
             )
 
+    def well_control(
+        self,
+        *,
+        field_id: str = "",
+        project_id: str = "",
+        well_id: str = "",
+        since: object = None,
+        until: object = None,
+        session: Session | None = None,
+    ) -> dict[str, Any]:
+        """Well-control events in scope.  See :meth:`FieldIntelligence.well_control`."""
+        with self._session(session) as active:
+            return FieldIntelligence(active).well_control(
+                field_id=field_id,
+                project_id=project_id,
+                well_id=well_id,
+                since=since,
+                until=until,
+            )
+
+    def hse(
+        self,
+        *,
+        field_id: str = "",
+        project_id: str = "",
+        well_id: str = "",
+        since: object = None,
+        until: object = None,
+        session: Session | None = None,
+    ) -> dict[str, Any]:
+        """HSE incidents in scope.  See :meth:`FieldIntelligence.hse`."""
+        with self._session(session) as active:
+            return FieldIntelligence(active).hse(
+                field_id=field_id,
+                project_id=project_id,
+                well_id=well_id,
+                since=since,
+                until=until,
+            )
+
     def problems(
         self,
         *,

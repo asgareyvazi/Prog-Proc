@@ -52,9 +52,12 @@ from ..database.models import (
     BhaComponent,
     BhaReport,
     BitRecord,
+    CasingRun,
+    CementJob,
     Document,
     DocumentVersion,
     Field,
+    HseIncident,
     KnowledgeItem,
     LessonLearned,
     MudMeasurement,
@@ -67,6 +70,7 @@ from ..database.models import (
     SurveyRun,
     SurveyStation,
     Well,
+    WellControlEvent,
     WellEvent,
 )
 from ..search.index import MAX_CANDIDATES
@@ -95,6 +99,13 @@ _STRUCTURED_MODELS: dict[str, type] = {
     "bha_report": BhaReport,
     "bit_record": BitRecord,
     "survey_run": SurveyRun,
+    # V7.1/V7.2 domains.  This map has to carry every structured record type the search projection
+    # can emit: a hit whose type is absent here is silently skipped below, so the search index would
+    # find a well-control event and retrieval would then be unable to reach the row it came from.
+    "casing_run": CasingRun,
+    "cement_job": CementJob,
+    "well_control_event": WellControlEvent,
+    "hse_incident": HseIncident,
 }
 
 #: The ``kind`` a knowledge-fact chunk carries (a fact is surfaced as a document-shaped chunk).

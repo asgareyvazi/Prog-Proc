@@ -227,9 +227,13 @@ The search index carries three kinds of unit, all ranked through the one BM25 pa
 - **document chunks** — extracted text (and diagnostics), cited to a page/sheet/cell;
 - **knowledge-fact chunks** — the facts derived from those artefacts, weighted above the prose they came
   from;
-- **structured records** — one unit per authoritative operational/domain row (`problem_definition`,
-  `problem_occurrence`, `npt_record`, `well_event`, `lesson_learned`, `recommendation`), projected by
+- **structured records** — one unit per authoritative operational/domain row, projected by
   `search/structured.py` into the same sidecar under a deterministic identity `structured:<type>:<row id>`.
+  The fourteen types are `problem_definition`, `problem_occurrence`, `npt_record`, `well_event`,
+  `lesson_learned`, `recommendation`, `mud_report`, `bha_report`, `bit_record`, `survey_run`, `casing_run`,
+  `cement_job`, `well_control_event` and `hse_incident`. Retrieval resolves every one of them back to its
+  authoritative row through `retrieval.service._STRUCTURED_MODELS`; a type the projection emits but that
+  map lacks would be silently skipped, so `test_evidence_chain_v73.py` asserts the two sets are equal.
 
 The structured projection is the same idea as the document half, stated once: the database is the
 authority, the sidecar is disposable, and a record's text is its own deterministic fields — never a copy of
