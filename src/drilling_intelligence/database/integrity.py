@@ -35,6 +35,8 @@ from .models import (
     BhaReport,
     BitRecord,
     Calculation,
+    CasingRun,
+    CementJob,
     Company,
     CostItem,
     DdrReport,
@@ -44,6 +46,7 @@ from .models import (
     ExtractionCache,
     Field,
     FieldPattern,
+    HseIncident,
     KnowledgeItem,
     KnowledgeRelation,
     LessonLearned,
@@ -61,6 +64,7 @@ from .models import (
     SurveyRun,
     SurveyStation,
     Well,
+    WellControlEvent,
     WellEvent,
     WellOperation,
     WellSection,
@@ -290,6 +294,14 @@ RELATION_ENDPOINT_MODELS: dict[str, type] = {
     "bit_record": BitRecord,
     "survey_run": SurveyRun,
     "survey_station": SurveyStation,
+    # Engineering deliverables (V7.1) and the operational safety domains (V7.2).  These are
+    # authoritative record tables carrying their own provenance, so a knowledge relation must be able
+    # to name one as an endpoint; without an entry a real row is rejected as though the endpoint type
+    # did not exist, which is indistinguishable from a typo in the caller.
+    "casing_run": CasingRun,
+    "cement_job": CementJob,
+    "well_control_event": WellControlEvent,
+    "hse_incident": HseIncident,
     # engineering records
     "procedure": ProcedureRecord,
     "program": DrillingProgram,

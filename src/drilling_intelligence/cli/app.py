@@ -215,19 +215,31 @@ def _resolve_well_id(workspace: Workspace, ref: str | None) -> str | None:
 def _record_counts(session: Session) -> dict[str, int]:
     """How many operational and engineering rows exist, which is what ``doctor`` prints.
 
-    Counted with five queries rather than by loading rows, because a workspace with forty thousand NPT
+    One ``COUNT`` per reported number rather than loading rows, because a workspace with forty thousand NPT
     records must still answer this in a second - and because the only honest definition of "empty field" is
     the one that does not depend on how much data the check is willing to read.
+
+    Every authoritative record table has a line here. That is not decoration: ``doctor`` is what a person
+    runs to ask "what does this workspace hold", and a domain missing from this list reads as an empty
+    domain even when it is full - which is how V7.1 and V7.2 looked here until now.
     """
     from sqlalchemy import func
 
     from ..database.models import (
+        BhaReport,
+        BitRecord,
+        CasingRun,
+        CementJob,
         DdrReport,
         DrillingProgram,
+        HseIncident,
         LessonLearned,
+        MudReport,
         NptRecord,
         ProblemOccurrence,
         ProgramTarget,
+        SurveyRun,
+        WellControlEvent,
         WellEvent,
         WellOperation,
         WellSection,
@@ -254,6 +266,23 @@ def _record_counts(session: Session) -> dict[str, int]:
         "programs": count(DrillingProgram),
         "programs_current": count(DrillingProgram, DrillingProgram.is_current.is_(True)),
         "targets": count(ProgramTarget),
+        # Hardware and geometry (V4/V6), engineering deliverables (V7.1), operational safety (V7.2).
+        "mud_reports": count(MudReport),
+        "bha_reports": count(BhaReport),
+        "bit_records": count(BitRecord),
+        "survey_runs": count(SurveyRun),
+        "casing_runs": count(CasingRun),
+        "cement_jobs": count(CementJob),
+        # The two domains this release taught the field aggregate about. Well-control counts are
+        # current-only: a superseded reading is history, and printing it as a live event would be the
+        # same mistake the aggregate itself refuses to make.
+        "well_control_events": count(WellControlEvent, WellControlEvent.is_current.is_(True)),
+        "hse_incidents": count(HseIncident, HseIncident.is_current.is_(True)),
+        "hse_site_scoped": count(
+            HseIncident,
+            HseIncident.is_current.is_(True),
+            HseIncident.well_id.is_(None),
+        ),
     }
 
 

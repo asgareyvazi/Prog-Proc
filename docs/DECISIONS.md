@@ -1613,42 +1613,61 @@ the source stated, or NULL.
 
 ## ADR-33 — V7.3A: the field aggregate learns the operational domain
 
-- Status: `accepted`
-- Date: 2026-10-04
-- Context: V7.2 made well-control events and HSE incidents first-class citizens — schema, contract,
-  promotion, review, timeline and search. The **field intelligence** layer never learned about them.
-  `FieldIntelligence` could aggregate NPT, mud, problems, generic events and lessons, so a project
-  summary could state a total NPT figure while saying nothing about five recorded kicks, and the
-  offset comparison could describe two wells as alike without mentioning that one of them recorded a
-  kick. That is not a missing dashboard; it is the aggregate being blind to a domain that already
-  exists and is already indexed.
-- Decision:
-  1. **Two new first-class aggregates**, `FieldIntelligence.well_control()` and
-     `FieldIntelligence.hse()`, and both exposed on `IntelligenceService`. `events()` is unchanged:
-     it remains the `WellEvent` aggregation, because a kick is not a generic event (P8).
-  2. **Every number is a grouped query.** Each method issues a constant set of `SELECT`/`GROUP BY`
-     statements — one combined totals-and-presence aggregate, one group-by per breakdown, one undated
-     count. Measured on the real corpus: 7 queries for `well_control`, 8 for `hse`, independent of row
-     count. No method loads rows into Python to count them.
-  3. **Scope rules are inherited, not restated.** A well scope matches on `well_id` alone, so a
-     site-only incident can never be attached to a hole it never happened at. A field/project scope
-     reports `well_scoped_incidents` and `site_scoped_incidents` separately, and a site row keeps an
-     empty well key rather than borrowing one.
-  4. **Presence, never inference.** `with_pit_gain` counts rows carrying a pit gain — five of them —
-     while `by_event_type["kick"]` stays at one, because the contract refuses to infer a kick from a
-     pit gain. `with_lost_time_wording` counts wordings and is never summed into hours (ADR-32).
-  5. **No cross-unit arithmetic.** The aggregates expose counts and grouped counts by unit only; there
-     is deliberately no total-pressure or total-volume key that could have added psi to a unitless
-     number.
-  6. **Offset matching stays problem-driven.** `offset_candidates()` gains a descriptive `profile`
-     (well-control and HSE counts per candidate) but the equivalence key and the ranking are unchanged:
-     shared problem types, then shared hole sizes. A profile is never a safety ranking, and no
-     "safer" claim is made from a count of recorded incidents.
-  7. **Retrieval was repaired, not just extended.** `retrieval.service._STRUCTURED_MODELS` mapped ten
-     of the fourteen structured record types; the four absent ones — including both V7.2 domains and
-     V7.1's `casing_run`/`cement_job` — were silently skipped, so a search hit could not be resolved
-     to its row. All fourteen are now mapped, and a test asserts the two registries stay equal.
-- Consequences: a project summary now carries both operational domains alongside the existing ones,
-  and every legacy key is untouched. The V7.1/V7.2 retrieval dead end is closed for four record types,
-  not two. Two aggregations were added to `summary()`, so the field-summary query budget changes; the
-  invariant that was protected is scale-invariance, and it is asserted at more than one row count.
+**Status:** accepted (2026-10-04)
+
+V7.2 made well-control events and HSE incidents first-class citizens — schema, contract, promotion,
+review, timeline and search. The field intelligence layer never learned about them. `FieldIntelligence`
+could aggregate NPT, mud, problems, generic events and lessons, so a project summary could state a
+total NPT figure while saying nothing about five recorded kicks, and the offset comparison could call
+two wells alike without mentioning that one of them took a kick. That is not a missing dashboard; it is
+an aggregate that is blind to a domain that already exists and is already indexed.
+
+**Two new first-class aggregates.** `FieldIntelligence.well_control()` and `.hse()`, both also exposed
+on `IntelligenceService`. `events()` is deliberately unchanged and remains the `WellEvent` aggregation:
+a kick is not a generic event (ADR-27), and folding it in would have destroyed the distinction this
+release exists to preserve.
+
+**Every number is a grouped query.** Each method issues a fixed set of `SELECT`/`GROUP BY` statements —
+one combined totals-and-presence aggregate, one group-by per breakdown, one undated count. Measured on
+the real corpus: seven queries for `well_control`, eight for `hse`, independent of row count. No method
+loads rows into Python in order to count them.
+
+**Scope rules are inherited, not restated.** A well scope matches on `well_id` alone, so a site-only
+incident can never be attached to a hole it never happened at. A field or project scope reports
+`well_scoped_incidents` and `site_scoped_incidents` separately, and a site row keeps an *empty* well key
+rather than borrowing one.
+
+**Presence, never inference.** `with_pit_gain` counts rows carrying a pit gain — five of them — while
+`by_event_type["kick"]` stays at one, because the contract refuses to infer a kick from a pit gain.
+`with_lost_time_wording` counts wordings and is never summed into hours (ADR-32). There is deliberately
+no total-pressure or total-volume key that could have added psi to a unitless number.
+
+**Offset matching stays problem-driven.** `offset_candidates()` gains a descriptive `profile` of
+well-control and HSE counts per candidate, but the equivalence key and the ranking are unchanged: shared
+problem types, then shared hole sizes. A profile is never a safety ranking, and no "safer" claim is made
+from a count of recorded incidents.
+
+**Two registry gaps were closed, not just extended.** `retrieval.service._STRUCTURED_MODELS` mapped ten
+of the fourteen structured record types; a type missing from that map is skipped silently, so a search
+for `SIDPP` returned a hit that retrieval then could not resolve to its row. `well_control_event`,
+`hse_incident`, `casing_run` and `cement_job` were all unreachable — including two types that predate
+this release. Separately, `database.integrity.RELATION_ENDPOINT_MODELS` decided which record tables a
+knowledge relation may name as an endpoint, and by that map's own contract a record table missing from
+it is *not* an unsupported relationship but a **rejected write**: an edge pointing at a real,
+provenance-carrying well-control row was being refused in exactly the way a typo in an endpoint name is,
+making a genuine row indistinguishable from a caller bug. All four tables are registered in both maps
+now. `test_integrity_and_golden_v73.py` pins the relationship between the six registries so a fifth
+table cannot be added to one and forgotten in another.
+
+**`doctor` was reporting full domains as empty.** `_record_counts` — the function behind
+``doctor``'s "what does this workspace hold" answer — counted reports, operations, events, NPT, problems,
+lessons, sections, programmes and targets, and nothing else. Every authoritative record table now has a
+line, including well-control and HSE, both counted current-only so a superseded reading is not printed as
+a live event. A domain missing from that list does not read as "not counted"; it reads as empty, which is
+worse than not printing it at all.
+
+**Consequences.** A project summary now carries both operational domains alongside the existing ones, and
+every legacy key is untouched. Four record types that were silently unreachable through retrieval are
+reachable again. Adding two aggregations to `summary()` moved the offset query constant from five to
+seven; the invariant that mattered was scale-invariance, and it is now asserted at twenty-one *and*
+forty-one candidates rather than by pinning a number.
