@@ -62,7 +62,7 @@ def test_severity_is_kept_verbatim_and_never_scored(workspace) -> None:
     for label, row in rows.items():
         assert not any(
             name.endswith("score") or name.endswith("rating_value")
-            for name in row.__table__.columns.keys()
+            for name in [column.name for column in row.__table__.columns]
             if getattr(row, name) not in (None, "")
         ), f"{label}: a severity word must not become a number"
 
