@@ -1671,3 +1671,52 @@ every legacy key is untouched. Four record types that were silently unreachable 
 reachable again. Adding two aggregations to `summary()` moved the offset query constant from five to
 seven; the invariant that mattered was scale-invariance, and it is now asserted at twenty-one *and*
 forty-one candidates rather than by pinning a number.
+
+## ADR-34 — V7.4: LOGGING and SERVICE_REPORT stay non-promotable, and why that is the decision
+
+**Status:** accepted (2026-10-05)
+
+Both classifications were carried as `KNOWLEDGE_SUPPORTED` with no domain writer, and the question for
+this wave was whether either had finally earned one. Both were audited against the source shapes the
+repository actually holds, and both answers are no. This records the reasoning, because "no writer yet"
+is only defensible if the missing input is named.
+
+**`SERVICE_REPORT` — `NOT READY`, insufficient deterministic source shape.** The repository's own golden
+corpus contains `service_report_well-a3.txt`. Its entire content is two sentences: *"Service report."* and
+*"Service provided: mud logging support; equipment used and personnel engineer crew."* Against the shape a
+service record needs, it carries no job or report identity, **no company name at all**, no date or
+reporting period, no named equipment, no named personnel, no result, no status and no revision semantics.
+The only other company names anywhere in the fixtures are `Baker Hughes`, `Schlumberger` and `Halliburton`
+appearing as *equipment manufacturers inside a BHA tally* - which is precisely the confusion to avoid, not
+evidence of a job. Writing a `service_job` table now would mean inventing every field the domain needs and
+then populating it from prose. `ServiceCompany` remains what it always was: an identity, not an activity.
+
+**`LOGGING` — `NOT READY`, insufficient deterministic source shape.** The schema has no log table of any
+kind, and no existing table can hold a log measurement without being misused. `mud_measurement` is a
+property/value/unit table with **no depth axis**; `survey_station` has a depth axis but only fixed
+trajectory channels (inclination, azimuth, toolface, TVD, northing, easting, DLS), so a curve would have to
+be smuggled into a column that means something else. What is missing is not a table but the *inputs* a
+deterministic contract would key on: there is no run-identity signal anywhere in the classification path,
+no channel/curve identity column, and no logging source in the corpus at all. The architecture does contain
+the right precedent - `survey_run` groups by `(table_id, run_label)`, records `station_identity` as
+`NUMBERED`/`AMBIGUOUS`/`UNNUMBERED`, and refuses a section rather than guessing one via `AMBIGUOUS_SECTIONS`
+- so a future log contract should follow that shape and require an explicit run key. It should not be
+written before a real source exists to write it against.
+
+**One real defect was fixed.** The LOGGING signature weighted `\bporosity\b|\bSW\b|\bVSH\b`, which are
+*interpreted* petrophysical conclusions - the values this platform refuses to derive. A formation-evaluation
+report therefore outscored a genuine acquisition report: measured, 0.94 versus 0.98 confidence, with a bare
+vocabulary appendix at 0.96. Those patterns are gone, as is the bare `\bGR\b` alternative, which matched any
+two-letter "GR" rather than a curve. The same interpretation report now scores 0.47 and a genuine acquisition
+report still scores 0.98.
+
+**The determination is executable, not prose.** `tests/integration/test_domain_boundary_v74.py` pins that
+both contracts keep `level == KNOWLEDGE_SUPPORTED` with no `handler` and no `target_models`, and that the
+vocabulary-only logging candidate, the interpretation report, the golden-corpus service fixture and a bare
+company-name-with-a-date document each pass through the real ingestion and promotion pipeline writing **zero**
+rows into any of the 48 tables. Refused promotion is not rejection: the documents are still ingested,
+classified and citable with full provenance.
+
+**Consequences.** No new table, no migration, no coverage-count increase. What changed is that the boundary
+is now enforced by a test rather than by the absence of a writer, so a future wave cannot add one silently -
+and the classifier no longer files an interpretation as an acquisition record.

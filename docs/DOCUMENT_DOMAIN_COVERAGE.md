@@ -1,4 +1,4 @@
-# Document/domain coverage matrix (V4 authority)
+# Document/domain coverage matrix (V7 authority)
 
 > **Note on commit references.** This checkout is a shallow clone whose history was
 > collapsed to a single grafted commit, so the commits this document describes are not in
@@ -7,10 +7,11 @@
 > that a report never names a full hash the repository cannot produce.
 
 **Status:** authoritative source-derived registry and certification index
-**As of:** 2026-09-23 (Asia/Tehran)
+**As of:** 2026-10-05 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0c936-prog-proc`
-**Inspected HEAD before final validation:** `f6a9976`
+**Inspected HEAD before final validation:** `13869f9`
+**Release state:** V7.3A closed - 26 classifications, 11 named handlers, 13 `END_TO_END_CERTIFIED` / 8 `KNOWLEDGE_SUPPORTED` / 5 `EXTRACT_ONLY`, migration head `0019`
 **Contract source:** `src/drilling_intelligence/operations/contracts.py`
 **Forensic corpus:** `tests/golden_corpus/manifest.json`
 

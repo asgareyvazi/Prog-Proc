@@ -237,11 +237,24 @@ TAXONOMY: tuple[TypeSignature, ...] = (
             (r"\bwireline\b", 0.35),
             (r"\bLWD\b|\bMWD\b", 0.35),
         ),
+        # Acquisition vocabulary only.  Two patterns were removed deliberately:
+        #
+        #   ``\bporosity\b|\bSW\b|\bVSH\b`` named *interpreted* petrophysical conclusions, so a
+        #   formation-evaluation report - the document that states what the curves mean, not the one
+        #   that recorded them - outscored a genuine acquisition report.  Porosity, saturation and
+        #   Vsh are exactly the values this platform refuses to derive, so they must not be the
+        #   evidence that files a document as an acquisition record either.
+        #
+        #   the bare ``\bGR\b`` alternative matched any two-letter "GR" anywhere, which is not a
+        #   curve.  The spelled-out ``gamma ray`` is kept.
+        #
+        # Curve vocabulary is still only a hint about what a document discusses.  It is not a table
+        # shape, and LOGGING has no domain writer, so nothing here may promote a row.
         content_patterns=(
-            (r"\bgamma\s*ray\b|\bGR\b", 0.25),
+            (r"\bgamma\s*ray\b", 0.25),
             (r"\bresistivity\b", 0.25),
             (r"\bsonic\b|\bdipole\b", 0.2),
-            (r"\bporosity\b|\bSW\b|\bVSH\b", 0.2),
+            (r"\b(log|logging)\s*(run|pass|acquisition)\b", 0.3),
             (r"\bformation\s*top\b", 0.15),
         ),
         extensions=(".pdf", ".xlsx"),
