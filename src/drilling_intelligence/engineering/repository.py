@@ -90,6 +90,48 @@ __all__ = [
 ]
 
 
+def _unit_comparability(
+    planned_unit: Any,
+    actual_unit: Any,
+    *,
+    has_actual: bool,
+    expects_actual_unit: bool = True,
+) -> str:
+    """Whether a planned figure and an actual one may be subtracted at all.
+
+    ``COMPARABLE`` - both sides state the same unit, or the metric carries a unit by definition
+    (``expects_actual_unit=False``: days, hours) so there is no axis for them to disagree on.
+
+    ``INCOMPARABLE_UNITS`` - both sides stated a unit and the units differ.  The subtraction is
+    refused rather than performed: this platform holds no conversion rule, and inventing one would
+    turn a plan-versus-actual report into fiction.
+
+    ``ACTUAL_UNIT_UNSTATED`` - the actual side carries a number but no unit, so agreement cannot be
+    *proved*.  The variance is still given, because a section almost certainly records the unit its
+    plan was written in, but the reader is told the check was unavailable instead of being handed a
+    certainty that was never made.
+
+    ``NOT_APPLICABLE`` - there is no actual to compare.
+    """
+    if not has_actual:
+        return "NOT_APPLICABLE"
+    if not expects_actual_unit:
+        # One unit by definition - the metric *is* days or *is* hours; there is no second
+        # unit column that could contradict it, so no check can fail and none is reported.
+        return "COMPARABLE"
+    planned = str(planned_unit or "").strip().upper()
+    actual = str(actual_unit or "").strip().upper()
+    if not planned and not actual:
+        # Neither side states a unit, so there is no disagreement to detect.
+        return "COMPARABLE"
+    if planned and actual:
+        return "COMPARABLE" if planned == actual else "INCOMPARABLE_UNITS"
+    if not actual:
+        return "ACTUAL_UNIT_UNSTATED"
+    # The actual states a unit and the plan does not: same unprovable agreement, from the other side.
+    return "ACTUAL_UNIT_UNSTATED"
+
+
 class Metric(NamedTuple):
     """One row of the plan-versus-actual comparison: where the plan lives, where the fact lives."""
 
@@ -98,6 +140,9 @@ class Metric(NamedTuple):
     planned_unit_column: str
     actual_key: str
     default_unit: str | None
+    #: Where the *actual* side states its own unit.  Empty means the metric has one unit by
+    #: definition (days, hours), so there is nothing to disagree about.
+    actual_unit_column: str = ""
 
 
 #: The plan-versus-actual pairs, in the order a report lists them.  ``actual_key`` names the entry in
@@ -105,9 +150,23 @@ class Metric(NamedTuple):
 #: bottom depth (the as-drilled one) and the program stores the planned one, which is exactly the
 #: comparison a post-well review opens with.
 PLAN_ACTUAL_METRICS: tuple[Metric, ...] = (
-    Metric("depth_md", "planned_depth_md_value", "planned_depth_md_unit", "depth_md", "m"),
+    Metric(
+        "depth_md",
+        "planned_depth_md_value",
+        "planned_depth_md_unit",
+        "depth_md",
+        "m",
+        "bottom_depth_unit",
+    ),
     Metric("duration_days", "planned_duration_days", "", "duration_days", "d"),
-    Metric("mud_weight", "planned_mud_weight_value", "planned_mud_weight_unit", "mud_weight", None),
+    Metric(
+        "mud_weight",
+        "planned_mud_weight_value",
+        "planned_mud_weight_unit",
+        "mud_weight",
+        None,
+        "actual_mud_weight_unit",
+    ),
     Metric("npt_hours", "planned_npt_hours", "", "npt_hours", "h"),
 )
 
@@ -1128,7 +1187,13 @@ class EngineeringRepository:
 
     # -- plan versus actual ---------------------------------------------------
     def plan_actual_summary(
-        self, *, well_id: str = "", section_id: str = "", program_id: str = ""
+        self,
+        *,
+        well_id: str = "",
+        section_id: str = "",
+        program_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
     ) -> list[dict[str, Any]]:
         """Compare each section's planned numbers with its actual ones, where both exist.
 
@@ -1149,17 +1214,32 @@ class EngineeringRepository:
         a caller who names A-3's well and B-11's programme has described no well, and answering with
         *either* of them would be picking one of the caller's two statements to ignore.  An id nobody
         wrote returns ``[]`` for the same reason, never a workspace-wide query.
+
+        ``field_id`` and ``project_id`` extend the same rule to a whole field or project: they are
+        filters on the section side (a section belongs to a well, the well to the field/project), so a
+        field comparison covers every section in the field in the *same* constant number of queries a
+        single well uses - never one query per well, which is the loop this method refuses to become.
+        The governing-programme resolution below already derives its well/field/project boundary from
+        the sections actually fetched, so it narrows itself to whatever scope was asked for.
         """
-        if not (well_id or section_id or program_id):
+        if not (well_id or section_id or program_id or field_id or project_id):
             raise ValidationError(
                 "plan-vs-actual needs a scope",
-                hint="pass well_id, section_id or program_id",
+                hint="pass well_id, section_id, program_id, field_id or project_id",
             )
         section_statement = select(WellSection)
         if well_id:
             section_statement = section_statement.where(WellSection.well_id == well_id)
         if section_id:
             section_statement = section_statement.where(WellSection.id == section_id)
+        if field_id or project_id:
+            # One join for both filters: joining Well twice would still work but would make the
+            # statement's shape depend on how many scope keys the caller happened to pass.
+            section_statement = section_statement.join(Well, Well.id == WellSection.well_id)
+        if field_id:
+            section_statement = section_statement.where(Well.field_id == field_id)
+        if project_id:
+            section_statement = section_statement.where(Well.project_id == project_id)
         if program_id:
             program = self.session.get(DrillingProgram, str(program_id))
             if program is None:
@@ -1273,6 +1353,19 @@ class EngineeringRepository:
                 unit = metric.default_unit
                 if metric.planned_unit_column and match is not None:
                     unit = getattr(match, metric.planned_unit_column, None) or unit
+                actual_unit = (
+                    actuals.get(f"{metric.actual_key}_unit") if metric.actual_unit_column else None
+                )
+                # The plan states a unit and the section states one too.  When the two disagree the
+                # subtraction is not a variance, it is metres minus feet, so it is refused rather than
+                # reported - and it is refused *visibly*, because a blank variance and an uncomparable
+                # one are different things for a reader to act on.
+                comparable = _unit_comparability(
+                    unit,
+                    actual_unit,
+                    has_actual=actual is not None,
+                    expects_actual_unit=bool(metric.actual_unit_column),
+                )
                 payload.append(
                     {
                         "well_id": section.well_id,
@@ -1282,12 +1375,18 @@ class EngineeringRepository:
                         "planned": None if planned is None else float(planned),
                         "actual": None if actual is None else float(actual),
                         "unit": unit,
+                        "actual_unit": actual_unit,
+                        "variance_state": comparable,
                         "variance": (
                             round(float(actual) - float(planned), 6)
-                            if planned is not None and actual is not None
+                            if planned is not None
+                            and actual is not None
+                            and comparable != "INCOMPARABLE_UNITS"
                             else None
                         ),
-                        "status": self._plan_actual_status(match, planned, actual),
+                        "status": self._plan_actual_status(
+                            match, planned, actual, comparability=comparable
+                        ),
                         "program_id": None if match is None else match.program_id,
                         "target_id": None if match is None else match.id,
                         # How the plan was found.  A name match is a guess and more than one name
@@ -1337,13 +1436,23 @@ class EngineeringRepository:
         return by_name[0], "NAME_AMBIGUOUS" if len(by_name) > 1 else "NAME"
 
     @staticmethod
-    def _plan_actual_status(target: ProgramTarget | None, planned: Any, actual: Any) -> str:
+    def _plan_actual_status(
+        target: ProgramTarget | None,
+        planned: Any,
+        actual: Any,
+        *,
+        comparability: str = "COMPARABLE",
+    ) -> str:
         if target is None:
             return "NO_TARGET"
         if planned is None:
             return "NO_PLAN"
         if actual is None:
             return "NO_ACTUAL"
+        if comparability == "INCOMPARABLE_UNITS":
+            # Both numbers exist and neither is wrong; the pair just cannot be subtracted.  Calling
+            # this ON_PLAN or VARIANCE would be a claim about the world the units do not support.
+            return "INCOMPARABLE_UNITS"
         return "ON_PLAN" if float(planned) == float(actual) else "VARIANCE"
 
     def _section_actuals(self, section: WellSection, *, npt_hours: float | None) -> dict[str, Any]:
@@ -1362,6 +1471,10 @@ class EngineeringRepository:
             "duration_days": getattr(section, "actual_duration_days", None),
             "mud_weight": getattr(section, "actual_mud_weight_value", None),
             "npt_hours": npt_hours,
+            # Units ride along with the values they belong to.  Without them the comparison below can
+            # only assume the actual side agrees with the plan, and an assumption is not a proof.
+            "depth_md_unit": getattr(section, "bottom_depth_unit", None),
+            "mud_weight_unit": getattr(section, "actual_mud_weight_unit", None),
         }
 
     def _npt_hours_by_section(self, section_ids: Sequence[str]) -> dict[str, float | None]:

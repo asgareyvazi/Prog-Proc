@@ -219,6 +219,68 @@ a discovery source for this boundary; the result says `search_sidecar_used: fals
 reports `MATCH`, `MISMATCH`, `UNREADABLE` and `NOT_CHECKABLE` through the existing evidence contract and
 never changes the registry.
 
+## Decision Pack: one scope, every decision surface, with the limitations attached
+
+`DecisionIntelligence(pack=...)` - `drillintel fields decision` - answers "what does this repository
+currently know about this well / field / project?" as **one deterministic plain-value document**
+(`DecisionPack`, schema `decision-pack/1`). It is a *read model*, not a table: nothing is persisted,
+two runs over the same state produce the same content identity, and the request that produced the pack
+travels inside it so a reader can re-run and compare.
+
+Architecture: a sibling of `FieldIntelligence` (it *is-a* `FieldIntelligence`, so scope resolution and
+the NPT/problem/well-control/HSE aggregates are inherited, never re-derived - the pack's numbers equal
+`fields summary`'s numbers by construction, and a test pins that equality). Engineering plan/actual is
+`EngineeringRepository.plan_actual_summary` folded, economics is `CostRepository.summary`/`rollup`, and
+risk/learning/patterns/calculations are grouped SQL over their own tables using the membership rules
+below. `FieldIntelligence.summary()` is untouched: no existing key moved or changed meaning.
+
+Scope is first-class and **exactly one of well / field / project** - a caller naming two scopes gets an
+explicit error rather than an arbitrary precedence rule. A well pack never absorbs its field; a field
+pack includes its wells plus rows genuinely carried at field level (a field-carried risk is labelled
+`field`, never relabelled `well`); site-scoped HSE stays site-scoped and appears only where the existing
+HSE scope rules put it. Patterns are a field/project-level model, so a well pack reads its field's
+patterns *and says so* in the section scope.
+
+Section by section, what the pack refuses:
+
+*   **Execution** - arithmetic is delegated to `plan_actual_summary`. V7.5 hardened that contract: a
+    variance is only reported when the plan and the actual **state compatible units**. Mismatched units
+    give `status=INCOMPARABLE_UNITS`, `variance=None`, `variance_state=INCOMPARABLE_UNITS` - metres minus
+    feet is refused, not performed. `matched_by` values (`SECTION_ID`, `NAME`, `*_AMBIGUOUS`) pass
+    through unchanged, because a NAME match is a guess and the reader has to see it.
+*   **Economics** - currencies are keys, never operands: USD and NOK stay separate totals, planned and
+    actual stay separate columns, a missing actual is `-` (its `*_lines` count says so) and never 0.
+    Only exact `npt_id` links count as cost-to-NPT association.
+*   **Risk** - counts and buckets as the source stated them; severity/probability/impact are split
+    `STATED` vs `UNASSESSED` (missing is not 0), bands are only ever the stored band, and there is no
+    score, rank, probability x impact or "unsafe well" anywhere in the output. Relations reported are
+    only stored `knowledge_relation` edges (`RISK_DERIVED_FROM_PROBLEM`, `PROCEDURE_ADDRESSES_RISK`, ...).
+*   **Learning** - an approved lesson is not an adopted practice and neither is a recommendation;
+    statuses stay per-domain (`APPROVED`/`DRAFT` for lessons, procedure lifecycle for practices,
+    `PROPOSED`/`ACCEPTED`/`DECLINED`/... for recommendations) and recommendation links (`pattern_id`,
+    `lesson_id`, `risk_id`, ...) are the explicit chain, not an inference from category or well.
+*   **Patterns** - observed grouped recurrence with `stale_at` visible; occurrence counts never become
+    probability and "confirmed" never becomes "will recur".
+*   **Calculations** - read-side only: current/history is decided by the revision chain (not the status
+    column), dependency state is `calculation_impact`'s own CURRENT/STALE/UNRESOLVED resolved per input
+    subject (capped, with truncation reported), and the pack never recalculates or triggers a rollup.
+*   **Evidence** - every section carries bounded references: `structured:<type>:<row-id>` identities for
+    searchable domains, sampled row ids for non-searchable ones, and exact re-executable method+scope
+    references for windowed aggregates - a fake "structured" id for a row the index cannot resolve would
+    itself be a dangling link.
+*   **Limitations and freshness** - derived from real state only (`missing_plan`, `incomparable_units`,
+    `mixed_currency`, `unassessed_risk`, `site_scoped_hse`, `stale_pattern`, `stale_dependency`, ...),
+    with per-section freshness in `CURRENT`/`STALE`/`UNRESOLVED`/`NOT_APPLICABLE`/`NOT_AVAILABLE`.
+    Observations are count-derived sentences ("2 current risks have no stated severity") - never
+    judgements ("A-3 is unsafe").
+
+Performance policy: grouped SQL or inherited bounded reads only - no per-well, per-risk or per-cost-row
+loops. The full field pack measures **41 SELECTs at 8 cost lines / 4 risks and 41 at 40 / 20**; the
+scale test pins the budget so a future per-row query fails the suite.
+
+The workbench renders the pack through `ReviewController.decision()` + `DecisionWorker` on a Decision
+tab - same service boundary as the CLI, no Qt in the logic, and viewing writes nothing (fingerprinted).
+
 ## How this coexists with search and knowledge
 
 The search index carries three kinds of unit, all ranked through the one BM25 path in

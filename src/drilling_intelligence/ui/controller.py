@@ -175,6 +175,18 @@ class ReviewController:
         )
         return DomainReviewService.for_workspace(workspace).review(request)
 
+    def decision(self, well_id: str) -> dict[str, Any]:
+        """The decision pack for one well as plain values - a read, never a write.
+
+        The pack is built by :class:`~drilling_intelligence.intelligence.decision.DecisionIntelligence`
+        through the same service boundary every other controller read uses, so the workbench shows
+        exactly what ``drillintel fields decision --json`` prints and nothing of its own.
+        """
+        workspace = self._require_workspace()
+        from ..intelligence.service import IntelligenceService
+
+        return IntelligenceService.for_workspace(workspace).pack(well_id=str(well_id)).to_dict()
+
     def run_npt_rollup(
         self,
         well_id: str,

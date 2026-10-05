@@ -1720,3 +1720,46 @@ classified and citable with full provenance.
 **Consequences.** No new table, no migration, no coverage-count increase. What changed is that the boundary
 is now enforced by a test rather than by the absence of a writer, so a future wave cannot add one silently -
 and the classifier no longer files an interpretation as an acquisition record.
+
+## ADR-35 — V7.5: the decision pack is a read model, and a variance must prove its units
+
+**Status:** accepted (2026-10-05)
+
+The repository already held every decision-relevant truth - NPT, problems, plan/actual, costs, risks,
+lessons, practices, recommendations, patterns, calculations - but each answer lived behind its own
+read surface, so a reviewer had to assemble the picture by hand and could not see the *limitations*
+as one object. V7.5 adds `DecisionPack`: a deterministic, plain-value, re-runnable read model for
+exactly one scope (well XOR field XOR project), composed from the authoritative services rather than
+re-querying them. It is deliberately **not** a table: a snapshot of yesterday's numbers would be the
+staleness this layer exists to expose, so the pack carries a content identity over its own payload
+instead of a row id, and `DecisionIntelligence` *is-a* `FieldIntelligence` so the pack's operational
+numbers equal `fields summary`'s by construction. The one-scope rule is explicit: naming two scopes
+is an error, because precedence between a well and a field would silently decide which caller
+statement to ignore.
+
+Auditing the execution section surfaced a real defect in `plan_actual_summary`: the row's `unit` came
+from the plan side only, while the actual side's unit column was never read - yet `variance =
+actual - planned` was computed regardless. Both unit columns are `NOT NULL` with defaults in today's
+schema, so the bug was latent rather than live, but nothing in the contract *proved* agreement. The
+comparison now states both units (`unit`, `actual_unit`) and refuses the subtraction when they
+differ: `status=INCOMPARABLE_UNITS`, `variance=None`, `variance_state=INCOMPARABLE_UNITS`, surfaced
+as the `incomparable_units` limitation. `ACTUAL_UNIT_UNSTATED` remains in the vocabulary for any
+future metric whose actual unit is optional (days/hours are definitional and pass through as
+`COMPARABLE` via `expects_actual_unit=False`). No conversion rule was added - this platform holds
+none, and inventing metres-to-feet would turn a plan-versus-actual report into fiction.
+
+Evidence honesty is part of the contract: searchable domains (NPT, problems, well control, HSE,
+lessons, recommendations) carry `structured:<type>:<row-id>` identities that retrieval can resolve;
+non-searchable domains (cost, risk, patterns, calculations, sections) carry sampled row ids or an
+exact re-executable method+scope reference - minting a `structured:` id for a row the index cannot
+resolve would be a dangling evidence link, which is the very failure the identity vocabulary exists
+to prevent. Limitations and freshness are derived from real state only, observations are
+count-derived sentences, and the claim-kind labels (`FACT` / `DERIVED` / `NOT_CHECKABLE`) are what a
+future AI layer may branch on - this wave adds no model, no embedding and no prompt.
+
+**Consequences.** No new table, no migration, no promotion contract, no search index change. The
+pack adds one service (`IntelligenceService.pack`), one CLI command (`fields decision`, `--json`
+stable), one workbench tab fed through `ReviewController.decision()` + `DecisionWorker`, and a query
+budget measured at **41 SELECTs at both 8/4 and 40/20 cost/risk corpora** - scale-invariance is
+pinned by test, so a future per-row aggregate fails the suite instead of shipping. `summary()` keys
+are untouched; existing consumers keep working.

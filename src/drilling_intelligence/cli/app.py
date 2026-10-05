@@ -2052,6 +2052,23 @@ def command_fields(args: argparse.Namespace) -> int:
                     ],
                 )
                 return 0
+            if args.action == "decision":
+                # The decision pack takes exactly one scope, so all three flags are offered and
+                # the service refuses a caller who names two - an explicit error beats an
+                # arbitrary precedence rule.
+                scope = _scope(args, workspace, allow_well=True, session=session)
+                pack = service.pack(
+                    well_id=scope.get("well_id", ""),
+                    field_id=scope.get("field_id", ""),
+                    project_id=scope.get("project_id", ""),
+                    since=args.since,
+                    until=args.until,
+                    detail=int(getattr(args, "detail", 1)),
+                    evidence_limit=int(getattr(args, "evidence_limit", 10)),
+                    session=session,
+                )
+                _emit(pack.to_dict(), as_json=args.json, lines=_decision_lines(pack))
+                return 0
             scope = _scope(args, workspace, allow_well=False, session=session)
             payload = service.summary(
                 field_id=scope.get("field_id", ""),
@@ -2117,6 +2134,142 @@ def _field_rows(session: Session) -> list[dict[str, Any]]:
         }
         for row in session.execute(select(Field).order_by(Field.name, Field.id)).scalars()
     ]
+
+
+def _decision_lines(pack: Any) -> list[str]:
+    """The human view of a decision pack: concise, scoped, and never a combined money figure.
+
+    Every number here is a section value - this renderer does no arithmetic of its own beyond
+    formatting, so the terminal and the JSON can never disagree.
+    """
+    payload = pack.to_dict()
+    subject = payload["subject"]
+    scope_label = f"{subject['name']} ({subject['kind']}"
+    if subject.get("well_count") is not None:
+        scope_label += f", {subject['well_count']} well(s)"
+    scope_label += ")"
+
+    execution = payload["execution"]
+    matched = ", ".join(f"{k} x{v}" for k, v in execution["by_matched_by"].items()) or "none"
+    money = payload["economics"]["summary"]
+    lines = [
+        f"decision pack: {payload['schema']}",
+        f"scope: {scope_label}",
+        "",
+        "Execution",
+        f"  sections: {execution['sections']} ({execution['rows']} comparison rows)",
+        f"  on-plan: {execution['by_status'].get('ON_PLAN', 0)}   "
+        f"variance: {execution['by_status'].get('VARIANCE', 0)}   "
+        f"no-plan: {execution['by_status'].get('NO_PLAN', 0) + execution['by_status'].get('NO_TARGET', 0)}   "
+        f"no-actual: {execution['by_status'].get('NO_ACTUAL', 0)}",
+        f"  plan matched by: {matched}",
+    ]
+    if execution["by_status"].get("INCOMPARABLE_UNITS", 0):
+        lines.append(
+            f"  incomparable units: {execution['by_status']['INCOMPARABLE_UNITS']} "
+            "(no variance reported for them)"
+        )
+    operations = payload["operations"]
+    npt = operations["npt"]
+    hse = operations["hse"]
+    lines += [
+        "",
+        "Operations",
+        f"  NPT: {npt['total_hours'] if npt['total_hours'] is not None else '-'} h over "
+        f"{npt['rows']} record(s); {npt['unknown_duration']} without duration, {npt['undated']} undated",
+        f"  problems: {operations['problems']['occurrences']}   "
+        f"well-control: {operations['well_control']['events']}   "
+        f"HSE: {hse['incidents']} ({hse['well_scoped_incidents']} well-scoped, "
+        f"{hse['site_scoped_incidents']} site-scoped)",
+        "",
+        "Economics",
+    ]
+    currencies = money.get("by_currency") or {}
+    if not currencies:
+        lines.append("  no cost lines in scope")
+    for currency, entry in sorted(currencies.items()):
+        planned = f"{entry['planned']:g}" if entry["planned_lines"] else "-"
+        actual = f"{entry['actual']:g}" if entry["actual_lines"] else "-"
+        variance = entry["variance"]
+        lines.append(
+            f"  {currency} planned: {planned}   actual: {actual}   "
+            f"(lines {entry['planned_lines']}/{entry['actual_lines']}"
+            + (f", variance {variance:g}" if variance is not None else "")
+            + ")"
+        )
+    if money.get("mixed_currency"):
+        lines.append("  mixed currencies: yes - no combined monetary total is reported")
+    lines.append(f"  current lines: {money['items']} ({money['unpriced']} unpriced)")
+
+    risk = payload["risk"]
+    lines += [
+        "",
+        "Risk",
+        f"  current: {risk['current']}   superseded: {risk['superseded']}",
+        "  by status: " + (", ".join(f"{k} x{v}" for k, v in risk["by_status"].items()) or "none"),
+        f"  severity: {risk['stated']['severity_stated']} stated, "
+        f"{risk['stated']['severity_unassessed']} unassessed (unassessed is not zero)",
+    ]
+    if risk["relations"]:
+        lines.append(
+            "  explicit relations: "
+            + ", ".join(f"{k} x{v}" for k, v in sorted(risk["relations"].items()))
+        )
+
+    learning = payload["learning"]
+    recommendations = payload["recommendations"]
+    lines += [
+        "",
+        "Learning",
+        f"  approved lessons: {learning['lessons']['approved']}   "
+        f"adopted practices: {learning['practices']['adopted']}",
+        "  recommendations: "
+        + (", ".join(f"{v} {k.lower()}" for k, v in recommendations["by_status"].items()) or "none")
+        + (
+            f" ({recommendations['with_evidence']} with evidence)"
+            if recommendations["total"]
+            else ""
+        ),
+    ]
+    patterns = payload["patterns"]
+    lines += [
+        "",
+        "Patterns",
+        f"  total: {patterns['total']}   stale: {patterns['stale']}"
+        + (
+            "   (" + ", ".join(f"{k} x{v['count']}" for k, v in patterns["by_status"].items()) + ")"
+            if patterns["by_status"]
+            else ""
+        ),
+    ]
+    calculations = payload["calculations"]
+    if calculations["total"]:
+        dependency = (
+            ", ".join(f"{v} {k.lower()}" for k, v in calculations["dependency"].items()) or "-"
+        )
+        lines += [
+            "",
+            "Calculations",
+            f"  total: {calculations['total']} ({calculations['current']} current, "
+            f"{calculations['history']} history); inputs: {calculations['inputs']}",
+            f"  dependency: {dependency}",
+        ]
+    lines += ["", f"Limitations ({len(payload['limitations'])})"]
+    lines += [f"  - {name}" for name in payload["limitations"]] or ["  none"]
+    fresh = ", ".join(
+        f"{key} {value}" for key, value in payload["freshness"].items() if value != "CURRENT"
+    )
+    if fresh:
+        lines += ["", "Freshness (non-current only)", f"  {fresh}"]
+    if payload["observations"]:
+        lines += ["", "Observations"]
+        lines += [f"  - {text}" for text in payload["observations"]]
+    lines += [
+        "",
+        f"evidence: {len(payload['evidence'])} reference(s); "
+        f"identity {payload['identity'][:16]}... (--json for ids)",
+    ]
+    return lines
 
 
 def command_patterns(args: argparse.Namespace) -> int:
@@ -2838,9 +2991,32 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("summary", "hours, records and occurrences for one field or project"),
         ("offsets", "other wells whose records say the same kind of thing happened"),
+        (
+            "decision",
+            "the deterministic decision pack: execution, economics, risk, learning, "
+            "patterns, calculations, evidence and limitations for one scope",
+        ),
     ):
         action = fields_sub.add_parser(name, help=help_text, parents=[common])
-        if name == "offsets":
+        if name == "decision":
+            action.add_argument("--well", help="this well (id or name)")
+            action.add_argument("--field", help="this field (id or name)")
+            action.add_argument("--project", help="every field in this project (id or name)")
+            action.add_argument("--since", help="count records dated on or after this ISO date")
+            action.add_argument("--until", help="count records dated on or before this ISO date")
+            action.add_argument(
+                "--detail",
+                type=int,
+                default=1,
+                help="0 = headline sections only; 1 = include bounded rollups (default 1)",
+            )
+            action.add_argument(
+                "--evidence-limit",
+                type=int,
+                default=10,
+                help="at most N sampled row ids per evidence reference (default 10)",
+            )
+        elif name == "offsets":
             action.add_argument(
                 "--well", required=True, help="the well to find offsets for (id or name)"
             )

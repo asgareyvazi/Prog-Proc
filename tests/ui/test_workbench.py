@@ -199,3 +199,57 @@ def test_worker_uses_real_controller_boundary_for_current_and_history(qt_app, wo
     worker.run()
     assert received and received[0].request["lifecycle"] == "current"
     controller.close()
+
+
+def test_decision_tab_renders_the_service_pack_without_touching_the_database(
+    qt_app, workspace
+) -> None:
+    """The Decision tab displays the controller's payload; it computes nothing and writes nothing."""
+    from tests.fixtures.fieldops import ingest, promote, well_id_for
+
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import MainWindow
+    from drilling_intelligence.ui.worker import DecisionWorker
+
+    ingest(workspace)
+    promote(workspace)
+    well_id = well_id_for(workspace, "A-3")
+    before = _database_fingerprint(workspace)
+
+    controller = ReviewController()
+    assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
+    window = MainWindow(controller)
+    try:
+        # The tab exists in the navigation, right after Overview.
+        assert window.navigation.item(1).text() == "Decision"
+
+        payload = controller.decision(well_id)
+        window.set_decision(payload)
+        qt_app.processEvents()
+
+        assert "decision-pack/" in window.decision_header.text()
+        assert window.decision_tree.topLevelItemCount() > 0
+        keys = {
+            window.decision_tree.topLevelItem(index).text(0)
+            for index in range(window.decision_tree.topLevelItemCount())
+        }
+        # The whole document is visible, section by section - not a widget-side summary of it.
+        assert {"subject", "execution", "economics", "risk", "limitations"} <= keys
+
+        # The worker runs the same controller boundary the CLI uses.
+        worker = DecisionWorker(controller, well_id)
+        received: list[Any] = []
+        failed: list[Any] = []
+        worker.succeeded.connect(received.append)
+        worker.failed.connect(failed.append)
+        worker.run()
+        assert received and not failed
+        assert received[0]["identity"] == payload["identity"], (
+            "worker and direct read must be the same pack - same state, same identity"
+        )
+    finally:
+        window.close()
+        qt_app.processEvents()
+        controller.close()
+
+    assert before == _database_fingerprint(workspace), "rendering the pack wrote to the database"

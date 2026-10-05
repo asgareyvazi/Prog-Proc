@@ -127,6 +127,52 @@ class ReviewWorker(QObject):
             self.succeeded.emit(review)
 
 
+class DecisionWorker(QObject):
+    """Run one read-only decision-pack build outside the GUI event loop."""
+
+    succeeded = Signal(object)
+    failed = Signal(object)
+
+    def __init__(self, controller: ReviewController, well_id: str, *, parent: Any = None) -> None:
+        super().__init__(parent)
+        self._controller = controller
+        self._well_id = well_id
+
+    @Slot()
+    def run(self) -> None:
+        if QThread.currentThread().isInterruptionRequested():
+            self.failed.emit(
+                WorkerError("cancelled", "Decision pack load was cancelled before it started.")
+            )
+            return
+        try:
+            payload = self._controller.decision(self._well_id)
+        except ValidationError as exc:
+            self.failed.emit(
+                WorkerError(
+                    "input",
+                    str(exc),
+                    str(exc.context.get("hint") or exc.hint or "Check the selected well."),
+                    type(exc).__name__,
+                )
+            )
+            return
+        except DrillingIntelligenceError as exc:
+            self.failed.emit(
+                WorkerError(
+                    "workspace",
+                    str(exc),
+                    str(exc.context.get("hint") or exc.hint or "The workspace could not answer."),
+                    type(exc).__name__,
+                )
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - the GUI boundary reports, it does not crash
+            self.failed.emit(WorkerError("internal", str(exc), "", type(exc).__name__))
+            return
+        self.succeeded.emit(payload)
+
+
 class CalculationWorker(QObject):
     """Run one explicit NPT V1 calculation outside the GUI event loop."""
 

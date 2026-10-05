@@ -291,6 +291,36 @@ class IntelligenceService:
                 field_id=field_id, project_id=project_id, since=since, until=until
             )
 
+    def pack(
+        self,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        since: object = None,
+        until: object = None,
+        detail: int = 1,
+        evidence_limit: int = 10,
+        session: Session | None = None,
+    ) -> Any:
+        """The deterministic decision pack for exactly one scope (see ``intelligence.decision``).
+
+        Composed from the same methods ``summary()`` and the repositories use, so a number in
+        the pack cannot drift from the number the detail screens report.
+        """
+        from .decision import DecisionIntelligence
+
+        with self._session(session) as active:
+            return DecisionIntelligence(active).pack(
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+                since=since,
+                until=until,
+                detail=detail,
+                evidence_limit=evidence_limit,
+            )
+
     # -- patterns -------------------------------------------------------------
     def patterns(
         self,

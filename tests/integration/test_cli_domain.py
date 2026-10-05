@@ -123,6 +123,82 @@ def test_fields_list_and_offsets_name_the_wells(ready) -> None:
     assert offsets["offsets"][0]["npt_hours"] == 22.25
 
 
+def test_fields_decision_prints_the_pack_the_service_builds(ready) -> None:
+    """The command is a thin wrapper: the JSON it prints IS the service's ``to_dict()``."""
+    from drilling_intelligence.intelligence.decision import DecisionIntelligence
+
+    payload = call(ready, "fields", "decision", "--field", "North Cormorant")
+    assert payload["schema"].startswith("decision-pack/")
+    from drilling_intelligence.database.models import Field as FieldModel
+
+    with ready.database.session() as session:
+        field_row = session.get(FieldModel, field_id(ready))
+        project = str(field_row.project_id or "") or None
+    assert payload["subject"] == {
+        "kind": "field",
+        "id": field_id(ready),
+        "name": "North Cormorant",
+        "well_count": 2,
+        "field_id": None,
+        "project_id": project,  # the field's own project, as the row stores it
+    }
+    # Every section is present with its own scope and claim kind - the machine contract.
+    for section in (
+        "execution",
+        "operations",
+        "economics",
+        "risk",
+        "learning",
+        "recommendations",
+        "patterns",
+        "calculations",
+    ):
+        assert payload[section]["scope"]["field_id"] == field_id(ready)
+        assert payload[section]["claim_kind"] in ("FACT", "DERIVED", "NOT_CHECKABLE")
+    assert payload["identity"] and len(payload["identity"]) == 64
+    assert isinstance(payload["limitations"], list)
+    assert isinstance(payload["observations"], list)
+    assert payload["evidence"], "a pack with rows must carry evidence references"
+
+    # Drift guard: same scope through the service gives byte-identical JSON.
+    with ready.database.session() as session:
+        service_pack = DecisionIntelligence(session).pack(field_id=field_id(ready)).to_dict()
+    assert payload == service_pack
+
+
+def test_fields_decision_resolves_a_well_by_name(ready) -> None:
+    payload = call(ready, "fields", "decision", "--well", "A-3")
+    assert payload["subject"]["kind"] == "well"
+    assert payload["subject"]["name"] == "A-3"
+    # The corpus's programme is on A-3: execution sees it, and the fold agrees with the rows.
+    assert payload["execution"]["sections"] >= 1
+    assert payload["operations"]["npt"]["rows"] == 4, (
+        "A-3's own NPT rows: B-11's row belongs to B-11's pack, not to A-3's"
+    )
+    field_payload = call(ready, "fields", "decision", "--field", "North Cormorant")
+    assert field_payload["operations"]["npt"]["rows"] == 5, (
+        "the field pack sees all five - the same rows fields summary reports"
+    )
+
+
+def test_fields_decision_refuses_two_scopes_instead_of_picking_one(ready) -> None:
+    code, out, err = _capture(
+        ready, "fields", "decision", "--well", "A-3", "--field", "North Cormorant"
+    )
+    assert code != 0, out[:400]
+    assert "scope" in (err + out).lower()
+
+
+def test_fields_decision_human_output_is_concise_and_never_adds_currencies(ready) -> None:
+    text, _err = _text(ready, "fields", "decision", "--field", "North Cormorant")
+    assert "decision pack:" in text
+    assert "scope: North Cormorant (field, 2 well(s))" in text
+    assert "Execution" in text and "Economics" in text
+    assert "Limitations" in text and "Observations" in text
+    # The renderer does no arithmetic: a money line shows planned and actual, never their sum.
+    assert "no combined monetary total" not in text or "mixed currencies: yes" in text
+
+
 def test_timeline_lists_the_records_in_order_and_respects_the_window(ready) -> None:
     payload = call(ready, "timeline", "--well", "A-3")
     # 22: the operational records, plus both programmes - the corpus's own drilling program, which

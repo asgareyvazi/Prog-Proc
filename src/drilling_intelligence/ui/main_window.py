@@ -63,10 +63,17 @@ from .models import (
     ReviewRecordsModel,
     TableColumn,
 )
-from .worker import CalculationWorker, ReviewActionWorker, ReviewWorker, WorkerError
+from .worker import (
+    CalculationWorker,
+    DecisionWorker,
+    ReviewActionWorker,
+    ReviewWorker,
+    WorkerError,
+)
 
 _NAVIGATION = (
     "Overview",
+    "Decision",
     "Sections",
     "Plan vs Actual",
     "Records",
@@ -143,6 +150,8 @@ class MainWindow(QMainWindow):
         self._well_choices: tuple[WellChoice, ...] = ()
         self._review_thread: QThread | None = None
         self._review_worker: ReviewWorker | None = None
+        self._decision_thread: QThread | None = None
+        self._decision_worker: DecisionWorker | None = None
         self._action_thread: QThread | None = None
         self._action_worker: ReviewActionWorker | None = None
         self._calculation_thread: QThread | None = None
@@ -247,6 +256,7 @@ class MainWindow(QMainWindow):
 
     def _build_pages(self) -> None:
         self._build_overview_page()
+        self._build_decision_page()
         self._build_sections_page()
         self._build_plan_page()
         self._build_records_page()
@@ -289,6 +299,23 @@ class MainWindow(QMainWindow):
             (TableColumn("key", "Observation", 260), TableColumn("value", "Value", 420))
         )
         layout.addWidget(self.observations_table, 1)
+        self.pages.addWidget(page)
+
+    def _build_decision_page(self) -> None:
+        """The decision pack, rendered exactly as the service returned it.
+
+        A tree rather than a grid because the pack is a nested plain-value document: converting it
+        into columns would mean the widget re-deciding what matters, and this layer's job is to
+        display the decision substrate, not to re-interpret it.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        self.decision_header = QLabel("Load a review to build the decision pack for the well.")
+        self.decision_header.setWordWrap(True)
+        layout.addWidget(self.decision_header)
+        self.decision_tree = QTreeWidget()
+        self.decision_tree.setHeaderLabels(["Key", "Value"])
+        layout.addWidget(self.decision_tree, 1)
         self.pages.addWidget(page)
 
     def _build_sections_page(self) -> None:
@@ -715,6 +742,64 @@ class MainWindow(QMainWindow):
         audit = "; citations audited" if review.citation_audit is not None else ""
         self._set_status(
             f"Loaded {review.record_count} records for {review.request.get('lifecycle', 'current')} review{audit}."
+        )
+        self._request_decision(str(review.request.get("well_id") or ""))
+
+    def _request_decision(self, well_id: str) -> None:
+        """Fetch the pack for the same well, off the GUI thread, after every review load.
+
+        A failure here is a status line and nothing else: the review already on screen stays, and
+        a decision-pack problem can never corrupt the service or the record views - both are
+        read-only surfaces.
+        """
+        if self._decision_thread is not None or not well_id:
+            return
+        thread = QThread(self)
+        worker = DecisionWorker(self.controller, well_id, parent=None)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._decision_succeeded)
+        worker.failed.connect(self._decision_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.succeeded.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._decision_thread_finished)
+        self._decision_thread = thread
+        self._decision_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _decision_succeeded(self, payload: dict) -> None:
+        self.set_decision(payload)
+
+    @Slot(object)
+    def _decision_failed(self, error: WorkerError) -> None:
+        self._set_status(f"Decision pack {error.category}: {error.message}", error=True)
+
+    @Slot()
+    def _decision_thread_finished(self) -> None:
+        thread = self._decision_thread
+        self._decision_thread = None
+        self._decision_worker = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def set_decision(self, payload: dict) -> None:
+        """Render a complete DecisionPack payload: label, tree, nothing reinterpreted."""
+        subject = payload.get("subject") or {}
+        schema = str(payload.get("schema") or "")
+        label = f"{subject.get('name') or subject.get('id') or '—'} · {subject.get('kind') or ''}"
+        header = f"Decision pack {schema} · scope: {label}"
+        limitations = payload.get("limitations") or []
+        if limitations:
+            header += f" · {len(limitations)} limitation(s)"
+        self.decision_header.setText(header)
+        _fill_tree(self.decision_tree, payload)
+        self.decision_tree.expandToDepth(1)
+        self._set_status(
+            f"Decision pack loaded for {subject.get('name') or 'well'} "
+            f"({len(payload.get('observations') or [])} observation(s))."
         )
 
     @Slot(object)

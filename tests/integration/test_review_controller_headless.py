@@ -134,3 +134,43 @@ def test_a_controller_with_no_workspace_open_says_so_instead_of_guessing() -> No
 
     with pytest.raises((WorkspaceError, ValidationError, AttributeError, RuntimeError)):
         controller.list_wells()
+
+
+def test_the_decision_pack_reads_through_the_controller_and_writes_nothing(
+    reviewed, workspace
+) -> None:
+    """The workbench's decision view is the service's pack, and viewing it changes nothing."""
+    controller, well_id = reviewed
+    before = _database_fingerprint(workspace)
+
+    payload = controller.decision(well_id)
+
+    assert payload["schema"].startswith("decision-pack/")
+    assert payload["subject"]["kind"] == "well"
+    for section in (
+        "execution",
+        "operations",
+        "economics",
+        "risk",
+        "learning",
+        "recommendations",
+        "patterns",
+        "calculations",
+        "evidence",
+        "limitations",
+        "freshness",
+        "observations",
+    ):
+        assert section in payload, section
+    assert isinstance(payload["limitations"], list)
+    assert payload["identity"], "a rendered pack carries its content identity"
+
+    assert _database_fingerprint(workspace) == before, (
+        "building the decision pack through the controller wrote to the database"
+    )
+
+
+def test_the_decision_read_is_refused_without_a_workspace_like_every_other_read() -> None:
+    controller = ReviewController()
+    with pytest.raises((WorkspaceError, ValidationError, AttributeError, RuntimeError)):
+        controller.decision("any-well")

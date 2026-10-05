@@ -12,6 +12,7 @@ asserts the things that actually break on a release and never break in a source 
   documented ``stamped-from-metadata`` path, which is the only one an installed wheel has;
 * a well can be created and read back, so the schema is really usable and not merely present;
 * ``doctor`` runs and its JSON is parseable;
+* ``fields decision`` prints an empty-but-valid decision pack whose JSON parses;
 * a search and a records read succeed against the empty-but-valid workspace.
 
 Every check prints what it observed.  The exit code is non-zero on the first failure, so this is
@@ -195,6 +196,7 @@ def smoke(kind: str, artefact: Path, workdir: Path) -> None:
         ["timeline", *scope],
         ["knowledge", "status", "--workspace", str(ws)],
         ["index", "status", "--workspace", str(ws)],
+        ["fields", "decision", *scope],
     ):
         result = run([str(cli), *argv], cwd=NEUTRAL_CWD)
         check(
@@ -212,6 +214,44 @@ def smoke(kind: str, artefact: Path, workdir: Path) -> None:
         payload = json.loads(doctor_json.stdout)
     except (json.JSONDecodeError, ValueError):
         pass
+    # The decision pack: an empty workspace must still yield a valid pack - schema, sections,
+    # scope and identity - because "nothing recorded yet" is an answer, not an error.
+    decision_json = run(
+        [
+            str(cli),
+            "--json",
+            "fields",
+            "decision",
+            "--workspace",
+            str(ws),
+            "--well",
+            "SMOKE-1",
+        ],
+        cwd=NEUTRAL_CWD,
+    )
+    decision_ok = False
+    decision_keys: list[str] = []
+    try:
+        decision_payload = json.loads(decision_json.stdout)
+        decision_keys = sorted(decision_payload)
+        decision_ok = (
+            decision_json.returncode == 0
+            and str(decision_payload.get("schema", "")).startswith("decision-pack/")
+            and decision_payload.get("subject", {}).get("kind") == "well"
+            and decision_payload.get("execution", {}).get("sections") == 0
+            and bool(decision_payload.get("identity"))
+            and "limitations" in decision_payload
+        )
+    except (ValueError, AttributeError, TypeError):
+        decision_payload = None
+    check(
+        f"{kind}: fields decision --json is an empty-but-valid pack",
+        decision_ok,
+        str(decision_keys)[:90]
+        if decision_keys
+        else decision_json.stdout[:90] or decision_json.stderr[:90],
+    )
+
     check(
         f"{kind}: doctor --json is parseable JSON",
         isinstance(payload, dict),

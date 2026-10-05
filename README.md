@@ -32,6 +32,7 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | The generic engineering record: a computed number stored with its method, version, inputs and units, assumptions, validation, confidence and evidence | **implemented, tested** (`record_calculation`; re-running is a no-op, superseding keeps the old row) |
 | Executable calculation V1: the explicit, fail-closed NPT roll-up through `EngineeringService` | **implemented, tested end to end** — NPT roll-up V1 is the only registered executable method; review never recalculates |
 | Field intelligence: derived timelines, NPT/problem rollups, offset candidates, recurring patterns with staleness checks | **implemented, tested on a two-well golden field** (`docs/DOMAIN.md`) |
+| Decision pack: one deterministic, evidence-backed read model per well/field/project - execution vs plan, per-currency economics, stated risk, learning, patterns, recommendations, calculations, freshness, limitations and observations (`fields decision`) | **implemented, tested, query-count scale-certified at 41 SELECTs regardless of row count** (`docs/DECISIONS.md` ADR-35) |
 | Domain CLI: `records`, `records rollup`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
 | Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented, read-only** — PySide6-Essentials is optional; it consumes `DomainReviewService`, supports current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model |
 | Skills, AI providers, and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
@@ -257,6 +258,8 @@ drillintel records review --well A-3 --lifecycle current --json  # authoritative
 drillintel records review --well A-3 --lifecycle history --verify-citations --json
 drillintel timeline --well A-3 --since 2025-06-13 --until 2025-06-14
 drillintel fields summary --field "North Cormorant"
+drillintel fields decision --field "North Cormorant"      # execution, economics, risk, learning, limitations
+drillintel fields decision --well A-3 --json              # the machine-readable decision substrate
 drillintel patterns find --field "North Cormorant"        # recurrence in the rows, not a prediction
 drillintel patterns stale 3f7c1a…                         # what has moved since a snapshot was reviewed
 drillintel lessons counts --project "North Cormorant"
@@ -271,6 +274,12 @@ problems: 3 occurrence(s) of equipment_failure x1 (1 well(s)), stuck_pipe x2 (2 
 events: 3, lessons: 0, reports: 2
 hours are summed per record: if two files describe one event, both are counted, and the record that says so is `drillintel records list --table npt`
 ```
+
+`drillintel fields decision` is the same philosophy composed across every decision surface: it prints
+execution against plan, money per currency (never summed across currencies), risk as the source stated it,
+lessons/practices/recommendations as the distinct things they are, observed patterns with their staleness,
+stored calculations with their dependency state - and then the limitations and observations that fall out
+of those facts. It never ranks, scores, predicts or converts.
 
 Read that last line as the layer's whole philosophy: the hours are what the records claim, each with the
 basis it was stated on, and the tool tells you which row to open rather than smoothing the number for you.
