@@ -1085,30 +1085,50 @@ def test_compare_query_count_grows_per_subject_not_per_metric(workspace, corpus)
     assert counts[5] - counts[2] == pytest.approx(per_extra * 3, abs=4), counts
 
 
-def test_offset_discovery_at_forty_candidates_stays_bounded(workspace):
+@pytest.mark.parametrize("candidates", [5, 20, 40])
+def test_offset_discovery_scale_is_bounded_at_five_twenty_and_forty(workspace, candidates):
+    """The mission's measurement points: 5/20/40 discovered candidates stay inside a
+    linear envelope (fixed discovery overhead + fixed per-subject cost), the candidate list
+    never exceeds the request's limit, and detail profiles stay capped with truncation
+    reported instead of a silently partial answer."""
     # Everything runs on the workspace's own database: one connection family, so the lazy
     # migration and the world's write transaction can never fight over the file lock.
     with workspace.database.unit_of_work() as session:
-        anchor = _sharing_world(workspace, session, count=40)
+        anchor = _sharing_world(workspace, session, count=candidates)
     with workspace.database.read_only() as session:
         measured = _select_count(
             workspace.database.engine,
             lambda: ComparisonIntelligence(session).compare(
-                anchor=anchor, offset_limit=40, detail=0
+                anchor=anchor, offset_limit=candidates, detail=0
             ),
         )
-    print(f"\nOFFSET_SCALE candidates=40 queries={measured}")
+    print(f"\nOFFSET_SCALE candidates={candidates} queries={measured}")
     with workspace.database.read_only() as session:
-        pack = ComparisonIntelligence(session).compare(anchor=anchor, offset_limit=40)
-    assert pack.basis.offset_returned == 40
-    assert len(pack.basis.subjects) == 41
-    assert len(pack.basis.profiles) <= 16
-    assert pack.basis.profiles_truncated is True
-    assert "truncated_detail" in pack.limitations
-    assert measured <= 2100, (
-        f"41 subjects issued {measured} SELECTs; the measured envelope is 2100 "
-        "(6 + 39*N measured on bare subjects, detail folds excluded by detail=0)"
+        pack = ComparisonIntelligence(session).compare(anchor=anchor, offset_limit=candidates)
+    assert pack.basis.offset_returned == candidates
+    assert len(pack.basis.subjects) == candidates + 1
+    assert pack.basis.offset_at_limit is True  # discovery cannot know the list is complete
+    # measured: 5 -> 247, 20 -> 832, 40 -> 1612 SELECTs (detail=0) = 7 + 39*(N+1) + ...;
+    # the envelope below is 20 + 40 per subject, identical in form at every size.
+    envelope = 20 + 40 * (candidates + 1)
+    assert measured <= envelope, (
+        f"{candidates + 1} subjects issued {measured} SELECTs; "
+        f"the measured envelope is {envelope} (fixed per-subject cost, detail=0)"
     )
+    # profiles are capped at OFFSET_PROFILE_CAP with the truncation reported
+    if candidates <= 16:
+        assert len(pack.basis.profiles) == candidates
+        assert pack.basis.profiles_truncated is False
+        assert "truncated_detail" not in pack.limitations, (
+            "an untruncated answer must not claim truncation"
+        )
+    else:
+        assert len(pack.basis.profiles) == 16
+        assert pack.basis.profiles_truncated is True
+        assert "truncated_detail" in pack.limitations
+        assert any("truncated at 16" in line for line in pack.observations), (
+            "truncation must be visible to a reader, not only to a machine"
+        )
 
 
 # --------------------------------------------------------------------------------------
@@ -1149,6 +1169,21 @@ def test_cli_compare_anchor_discovers_candidates_and_text_prints_the_matrix(work
     assert "npt.rows" in text and "well_control.events" in text
     # a missing value prints as "-", never as a zero the source did not state
     assert "identity: " in text
+
+
+def test_cli_compare_named_offsets_keep_the_anchor_basis(workspace, corpus):
+    """The mission's literal form: ``--anchor A-3 --offsets B-11`` - explicitly named
+    offsets stay an explicit selection with the anchor recorded, never a discovery."""
+    from tests.integration.test_cli_domain import call
+
+    payload = call(corpus, "fields", "compare", "--anchor", "A-3", "--offsets", "B-11")
+    assert payload["basis"]["kind"] == "explicit_wells"
+    assert payload["basis"]["anchor"] == well_id_for(corpus, "A-3")
+    assert payload["basis"]["anchor_name"] == "A-3"
+    selections = {s["well_id"]: s["selection"] for s in payload["basis"]["subjects"]}
+    assert selections[well_id_for(corpus, "A-3")] == "anchor"
+    assert selections[well_id_for(corpus, "B-11")] == "named_offset"
+    assert payload["basis"]["discovered"] == [], "nothing was discovered; both were named"
 
 
 def test_cli_compare_refuses_one_well_and_unknown_names(workspace, corpus):
