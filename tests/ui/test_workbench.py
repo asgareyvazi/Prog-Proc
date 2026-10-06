@@ -125,6 +125,11 @@ def test_presentation_filter_conflict_detail_and_explicit_error_states(qt_app) -
 
     window = MainWindow()
     try:
+        # The window must be shown for isVisible() to mean anything: a child of a hidden
+        # window reports False no matter what setVisible(True) did.  (This test could only
+        # run once Qt loads on the host; the assertion was dormant until then.)
+        window.show()
+        qt_app.processEvents()
         record = ReviewRecord(
             record_type="calculation",
             record_id="calc-1",
