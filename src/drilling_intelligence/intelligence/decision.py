@@ -103,6 +103,69 @@ CALCULATION_SUBJECT_CAP = 32
 #: Pack schema version, bumped when the JSON shape changes incompatibly.
 DECISION_PACK_SCHEMA = "decision-pack/1"
 
+
+def calculation_chain_case() -> Any:
+    """The current/history expression for stored calculations - the chain decides, never status.
+
+    Shared by the decision pack and the comparison pack so "current" can never mean two things
+    in two read models: a child points back at the row it superseded, so anything *referenced* by
+    a ``supersedes_id`` is history and everything else is current (the rule
+    ``calculations_for(current_only=True)`` documents).
+    """
+    superseded = select(Calculation.supersedes_id).where(Calculation.supersedes_id.is_not(None))
+    return case((Calculation.id.in_(superseded), "history"), else_="current")
+
+
+def resolve_dependency_states(
+    session: Any,
+    input_rows: Sequence[tuple[Any, Any]],
+    *,
+    scoped_calc_ids: set[str],
+    evidence_limit: int,
+    subject_cap: int = CALCULATION_SUBJECT_CAP,
+) -> tuple[dict[str, int], list[dict[str, Any]], bool]:
+    """Dependency state for in-scope calculation inputs, through ``calculation_impact`` itself.
+
+    ``input_rows`` are ``(subject_key, calculation_id)`` pairs already scope-filtered.  Each
+    distinct subject is resolved through the repository's own impact report (never a re-derived
+    copy of its state machine), capped at ``subject_cap`` so the query budget stays independent
+    of row count, and the entries are intersected with ``scoped_calc_ids`` so a subject shared
+    with another scope cannot leak foreign calculations in.  Returns ``(counts, entries,
+    truncated)``.
+    """
+    subject_keys = sorted({str(key) for key, _ in input_rows if key})
+    truncated = len(subject_keys) > int(subject_cap)
+    counts = {DEPENDENCY_CURRENT: 0, DEPENDENCY_STALE: 0, DEPENDENCY_UNRESOLVED: 0}
+    entries: list[dict[str, Any]] = []
+    if truncated:
+        return counts, entries, True
+    repository = EngineeringRepository(session)
+    seen: set[tuple[str, str]] = set()
+    for key in subject_keys[: int(subject_cap)]:
+        report = repository.calculation_impact(key, current_only=True)
+        for entry in report.get("entries", []) or []:
+            if str(entry.get("calculation_id")) not in scoped_calc_ids:
+                continue
+            dedupe = (str(entry.get("calculation_id")), str(entry.get("input_name")))
+            if dedupe in seen:
+                continue
+            seen.add(dedupe)
+            state = str(entry.get("dependency"))
+            counts[state] = counts.get(state, 0) + 1
+            if len(entries) < int(evidence_limit):
+                entries.append(
+                    {
+                        "calculation_id": entry.get("calculation_id"),
+                        "method_id": entry.get("method_id"),
+                        "method_version": entry.get("method_version"),
+                        "status": entry.get("status"),
+                        "input_name": entry.get("input_name"),
+                        "dependency": state,
+                    }
+                )
+    return counts, entries, truncated
+
+
 _SCOPE_KEYS = ("well_id", "field_id", "project_id")
 
 
@@ -869,7 +932,7 @@ class DecisionIntelligence(FieldIntelligence):
                 .where(membership)
                 .order_by(RiskRecord.id)
                 .limit(int(evidence_limit))
-            )
+            ).scalars()
         ]
         total_rows = sum(by_status.values())
         section = RiskSection(
@@ -1022,7 +1085,7 @@ class DecisionIntelligence(FieldIntelligence):
                 str(row)
                 for row in self.session.execute(
                     select(model.id).where(membership).order_by(model.id).limit(int(evidence_limit))
-                )
+                ).scalars()
             ]
 
         evidence: list[EvidenceRef] = []
@@ -1243,7 +1306,7 @@ class DecisionIntelligence(FieldIntelligence):
                     .where(membership)
                     .order_by(FieldPattern.id)
                     .limit(int(evidence_limit))
-                )
+                ).scalars()
             ]
             evidence.append(
                 EvidenceRef(
@@ -1292,17 +1355,9 @@ class DecisionIntelligence(FieldIntelligence):
             )
         membership = or_(*clauses)
         # Current/history for calculations is decided by the revision chain, exactly as
-        # ``calculations_for(current_only=True)`` defines it - the child points back at the row it
-        # superseded, so "referenced by a supersedes_id" is history and everything else is current.
-        # The status column is deliberately not consulted: it is a statement about the row and can
-        # be wrong about its own chain.
-        superseded_ids = select(Calculation.supersedes_id).where(
-            Calculation.supersedes_id.is_not(None)
-        )
-        chain_case = case(
-            (Calculation.id.in_(superseded_ids), "history"),
-            else_="current",
-        )
+        # ``calculations_for(current_only=True)`` defines it; the shared expression is what the
+        # comparison pack reads too, so the two read models cannot disagree about "current".
+        chain_case = calculation_chain_case()
 
         state_rows = list(
             self.session.execute(
@@ -1345,41 +1400,17 @@ class DecisionIntelligence(FieldIntelligence):
         )
         inputs_total = len(input_rows)
         scoped_calc_ids = {str(calc_id) for _, calc_id in input_rows}
-        subject_keys = sorted({str(key) for key, _ in input_rows if key})
-        subjects_resolved = 0
-        truncated = len(subject_keys) > CALCULATION_SUBJECT_CAP
-        dependency = {DEPENDENCY_CURRENT: 0, DEPENDENCY_STALE: 0, DEPENDENCY_UNRESOLVED: 0}
-        entries: list[dict[str, Any]] = []
-        seen_entries: set[tuple[str, str]] = set()
-        if not truncated:
-            repository = EngineeringRepository(self.session)
-            for key in subject_keys[:CALCULATION_SUBJECT_CAP]:
-                subjects_resolved += 1
-                report = repository.calculation_impact(key, current_only=True)
-                for entry in report.get("entries", []) or []:
-                    # ``calculation_impact`` is resolved per subject without a scope filter and
-                    # then intersected with the pack's own in-scope calculation ids here - the
-                    # intersection is what keeps a project-level subject from leaking another
-                    # field's calculations into this pack.
-                    if str(entry.get("calculation_id")) not in scoped_calc_ids:
-                        continue
-                    dedupe = (str(entry.get("calculation_id")), str(entry.get("input_name")))
-                    if dedupe in seen_entries:
-                        continue
-                    seen_entries.add(dedupe)
-                    state = str(entry.get("dependency"))
-                    dependency[state] = dependency.get(state, 0) + 1
-                    if len(entries) < int(evidence_limit):
-                        entries.append(
-                            {
-                                "calculation_id": entry.get("calculation_id"),
-                                "method_id": entry.get("method_id"),
-                                "method_version": entry.get("method_version"),
-                                "status": entry.get("status"),
-                                "input_name": entry.get("input_name"),
-                                "dependency": state,
-                            }
-                        )
+        # ``calculation_impact`` is resolved per subject *without* a scope filter and then
+        # intersected with this pack's own in-scope calculation ids inside the shared fold - the
+        # intersection is what keeps a project-level subject from leaking another field's
+        # calculations into this pack.
+        dependency, entries, truncated = resolve_dependency_states(
+            self.session,
+            input_rows,
+            scoped_calc_ids=scoped_calc_ids,
+            evidence_limit=evidence_limit,
+        )
+        subjects_resolved = 0 if truncated else len({str(key) for key, _ in input_rows if key})
         section = CalculationSection(
             scope=_scope_payload(**{scope_key: scope_value}),
             claim_kind=CLAIM_FACT,
@@ -1435,7 +1466,7 @@ class DecisionIntelligence(FieldIntelligence):
                 .where(scope_filter)
                 .order_by(CostItem.id)
                 .limit(int(evidence_limit))
-            )
+            ).scalars()
         ]
         return [
             EvidenceRef(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -153,6 +154,54 @@ class DecisionWorker(QObject):
                     "input",
                     str(exc),
                     str(exc.context.get("hint") or exc.hint or "Check the selected well."),
+                    type(exc).__name__,
+                )
+            )
+            return
+        except DrillingIntelligenceError as exc:
+            self.failed.emit(
+                WorkerError(
+                    "workspace",
+                    str(exc),
+                    str(exc.context.get("hint") or exc.hint or "The workspace could not answer."),
+                    type(exc).__name__,
+                )
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - the GUI boundary reports, it does not crash
+            self.failed.emit(WorkerError("internal", str(exc), "", type(exc).__name__))
+            return
+        self.succeeded.emit(payload)
+
+
+class ComparisonWorker(QObject):
+    """Run one read-only cross-well comparison build outside the GUI event loop."""
+
+    succeeded = Signal(object)
+    failed = Signal(object)
+
+    def __init__(
+        self, controller: ReviewController, well_ids: Sequence[str], *, parent: Any = None
+    ) -> None:
+        super().__init__(parent)
+        self._controller = controller
+        self._well_ids = tuple(well_ids)
+
+    @Slot()
+    def run(self) -> None:
+        if QThread.currentThread().isInterruptionRequested():
+            self.failed.emit(
+                WorkerError("cancelled", "Comparison pack load was cancelled before it started.")
+            )
+            return
+        try:
+            payload = self._controller.compare(list(self._well_ids))
+        except ValidationError as exc:
+            self.failed.emit(
+                WorkerError(
+                    "input",
+                    str(exc),
+                    str(exc.context.get("hint") or exc.hint or "Select at least two wells."),
                     type(exc).__name__,
                 )
             )
@@ -334,4 +383,11 @@ class ReviewActionWorker(QObject):
             self.succeeded.emit(result)
 
 
-__all__ = ["CalculationWorker", "ReviewActionWorker", "ReviewWorker", "WorkerError"]
+__all__ = [
+    "CalculationWorker",
+    "ComparisonWorker",
+    "DecisionWorker",
+    "ReviewActionWorker",
+    "ReviewWorker",
+    "WorkerError",
+]

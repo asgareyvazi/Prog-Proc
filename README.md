@@ -33,6 +33,8 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Executable calculation V1: the explicit, fail-closed NPT roll-up through `EngineeringService` | **implemented, tested end to end** — NPT roll-up V1 is the only registered executable method; review never recalculates |
 | Field intelligence: derived timelines, NPT/problem rollups, offset candidates, recurring patterns with staleness checks | **implemented, tested on a two-well golden field** (`docs/DOMAIN.md`) |
 | Decision pack: one deterministic, evidence-backed read model per well/field/project - execution vs plan, per-currency economics, stated risk, learning, patterns, recommendations, calculations, freshness, limitations and observations (`fields decision`) | **implemented, tested, query-count scale-certified at 41 SELECTs regardless of row count** (`docs/DECISIONS.md` ADR-35) |
+| Comparison pack: two or more wells side by side on the same recorded basis - per-metric values with `COMPARABLE`/`INCOMPARABLE`/`MISSING`/`UNRESOLVED` states, unit and risk-scale identity gates, offset-candidate discovery, forensic evidence, limitations (`fields compare`) | **implemented, tested, query-count scale-certified at 6 + 39 SELECTs per subject** (`docs/DECISIONS.md` ADR-36) |
+| Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
 | Domain CLI: `records`, `records rollup`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
 | Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented, read-only** — PySide6-Essentials is optional; it consumes `DomainReviewService`, supports current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model |
 | Skills, AI providers, and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
@@ -260,6 +262,10 @@ drillintel timeline --well A-3 --since 2025-06-13 --until 2025-06-14
 drillintel fields summary --field "North Cormorant"
 drillintel fields decision --field "North Cormorant"      # execution, economics, risk, learning, limitations
 drillintel fields decision --well A-3 --json              # the machine-readable decision substrate
+drillintel fields compare --well A-3 --well B-11          # the matrix: metric | A-3 | B-11 | state
+drillintel fields compare --anchor A-3 --json             # candidates discovered through recorded overlap
+drillintel analyze --list-questions                       # the fixed question catalog, with its contracts
+drillintel analyze --question npt_summary --well A-3      # one typed answer, JSON == the service document
 drillintel patterns find --field "North Cormorant"        # recurrence in the rows, not a prediction
 drillintel patterns stale 3f7c1a…                         # what has moved since a snapshot was reviewed
 drillintel lessons counts --project "North Cormorant"
@@ -280,6 +286,17 @@ execution against plan, money per currency (never summed across currencies), ris
 lessons/practices/recommendations as the distinct things they are, observed patterns with their staleness,
 stored calculations with their dependency state - and then the limitations and observations that fall out
 of those facts. It never ranks, scores, predicts or converts.
+
+`drillintel fields compare` takes that philosophy across wells: one row per metric, one column per well,
+and a comparability verdict per row. Numbers in different units are shown side by side and labelled
+`INCOMPARABLE` rather than converted; a value the source never stated stays missing rather than becoming
+zero; severity bands are comparable only while the wells' recorded risk scales are the same identity.
+Candidate wells come from the existing `offset_candidates` discovery - recorded problem types and hole
+sizes, never a "best offset" - and every cell traces back through structured row ids or an exact
+method+scope reference. `drillintel analyze --question ...` is the machine-facing door to the same
+surface: a closed catalog of sixteen question ids with declared params, scope, evidence, lifecycle and
+missing-value semantics, answered as typed JSON. It is AI-*ready* shape, not AI: no prompts, no models,
+no confidence scores, and an unknown question fails with the list of real ids instead of a guess.
 
 Read that last line as the layer's whole philosophy: the hours are what the records claim, each with the
 basis it was stated on, and the tool tells you which row to open rather than smoothing the number for you.

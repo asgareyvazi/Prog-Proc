@@ -35,6 +35,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTableView,
+    QTableWidget,
+    QTableWidgetItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -65,6 +67,7 @@ from .models import (
 )
 from .worker import (
     CalculationWorker,
+    ComparisonWorker,
     DecisionWorker,
     ReviewActionWorker,
     ReviewWorker,
@@ -74,6 +77,7 @@ from .worker import (
 _NAVIGATION = (
     "Overview",
     "Decision",
+    "Comparison",
     "Sections",
     "Plan vs Actual",
     "Records",
@@ -152,6 +156,8 @@ class MainWindow(QMainWindow):
         self._review_worker: ReviewWorker | None = None
         self._decision_thread: QThread | None = None
         self._decision_worker: DecisionWorker | None = None
+        self._comparison_thread: QThread | None = None
+        self._comparison_worker: ComparisonWorker | None = None
         self._action_thread: QThread | None = None
         self._action_worker: ReviewActionWorker | None = None
         self._calculation_thread: QThread | None = None
@@ -257,6 +263,7 @@ class MainWindow(QMainWindow):
     def _build_pages(self) -> None:
         self._build_overview_page()
         self._build_decision_page()
+        self._build_comparison_page()
         self._build_sections_page()
         self._build_plan_page()
         self._build_records_page()
@@ -316,6 +323,44 @@ class MainWindow(QMainWindow):
         self.decision_tree = QTreeWidget()
         self.decision_tree.setHeaderLabels(["Key", "Value"])
         layout.addWidget(self.decision_tree, 1)
+        self.pages.addWidget(page)
+
+    def _build_comparison_page(self) -> None:
+        """The comparison pack as a matrix: Metric | well | well | ... | State.
+
+        A grid rather than a tree because the pack *is* a matrix: one row per metric, one
+        column per subject, the comparability verdict in the last column.  A cell that the
+        source never valued renders as the em dash the whole workbench uses for "absent" -
+        visibly different from a recorded zero - and carries the value state as a tooltip.
+        No charting dependency: a strong table is the honest rendering of this document.
+        """
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        controls = QHBoxLayout()
+        self.comparison_wells = QListWidget()
+        self.comparison_wells.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.comparison_wells.setMaximumHeight(110)
+        controls.addWidget(self.comparison_wells, 1)
+        side = QVBoxLayout()
+        self.comparison_build_button = QPushButton("Build comparison")
+        self.comparison_build_button.clicked.connect(self._request_comparison_from_ui)
+        side.addWidget(self.comparison_build_button)
+        side.addStretch(1)
+        controls.addLayout(side)
+        layout.addLayout(controls)
+        self.comparison_header = QLabel("Tick at least two wells, then build the comparison pack.")
+        self.comparison_header.setWordWrap(True)
+        layout.addWidget(self.comparison_header)
+        self.comparison_table = QTableWidget()
+        self.comparison_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.comparison_table.setWordWrap(True)
+        layout.addWidget(self.comparison_table, 2)
+        self.comparison_observations = QLabel("")
+        self.comparison_observations.setWordWrap(True)
+        layout.addWidget(self.comparison_observations)
+        self.comparison_limitations = QLabel("")
+        self.comparison_limitations.setWordWrap(True)
+        layout.addWidget(self.comparison_limitations)
         self.pages.addWidget(page)
 
     def _build_sections_page(self) -> None:
@@ -669,6 +714,16 @@ class MainWindow(QMainWindow):
                 f"{choice.name} | {choice.lifecycle_status or 'status unavailable'} | {choice.well_id}",
                 Qt.ItemDataRole.ToolTipRole,
             )
+        self.comparison_wells.blockSignals(True)
+        self.comparison_wells.clear()
+        for choice in choices:
+            item = QListWidgetItem(choice.name or choice.label)
+            item.setData(Qt.ItemDataRole.UserRole, choice.well_id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setToolTip(choice.well_id)
+            self.comparison_wells.addItem(item)
+        self.comparison_wells.blockSignals(False)
         selected = self._select_well(well_reference)
         self.well_combo.blockSignals(False)
         if not choices:
@@ -744,6 +799,7 @@ class MainWindow(QMainWindow):
             f"Loaded {review.record_count} records for {review.request.get('lifecycle', 'current')} review{audit}."
         )
         self._request_decision(str(review.request.get("well_id") or ""))
+        self._preselect_comparison_well(str(review.request.get("well_id") or ""))
 
     def _request_decision(self, well_id: str) -> None:
         """Fetch the pack for the same well, off the GUI thread, after every review load.
@@ -800,6 +856,129 @@ class MainWindow(QMainWindow):
         self._set_status(
             f"Decision pack loaded for {subject.get('name') or 'well'} "
             f"({len(payload.get('observations') or [])} observation(s))."
+        )
+
+    def _preselect_comparison_well(self, well_id: str) -> None:
+        """Tick the review's well in the comparison list so a second tick starts a pair."""
+        if not well_id:
+            return
+        for index in range(self.comparison_wells.count()):
+            item = self.comparison_wells.item(index)
+            if str(item.data(Qt.ItemDataRole.UserRole) or "") == well_id:
+                item.setCheckState(Qt.CheckState.Checked)
+                return
+
+    @Slot()
+    def _request_comparison_from_ui(self) -> None:
+        well_ids: list[str] = []
+        for index in range(self.comparison_wells.count()):
+            item = self.comparison_wells.item(index)
+            if item.checkState() == Qt.CheckState.Checked:
+                value = str(item.data(Qt.ItemDataRole.UserRole) or "")
+                if value:
+                    well_ids.append(value)
+        self._request_comparison(well_ids)
+
+    def _request_comparison(self, well_ids: Sequence[str]) -> None:
+        """Fetch the comparison pack off the GUI thread; failures change only the status.
+
+        Every rule (two wells minimum, known ids, unit comparability) lives behind the
+        service boundary - the window selects and displays, nothing else.
+        """
+        if self._comparison_thread is not None:
+            return
+        if len(well_ids) < 2:
+            self._set_status("Comparison needs at least two wells ticked.", error=True)
+            return
+        thread = QThread(self)
+        worker = ComparisonWorker(self.controller, well_ids, parent=None)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._comparison_succeeded)
+        worker.failed.connect(self._comparison_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.succeeded.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._comparison_thread_finished)
+        self._comparison_thread = thread
+        self._comparison_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _comparison_succeeded(self, payload: dict) -> None:
+        self.set_comparison(payload)
+
+    @Slot(object)
+    def _comparison_failed(self, error: WorkerError) -> None:
+        self._set_status(f"Comparison pack {error.category}: {error.message}", error=True)
+
+    @Slot()
+    def _comparison_thread_finished(self) -> None:
+        thread = self._comparison_thread
+        self._comparison_thread = None
+        self._comparison_worker = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def set_comparison(self, payload: dict) -> None:
+        """Render a complete ComparisonPack payload as the matrix it is.
+
+        One row per metric, one column per subject, the verdict last.  An absent value is
+        the em dash every other page uses - visibly different from a recorded zero - and
+        each cell carries its value state and comparability as a tooltip.  Nothing is
+        recomputed: the table shows the pack's own cells.
+        """
+        basis = payload.get("basis") or {}
+        subjects = basis.get("subjects") or []
+        names = [str(s.get("name") or s.get("well_id") or "") for s in subjects]
+        header = f"Comparison pack {payload.get('schema')} · basis: {basis.get('kind')} · {', '.join(names) or 'no subjects'}"
+        window = basis.get("window") or {}
+        if window.get("applied"):
+            header += f" · window {window.get('since') or '...'} to {window.get('until') or '...'}"
+        limitations = payload.get("limitations") or []
+        if limitations:
+            header += f" · {len(limitations)} limitation(s)"
+        self.comparison_header.setText(header)
+
+        rows: list[Mapping[str, Any]] = []
+        for section in payload.get("sections") or []:
+            for row in section.get("metrics") or []:
+                rows.append(row)
+        columns = ["Metric", *names, "State"]
+        self.comparison_table.clear()
+        self.comparison_table.setColumnCount(len(columns))
+        self.comparison_table.setRowCount(len(rows))
+        self.comparison_table.setHorizontalHeaderLabels(columns)
+        for row_index, row in enumerate(rows):
+            metric_item = QTableWidgetItem(str(row.get("metric") or ""))
+            metric_item.setToolTip(str(row.get("label") or ""))
+            self.comparison_table.setItem(row_index, 0, metric_item)
+            values = row.get("values") or {}
+            for column_index, subject in enumerate(subjects, start=1):
+                cell = values.get(str(subject.get("well_id"))) or {}
+                value = cell.get("value")
+                text = _value_text(value)
+                if value is not None and cell.get("unit"):
+                    text = f"{text} {cell['unit']}"
+                cell_item = QTableWidgetItem(text)
+                cell_item.setToolTip(
+                    f"value_state: {cell.get('value_state', '—')}\n"
+                    f"comparability: {cell.get('comparability', '—')}"
+                )
+                self.comparison_table.setItem(row_index, column_index, cell_item)
+            state_item = QTableWidgetItem(str(row.get("comparability") or ""))
+            self.comparison_table.setItem(row_index, len(subjects) + 1, state_item)
+        self.comparison_table.resizeColumnsToContents()
+        self.comparison_table.horizontalHeader().setStretchLastSection(True)
+
+        observations = payload.get("observations") or []
+        self.comparison_observations.setText("\n".join(f"• {line}" for line in observations))
+        self.comparison_limitations.setText(
+            "Limitations: " + ", ".join(limitations) if limitations else "Limitations: none"
+        )
+        self._set_status(
+            f"Comparison pack loaded for {len(subjects)} well(s) ({len(rows)} metric row(s))."
         )
 
     @Slot(object)

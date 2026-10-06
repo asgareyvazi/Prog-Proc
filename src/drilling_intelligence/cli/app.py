@@ -2069,6 +2069,25 @@ def command_fields(args: argparse.Namespace) -> int:
                 )
                 _emit(pack.to_dict(), as_json=args.json, lines=_decision_lines(pack))
                 return 0
+            if args.action == "compare":
+                # Selection only in the CLI: names are resolved to ids here and every
+                # validation, fold and limitation lives in the service (no business logic).
+                well_refs = [ref for ref in (args.well or []) if ref is not None]
+                anchor_ref = str(args.anchor or "").strip()
+                offset_refs = [ref for ref in (args.offsets or []) if ref is not None]
+                pack = service.compare(
+                    well_ids=[_resolve_well_id(workspace, ref) or "" for ref in well_refs],
+                    anchor=(_resolve_well_id(workspace, anchor_ref) or "" if anchor_ref else ""),
+                    offsets=[_resolve_well_id(workspace, ref) or "" for ref in offset_refs],
+                    since=args.since,
+                    until=args.until,
+                    detail=int(getattr(args, "detail", 1)),
+                    evidence_limit=int(getattr(args, "evidence_limit", 10)),
+                    offset_limit=int(getattr(args, "offset_limit", 10)),
+                    session=session,
+                )
+                _emit(pack.to_dict(), as_json=args.json, lines=_compare_lines(pack))
+                return 0
             scope = _scope(args, workspace, allow_well=False, session=session)
             payload = service.summary(
                 field_id=scope.get("field_id", ""),
@@ -2134,6 +2153,176 @@ def _field_rows(session: Session) -> list[dict[str, Any]]:
         }
         for row in session.execute(select(Field).order_by(Field.name, Field.id)).scalars()
     ]
+
+
+def _compare_lines(pack: Any) -> list[str]:
+    """The human view of a comparison pack: the matrix, the states, then the observations.
+
+    Values are rendered from the pack's own cells - a missing value prints as "-", never as
+    a zero, so the terminal cannot claim what the JSON does not.
+    """
+    payload = pack.to_dict()
+    basis = payload["basis"]
+    subjects = basis["subjects"]
+    names = [str(subject["name"]) for subject in subjects]
+    lines = [
+        f"comparison pack: {payload['schema']}",
+        f"basis: {basis['kind']} ({len(subjects)} wells: {', '.join(names)})",
+    ]
+    window = basis["window"]
+    if window["applied"]:
+        lines.append(
+            f"window: {window['since'] or '...'} to {window['until'] or '...'} "
+            f"(applies to {', '.join(window['windowed_domains'])}; undated rows reported separately)"
+        )
+    else:
+        lines.append("window: none (current state)")
+    lines.append("")
+    columns = [
+        ("metric", 30),
+        *((name, 14) for name in names),
+        ("state", 15),
+    ]
+    header = ["metric", *names, "state"]
+    rows: list[dict[str, Any]] = []
+    for section in payload["sections"]:
+        for row in section["metrics"]:
+            cells: list[Any] = []
+            for subject in subjects:
+                cell = row["values"][subject["well_id"]]
+                value = cell.get("value")
+                if value is None:
+                    cells.append(None)  # "-" from _table: absent, not zero
+                elif cell.get("unit"):
+                    cells.append(
+                        f"{value:g} {cell['unit']}"
+                        if isinstance(value, float)
+                        else f"{value} {cell['unit']}"
+                    )
+                else:
+                    cells.append(value)
+            rows.append(
+                dict(
+                    zip(
+                        header,
+                        [row["metric"], *cells, row["comparability"]],
+                        strict=False,
+                    )
+                )
+            )
+    lines += _table(rows, columns)
+    lines.append("")
+    for observation in payload["observations"]:
+        lines.append(f"- {observation}")
+    if payload["limitations"]:
+        lines.append("limitations: " + ", ".join(payload["limitations"]))
+    lines.append(f"identity: {payload['identity']}")
+    return lines
+
+
+def _analyze_lines(answer: Any) -> list[str]:
+    """The human view of an analyst answer: question, observations, limitations, identity."""
+    payload = answer.to_dict()
+    lines = [
+        f"analyst answer: {payload['schema']}",
+        f"question: {payload['question_id']}",
+        "",
+    ]
+    for observation in payload["observations"]:
+        lines.append(f"- {observation}")
+    if payload["limitations"]:
+        lines.append("limitations: " + ", ".join(payload["limitations"]))
+    lines.append(f"identity: {payload['identity']}")
+    return lines
+
+
+def command_analyze(args: argparse.Namespace) -> int:
+    """``drillintel analyze``: one typed answer from the fixed analyst question catalog.
+
+    The CLI resolves names to ids and prints; every rule about what a question means, which
+    scope it needs and how it fails lives in ``intelligence.analyst``.  ``--list-questions``
+    prints the catalog itself, so the machine-readable contract is one command away.
+    """
+    from ..intelligence.analyst import QUESTION_CATALOG, QUESTION_IDS
+
+    if getattr(args, "list_questions", False):
+        catalog = [dict(QUESTION_CATALOG[question_id]) for question_id in QUESTION_IDS]
+        _emit(
+            {"count": len(catalog), "questions": catalog},
+            as_json=args.json,
+            lines=[
+                f"analyst question catalog ({len(catalog)} questions):",
+                *[f"  {entry['question_id']}: {str(entry['output'])[:90]}" for entry in catalog],
+            ],
+        )
+        return 0
+    question = str(getattr(args, "question", "") or "").strip()
+    if not question:
+        raise DrillingIntelligenceError(
+            "a question id is required",
+            hint="pass --question <id>, or --list-questions to see the catalog",
+        )
+
+    from ..intelligence.service import IntelligenceService
+
+    workspace = _open_workspace(args)
+    try:
+        service = IntelligenceService.for_workspace(workspace)
+        with workspace.database.session() as session:
+            well_refs = [ref for ref in (args.well or []) if ref is not None]
+            resolved = [_resolve_well_id(workspace, ref) or "" for ref in well_refs]
+            well_id = resolved[0] if len(resolved) == 1 else ""
+            well_ids = resolved if len(resolved) >= 2 else []
+            anchor_ref = str(args.anchor or "").strip()
+            anchor = _resolve_well_id(workspace, anchor_ref) or "" if anchor_ref else ""
+            offsets = [
+                _resolve_well_id(workspace, ref) or ""
+                for ref in (args.offsets or [])
+                if ref is not None
+            ]
+            field_id = (
+                service.resolve_field(args.field, session=session)
+                if getattr(args, "field", None)
+                else ""
+            )
+            project_id = ""
+            if getattr(args, "project", None):
+                from ..database.models import Project
+
+                wanted = str(args.project)
+                row = session.get(Project, wanted) or session.scalar(
+                    select(Project).where(Project.name == wanted)
+                )
+                if row is None:
+                    known = [item.name for item in session.execute(select(Project)).scalars()]
+                    raise DrillingIntelligenceError(
+                        f"no project matches {wanted!r}",
+                        hint=(
+                            f"known projects: {', '.join(known)}"
+                            if known
+                            else "none registered yet"
+                        ),
+                    )
+                project_id = str(row.id)
+            answer = service.analyze(
+                question,
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+                well_ids=well_ids,
+                anchor=anchor,
+                offsets=offsets,
+                since=args.since,
+                until=args.until,
+                detail=int(getattr(args, "detail", 1)),
+                evidence_limit=int(getattr(args, "evidence_limit", 10)),
+                offset_limit=int(getattr(args, "offset_limit", 10)),
+                session=session,
+            )
+        _emit(answer.to_dict(), as_json=args.json, lines=_analyze_lines(answer))
+        return 0
+    finally:
+        workspace.close()
 
 
 def _decision_lines(pack: Any) -> list[str]:
@@ -2996,6 +3185,11 @@ def build_parser() -> argparse.ArgumentParser:
             "the deterministic decision pack: execution, economics, risk, learning, "
             "patterns, calculations, evidence and limitations for one scope",
         ),
+        (
+            "compare",
+            "the deterministic cross-well comparison pack: per-metric values with "
+            "comparability, basis, evidence and limitations for two or more wells",
+        ),
     ):
         action = fields_sub.add_parser(name, help=help_text, parents=[common])
         if name == "decision":
@@ -3016,6 +3210,44 @@ def build_parser() -> argparse.ArgumentParser:
                 default=10,
                 help="at most N sampled row ids per evidence reference (default 10)",
             )
+        elif name == "compare":
+            action.add_argument(
+                "--well",
+                action="append",
+                default=[],
+                help="a subject well (id or name); repeat for at least two",
+            )
+            action.add_argument(
+                "--anchor",
+                help="anchor well (id or name): with no --offsets, candidates are "
+                "discovered through the recorded overlap of offset_candidates",
+            )
+            action.add_argument(
+                "--offsets",
+                action="append",
+                default=[],
+                help="an offset well (id or name); repeat as often as needed",
+            )
+            action.add_argument("--since", help="count records dated on or after this ISO date")
+            action.add_argument("--until", help="count records dated on or before this ISO date")
+            action.add_argument(
+                "--detail",
+                type=int,
+                default=1,
+                help="0 = headline sections only; 1 = include bounded rollups (default 1)",
+            )
+            action.add_argument(
+                "--evidence-limit",
+                type=int,
+                default=10,
+                help="at most N sampled row ids per evidence reference (default 10)",
+            )
+            action.add_argument(
+                "--offset-limit",
+                type=int,
+                default=10,
+                help="at most N discovered offset candidates (default 10)",
+            )
         elif name == "offsets":
             action.add_argument(
                 "--well", required=True, help="the well to find offsets for (id or name)"
@@ -3034,6 +3266,60 @@ def build_parser() -> argparse.ArgumentParser:
             action.add_argument("--since", help="count records dated on or after this ISO date")
             action.add_argument("--until", help="count records dated on or before this ISO date")
         action.set_defaults(handler=command_fields)
+
+    analyze = sub.add_parser(
+        "analyze",
+        help="one typed answer from the fixed analyst question catalog "
+        "(well_profile, npt_summary, ..., well_comparison)",
+        parents=[common],
+    )
+    analyze.add_argument(
+        "--question",
+        help="the catalog question id to answer; use --list-questions to see them all",
+    )
+    analyze.add_argument(
+        "--list-questions",
+        action="store_true",
+        help="print the question catalog (params, scope, output, evidence, lifecycle, missing) and exit",
+    )
+    analyze.add_argument(
+        "--well",
+        action="append",
+        default=[],
+        help="a well (id or name); repeat twice or more for well_comparison",
+    )
+    analyze.add_argument("--field", help="this field (id or name)")
+    analyze.add_argument("--project", help="this project (id or name)")
+    analyze.add_argument(
+        "--anchor", help="anchor well (id or name), required for offset_comparison"
+    )
+    analyze.add_argument(
+        "--offsets",
+        action="append",
+        default=[],
+        help="an offset well (id or name); repeat as often as needed",
+    )
+    analyze.add_argument("--since", help="count records dated on or after this ISO date")
+    analyze.add_argument("--until", help="count records dated on or before this ISO date")
+    analyze.add_argument(
+        "--detail",
+        type=int,
+        default=1,
+        help="0 = headline sections only; 1 = include bounded rollups (default 1)",
+    )
+    analyze.add_argument(
+        "--evidence-limit",
+        type=int,
+        default=10,
+        help="at most N sampled row ids per evidence reference (default 10)",
+    )
+    analyze.add_argument(
+        "--offset-limit",
+        type=int,
+        default=10,
+        help="at most N discovered offset candidates (default 10)",
+    )
+    analyze.set_defaults(handler=command_analyze)
 
     patterns = sub.add_parser(
         "patterns",

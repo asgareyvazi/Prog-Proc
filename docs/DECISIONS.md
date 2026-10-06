@@ -1763,3 +1763,66 @@ stable), one workbench tab fed through `ReviewController.decision()` + `Decision
 budget measured at **41 SELECTs at both 8/4 and 40/20 cost/risk corpora** - scale-invariance is
 pinned by test, so a future per-row aggregate fails the suite instead of shipping. `summary()` keys
 are untouched; existing consumers keep working.
+
+## ADR-36 — V7.6: comparison is a matrix of stated facts, never an inference
+
+**Status:** accepted (2026-10-06)
+
+The decision pack answers one scope; the question it cannot answer is the one engineers ask next -
+"how does A-3 compare with B-11 and C-17 on the same basis, and what is actually comparable between
+them?" V7.6 adds `ComparisonPack` (schema `well-comparison/1`) as a *matrix of per-subject values*,
+not a score: each metric row carries one cell per well with its own value state
+(`STATED`/`COUNTED`/`PARTIAL`/`UNASSESSED`/`NO_RECORDS`) and an overall verdict from `COMPARABLE`,
+`INCOMPARABLE`, `MISSING`, `NOT_APPLICABLE`, `UNRESOLVED`, `STALE`. The hard rule is that comparison
+is not inference: the pack may say "A-3 recorded 28.75 h and B-11 12.0 h" or "A-3 has 7 well-control
+rows, B-11 has none", and may never say better/safer/cheaper/best-offset/lower-risk. A test sweeps the
+observations and metric notes for that vocabulary; the candidate rows that `offset_candidates`
+produces keep their recorded field names (`shared_problem_types`, `npt_hours`), because renaming a
+count of shared attributes to a "score" would smuggle in exactly the judgement the method's own
+docstring refuses.
+
+Design decisions worth keeping:
+
+*   **Units and scales are facts, not obstacles.** No conversion exists anywhere in the platform, so a
+    row whose cells state different units (USD/NOK, psi/bar, m/ft, d/h, ppg/sg) becomes
+    `INCOMPARABLE` with every source value and unit still visible and a machine-readable `units` map -
+    the numeric comparison is refused, the data is not hidden. A stated value without a unit beside a
+    stated value with one is `UNRESOLVED` (agreement provable neither way), and a single stated value
+    is `MISSING` - one number cannot compare. Severity bands are additionally gated on the recorded
+    `RiskRecord.scale` identity: identical single scale on every risk-carrying subject, else
+    `UNRESOLVED`; differing known scales, else `INCOMPARABLE`; counts stay on screen in every case.
+*   **Missing is not zero, and a counted zero is not missing.** Value states distinguish "no records"
+    (`NO_RECORDS`: C-17 has no NPT rows, so its hours are not 0.0) from "records exist, source never
+    stated a value" (`UNASSESSED`), from a genuine recorded zero (a count of rows in scope is 0 when
+    there are none - `COUNTED`). Cells that are absent render as the workbench's em dash, never as 0.
+*   **Reuse over re-implementation.** Per subject the pack calls the certified decision sections - the
+    same folds `fields decision` runs - so a number cannot drift between the two read models, and
+    evidence/limitations/freshness vocabularies are literally the same code. Candidate discovery is
+    `offset_candidates` itself. New SQL exists only where comparison needs facts no pack carries:
+    risk scale identity (one grouped query reusing the risk fold's membership and its current rule)
+    and bounded structured row-id samples for the operational domains (one windowed query for all
+    subjects). Shared hole sizes come from `ProblemOccurrence.hole_size_in` - the very column
+    `offset_candidates` counts - so an explicit selection and a discovered one cannot use the same
+    word for different things.
+*   **Bounds are declared.** Discovery is bounded by `--offset-limit` (and an anchor with no recorded
+    overlap is an error, never a broadened search); detail profiles are capped with
+    `truncated_detail`; evidence samples cap at `--evidence-limit`. Query cost was measured before it
+    was pinned: **6 + 39 SELECTs per subject**, identical at 2, 5 and 10 wells, with the 40-candidate
+    world at 1612 SELECTs - a linear, fixed per-subject cost, never per metric.
+*   **The analyst catalog is a contract, not a chatbot.** Sixteen fixed question ids, each declaring
+    params, scope, output, evidence, lifecycle and missing-value semantics (`--list-questions`), each
+    answered by composing the certified methods - including the full decision and comparison packs for
+    the three pack-shaped questions. An unknown id fails with the list of real ids; a sentence is not
+    a question; a date window on a current-state question is an error rather than a silently ignored
+    flag. The output is AI-*ready* typed JSON (schema `analyst-answer/1`, content identity over its
+    own payload) with no AI in it: no prompts, no models, no confidence, no embeddings.
+
+Auditing the evidence chain surfaced one real defect inherited from V7.5: bounded row-id samples were
+built with `str(row)` over one-column `Result` rows, producing stringified tuples (`"('cost-1',)"`)
+instead of ids. Fixed at the source with `.scalars()` so every sample is the identity it claims to be.
+
+**Consequences.** Read-side only: no table, no migration, no promotion contract, no cache, no search
+index change; registry counts are untouched. New surface: `intelligence/comparison.py`,
+`intelligence/analyst.py`, `IntelligenceService.compare()` / `.analyze()`, CLI `fields compare` and
+`analyze`, a Comparison tab in the workbench (matrix table, no charting dependency - graphics are a
+documented deferral), and tests pinning semantics, negatives A-L, scale, fingerprint and CLI parity.

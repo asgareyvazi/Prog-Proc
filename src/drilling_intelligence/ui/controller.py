@@ -7,6 +7,7 @@ This module contains no Qt imports.  It opens the existing :class:`Workspace`, r
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -186,6 +187,24 @@ class ReviewController:
         from ..intelligence.service import IntelligenceService
 
         return IntelligenceService.for_workspace(workspace).pack(well_id=str(well_id)).to_dict()
+
+    def compare(self, well_ids: Sequence[str]) -> dict[str, Any]:
+        """The comparison pack for two or more wells as plain values - a read, never a write.
+
+        The pack is built by
+        :class:`~drilling_intelligence.intelligence.comparison.ComparisonIntelligence` through
+        the same service boundary every other controller read uses, so the workbench shows
+        exactly what ``drillintel fields compare --json`` prints and nothing of its own.
+        Two or more wells are required; the refusal is the service's, not the widget's.
+        """
+        workspace = self._require_workspace()
+        from ..intelligence.service import IntelligenceService
+
+        return (
+            IntelligenceService.for_workspace(workspace)
+            .compare(well_ids=[str(value) for value in well_ids])
+            .to_dict()
+        )
 
     def run_npt_rollup(
         self,

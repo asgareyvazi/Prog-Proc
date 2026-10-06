@@ -174,3 +174,52 @@ def test_the_decision_read_is_refused_without_a_workspace_like_every_other_read(
     controller = ReviewController()
     with pytest.raises((WorkspaceError, ValidationError, AttributeError, RuntimeError)):
         controller.decision("any-well")
+
+
+def test_the_comparison_pack_reads_through_the_controller_and_writes_nothing(
+    reviewed, workspace
+) -> None:
+    """The workbench's comparison view is the service's pack, and viewing it changes nothing."""
+    controller, a3 = reviewed
+    b11 = controller.resolve_well("B-11")
+    before = _database_fingerprint(workspace)
+
+    payload = controller.compare([a3, b11])
+
+    assert payload["schema"] == "well-comparison/1"
+    assert len(payload["basis"]["subjects"]) == 2
+    assert payload["basis"]["kind"] == "explicit_wells"
+    for section in (
+        "schema",
+        "request",
+        "basis",
+        "sections",
+        "evidence",
+        "limitations",
+        "freshness",
+        "observations",
+        "summary",
+        "identity",
+    ):
+        assert section in payload, section
+    assert payload["identity"], "a rendered pack carries its content identity"
+    again = controller.compare([a3, b11])
+    assert again == payload, "the same request over the same state is the same document"
+
+    assert _database_fingerprint(workspace) == before, (
+        "building the comparison pack through the controller wrote to the database"
+    )
+
+
+def test_the_controller_compare_refuses_one_well_like_every_other_read(reviewed) -> None:
+    controller, a3 = reviewed
+    with pytest.raises(ValidationError):
+        controller.compare([a3])
+    with pytest.raises(ValidationError):
+        controller.compare([])
+
+
+def test_the_controller_compare_is_refused_without_a_workspace_like_every_other_read() -> None:
+    controller = ReviewController()
+    with pytest.raises((WorkspaceError, ValidationError, AttributeError, RuntimeError)):
+        controller.compare(["well-a", "well-b"])

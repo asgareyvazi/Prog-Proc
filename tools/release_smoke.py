@@ -13,6 +13,9 @@ asserts the things that actually break on a release and never break in a source 
 * a well can be created and read back, so the schema is really usable and not merely present;
 * ``doctor`` runs and its JSON is parseable;
 * ``fields decision`` prints an empty-but-valid decision pack whose JSON parses;
+* ``fields compare`` prints an empty-but-valid comparison pack for two fresh wells;
+* ``analyze --list-questions`` prints the sixteen-question catalog and ``analyze --question``
+  answers with parseable ``analyst-answer/1`` JSON - no golden corpus required;
 * a search and a records read succeed against the empty-but-valid workspace.
 
 Every check prints what it observed.  The exit code is non-zero on the first failure, so this is
@@ -250,6 +253,108 @@ def smoke(kind: str, artefact: Path, workdir: Path) -> None:
         str(decision_keys)[:90]
         if decision_keys
         else decision_json.stdout[:90] or decision_json.stderr[:90],
+    )
+
+    # The comparison pack: two fresh wells on an empty workspace must still yield a valid
+    # pack - schema, basis, sections, identity - with zero rows everywhere, because "neither
+    # well has anything recorded yet" is an answer, not an error.  No golden corpus is used.
+    made_two = run(
+        [str(cli), "wells", "create", "--name", "SMOKE-2", "--workspace", str(ws)],
+        cwd=NEUTRAL_CWD,
+    )
+    check(f"{kind}: second well create for comparison", made_two.returncode == 0)
+    compare_json = run(
+        [
+            str(cli),
+            "--json",
+            "fields",
+            "compare",
+            "--workspace",
+            str(ws),
+            "--well",
+            "SMOKE-1",
+            "--well",
+            "SMOKE-2",
+        ],
+        cwd=NEUTRAL_CWD,
+    )
+    compare_ok = False
+    compare_keys: list[str] = []
+    try:
+        compare_payload = json.loads(compare_json.stdout)
+        compare_keys = sorted(compare_payload)
+        compare_ok = (
+            compare_json.returncode == 0
+            and str(compare_payload.get("schema", "")) == "well-comparison/1"
+            and compare_payload.get("basis", {}).get("kind") == "explicit_wells"
+            and len(compare_payload.get("basis", {}).get("subjects") or []) == 2
+            and bool(compare_payload.get("identity"))
+            and compare_payload.get("summary", {}).get("metrics", 0) > 0
+            and all(section.get("detail") for section in compare_payload.get("sections") or [])
+        )
+    except (ValueError, AttributeError, TypeError):
+        compare_payload = None
+    check(
+        f"{kind}: fields compare --json is an empty-but-valid pack",
+        compare_ok,
+        str(compare_keys)[:90]
+        if compare_keys
+        else compare_json.stdout[:90] or compare_json.stderr[:90],
+    )
+
+    # The analyst catalog: list it (parseable, sixteen ids), then answer one question with
+    # parseable analyst-answer/1 JSON on the empty workspace.
+    catalog_json = run(
+        [str(cli), "--json", "analyze", "--list-questions", "--workspace", str(ws)],
+        cwd=NEUTRAL_CWD,
+    )
+    catalog_ok = False
+    try:
+        catalog_payload = json.loads(catalog_json.stdout)
+        ids = [entry.get("question_id") for entry in catalog_payload.get("questions") or []]
+        catalog_ok = (
+            catalog_json.returncode == 0
+            and catalog_payload.get("count") == 16
+            and ids[0] == "well_profile"
+            and ids[-1] == "offset_comparison"
+        )
+    except (ValueError, AttributeError, TypeError, IndexError):
+        catalog_payload = None
+    check(
+        f"{kind}: analyze --list-questions prints the sixteen-question catalog",
+        catalog_ok,
+        str(catalog_json.stdout[:90]) if catalog_payload is None else "16 ids",
+    )
+    analyze_json = run(
+        [
+            str(cli),
+            "--json",
+            "analyze",
+            "--question",
+            "npt_summary",
+            "--well",
+            "SMOKE-1",
+            "--workspace",
+            str(ws),
+        ],
+        cwd=NEUTRAL_CWD,
+    )
+    analyze_ok = False
+    try:
+        analyze_payload = json.loads(analyze_json.stdout)
+        analyze_ok = (
+            analyze_json.returncode == 0
+            and str(analyze_payload.get("schema", "")) == "analyst-answer/1"
+            and analyze_payload.get("question_id") == "npt_summary"
+            and bool(analyze_payload.get("identity"))
+            and "answer" in analyze_payload
+        )
+    except (ValueError, AttributeError, TypeError):
+        analyze_payload = None
+    check(
+        f"{kind}: analyze --question --json is an empty-but-valid answer",
+        analyze_ok,
+        str(analyze_json.stdout[:90]) if analyze_payload is None else "analyst-answer/1",
     )
 
     check(

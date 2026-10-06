@@ -253,3 +253,73 @@ def test_decision_tab_renders_the_service_pack_without_touching_the_database(
         controller.close()
 
     assert before == _database_fingerprint(workspace), "rendering the pack wrote to the database"
+
+
+def test_comparison_tab_renders_the_matrix_without_touching_the_database(qt_app, workspace) -> None:
+    """The Comparison tab displays the controller's matrix; it computes nothing and writes nothing."""
+    from tests.fixtures.fieldops import ingest, promote, well_id_for
+
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import MainWindow
+    from drilling_intelligence.ui.worker import ComparisonWorker
+
+    ingest(workspace)
+    promote(workspace)
+    a3 = well_id_for(workspace, "A-3")
+    b11 = well_id_for(workspace, "B-11")
+    before = _database_fingerprint(workspace)
+
+    controller = ReviewController()
+    assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
+    window = MainWindow(controller)
+    try:
+        # The tab exists in the navigation, right after Decision.
+        assert window.navigation.item(1).text() == "Decision"
+        assert window.navigation.item(2).text() == "Comparison"
+
+        payload = controller.compare([a3, b11])
+        window.set_comparison(payload)
+        qt_app.processEvents()
+
+        assert "well-comparison/" in window.comparison_header.text()
+        header_labels = [
+            window.comparison_table.horizontalHeaderItem(column).text()
+            for column in range(window.comparison_table.columnCount())
+        ]
+        assert header_labels[0] == "Metric"
+        assert header_labels[-1] == "State"
+        assert window.comparison_table.rowCount() > 0
+        # The matrix shows every metric row of the pack, both subjects, and the verdict.
+        metrics = {
+            window.comparison_table.item(row, 0).text()
+            for row in range(window.comparison_table.rowCount())
+        }
+        assert "npt.rows" in metrics and "cost.planned" in metrics
+        # Missing is visibly distinct from zero: an unvalued cell is the em dash, a counted
+        # zero is a zero - the exact distinction the JSON carries.
+        cells = {
+            window.comparison_table.item(row, column).text()
+            for row in range(window.comparison_table.rowCount())
+            for column in range(1, window.comparison_table.columnCount() - 1)
+        }
+        assert "—" in cells, cells
+        assert "0" in cells, cells
+        assert window.comparison_limitations.text().startswith("Limitations:")
+
+        # The worker runs the same controller boundary the CLI uses.
+        worker = ComparisonWorker(controller, [a3, b11])
+        received: list[Any] = []
+        failed: list[Any] = []
+        worker.succeeded.connect(received.append)
+        worker.failed.connect(failed.append)
+        worker.run()
+        assert received and not failed
+        assert received[0]["identity"] == payload["identity"], (
+            "worker and direct read must be the same pack - same state, same identity"
+        )
+    finally:
+        window.close()
+        qt_app.processEvents()
+        controller.close()
+
+    assert before == _database_fingerprint(workspace), "rendering the pack wrote to the database"

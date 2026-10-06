@@ -321,6 +321,82 @@ class IntelligenceService:
                 evidence_limit=evidence_limit,
             )
 
+    def compare(
+        self,
+        *,
+        well_ids: Sequence[str] = (),
+        anchor: str = "",
+        offsets: Sequence[str] = (),
+        since: object = None,
+        until: object = None,
+        detail: int = 1,
+        evidence_limit: int = 10,
+        offset_limit: int = 10,
+        session: Session | None = None,
+    ) -> Any:
+        """The deterministic cross-well comparison pack (see ``intelligence.comparison``).
+
+        Selection is explicit (``well_ids``) or discovered through the existing
+        ``offset_candidates`` method (``anchor``, with ``offsets`` empty to discover or
+        named to pin).  Read-side only: nothing is stored and no aggregate is cached.
+        """
+        from .comparison import ComparisonIntelligence
+
+        with self._session(session) as active:
+            return ComparisonIntelligence(active).compare(
+                well_ids=well_ids,
+                anchor=anchor,
+                offsets=offsets,
+                since=since,
+                until=until,
+                detail=detail,
+                evidence_limit=evidence_limit,
+                offset_limit=offset_limit,
+            )
+
+    def analyze(
+        self,
+        question: str,
+        *,
+        well_id: str = "",
+        field_id: str = "",
+        project_id: str = "",
+        program_id: str = "",
+        well_ids: Sequence[str] = (),
+        anchor: str = "",
+        offsets: Sequence[str] = (),
+        since: object = None,
+        until: object = None,
+        detail: int = 1,
+        evidence_limit: int = 10,
+        offset_limit: int = 10,
+        session: Session | None = None,
+    ) -> Any:
+        """One answer from the fixed analyst question catalog (see ``intelligence.analyst``).
+
+        ``question`` must be an exact catalog id; unknown ids fail with the list of real
+        ones.  No natural-language parsing, no inference, no AI: the answer is typed JSON
+        over the same certified read paths everything else uses.
+        """
+        from .analyst import AnalystIntelligence
+
+        with self._session(session) as active:
+            return AnalystIntelligence(active).analyze(
+                question,
+                well_id=well_id,
+                field_id=field_id,
+                project_id=project_id,
+                program_id=program_id,
+                well_ids=well_ids,
+                anchor=anchor,
+                offsets=offsets,
+                since=since,
+                until=until,
+                detail=detail,
+                evidence_limit=evidence_limit,
+                offset_limit=offset_limit,
+            )
+
     # -- patterns -------------------------------------------------------------
     def patterns(
         self,

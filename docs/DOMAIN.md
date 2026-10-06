@@ -281,6 +281,58 @@ scale test pins the budget so a future per-row query fails the suite.
 The workbench renders the pack through `ReviewController.decision()` + `DecisionWorker` on a Decision
 tab - same service boundary as the CLI, no Qt in the logic, and viewing writes nothing (fingerprinted).
 
+## Comparison Pack: several wells, one matrix, no inference
+
+`ComparisonIntelligence.compare(...)` - `drillintel fields compare` - answers "how do these wells
+differ on the same recorded basis, what is actually comparable, and what is missing?" as **one
+deterministic plain-value document** (`ComparisonPack`, schema `well-comparison/1`). It is the
+decision-pack philosophy made rectangular: every metric row carries one value per subject with its own
+`value_state` (`STATED`/`COUNTED`/`PARTIAL`/`UNASSESSED`/`NO_RECORDS`/...) and `comparability`, plus an
+overall verdict from `COMPARABLE` / `INCOMPARABLE` / `MISSING` / `NOT_APPLICABLE` / `UNRESOLVED` /
+`STALE`. An absent value stays `null` with a state that says why; a missing value is never zero, and a
+counted zero (`B-11 has 0 well-control rows`) is never mistaken for missing data.
+
+Selection is explicit (`--well A-3 --well B-11`, at least two, no duplicates, unknown ids refused) or
+discovered: `--anchor A-3` with no `--offsets` runs the existing `offset_candidates` method and keeps
+its row fields verbatim (`shared_problem_types`, `shared_hole_sizes`, `problems`, `npt_hours`) - the
+basis states *why* each subject is included (`explicit_wells` or `offset_candidates` plus the shared
+problem types and hole sizes), and the candidate list never grows a "best" or "safe" label it does not
+have. Discovered candidates get a bounded per-candidate profile (comparable / incomparable / missing
+metric id lists over a documented cap, with truncation reported).
+
+The comparability engine refuses, it does not convert: differing units (USD/NOK, psi/bar, m/ft, d/h,
+ppg/sg) make a row `INCOMPARABLE` with every source value and unit still visible; a stated value with
+no unit beside a stated value with one is `UNRESOLVED`; one stated value alone is `MISSING`, because
+one number cannot compare. Severity bands are gated on the recorded `RiskRecord.scale` identity -
+identical single scale on every risk-carrying subject makes the counts comparable, a subject with no
+recorded scale makes them `UNRESOLVED`, and differing known scales make them `INCOMPARABLE` - while the
+counts themselves stay on screen throughout.
+
+Reuse is total: per subject the pack folds the certified decision sections (which are themselves the
+operational aggregates, the plan/actual fold, the cost summary and the grouped risk/learning/pattern/
+calculation folds), windowed domains keep their `since`/`until` with the documented undated-row
+behaviour, sections are per subject and never merged across wells, and evidence is the decision pack's
+own references plus structured row-id samples for the operational domains. Observations are
+count-derived sentences only - never better/safer/best/likely, never a recommendation. Budget: measured
+at **6 + 39 SELECTs per subject** (2/5/10 wells pinned by test), discovery bounded by `--offset-limit`.
+
+## Analyst question catalog: typed answers, no natural language
+
+`AnalystIntelligence.analyze(question, ...)` - `drillintel analyze --question ...` - is the
+machine-facing door to the same read paths: a **closed catalog of sixteen question ids**
+(`well_profile`, `npt_summary`, `npt_by_category`, `problem_summary`, `problem_recurrence`,
+`well_control_summary`, `hse_summary`, `plan_actual`, `cost_summary`, `risk_summary`, `learning_summary`,
+`pattern_summary`, `calculation_status`, `decision_pack`, `well_comparison`, `offset_comparison`), each
+declaring its params, scope keys, output, evidence form, lifecycle (windowed vs current-state) and
+missing-value semantics in `QUESTION_CATALOG` (`--list-questions` prints it). The answer is typed JSON
+(`analyst-answer/1`) with its own content identity; unknown ids fail with the list of real ids; scope
+violations fail with the catalog's own rule; a date window on a current-state question is an error
+rather than a filter that silently did nothing.
+
+What it is not, is the point: no sentence parsing, no AI, no embeddings, no confidence scores - just
+exact ids over the certified methods, so a future automation layer can ask a well-formed question and
+*check* the answer against a declared contract.
+
 ## How this coexists with search and knowledge
 
 The search index carries three kinds of unit, all ranked through the one BM25 path in
