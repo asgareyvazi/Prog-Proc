@@ -223,14 +223,19 @@ def test_decision_tab_renders_the_service_pack_without_touching_the_database(
 
     controller = ReviewController()
     assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
+    print("decision-step open", flush=True)
     window = MainWindow(controller)
+    print("decision-step window", flush=True)
     try:
         # The tab exists in the navigation, right after Overview.
         assert window.navigation.item(1).text() == "Decision"
 
         payload = controller.decision(well_id)
+        print("decision-step payload", flush=True)
         window.set_decision(payload)
+        print("decision-step set", flush=True)
         qt_app.processEvents()
+        print("decision-step events", flush=True)
 
         assert "decision-pack/" in window.decision_header.text()
         assert window.decision_tree.topLevelItemCount() > 0
@@ -253,9 +258,11 @@ def test_decision_tab_renders_the_service_pack_without_touching_the_database(
             "worker and direct read must be the same pack - same state, same identity"
         )
     finally:
+        print("decision-step close", flush=True)
         window.close()
         qt_app.processEvents()
         controller.close()
+        print("decision-step closed", flush=True)
 
     assert before == _database_fingerprint(workspace), "rendering the pack wrote to the database"
 
@@ -362,11 +369,15 @@ def test_report_export_uses_the_canonical_renderer_and_the_chart_does_not_query(
             subject["well_id"] for subject in comparison["basis"]["subjects"]
         ]
         chart_before = _database_fingerprint(workspace)
+        print("export-step before-repaint", flush=True)
         window.comparison_chart.repaint()
+        print("export-step after-repaint", flush=True)
         qt_app.processEvents()
         assert _database_fingerprint(workspace) == chart_before
+        print("export-step set-report", flush=True)
         window.set_report(payload)
         qt_app.processEvents()
+        print("export-step report-shown", flush=True)
         assert payload["identity"] in window.report_header.text()
         path = tmp_path / "report.html"
         assert window.export_loaded_report(str(path)) == payload["identity"]

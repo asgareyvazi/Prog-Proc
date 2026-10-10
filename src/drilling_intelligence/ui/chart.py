@@ -55,7 +55,9 @@ class ExhibitChart(QWidget):
         return len((self._exhibit or {}).get("series") or [])
 
     def paintEvent(self, _event: Any) -> None:
-        painter = QPainter(self)
+        painter = QPainter()
+        if not painter.begin(self):
+            return
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         layout = self.drawing()
         painter.fillRect(self.rect(), _PAPER)
