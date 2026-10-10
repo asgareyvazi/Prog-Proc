@@ -1862,3 +1862,40 @@ Design decisions worth keeping:
 **Consequences.** New surface: `reporting/`, `IntelligenceService.report()`, CLI `fields report`
 (`--json` and `--output`), a Report page, and a chart strip on the Comparison page that does not hide
 the matrix. PDF is not in this release. A true depth plot waits on point-level data the packs do not have.
+
+## ADR-38 — V7.8: source lineage is a reading of the pack, and citation verification is optional
+
+**Status:** accepted (2026-10-10)
+
+An engineering report already carries the certified pack's evidence references. V7.8 makes those
+references addressable from each section, table and metric, and adds an explicit check that a
+retrieval-eligible sample still resolves and that a recorded file citation still matches. It does not
+add a second retrieval engine, a second report model, or a stored audit.
+
+Design decisions worth keeping:
+
+*   **The report identity is unchanged.** Schema stays `engineering-report/1`. Traceability
+    (`report-traceability/1`) is derived from a built pack and is not mixed into that hash. Default
+    `fields report --json` remains `IntelligenceService.report(...).to_dict()`. Citation outcomes are
+    not an input to the report identity.
+*   **A link is a domain, not a number.** A metric links to an evidence reference only when the
+    metric's domain is the reference's domain. A shared value, label, unit or position is not a link.
+    Aggregate references keep their method and scope. A truncated sample says so. A reference that
+    matches no engineering target stays in an unlinked ledger.
+*   **Verification is opt-in and bounded.** `--verify-citations` resolves `structured:<type>:<id>`
+    samples through `RetrievalService.resolve_structured` (the same authoritative batch read retrieval
+    already uses) and re-reads file citations through `CitationAuditor.audit_items`. It does not build
+    a fake `EvidencePackage`. The check cap is 40 identities, applied before the read. Omitted ids are
+    counted. The JSON envelope is `engineering-report-audited/1`.
+*   **No mismatch is not full verification.** `FULLY_VERIFIED` requires every attempted citation to
+    match, with nothing unresolved, omitted, aggregate-only or not checkable. A missing file stays
+    `UNREADABLE` and the overall status is `FAILED`. An operational error is `INCOMPLETE`. An aggregate
+    method is not a claim that every row was opened.
+*   **HTML states what was not done.** Without the flag, the appendix says citation verification was
+    not requested. With it, the appendix names the overall status in text. Paths are not written into
+    the HTML. A failed write leaves no partial file. Rendering and traceability issue no SQL.
+
+**Consequences.** `fields report --verify-citations`, a workbench Verify citations action on the loaded
+report, and an evidence-lineage appendix. No new table, migration, cache, dependency, or daemon.
+`METADATA_REVISION` stays `0019`. PDF, embeddings and natural-language source matching are not in this
+release.

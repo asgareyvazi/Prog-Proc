@@ -282,6 +282,30 @@ class ReportWorker(QObject):
         self.succeeded.emit(payload)
 
 
+class ReportAuditWorker(QObject):
+    """Verify citations on a loaded report. Does not rebuild it."""
+
+    succeeded = Signal(object)
+    failed = Signal(object)
+
+    def __init__(self, controller: ReviewController, payload: dict, *, parent: Any = None) -> None:
+        super().__init__(parent)
+        self._controller = controller
+        self._payload = payload
+
+    @Slot()
+    def run(self) -> None:
+        if QThread.currentThread().isInterruptionRequested():
+            self.failed.emit(WorkerError("cancelled", "Citation verification was cancelled."))
+            return
+        try:
+            result = self._controller.audit_report(self._payload)
+        except Exception as exc:  # noqa: BLE001 - the GUI boundary reports, it does not crash
+            self.failed.emit(WorkerError("internal", str(exc), "", type(exc).__name__))
+            return
+        self.succeeded.emit(result)
+
+
 class CalculationWorker(QObject):
     """Run one explicit NPT V1 calculation outside the GUI event loop."""
 

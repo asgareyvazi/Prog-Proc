@@ -72,6 +72,7 @@ from .worker import (
     CalculationWorker,
     ComparisonWorker,
     DecisionWorker,
+    ReportAuditWorker,
     ReportWorker,
     ReviewActionWorker,
     ReviewWorker,
@@ -164,6 +165,9 @@ class MainWindow(QMainWindow):
         self._comparison_thread: QThread | None = None
         self._comparison_worker: ComparisonWorker | None = None
         self._report_thread: QThread | None = None
+        self._report_audit_thread: QThread | None = None
+        self._report_audit: dict | None = None
+        self._report_audit_generation = 0
         self._report_worker: ReportWorker | None = None
         self._comparison_exhibits: dict[str, dict] = {}
         self._report_payload: dict | None = None
@@ -411,6 +415,9 @@ class MainWindow(QMainWindow):
         self.report_export_button = QPushButton("Export HTML…")
         self.report_export_button.clicked.connect(self._export_report_dialog)
         side.addWidget(self.report_export_button)
+        self.report_verify_button = QPushButton("Verify citations")
+        self.report_verify_button.clicked.connect(self._request_report_audit)
+        side.addWidget(self.report_verify_button)
         controls.addLayout(side)
         layout.addLayout(controls)
         self.report_header = QLabel(
@@ -435,6 +442,13 @@ class MainWindow(QMainWindow):
         self.report_limitations = QLabel("")
         self.report_limitations.setWordWrap(True)
         layout.addWidget(self.report_limitations)
+        self.report_lineage = QLabel(
+            "Evidence lineage appears after a report is built. "
+            "Citation verification was not requested."
+        )
+        self.report_lineage.setWordWrap(True)
+        self.report_lineage.setObjectName("reportLineage")
+        layout.addWidget(self.report_lineage)
         self.pages.addWidget(page)
 
     def _build_sections_page(self) -> None:
@@ -1185,6 +1199,75 @@ class MainWindow(QMainWindow):
         if thread is not None:
             thread.deleteLater()
 
+    def _show_report_lineage(self, payload: dict, audit: dict | None) -> None:
+        from ..reporting.lineage import traceability_manifest
+
+        manifest = traceability_manifest(payload).to_dict()
+        counts: dict[str, int] = {}
+        for source in manifest.get("sources") or []:
+            state = str(source.get("relationship") or "")
+            counts[state] = counts.get(state, 0) + 1
+        summary = ", ".join(f"{key} {counts[key]}" for key in sorted(counts)) or "none"
+        if audit is None:
+            notice = "Citation verification was not requested."
+        else:
+            notice = (
+                f"Citation verification requested. Overall {audit.get('overall')}. "
+                f"eligible {audit.get('eligible')}, attempted {audit.get('attempted')}, "
+                f"omitted {audit.get('omitted')}."
+            )
+        self.report_lineage.setText(
+            f"Evidence lineage: {summary}. Unlinked {len(manifest.get('unlinked') or [])}. {notice}"
+        )
+
+    @Slot()
+    def _request_report_audit(self) -> None:
+        if not self._report_payload:
+            self._set_status("Build a report before verifying citations.", error=True)
+            return
+        if self._report_audit_thread is not None:
+            return
+        generation = self._report_audit_generation
+        thread = QThread(self)
+        worker = ReportAuditWorker(self.controller, dict(self._report_payload), parent=None)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(
+            lambda payload, generation=generation: self._report_audit_succeeded(payload, generation)
+        )
+        worker.failed.connect(
+            lambda error, generation=generation: self._report_audit_failed(error, generation)
+        )
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.succeeded.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._report_audit_thread_finished)
+        self._report_audit_thread = thread
+        thread.start()
+        self._set_status("Verifying citations…")
+
+    @Slot(object)
+    def _report_audit_succeeded(self, payload: dict, generation: int) -> None:
+        if generation != self._report_audit_generation or not self._report_payload:
+            return
+        self._report_audit = payload
+        self._show_report_lineage(self._report_payload, payload)
+        self._set_status(f"Citation audit {payload.get('overall')}.")
+
+    @Slot(object)
+    def _report_audit_failed(self, error: WorkerError, generation: int) -> None:
+        if generation != self._report_audit_generation:
+            return
+        self._set_status(f"Citation audit {error.category}: {error.message}", error=True)
+
+    @Slot()
+    def _report_audit_thread_finished(self) -> None:
+        thread = self._report_audit_thread
+        self._report_audit_thread = None
+        if thread is not None:
+            thread.deleteLater()
+
     def set_report(self, payload: dict) -> None:
         """Render a ReportPack. Export writes this payload, not a second composition."""
         self._report_payload = payload
@@ -1225,6 +1308,9 @@ class MainWindow(QMainWindow):
             self.report_chart_selector.setCurrentIndex(preferred)
             self._show_report_exhibit(str(exhibits[preferred].get("exhibit_id") or ""))
         self.report_chart_selector.blockSignals(False)
+        self._report_audit = None
+        self._report_audit_generation = getattr(self, "_report_audit_generation", 0) + 1
+        self._show_report_lineage(payload, None)
         self._set_status(f"Report loaded ({payload.get('mode')}).")
 
     @Slot(int)
@@ -1266,7 +1352,7 @@ class MainWindow(QMainWindow):
         """Write the loaded report with the canonical HTML renderer. No second query."""
         if not self._report_payload:
             raise ValidationError("no report is loaded", hint="build a report before exporting")
-        write_report_html(path, self._report_payload)
+        write_report_html(path, self._report_payload, audit=getattr(self, "_report_audit", None))
         return str(self._report_payload.get("identity") or "")
 
     @Slot(object)
@@ -1923,7 +2009,13 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         threads = [
             thread
-            for thread in (self._review_thread, self._action_thread, self._calculation_thread)
+            for thread in (
+                self._review_thread,
+                self._action_thread,
+                self._calculation_thread,
+                self._report_thread,
+                self._report_audit_thread,
+            )
             if thread is not None
         ]
         for thread in threads:

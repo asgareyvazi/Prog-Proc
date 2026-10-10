@@ -2089,10 +2089,24 @@ def command_fields(args: argparse.Namespace) -> int:
                     session=session,
                 )
                 output = str(getattr(args, "output", "") or "").strip()
+                payload = pack.to_dict()
+                if getattr(args, "verify_citations", False):
+                    from ..reporting.audit import audited_payload, verify_report_citations
+                    from ..reporting.lineage import traceability_manifest
+
+                    audit = verify_report_citations(workspace, payload)
+                    if output:
+                        write_report_html(output, payload, audit=audit.to_dict())
+                        print(f"wrote {output}", file=sys.stderr)
+                    envelope = audited_payload(
+                        payload, traceability_manifest(payload).to_dict(), audit.to_dict()
+                    )
+                    _emit(envelope, as_json=args.json, lines=_report_audit_lines(audit))
+                    return 0 if audit.overall not in {"FAILED", "INCOMPLETE"} else 1
                 if output:
-                    write_report_html(output, pack)
+                    write_report_html(output, payload)
                     print(f"wrote {output}", file=sys.stderr)
-                _emit(pack.to_dict(), as_json=args.json, lines=_report_lines(pack))
+                _emit(payload, as_json=args.json, lines=_report_lines(pack))
                 return 0
             if args.action == "compare":
                 # Selection only in the CLI: names are resolved to ids here and every
@@ -2264,6 +2278,21 @@ def _report_lines(pack: Any) -> list[str]:
         lines.append("limitations: " + ", ".join(payload["limitations"]))
     for item in payload["source_packs"]:
         lines.append(f"source: {item.get('schema')} {item.get('identity')}")
+    return lines
+
+
+def _report_audit_lines(audit: Any) -> list[str]:
+    """Human view of a citation audit. It is not the report."""
+    payload = audit.to_dict() if hasattr(audit, "to_dict") else dict(audit)
+    lines = [
+        f"citation audit: {payload.get('schema')}",
+        f"overall: {payload.get('overall')}",
+        (
+            f"eligible {payload.get('eligible')}  attempted {payload.get('attempted')}  "
+            f"completed {payload.get('completed')}  omitted {payload.get('omitted')}"
+        ),
+        "A certified report value is unchanged. No mismatch is not full verification.",
+    ]
     return lines
 
 
@@ -3359,6 +3388,11 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument(
         "--output",
         help="write a standalone HTML report to this path; does not change report identity",
+    )
+    report.add_argument(
+        "--verify-citations",
+        action="store_true",
+        help="re-read retrieval-eligible sample citations; omitted from the default JSON report",
     )
     report.set_defaults(handler=command_fields)
 

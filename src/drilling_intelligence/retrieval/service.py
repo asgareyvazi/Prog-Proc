@@ -198,6 +198,16 @@ class _Names:
         return str(getattr(well, "project_id", "") or "") if well is not None else ""
 
 
+class _IdentityStub:
+    """The minimum candidate shape ``_structured_item`` reads when the id is already known."""
+
+    def __init__(self, record_type: str, source_id: str) -> None:
+        self.metadata = {"record_type": record_type, "source_id": source_id}
+        self.chunk_id = source_id
+        self.score = 0.0
+        self.matched_terms: tuple[str, ...] = ()
+
+
 class RetrievalService:
     """Re-reads search candidates from the authoritative database and returns verified evidence."""
 
@@ -242,6 +252,55 @@ class RetrievalService:
             scope = self._resolve_scope(active, req)
             candidates, broadened, capped = self._discover(req)
             return self._verify(active, req, scope, candidates, broadened, capped)
+
+    def resolve_structured(
+        self, identities: Sequence[str], *, session: Any | None = None
+    ) -> dict[str, EvidenceItem | None]:
+        """Re-read ``structured:<type>:<id>`` identities from the authoritative tables.
+
+        This is the same batch read retrieval uses after discovery. It does not search, does not
+        invent a row, and does not treat a missing id as a verified item. History lifecycle is
+        used so a superseded row is returned labelled, not dropped as if it had never existed.
+        """
+        wanted: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for raw in identities:
+            identity = str(raw or "")
+            if identity in seen:
+                continue
+            seen.add(identity)
+            kind, _, rest = identity.partition(":")
+            record_type, _, source_id = rest.partition(":")
+            if kind != "structured" or not record_type or not source_id:
+                continue
+            if record_type not in _STRUCTURED_MODELS:
+                continue
+            wanted.append((identity, record_type, source_id))
+        if not wanted:
+            return {}
+        request = RetrievalRequest(
+            query="",
+            source_types=(SOURCE_STRUCTURED,),
+            lifecycle=LIFECYCLE_HISTORY,
+            limit=0,
+        )
+        scope = _Scope(level="all")
+        grouped: dict[str, list[str]] = {}
+        for _identity, record_type, source_id in wanted:
+            grouped.setdefault(record_type, []).append(source_id)
+        with self._authority(session) as active:
+            rows = self._batch_read(active, grouped, set(), set(), set())
+            names = self._load_names(active, rows)
+            found: dict[str, EvidenceItem | None] = {}
+            for identity, record_type, source_id in wanted:
+                row = rows["structured"].get((record_type, source_id))
+                if row is None:
+                    found[identity] = None
+                    continue
+                stub = _IdentityStub(record_type, source_id)
+                item = self._structured_item(request, scope, stub, record_type, row, names, rows)
+                found[identity] = item if isinstance(item, EvidenceItem) else None
+        return found
 
     # -- discovery: search is the only candidate source ------------------------
     def _discover(self, req: RetrievalRequest) -> tuple[list[Any], bool, bool]:

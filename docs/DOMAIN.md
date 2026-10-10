@@ -357,6 +357,13 @@ What the packs do not carry is stated, not invented. A point-level depth series 
 figure metadata is not a curve and not portable image bytes. A timeline is not re-queried. `LOGGING`
 and `SERVICE_REPORT` remain `NOT READY`. PDF is not produced.
 
+The same report can be read as a source ledger (`report-traceability/1`). Each section, table and
+metric points at the certified evidence reference for its domain. A matching number is not a citation.
+`--verify-citations` is the only path that re-reads retrieval-eligible samples and their file
+citations. Without that flag, the HTML appendix says verification was not requested. A completed check
+with no mismatch is not `FULLY_VERIFIED` when coverage is aggregate-only, truncated, unresolved or
+capped. See ADR-38.
+
 ## How this coexists with search and knowledge
 
 The search index carries three kinds of unit, all ranked through the one BM25 path in

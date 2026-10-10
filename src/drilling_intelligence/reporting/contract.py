@@ -15,7 +15,7 @@ from ..core.hashing import sha256_obj
 
 REPORT_SCHEMA = "engineering-report/1"
 #: Bumped when HTML/SVG bytes change for the same pack. Not part of report identity.
-RENDERER_VERSION = "engineering-report-html/1"
+RENDERER_VERSION = "engineering-report-html/2"
 
 MODE_SINGLE_WELL = "single_well"
 MODE_EXPLICIT_WELL_SET = "explicit_well_set"

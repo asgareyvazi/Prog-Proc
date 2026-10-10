@@ -143,18 +143,25 @@ class CitationAuditor:
         so the authoritative read is a single ``IN`` query whatever the package contains -
         structured rows cite their documents from the evidence list, not from a row column.
         """
+        return CitationAuditReport(
+            package_identity=package.identity,
+            checks=self.audit_items(entry.item for entry in package.items),
+        )
+
+    def audit_items(self, items: Any) -> tuple[CitationCheck, ...]:
+        """Re-read file citations on evidence items that already came from retrieval.
+
+        The items must be the authoritative ``EvidenceItem`` values retrieval produced. This
+        method does not construct them and does not accept a hand-built package. Check order is
+        identity order, the same order ``audit`` has always used.
+        """
         from sqlalchemy import select
 
         from ..database.models import Document, DocumentVersion
         from ..documents.repository import DocumentRepository
 
-        version_ids = sorted(
-            {
-                vid
-                for item in (e.item for e in package.items)
-                for vid in self._cited_version_ids(item)
-            }
-        )
+        material = tuple(sorted(items, key=lambda item: str(getattr(item, "identity", ""))))
+        version_ids = sorted({vid for item in material for vid in self._cited_version_ids(item)})
         with self._workspace.database.read_only() as session:
             repository = DocumentRepository(session)
             versions: dict[str, Any] = {}
@@ -169,10 +176,9 @@ class CitationAuditor:
                     versions[str(version.id)] = version
                     documents[str(document.id)] = document
             hashes: dict[str, str] = {}
-            checks = []
-            for entry in sorted(package.items, key=lambda entry: entry.item.identity):
-                checks.append(self._check_item(entry.item, repository, versions, documents, hashes))
-        return CitationAuditReport(package_identity=package.identity, checks=tuple(checks))
+            return tuple(
+                self._check_item(item, repository, versions, documents, hashes) for item in material
+            )
 
     @staticmethod
     def _cited_version_ids(item: Any) -> list[str]:

@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from ..core.errors import ValidationError
+from .audit import safe_detail
 from .contract import RENDERER_VERSION, limitation_text
 from .format import format_value, plain_text
+from .lineage import traceability_manifest
 from .svg import render_svg
 
 _CSS = """
@@ -175,12 +177,42 @@ def _exhibit_html(exhibit: Mapping[str, Any]) -> str:
     )
 
 
-def _section_html(section: Mapping[str, Any], exhibits: Mapping[str, Mapping[str, Any]]) -> str:
+def _ledger_anchor(ref_id: str) -> str:
+    slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in str(ref_id))
+    return f"ledger-{slug}"
+
+
+def _source_links(manifest: Mapping[str, Any], target_id: str) -> str:
+    target = next(
+        (
+            item
+            for item in manifest.get("targets") or ()
+            if isinstance(item, dict) and item.get("target_id") == target_id
+        ),
+        None,
+    )
+    if not isinstance(target, dict) or not target.get("ref_ids"):
+        return ""
+    links = " ".join(
+        f'<a href="#{_ledger_anchor(ref_id)}">Source {_esc(ref_id)}</a>'
+        for ref_id in target.get("ref_ids") or ()
+    )
+    return f'<p class="note">Source ledger: {links}</p>'
+
+
+def _section_html(
+    section: Mapping[str, Any],
+    exhibits: Mapping[str, Mapping[str, Any]],
+    manifest: Mapping[str, Any],
+) -> str:
     parts = [
         f'<section id="{_anchor(section.get("section_id"))}">',
         f"<h2>{_esc(section.get('title'))}</h2>",
         f'<p class="state">State: {_esc(section.get("state"))}</p>',
     ]
+    links = _source_links(manifest, f"section:{section.get('section_id')}")
+    if links:
+        parts.append(links)
     if section.get("note"):
         parts.append(f'<p class="note">{_esc(section.get("note"))}</p>')
     for table in section.get("tables") or []:
@@ -195,9 +227,17 @@ def _section_html(section: Mapping[str, Any], exhibits: Mapping[str, Mapping[str
     return "\n".join(parts)
 
 
-def render_html(pack: Mapping[str, Any] | Any) -> str:
-    """HTML document for one report. Byte-stable for the same pack and renderer version."""
+def render_html(
+    pack: Mapping[str, Any] | Any, *, audit: Mapping[str, Any] | Any | None = None
+) -> str:
+    """HTML document for one report. Byte-stable for the same pack and renderer version.
+
+    The lineage appendix is a rendering of the pack's own evidence. ``audit`` is shown only when
+    the caller already verified citations. This function does not open a database.
+    """
     payload = pack.to_dict() if hasattr(pack, "to_dict") else dict(pack)
+    manifest = traceability_manifest(payload).to_dict()
+    audit_payload = _audit_payload(audit)
     exhibits = {str(item.get("exhibit_id")): item for item in payload.get("exhibits") or []}
     subject = payload.get("subject") or {}
     window = subject.get("window") or {}
@@ -223,7 +263,7 @@ def render_html(pack: Mapping[str, Any] | Any) -> str:
                 )
             )
             continue
-        body.append(_section_html(section, exhibits))
+        body.append(_section_html(section, exhibits, manifest))
     observations = "".join(f"<li>{_esc(line)}</li>" for line in payload.get("observations") or [])
     source = ", ".join(
         f"{item.get('schema')} {item.get('identity')}" for item in payload.get("source_packs") or []
@@ -258,7 +298,9 @@ def render_html(pack: Mapping[str, Any] | Any) -> str:
         f'<p class="meta">Source pack: {_esc(source)}</p>',
         '<p class="note">This document does not require JavaScript and does not load remote resources.</p>',
         "</header>",
-        f"<nav><ol>{''.join(nav)}</ol></nav>",
+        "<nav><ol>"
+        + "".join(nav)
+        + '<li><a href="#evidence-lineage">Evidence lineage</a></li></ol></nav>',
         "<main>",
         *body,
         "<section>",
@@ -266,6 +308,7 @@ def render_html(pack: Mapping[str, Any] | Any) -> str:
         f"<ul>{observations or '<li>None recorded by the source pack.</li>'}</ul>",
         '<p class="note">Observations are the source pack\'s sentences, copied, not a second summary.</p>',
         "</section>",
+        _lineage_html(manifest, audit_payload),
         "</main>",
         "<footer>",
         f"<p>Schema {_esc(payload.get('schema'))}. Identity {_esc(payload.get('identity'))}.</p>",
@@ -279,8 +322,13 @@ def render_html(pack: Mapping[str, Any] | Any) -> str:
     return "\n".join(line for line in document if line is not None)
 
 
-def write_report_html(path: str | Path, pack: Mapping[str, Any] | Any) -> None:
-    """Write UTF-8 HTML to exactly ``path``. A missing directory is an error, not a fallback."""
+def write_report_html(
+    path: str | Path,
+    pack: Mapping[str, Any] | Any,
+    *,
+    audit: Mapping[str, Any] | Any | None = None,
+) -> None:
+    """Write UTF-8 HTML to exactly ``path``. A failed write leaves no partial file."""
     target = Path(path)
     if not str(path).strip():
         raise ValidationError("an output path is required", hint="pass --output report.html")
@@ -295,5 +343,95 @@ def write_report_html(path: str | Path, pack: Mapping[str, Any] | Any) -> None:
             f"output directory does not exist: {parent}",
             hint="create the directory, or choose a path that exists",
         )
-    text = render_html(pack)
-    target.write_text(text, encoding="utf-8", newline="\n")
+    text = render_html(pack, audit=audit)
+    temporary = target.with_name(target.name + ".partial")
+    try:
+        temporary.write_text(text, encoding="utf-8", newline="\n")
+        temporary.replace(target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _lineage_html(manifest: Mapping[str, Any], audit: Mapping[str, Any] | None) -> str:
+    if audit is None:
+        notice = (
+            "Citation verification was not requested. This ledger lists certified source "
+            "references. It is not an audit result, and the absence of a mismatch is not "
+            "verification."
+        )
+    else:
+        notice = (
+            "Citation verification was requested. Overall status: "
+            + str(audit.get("overall") or "")
+            + ". A certified report value is not changed when a citation cannot be re-read. "
+            + "An aggregate method is not a check of every row."
+        )
+    checks = _checks_by_ref(audit)
+    rows = []
+    for source in manifest.get("sources") or ():
+        if not isinstance(source, dict):
+            continue
+        ref_id = str(source.get("ref_id") or "")
+        sample = ", ".join(str(item) for item in source.get("sample") or ())
+        rows.append(
+            '<tr id="'
+            + _ledger_anchor(ref_id)
+            + '"><td>'
+            + _esc(ref_id)
+            + "</td><td>"
+            + _esc(source.get("domain"))
+            + "</td><td>"
+            + _esc(source.get("relationship"))
+            + "</td><td>"
+            + _esc(source.get("method"))
+            + "</td><td>"
+            + _esc(sample)
+            + "</td><td>"
+            + _esc(checks.get(ref_id, ""))
+            + "</td></tr>"
+        )
+    unlinked = ", ".join(str(item) for item in manifest.get("unlinked") or ())
+    body = (
+        "<table><thead><tr><th>Reference</th><th>Domain</th><th>Relationship</th>"
+        "<th>Method</th><th>Sample</th><th>Citation check</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+        if rows
+        else "<p>No source references are recorded on this report.</p>"
+    )
+    extra = f'<p class="note">Unlinked references: {_esc(unlinked)}</p>' if unlinked else ""
+    return "\n".join(
+        [
+            '<section id="evidence-lineage">',
+            "<h2>Evidence lineage</h2>",
+            f'<p class="note">{_esc(notice)}</p>',
+            body,
+            extra,
+            "</section>",
+        ]
+    )
+
+
+def _checks_by_ref(audit: Mapping[str, Any] | None) -> dict[str, str]:
+    if not audit:
+        return {}
+    grouped: dict[str, list[str]] = {}
+    for entry in audit.get("entries") or ():
+        if not isinstance(entry, dict):
+            continue
+        ref_id = str(entry.get("ref_id") or "")
+        text = str(entry.get("resolution") or "") + " / " + str(entry.get("citation_status") or "")
+        detail = safe_detail(str(entry.get("detail") or ""))
+        if detail:
+            text = text + " — " + detail
+        grouped.setdefault(ref_id, []).append(text)
+    return {ref_id: "; ".join(parts) for ref_id, parts in grouped.items()}
+
+
+def _audit_payload(audit: Mapping[str, Any] | Any | None) -> Mapping[str, Any] | None:
+    if audit is None:
+        return None
+    if hasattr(audit, "to_dict"):
+        rendered = audit.to_dict()
+        return rendered if isinstance(rendered, dict) else None
+    return audit if isinstance(audit, dict) else None

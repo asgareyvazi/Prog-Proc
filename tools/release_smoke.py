@@ -18,6 +18,8 @@ asserts the things that actually break on a release and never break in a source 
   answers with parseable ``analyst-answer/1`` JSON - no golden corpus required;
 * ``fields report`` prints an ``engineering-report/1`` document and writes standalone HTML
   with inline SVG - no golden corpus, no source-tree import;
+* ``fields report --verify-citations`` prints ``engineering-report-audited/1`` for the same
+  report identity and does not call a quiet audit fully verified;
 * a search and a records read succeed against the empty-but-valid workspace.
 
 Every check prints what it observed.  The exit code is non-zero on the first failure, so this is
@@ -399,6 +401,46 @@ def smoke(kind: str, artefact: Path, workdir: Path) -> None:
         f"{kind}: fields report --json --output is a standalone engineering report",
         report_ok,
         report_identity[:16] if report_ok else (report_json.stderr or report_json.stdout)[:90],
+    )
+    audit_path = workdir / "smoke-report-audit.html"
+    audit_json = run(
+        [
+            str(cli),
+            "--json",
+            "fields",
+            "report",
+            "--workspace",
+            str(ws),
+            "--well",
+            "SMOKE-1",
+            "--verify-citations",
+            "--output",
+            str(audit_path),
+        ],
+        cwd=NEUTRAL_CWD,
+    )
+    audit_ok = False
+    audit_overall = ""
+    try:
+        audit_payload = json.loads(audit_json.stdout)
+        audit_html = audit_path.read_text(encoding="utf-8") if audit_path.exists() else ""
+        audit_overall = str((audit_payload.get("audit") or {}).get("overall") or "")
+        audit_ok = (
+            audit_payload.get("schema") == "engineering-report-audited/1"
+            and (audit_payload.get("report") or {}).get("identity") == report_identity
+            and audit_overall in {"FULLY_VERIFIED", "PARTIALLY_VERIFIED", "FAILED", "INCOMPLETE"}
+            and audit_overall != "FULLY_VERIFIED"
+            and "Citation verification was requested" in audit_html
+            and audit_overall in audit_html
+            and "<script" not in audit_html.lower()
+            and "Citation verification was not requested" in html
+        )
+    except (ValueError, AttributeError, TypeError, OSError, KeyError):
+        audit_payload = None
+    check(
+        f"{kind}: fields report --verify-citations is a separate audit of the same report",
+        audit_ok,
+        audit_overall or (audit_json.stderr or audit_json.stdout)[:90],
     )
     render_probe = run(
         [

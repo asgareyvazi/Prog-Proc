@@ -227,6 +227,13 @@ class ReviewController:
             .to_dict()
         )
 
+    def audit_report(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Verify citations on an already-built report. Does not recompose the pack."""
+        workspace = self._require_workspace()
+        from ..reporting.audit import verify_report_citations
+
+        return verify_report_citations(workspace, dict(payload)).to_dict()
+
     def run_npt_rollup(
         self,
         well_id: str,
