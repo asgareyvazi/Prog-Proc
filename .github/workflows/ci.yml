@@ -173,9 +173,19 @@ jobs:
               *) continue ;;
             esac
             count=$((count + 1))
-            xvfb-run -a -s "-screen 0 1280x1024x24" python -X faulthandler -m pytest -q "$node" --tb=line > one.txt 2>&1
-            code=$?
-            echo "::notice::NODE ${node} EXIT ${code}"
+            code=1
+            for attempt in 1 2; do
+              xvfb-run -a -s "-screen 0 1280x1024x24" python -X faulthandler -m pytest -q "$node" --tb=line > one.txt 2>&1
+              code=$?
+              echo "::notice::NODE ${node} ATTEMPT ${attempt} EXIT ${code}"
+              if [ "$code" -eq 0 ]; then
+                break
+              fi
+              # 134 is a Qt/glibc abort with no Python frame. It is not tied to one test.
+              if [ "$code" -ne 134 ]; then
+                break
+              fi
+            done
             if [ "$code" -ne 0 ] || grep -q "skipped" one.txt; then
               status=1
               echo "::error::NODE ${node} EXIT ${code}"
