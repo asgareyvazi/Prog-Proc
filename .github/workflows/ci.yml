@@ -157,14 +157,21 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: |
           set +e
-          xvfb-run -a -s "-screen 0 1280x1024x24" python -X faulthandler -m pytest -q tests/ui --tb=line > pytest-ui.txt 2>&1
-          status=$?
-          set -e
-          tail -30 pytest-ui.txt | while IFS= read -r line; do
-            echo "::error::${line}"
-          done
-          if grep -q "skipped" pytest-ui.txt; then
-            echo "::error::workbench tests skipped; this job must execute Qt"
-            exit 1
-          fi
+          python -m pytest --collect-only -q tests/ui > nodes.txt 2>&1
+          status=0
+          while IFS= read -r node; do
+            case "$node" in
+              *::*) ;;
+              *) continue ;;
+            esac
+            xvfb-run -a -s "-screen 0 1280x1024x24" python -X faulthandler -m pytest -q "$node" --tb=line > one.txt 2>&1
+            code=$?
+            echo "::error::NODE ${node} EXIT ${code}"
+            if [ "$code" -ne 0 ] || grep -q "skipped" one.txt; then
+              status=1
+              tail -8 one.txt | while IFS= read -r line; do
+                echo "::error::${node}: ${line}"
+              done
+            fi
+          done < nodes.txt
           exit "$status"

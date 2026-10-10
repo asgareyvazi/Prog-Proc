@@ -398,8 +398,6 @@ def test_report_audit_does_not_recompose_and_a_late_result_cannot_replace_a_newe
     qt_app, workspace, tmp_path
 ) -> None:
     """Citation verification uses the loaded pack. A stale worker result is ignored."""
-    from PySide6.QtCore import QThread
-
     from drilling_intelligence.reporting.html import render_html
     from drilling_intelligence.ui.controller import ReviewController
     from drilling_intelligence.ui.main_window import MainWindow
@@ -430,10 +428,10 @@ def test_report_audit_does_not_recompose_and_a_late_result_cannot_replace_a_newe
         window.set_report(first)
         qt_app.processEvents()
         assert "not requested" in window.report_lineage.text()
-        held = QThread()
-        window._report_audit_thread = held
+        marker = object()
+        window._report_audit_thread = marker
         window._request_report_audit()
-        assert window._report_audit_thread is held
+        assert window._report_audit_thread is marker
         window._report_audit_thread = None
         window.report_verify_button.setEnabled(True)
 
