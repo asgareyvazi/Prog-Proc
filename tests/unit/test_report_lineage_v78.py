@@ -156,10 +156,29 @@ def test_overall_status_does_not_treat_silence_as_full_verification():
     )
     assert (
         overall_status(
-            [{"resolution": "RESOLVED", "citation_status": "MATCH"}],
+            [
+                {
+                    "resolution": "RESOLVED",
+                    "citation_status": "MATCH",
+                    "scope_status": "IN_SCOPE",
+                    "domain_status": "AGREE",
+                    "lifecycle": "CURRENT",
+                    "current": True,
+                    "relationship": "DIRECT_RECORD",
+                    "coverage": "COMPLETE",
+                }
+            ],
             omitted=0,
             incomplete=False,
         )
         == "FULLY_VERIFIED"
+    )
+    assert (
+        overall_status(
+            [{"resolution": "RESOLVED", "citation_status": "MATCH"}],
+            omitted=0,
+            incomplete=False,
+        )
+        == "PARTIALLY_VERIFIED"
     )
     assert overall_status([], omitted=0, incomplete=True) == "INCOMPLETE"

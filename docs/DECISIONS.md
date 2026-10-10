@@ -1899,3 +1899,35 @@ Design decisions worth keeping:
 report, and an evidence-lineage appendix. No new table, migration, cache, dependency, or daemon.
 `METADATA_REVISION` stays `0019`. PDF, embeddings and natural-language source matching are not in this
 release.
+
+## ADR-39 — V7.9: a citation match is not scope, freshness, or complete coverage
+
+**Status:** accepted (2026-10-10)
+
+V7.8 could treat a resolved row as support when its well id was empty, could follow a
+`structured:` token whose embedded domain disagreed with the evidence reference, and could
+reach `FULLY_VERIFIED` from citation status alone. V7.9 keeps those facts separate.
+
+*   **Status precedence is fixed.** `FAILED` outranks `INCOMPLETE` when a mismatch or unreadable
+    citation was completed. `INCOMPLETE` is an operational failure with no such finding, and it
+    keeps the outcomes already known. `PARTIALLY_VERIFIED` is a finished audit with a coverage,
+    scope, lifecycle, or checkability gap. `FULLY_VERIFIED` requires an in-scope, domain-agreed,
+    current-or-explicitly-historical, checkable match of a complete enumeration. An empty audit
+    is not that.
+*   **Identity is validated before retrieval.** A structured sample is resolved only when its
+    embedded domain is the evidence reference's domain and that domain is on the retrieval path.
+    The returned item must still be that identity. A cross-domain token is not a lookup.
+*   **Scope is the report's selected wells.** A single-well report uses `subject.id`. An empty
+    well id is site-level evidence, not support for every selected well. A date window licenses
+    a non-current row only for the windowed operational domains, and it does not call that row
+    current.
+*   **Coverage follows `EvidenceRef`.** `truncated` means the sample is not the count. One
+    untruncated id is a direct record. Several untruncated ids are a complete enumeration, not
+    one record. An aggregate remains method and scope. Duplicate target ids are not merged.
+*   **The cap is unique identities, before the read.** Citation checks are not started for an
+    identity that was not resolved. Repeating an identity does not spend the cap twice.
+
+**Consequences.** `report-evidence-audit/1` gains scope, lifecycle, and domain fields. The report
+schema and identity are unchanged. No migration. The workbench ignores an audit whose generation
+or report identity is no longer the one on screen. CI runs the real offscreen Qt tests in a
+separate job; a skip there is a failure of that job.

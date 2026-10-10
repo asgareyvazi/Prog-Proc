@@ -168,6 +168,7 @@ class MainWindow(QMainWindow):
         self._report_audit_thread: QThread | None = None
         self._report_audit: dict | None = None
         self._report_audit_generation = 0
+        self._report_audit_identity = ""
         self._report_worker: ReportWorker | None = None
         self._comparison_exhibits: dict[str, dict] = {}
         self._report_payload: dict | None = None
@@ -1210,14 +1211,28 @@ class MainWindow(QMainWindow):
         summary = ", ".join(f"{key} {counts[key]}" for key in sorted(counts)) or "none"
         if audit is None:
             notice = "Citation verification was not requested."
+            detail = ""
         else:
             notice = (
                 f"Citation verification requested. Overall {audit.get('overall')}. "
                 f"eligible {audit.get('eligible')}, attempted {audit.get('attempted')}, "
-                f"omitted {audit.get('omitted')}."
+                f"completed {audit.get('completed')}, omitted {audit.get('omitted')}."
             )
+            seen: list[str] = []
+            for entry in audit.get("entries") or []:
+                if not isinstance(entry, dict):
+                    continue
+                line = " / ".join(
+                    str(entry.get(key) or "")
+                    for key in ("resolution", "scope_status", "lifecycle", "citation_status")
+                    if entry.get(key)
+                )
+                if line and line not in seen:
+                    seen.append(line)
+            detail = " States: " + "; ".join(seen[:8]) if seen else ""
         self.report_lineage.setText(
-            f"Evidence lineage: {summary}. Unlinked {len(manifest.get('unlinked') or [])}. {notice}"
+            f"Evidence lineage: {summary}. Unlinked {len(manifest.get('unlinked') or [])}. "
+            f"{notice}{detail} A citation match is not scope, freshness, or complete coverage."
         )
 
     @Slot()
@@ -1226,8 +1241,11 @@ class MainWindow(QMainWindow):
             self._set_status("Build a report before verifying citations.", error=True)
             return
         if self._report_audit_thread is not None:
+            self._set_status("Citation verification is already running.")
             return
         generation = self._report_audit_generation
+        self._report_audit_identity = str(self._report_payload.get("identity") or "")
+        self.report_verify_button.setEnabled(False)
         thread = QThread(self)
         worker = ReportAuditWorker(self.controller, dict(self._report_payload), parent=None)
         worker.moveToThread(thread)
@@ -1251,6 +1269,11 @@ class MainWindow(QMainWindow):
     def _report_audit_succeeded(self, payload: dict, generation: int) -> None:
         if generation != self._report_audit_generation or not self._report_payload:
             return
+        if str(payload.get("report_identity") or "") != str(
+            self._report_payload.get("identity") or ""
+        ):
+            self._set_status("Ignored a citation audit for a report that is no longer displayed.")
+            return
         self._report_audit = payload
         self._show_report_lineage(self._report_payload, payload)
         self._set_status(f"Citation audit {payload.get('overall')}.")
@@ -1265,6 +1288,8 @@ class MainWindow(QMainWindow):
     def _report_audit_thread_finished(self) -> None:
         thread = self._report_audit_thread
         self._report_audit_thread = None
+        if hasattr(self, "report_verify_button"):
+            self.report_verify_button.setEnabled(True)
         if thread is not None:
             thread.deleteLater()
 

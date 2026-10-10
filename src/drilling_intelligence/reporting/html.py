@@ -364,7 +364,8 @@ def _lineage_html(manifest: Mapping[str, Any], audit: Mapping[str, Any] | None) 
         notice = (
             "Citation verification was requested. Overall status: "
             + str(audit.get("overall") or "")
-            + ". A certified report value is not changed when a citation cannot be re-read. "
+            + ". A citation match is not freshness, scope, or complete coverage. "
+            + "A certified report value is not changed when a citation cannot be re-read. "
             + "An aggregate method is not a check of every row."
         )
     checks = _checks_by_ref(audit)
@@ -420,7 +421,11 @@ def _checks_by_ref(audit: Mapping[str, Any] | None) -> dict[str, str]:
         if not isinstance(entry, dict):
             continue
         ref_id = str(entry.get("ref_id") or "")
-        text = str(entry.get("resolution") or "") + " / " + str(entry.get("citation_status") or "")
+        text = " / ".join(
+            str(entry.get(key) or "")
+            for key in ("resolution", "scope_status", "lifecycle", "citation_status")
+            if entry.get(key)
+        )
         detail = safe_detail(str(entry.get("detail") or ""))
         if detail:
             text = text + " — " + detail

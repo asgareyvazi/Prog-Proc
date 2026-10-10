@@ -429,8 +429,10 @@ def smoke(kind: str, artefact: Path, workdir: Path) -> None:
             audit_payload.get("schema") == "engineering-report-audited/1"
             and (audit_payload.get("report") or {}).get("identity") == report_identity
             and audit_overall in {"FULLY_VERIFIED", "PARTIALLY_VERIFIED", "FAILED", "INCOMPLETE"}
-            and audit_overall != "FULLY_VERIFIED"
+            and audit_overall == "PARTIALLY_VERIFIED"
+            and int((audit_payload.get("audit") or {}).get("eligible") or 0) == 0
             and "Citation verification was requested" in audit_html
+            and "FULLY_VERIFIED" not in audit_html
             and audit_overall in audit_html
             and "<script" not in audit_html.lower()
             and "Citation verification was not requested" in html

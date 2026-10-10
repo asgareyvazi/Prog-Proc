@@ -2091,7 +2091,11 @@ def command_fields(args: argparse.Namespace) -> int:
                 output = str(getattr(args, "output", "") or "").strip()
                 payload = pack.to_dict()
                 if getattr(args, "verify_citations", False):
-                    from ..reporting.audit import audited_payload, verify_report_citations
+                    from ..reporting.audit import (
+                        audit_exit_code,
+                        audited_payload,
+                        verify_report_citations,
+                    )
                     from ..reporting.lineage import traceability_manifest
 
                     audit = verify_report_citations(workspace, payload)
@@ -2102,7 +2106,7 @@ def command_fields(args: argparse.Namespace) -> int:
                         payload, traceability_manifest(payload).to_dict(), audit.to_dict()
                     )
                     _emit(envelope, as_json=args.json, lines=_report_audit_lines(audit))
-                    return 0 if audit.overall not in {"FAILED", "INCOMPLETE"} else 1
+                    return audit_exit_code(audit.overall)
                 if output:
                     write_report_html(output, payload)
                     print(f"wrote {output}", file=sys.stderr)
@@ -2291,7 +2295,8 @@ def _report_audit_lines(audit: Any) -> list[str]:
             f"eligible {payload.get('eligible')}  attempted {payload.get('attempted')}  "
             f"completed {payload.get('completed')}  omitted {payload.get('omitted')}"
         ),
-        "A certified report value is unchanged. No mismatch is not full verification.",
+        "A citation match is not scope, freshness, or complete coverage.",
+        "Exit 1 means FAILED or INCOMPLETE. PARTIALLY_VERIFIED is a finished incomplete audit.",
     ]
     return lines
 

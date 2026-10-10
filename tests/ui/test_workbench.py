@@ -392,3 +392,77 @@ def test_report_export_uses_the_canonical_renderer_and_the_chart_does_not_query(
         qt_app.processEvents()
         controller.close()
     assert before == _database_fingerprint(workspace)
+
+
+def test_report_audit_does_not_recompose_and_a_late_result_cannot_replace_a_newer_report(
+    qt_app, workspace, tmp_path
+) -> None:
+    """Citation verification uses the loaded pack. A stale worker result is ignored."""
+    from PySide6.QtCore import QThread
+
+    from drilling_intelligence.reporting.html import render_html
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import MainWindow
+    from drilling_intelligence.ui.worker import ReportAuditWorker
+
+    before = _database_fingerprint(workspace)
+    controller = ReviewController()
+    assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
+    window = MainWindow(controller)
+    first = {
+        "schema": "engineering-report/1",
+        "identity": "report-first",
+        "mode": "single_well",
+        "title": "First",
+        "subject": {"kind": "well", "id": "well-a", "name": "A"},
+        "source_packs": [],
+        "sections": [],
+        "exhibits": [],
+        "evidence": [],
+        "limitations": [],
+        "observations": [],
+        "freshness": {},
+    }
+    second = dict(first)
+    second["identity"] = "report-second"
+    second["title"] = "Second"
+    try:
+        window.set_report(first)
+        qt_app.processEvents()
+        assert "not requested" in window.report_lineage.text()
+        held = QThread()
+        window._report_audit_thread = held
+        window._request_report_audit()
+        assert window._report_audit_thread is held
+        window._report_audit_thread = None
+        window.report_verify_button.setEnabled(True)
+
+        worker = ReportAuditWorker(controller, dict(first))
+        received: list[Any] = []
+        worker.succeeded.connect(received.append)
+        worker.run()
+        assert received
+        assert received[0]["report_identity"] == "report-first"
+        assert received[0]["overall"] != "FULLY_VERIFIED"
+        window._report_audit_succeeded(received[0], window._report_audit_generation)
+        assert window._report_audit["overall"] == received[0]["overall"]
+        path = tmp_path / "audited.html"
+        window.export_loaded_report(str(path))
+        text = path.read_text(encoding="utf-8")
+        assert text == render_html(first, audit=received[0])
+        assert "Citation verification was requested" in text
+        assert "report-first" in text
+        assert "<script" not in text.lower()
+
+        window.set_report(second)
+        qt_app.processEvents()
+        assert window._report_audit is None
+        window._report_audit_succeeded(received[0], window._report_audit_generation - 1)
+        assert window._report_audit is None
+        assert "report-second" in window.report_header.text()
+        assert "not requested" in window.report_lineage.text()
+    finally:
+        window.close()
+        qt_app.processEvents()
+        controller.close()
+    assert before == _database_fingerprint(workspace)

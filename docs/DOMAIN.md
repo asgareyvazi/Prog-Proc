@@ -362,7 +362,8 @@ metric points at the certified evidence reference for its domain. A matching num
 `--verify-citations` is the only path that re-reads retrieval-eligible samples and their file
 citations. Without that flag, the HTML appendix says verification was not requested. A completed check
 with no mismatch is not `FULLY_VERIFIED` when coverage is aggregate-only, truncated, unresolved or
-capped. See ADR-38.
+capped. A matching file citation does not make a stale, out-of-scope, or cross-domain row verified.
+See ADR-38 and ADR-39.
 
 ## How this coexists with search and knowledge
 

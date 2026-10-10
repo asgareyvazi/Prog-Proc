@@ -23,6 +23,7 @@ REL_SAMPLE = "BOUNDED_SAMPLE"
 REL_TRUNCATED = "TRUNCATED_SAMPLE"
 REL_COUNT_ONLY = "COUNT_ONLY"
 REL_DIRECT = "DIRECT_RECORD"
+REL_ENUMERATED = "COMPLETE_ENUMERATION"
 REL_UNSUPPORTED = "UNSUPPORTED_LINKAGE"
 REL_UNLINKED = "UNLINKED_SOURCE"
 REL_MISSING = "MISSING_REFERENCE"
@@ -77,18 +78,32 @@ def _items(value: Any) -> list[Any]:
 
 
 def _relationship(ref: dict[str, Any]) -> str:
+    """Classify a reference from the producer contract, not from a shared number.
+
+    ``EvidenceRef`` says ``rows`` carries real ids, ``truncated`` means the count is
+    larger than the sample, ``aggregate`` is method and scope, and ``records`` is a
+    count with no id query. Equality of count and sample length is a complete
+    enumeration only when the producer would have set ``truncated`` otherwise. One
+    id is a direct record. More than one, untruncated, is a complete set, not a
+    single record. A ``records`` reference that nevertheless carries ids is not
+    relabelled as count-only.
+    """
     kind = str(ref.get("kind") or "")
     sample = _items(ref.get("sample"))
     truncated = bool(ref.get("truncated"))
     count = ref.get("count")
-    if kind == "aggregate" and str(ref.get("method") or ""):
+    if kind == "aggregate":
         return REL_AGGREGATE
-    if kind == "records" or not sample:
+    if kind == "records" and not sample:
+        return REL_COUNT_ONLY
+    if not sample:
         return REL_COUNT_ONLY
     if truncated:
         return REL_TRUNCATED
-    if isinstance(count, int) and count == len(sample):
+    if isinstance(count, int) and count == len(sample) == 1:
         return REL_DIRECT
+    if isinstance(count, int) and count == len(sample) and count > 1:
+        return REL_ENUMERATED
     return REL_SAMPLE
 
 
@@ -151,6 +166,7 @@ def traceability_manifest(payload: dict[str, Any]) -> TraceabilityManifest:
             "method": str(ref.get("method") or ""),
             "scope": _mapping(ref.get("scope")),
             "relationship": relationship,
+            "coverage": _coverage(relationship),
             "resolvable": relationship != REL_AGGREGATE and _has_structured_sample(ref, sample),
         }
         sources.append(record)
@@ -159,6 +175,18 @@ def traceability_manifest(payload: dict[str, Any]) -> TraceabilityManifest:
     targets: list[dict[str, Any]] = []
     links: list[dict[str, Any]] = []
     linked: set[str] = set()
+    used_ids: set[str] = set()
+
+    def _allocate(preferred: str) -> str:
+        if preferred not in used_ids:
+            used_ids.add(preferred)
+            return preferred
+        index = 2
+        while f"{preferred}#{index}" in used_ids:
+            index += 1
+        allocated = f"{preferred}#{index}"
+        used_ids.add(allocated)
+        return allocated
 
     def _add_target(
         target_id: str,
@@ -183,6 +211,7 @@ def traceability_manifest(payload: dict[str, Any]) -> TraceabilityManifest:
             state = REL_SCOPE
         else:
             state = REL_MISSING
+        target_id = _allocate(target_id)
         targets.append(
             {
                 "target_id": target_id,
@@ -232,7 +261,7 @@ def traceability_manifest(payload: dict[str, Any]) -> TraceabilityManifest:
             table_id = str(table.get("table_id") or "")
             table_domains = _table_domains(table)
             _add_target(
-                f"table:{table_id}",
+                f"section:{section_id}/table:{table_id}",
                 "table",
                 str(table.get("title") or table_id),
                 table_domains,
@@ -317,6 +346,39 @@ def traceability_manifest(payload: dict[str, Any]) -> TraceabilityManifest:
         unlinked=body.unlinked,
         identity=str(rendered["identity"]),
     )
+
+
+def _coverage(relationship: str) -> str:
+    if relationship in {REL_DIRECT, REL_ENUMERATED}:
+        return "COMPLETE"
+    if relationship == REL_TRUNCATED:
+        return "TRUNCATED"
+    if relationship == REL_SAMPLE:
+        return "SAMPLED"
+    if relationship == REL_AGGREGATE:
+        return "AGGREGATE"
+    if relationship == REL_COUNT_ONLY:
+        return "COUNT_ONLY"
+    return "NONE"
+
+
+def manifest_links_closed(manifest: dict[str, Any]) -> bool:
+    """Every link names one declared target and one declared source. No duplicate target ids."""
+    targets = [item for item in manifest.get("targets") or [] if isinstance(item, dict)]
+    sources = [item for item in manifest.get("sources") or [] if isinstance(item, dict)]
+    target_ids = [str(item.get("target_id") or "") for item in targets]
+    source_ids = {str(item.get("ref_id") or "") for item in sources}
+    if len(target_ids) != len(set(target_ids)) or "" in target_ids:
+        return False
+    declared = set(target_ids)
+    for link in manifest.get("links") or []:
+        if not isinstance(link, dict):
+            return False
+        if str(link.get("target_id") or "") not in declared:
+            return False
+        if str(link.get("ref_id") or "") not in source_ids:
+            return False
+    return True
 
 
 def _has_structured_sample(ref: dict[str, Any], sample: list[str]) -> bool:
