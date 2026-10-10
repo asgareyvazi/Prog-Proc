@@ -16,6 +16,8 @@ asserts the things that actually break on a release and never break in a source 
 * ``fields compare`` prints an empty-but-valid comparison pack for two fresh wells;
 * ``analyze --list-questions`` prints the sixteen-question catalog and ``analyze --question``
   answers with parseable ``analyst-answer/1`` JSON - no golden corpus required;
+* ``fields report`` prints an ``engineering-report/1`` document and writes standalone HTML
+  with inline SVG - no golden corpus, no source-tree import;
 * a search and a records read succeed against the empty-but-valid workspace.
 
 Every check prints what it observed.  The exit code is non-zero on the first failure, so this is
@@ -355,6 +357,64 @@ def smoke(kind: str, artefact: Path, workdir: Path) -> None:
         f"{kind}: analyze --question --json is an empty-but-valid answer",
         analyze_ok,
         str(analyze_json.stdout[:90]) if analyze_payload is None else "analyst-answer/1",
+    )
+
+    report_path = workdir / "smoke-report.html"
+    report_json = run(
+        [
+            str(cli),
+            "--json",
+            "fields",
+            "report",
+            "--workspace",
+            str(ws),
+            "--well",
+            "SMOKE-1",
+            "--output",
+            str(report_path),
+        ],
+        cwd=NEUTRAL_CWD,
+    )
+    report_ok = False
+    report_identity = ""
+    try:
+        report_payload = json.loads(report_json.stdout)
+        report_identity = str(report_payload.get("identity") or "")
+        html = report_path.read_text(encoding="utf-8") if report_path.exists() else ""
+        report_ok = (
+            report_json.returncode == 0
+            and report_payload.get("schema") == "engineering-report/1"
+            and report_payload.get("mode") == "single_well"
+            and bool(report_identity)
+            and html.startswith("<!DOCTYPE html>")
+            and report_identity in html
+            and "<svg" in html
+            and "<script" not in html.lower()
+            and "http://www.w3.org/2000/svg" in html
+            and "https://" not in html
+        )
+    except (ValueError, AttributeError, TypeError, OSError):
+        report_payload = None
+    check(
+        f"{kind}: fields report --json --output is a standalone engineering report",
+        report_ok,
+        report_identity[:16] if report_ok else (report_json.stderr or report_json.stdout)[:90],
+    )
+    render_probe = run(
+        [
+            str(python),
+            "-c",
+            "from drilling_intelligence.reporting import render_svg; "
+            "svg = render_svg({'exhibit_id':'smoke','title':'Smoke','state':'NO_DATA',"
+            "'exhibit_type':'state','subjects':[],'series':[],'unit':None,'reason':'empty'}); "
+            "print('SVG' if svg.startswith('<svg') and '<script' not in svg else 'BAD')",
+        ],
+        cwd=NEUTRAL_CWD,
+    )
+    check(
+        f"{kind}: installed package renders SVG without the source tree",
+        render_probe.returncode == 0 and render_probe.stdout.strip() == "SVG",
+        render_probe.stdout.strip() or render_probe.stderr[:90],
     )
 
     check(

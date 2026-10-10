@@ -328,3 +328,67 @@ def test_comparison_tab_renders_the_matrix_without_touching_the_database(qt_app,
         controller.close()
 
     assert before == _database_fingerprint(workspace), "rendering the pack wrote to the database"
+
+
+def test_report_export_uses_the_canonical_renderer_and_the_chart_does_not_query(
+    qt_app, workspace, tmp_path
+) -> None:
+    """The workbench chart and HTML export consume the report contract, not a second fold."""
+    from tests.fixtures.fieldops import ingest, promote, well_id_for
+
+    from drilling_intelligence.intelligence.service import IntelligenceService
+    from drilling_intelligence.reporting.html import render_html
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import MainWindow
+    from drilling_intelligence.ui.worker import ReportWorker
+
+    ingest(workspace)
+    promote(workspace)
+    a3 = well_id_for(workspace, "A-3")
+    b11 = well_id_for(workspace, "B-11")
+    before = _database_fingerprint(workspace)
+    controller = ReviewController()
+    assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
+    window = MainWindow(controller)
+    try:
+        assert window.navigation.item(3).text() == "Report"
+        payload = controller.report(well_ids=[a3, b11])
+        comparison = controller.compare([a3, b11])
+        window.set_comparison(comparison)
+        qt_app.processEvents()
+        assert window.comparison_table.rowCount() > 0
+        assert window.comparison_chart.state()
+        assert window.comparison_chart.subject_ids() == [
+            subject["well_id"] for subject in comparison["basis"]["subjects"]
+        ]
+        chart_before = _database_fingerprint(workspace)
+        window.comparison_chart.repaint()
+        qt_app.processEvents()
+        assert _database_fingerprint(workspace) == chart_before
+        window.set_report(payload)
+        qt_app.processEvents()
+        assert payload["identity"] in window.report_header.text()
+        path = tmp_path / "report.html"
+        assert window.export_loaded_report(str(path)) == payload["identity"]
+        assert path.read_text(encoding="utf-8") == render_html(payload)
+        with workspace.database.read_only() as session:
+            service_payload = (
+                IntelligenceService.for_workspace(workspace)
+                .report(well_ids=[a3, b11], session=session)
+                .to_dict()
+            )
+        assert service_payload["identity"] == payload["identity"]
+        worker = ReportWorker(controller, well_ids=[a3])
+        received: list[Any] = []
+        failed: list[Any] = []
+        worker.succeeded.connect(received.append)
+        worker.failed.connect(failed.append)
+        worker.run()
+        assert received and not failed
+        assert received[0]["mode"] == "single_well"
+        assert received[0]["schema"] == "engineering-report/1"
+    finally:
+        window.close()
+        qt_app.processEvents()
+        controller.close()
+    assert before == _database_fingerprint(workspace)

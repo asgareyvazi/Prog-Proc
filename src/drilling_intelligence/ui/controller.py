@@ -206,6 +206,27 @@ class ReviewController:
             .to_dict()
         )
 
+    def report(
+        self,
+        *,
+        well_ids: Sequence[str] = (),
+        anchor: str = "",
+        offsets: Sequence[str] = (),
+    ) -> dict[str, Any]:
+        """The engineering report as plain values. The view does not choose the fold."""
+        workspace = self._require_workspace()
+        from ..intelligence.service import IntelligenceService
+
+        return (
+            IntelligenceService.for_workspace(workspace)
+            .report(
+                well_ids=[str(value) for value in well_ids],
+                anchor=str(anchor or ""),
+                offsets=[str(value) for value in offsets],
+            )
+            .to_dict()
+        )
+
     def run_npt_rollup(
         self,
         well_id: str,

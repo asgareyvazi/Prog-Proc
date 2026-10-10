@@ -333,6 +333,30 @@ What it is not, is the point: no sentence parsing, no AI, no embeddings, no conf
 exact ids over the certified methods, so a future automation layer can ask a well-formed question and
 *check* the answer against a declared contract.
 
+## Engineering report: one offline document, no second calculation
+
+`IntelligenceService.report(...)` — `drillintel fields report` — turns a certified pack into a
+presentation document (`engineering-report/1`). One well composes `DecisionPack`. Two or more wells,
+named offsets (`--anchor` plus `--offsets`), and discovered offsets (`--anchor` alone) compose
+`ComparisonPack` through the same selection the comparison pack already certifies. The report does not
+rediscover offsets, re-sum NPT, convert units, or execute stored calculations.
+
+The comparison matrix in the report is the authoritative comparison. Charts are a second view of those
+cells: a bar is drawn only when the source row is `COMPARABLE` and the values are numeric and share one
+unit. `INCOMPARABLE`, `UNRESOLVED`, `MISSING`, `STALE`, and non-numeric rows keep their source values
+and an explicit chart state instead of a shared axis. A null cell is not a bar of zero. A counted zero
+stays a zero. Currency charts are one currency per axis. Risk bands follow the comparison pack's scale
+gate and are not coloured as danger. Site-scoped HSE incidents are not attached to a well chart.
+
+HTML is standalone: inline CSS, inline SVG, no script, no remote font or image. The same exhibit
+specification feeds the SVG renderer and the workbench's native painter. Report identity is a hash of
+the report body and the source pack identity; the output path and the clock are not in it. Rendering
+issues no SQL. Nothing is stored: no report table, no cache, no migration.
+
+What the packs do not carry is stated, not invented. A point-level depth series is `UNSUPPORTED` —
+figure metadata is not a curve and not portable image bytes. A timeline is not re-queried. `LOGGING`
+and `SERVICE_REPORT` remain `NOT READY`. PDF is not produced.
+
 ## How this coexists with search and knowledge
 
 The search index carries three kinds of unit, all ranked through the one BM25 path in

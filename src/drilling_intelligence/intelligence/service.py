@@ -397,6 +397,40 @@ class IntelligenceService:
                 offset_limit=offset_limit,
             )
 
+    def report(
+        self,
+        *,
+        well_ids: Sequence[str] = (),
+        anchor: str = "",
+        offsets: Sequence[str] = (),
+        since: object = None,
+        until: object = None,
+        detail: int = 1,
+        evidence_limit: int = 10,
+        offset_limit: int = 10,
+        session: Session | None = None,
+    ) -> Any:
+        """A deterministic engineering report over one well or a certified comparison.
+
+        Single-well requests compose the decision pack. Two or more wells, named
+        offsets, and discovered offsets compose the comparison pack. Nothing is
+        stored. Rendering is not done here.
+        """
+        from ..reporting.service import build_report
+
+        with self._session(session) as active:
+            return build_report(
+                active,
+                well_ids=well_ids,
+                anchor=anchor,
+                offsets=offsets,
+                since=since,
+                until=until,
+                detail=detail,
+                evidence_limit=evidence_limit,
+                offset_limit=offset_limit,
+            )
+
     # -- patterns -------------------------------------------------------------
     def patterns(
         self,

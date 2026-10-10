@@ -2069,6 +2069,31 @@ def command_fields(args: argparse.Namespace) -> int:
                 )
                 _emit(pack.to_dict(), as_json=args.json, lines=_decision_lines(pack))
                 return 0
+            if args.action == "report":
+                # Names resolve here. Mode, folds, exhibits and identity live in the
+                # report service. HTML export uses the same renderer as the workbench.
+                from ..reporting.html import write_report_html
+
+                well_refs = [ref for ref in (args.well or []) if ref is not None]
+                anchor_ref = str(args.anchor or "").strip()
+                offset_refs = [ref for ref in (args.offsets or []) if ref is not None]
+                pack = service.report(
+                    well_ids=[_resolve_well_id(workspace, ref) or "" for ref in well_refs],
+                    anchor=(_resolve_well_id(workspace, anchor_ref) or "" if anchor_ref else ""),
+                    offsets=[_resolve_well_id(workspace, ref) or "" for ref in offset_refs],
+                    since=args.since,
+                    until=args.until,
+                    detail=int(getattr(args, "detail", 1)),
+                    evidence_limit=int(getattr(args, "evidence_limit", 10)),
+                    offset_limit=int(getattr(args, "offset_limit", 10)),
+                    session=session,
+                )
+                output = str(getattr(args, "output", "") or "").strip()
+                if output:
+                    write_report_html(output, pack)
+                    print(f"wrote {output}", file=sys.stderr)
+                _emit(pack.to_dict(), as_json=args.json, lines=_report_lines(pack))
+                return 0
             if args.action == "compare":
                 # Selection only in the CLI: names are resolved to ids here and every
                 # validation, fold and limitation lives in the service (no business logic).
@@ -2217,6 +2242,28 @@ def _compare_lines(pack: Any) -> list[str]:
     if payload["limitations"]:
         lines.append("limitations: " + ", ".join(payload["limitations"]))
     lines.append(f"identity: {payload['identity']}")
+    return lines
+
+
+def _report_lines(pack: Any) -> list[str]:
+    """A contents list for a report. Values come from the pack; null stays \"-\"."""
+    payload = pack.to_dict()
+    lines = [
+        f"engineering report: {payload['schema']}",
+        f"mode: {payload['mode']}",
+        f"title: {payload['title']}",
+        f"identity: {payload['identity']}",
+        "",
+    ]
+    for section in payload["sections"]:
+        lines.append(f"section {section['section_id']}: {section['state']}  {section['title']}")
+    lines.append("")
+    for exhibit in payload["exhibits"]:
+        lines.append(f"exhibit {exhibit['exhibit_id']}: {exhibit['state']}  {exhibit['title']}")
+    if payload["limitations"]:
+        lines.append("limitations: " + ", ".join(payload["limitations"]))
+    for item in payload["source_packs"]:
+        lines.append(f"source: {item.get('schema')} {item.get('identity')}")
     return lines
 
 
@@ -3266,6 +3313,54 @@ def build_parser() -> argparse.ArgumentParser:
             action.add_argument("--since", help="count records dated on or after this ISO date")
             action.add_argument("--until", help="count records dated on or before this ISO date")
         action.set_defaults(handler=command_fields)
+
+    report = fields_sub.add_parser(
+        "report",
+        help="a deterministic engineering report (HTML export and JSON) from the "
+        "decision pack or the comparison pack",
+        parents=[common],
+    )
+    report.add_argument(
+        "--well",
+        action="append",
+        default=[],
+        help="a subject well (id or name); one well is a decision report, two or more a comparison",
+    )
+    report.add_argument(
+        "--anchor",
+        help="anchor well (id or name); with no --offsets, candidates are discovered",
+    )
+    report.add_argument(
+        "--offsets",
+        action="append",
+        default=[],
+        help="an offset well (id or name); requires --anchor",
+    )
+    report.add_argument("--since", help="count records dated on or after this ISO date")
+    report.add_argument("--until", help="count records dated on or before this ISO date")
+    report.add_argument(
+        "--detail",
+        type=int,
+        default=1,
+        help="0 = headline sections only; 1 = include bounded rollups (default 1)",
+    )
+    report.add_argument(
+        "--evidence-limit",
+        type=int,
+        default=10,
+        help="at most N sampled row ids per evidence reference (default 10)",
+    )
+    report.add_argument(
+        "--offset-limit",
+        type=int,
+        default=10,
+        help="at most N discovered offset candidates (default 10)",
+    )
+    report.add_argument(
+        "--output",
+        help="write a standalone HTML report to this path; does not change report identity",
+    )
+    report.set_defaults(handler=command_fields)
 
     analyze = sub.add_parser(
         "analyze",

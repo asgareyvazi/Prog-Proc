@@ -50,6 +50,8 @@ from ..core.errors import (
     WorkspaceError,
 )
 from ..database.integrity import KnowledgeIntegrityError
+from ..reporting.exhibits import exhibits_from_comparison
+from ..reporting.html import write_report_html
 from ..review import (
     DomainReview,
     ReviewAction,
@@ -58,6 +60,7 @@ from ..review import (
     ReviewConflict,
     ReviewRecord,
 )
+from .chart import ExhibitChart
 from .controller import NptRollupResult, ReviewController, WellChoice
 from .models import (
     MappingTableModel,
@@ -69,6 +72,7 @@ from .worker import (
     CalculationWorker,
     ComparisonWorker,
     DecisionWorker,
+    ReportWorker,
     ReviewActionWorker,
     ReviewWorker,
     WorkerError,
@@ -78,6 +82,7 @@ _NAVIGATION = (
     "Overview",
     "Decision",
     "Comparison",
+    "Report",
     "Sections",
     "Plan vs Actual",
     "Records",
@@ -158,6 +163,11 @@ class MainWindow(QMainWindow):
         self._decision_worker: DecisionWorker | None = None
         self._comparison_thread: QThread | None = None
         self._comparison_worker: ComparisonWorker | None = None
+        self._report_thread: QThread | None = None
+        self._report_worker: ReportWorker | None = None
+        self._comparison_exhibits: dict[str, dict] = {}
+        self._report_payload: dict | None = None
+        self._report_exhibits: dict[str, dict] = {}
         self._action_thread: QThread | None = None
         self._action_worker: ReviewActionWorker | None = None
         self._calculation_thread: QThread | None = None
@@ -264,6 +274,7 @@ class MainWindow(QMainWindow):
         self._build_overview_page()
         self._build_decision_page()
         self._build_comparison_page()
+        self._build_report_page()
         self._build_sections_page()
         self._build_plan_page()
         self._build_records_page()
@@ -326,13 +337,10 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(page)
 
     def _build_comparison_page(self) -> None:
-        """The comparison pack as a matrix: Metric | well | well | ... | State.
+        """The comparison pack as a matrix, with a chart view of the same cells.
 
-        A grid rather than a tree because the pack *is* a matrix: one row per metric, one
-        column per subject, the comparability verdict in the last column.  A cell that the
-        source never valued renders as the em dash the whole workbench uses for "absent" -
-        visibly different from a recorded zero - and carries the value state as a tooltip.
-        No charting dependency: a strong table is the honest rendering of this document.
+        The matrix stays authoritative. The chart paints a ReportExhibit built from those
+        cells; it does not reorder wells or replace a missing value with zero.
         """
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -351,6 +359,24 @@ class MainWindow(QMainWindow):
         self.comparison_header = QLabel("Tick at least two wells, then build the comparison pack.")
         self.comparison_header.setWordWrap(True)
         layout.addWidget(self.comparison_header)
+        self.comparison_authority = QLabel(
+            "The matrix is authoritative. Charts are a view of the same cells and do not replace it."
+        )
+        self.comparison_authority.setWordWrap(True)
+        layout.addWidget(self.comparison_authority)
+        chart_row = QHBoxLayout()
+        self.comparison_chart_selector = QComboBox()
+        self.comparison_chart_selector.setObjectName("comparisonChartSelector")
+        self.comparison_chart_selector.currentIndexChanged.connect(self._comparison_chart_changed)
+        chart_row.addWidget(self.comparison_chart_selector, 1)
+        layout.addLayout(chart_row)
+        self.comparison_chart = ExhibitChart()
+        self.comparison_chart.setObjectName("comparisonExhibitChart")
+        layout.addWidget(self.comparison_chart, 1)
+        self.comparison_chart_state = QLabel("Chart state: —")
+        self.comparison_chart_state.setWordWrap(True)
+        self.comparison_chart_state.setObjectName("comparisonChartState")
+        layout.addWidget(self.comparison_chart_state)
         self.comparison_table = QTableWidget()
         self.comparison_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.comparison_table.setWordWrap(True)
@@ -361,6 +387,54 @@ class MainWindow(QMainWindow):
         self.comparison_limitations = QLabel("")
         self.comparison_limitations.setWordWrap(True)
         layout.addWidget(self.comparison_limitations)
+        self.pages.addWidget(page)
+
+    def _build_report_page(self) -> None:
+        """Report preview and HTML export. The page selects wells; the service composes."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        controls = QHBoxLayout()
+        self.report_wells = QListWidget()
+        self.report_wells.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.report_wells.setMaximumHeight(110)
+        controls.addWidget(self.report_wells, 1)
+        side = QVBoxLayout()
+        self.report_single_button = QPushButton("Report for open well")
+        self.report_single_button.clicked.connect(self._request_single_report)
+        side.addWidget(self.report_single_button)
+        self.report_compare_button = QPushButton("Report for ticked wells")
+        self.report_compare_button.clicked.connect(self._request_ticked_report)
+        side.addWidget(self.report_compare_button)
+        self.report_offsets_button = QPushButton("Discovered offsets of open well")
+        self.report_offsets_button.clicked.connect(self._request_offset_report)
+        side.addWidget(self.report_offsets_button)
+        self.report_export_button = QPushButton("Export HTML…")
+        self.report_export_button.clicked.connect(self._export_report_dialog)
+        side.addWidget(self.report_export_button)
+        controls.addLayout(side)
+        layout.addLayout(controls)
+        self.report_header = QLabel(
+            "Build a report from the open well, ticked wells, or discovered offsets."
+        )
+        self.report_header.setWordWrap(True)
+        self.report_header.setObjectName("reportHeader")
+        layout.addWidget(self.report_header)
+        self.report_chart_selector = QComboBox()
+        self.report_chart_selector.setObjectName("reportChartSelector")
+        self.report_chart_selector.currentIndexChanged.connect(self._report_chart_changed)
+        layout.addWidget(self.report_chart_selector)
+        self.report_chart = ExhibitChart()
+        self.report_chart.setObjectName("reportExhibitChart")
+        layout.addWidget(self.report_chart, 1)
+        self.report_chart_state = QLabel("Chart state: —")
+        self.report_chart_state.setWordWrap(True)
+        layout.addWidget(self.report_chart_state)
+        self.report_sections = QLabel("")
+        self.report_sections.setWordWrap(True)
+        layout.addWidget(self.report_sections)
+        self.report_limitations = QLabel("")
+        self.report_limitations.setWordWrap(True)
+        layout.addWidget(self.report_limitations)
         self.pages.addWidget(page)
 
     def _build_sections_page(self) -> None:
@@ -724,6 +798,16 @@ class MainWindow(QMainWindow):
             item.setToolTip(choice.well_id)
             self.comparison_wells.addItem(item)
         self.comparison_wells.blockSignals(False)
+        self.report_wells.blockSignals(True)
+        self.report_wells.clear()
+        for choice in choices:
+            item = QListWidgetItem(choice.name or choice.label)
+            item.setData(Qt.ItemDataRole.UserRole, choice.well_id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setToolTip(choice.well_id)
+            self.report_wells.addItem(item)
+        self.report_wells.blockSignals(False)
         selected = self._select_well(well_reference)
         self.well_combo.blockSignals(False)
         if not choices:
@@ -980,6 +1064,210 @@ class MainWindow(QMainWindow):
         self._set_status(
             f"Comparison pack loaded for {len(subjects)} well(s) ({len(rows)} metric row(s))."
         )
+        self._load_comparison_exhibits(payload)
+
+    def _load_comparison_exhibits(self, payload: dict) -> None:
+        """Chart specs from the pack already on screen. No database, no second fold."""
+        exhibits = [item.payload() for item in exhibits_from_comparison(payload)]
+        self._comparison_exhibits = {item["exhibit_id"]: item for item in exhibits}
+        self.comparison_chart_selector.blockSignals(True)
+        self.comparison_chart_selector.clear()
+        for item in exhibits:
+            self.comparison_chart_selector.addItem(
+                f"{item.get('title')} [{item.get('state')}]",
+                item.get("exhibit_id"),
+            )
+        preferred = next(
+            (index for index, item in enumerate(exhibits) if item.get("state") == "RENDERED"), 0
+        )
+        if exhibits:
+            self.comparison_chart_selector.setCurrentIndex(preferred)
+            self._show_comparison_exhibit(str(exhibits[preferred].get("exhibit_id") or ""))
+        self.comparison_chart_selector.blockSignals(False)
+
+    @Slot(int)
+    def _comparison_chart_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        exhibit_id = str(self.comparison_chart_selector.itemData(index) or "")
+        self._show_comparison_exhibit(exhibit_id)
+
+    def _show_comparison_exhibit(self, exhibit_id: str) -> None:
+        exhibit = self._comparison_exhibits.get(exhibit_id)
+        if exhibit is None:
+            self.comparison_chart.set_exhibit(None)
+            self.comparison_chart_state.setText("Chart state: —")
+            return
+        self.comparison_chart.set_exhibit(exhibit)
+        reason = exhibit.get("reason") or exhibit.get("caption") or ""
+        self.comparison_chart_state.setText(f"Chart state: {exhibit.get('state')}. {reason}")
+
+    def _checked_report_wells(self) -> list[str]:
+        well_ids: list[str] = []
+        for index in range(self.report_wells.count()):
+            item = self.report_wells.item(index)
+            if item.checkState() == Qt.CheckState.Checked:
+                value = str(item.data(Qt.ItemDataRole.UserRole) or "")
+                if value:
+                    well_ids.append(value)
+        return well_ids
+
+    def _open_well_id(self) -> str:
+        return str(self.well_combo.currentData() or "")
+
+    @Slot()
+    def _request_single_report(self) -> None:
+        well_id = self._open_well_id()
+        if not well_id:
+            self._set_status("Open a well before building its report.", error=True)
+            return
+        self._request_report(well_ids=[well_id])
+
+    @Slot()
+    def _request_ticked_report(self) -> None:
+        well_ids = self._checked_report_wells()
+        if not well_ids:
+            self._set_status("Tick at least one well, or use the open-well report.", error=True)
+            return
+        self._request_report(well_ids=well_ids)
+
+    @Slot()
+    def _request_offset_report(self) -> None:
+        well_id = self._open_well_id()
+        if not well_id:
+            self._set_status("Open a well before discovering offsets.", error=True)
+            return
+        self._request_report(anchor=well_id)
+
+    def _request_report(
+        self,
+        *,
+        well_ids: Sequence[str] = (),
+        anchor: str = "",
+        offsets: Sequence[str] = (),
+    ) -> None:
+        if self._report_thread is not None:
+            return
+        thread = QThread(self)
+        worker = ReportWorker(
+            self.controller,
+            well_ids=well_ids,
+            anchor=anchor,
+            offsets=offsets,
+            parent=None,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._report_succeeded)
+        worker.failed.connect(self._report_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        worker.succeeded.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(self._report_thread_finished)
+        self._report_thread = thread
+        self._report_worker = worker
+        thread.start()
+
+    @Slot(object)
+    def _report_succeeded(self, payload: dict) -> None:
+        self.set_report(payload)
+
+    @Slot(object)
+    def _report_failed(self, error: WorkerError) -> None:
+        self._set_status(f"Report {error.category}: {error.message}", error=True)
+
+    @Slot()
+    def _report_thread_finished(self) -> None:
+        thread = self._report_thread
+        self._report_thread = None
+        self._report_worker = None
+        if thread is not None:
+            thread.deleteLater()
+
+    def set_report(self, payload: dict) -> None:
+        """Render a ReportPack. Export writes this payload, not a second composition."""
+        self._report_payload = payload
+        subject = payload.get("subject") or {}
+        names = [
+            str(item.get("name") or item.get("well_id") or "")
+            for item in subject.get("subjects") or []
+        ]
+        who = ", ".join(names) or str(subject.get("name") or subject.get("id") or "")
+        self.report_header.setText(
+            f"Report {payload.get('schema')} · {payload.get('mode')} · {who} · "
+            f"identity {payload.get('identity')}"
+        )
+        section_lines = [
+            f"{section.get('section_id')}: {section.get('state')}"
+            for section in payload.get("sections") or []
+        ]
+        self.report_sections.setText("Sections: " + ", ".join(section_lines))
+        limitations = payload.get("limitations") or []
+        self.report_limitations.setText(
+            "Limitations: " + ", ".join(str(item) for item in limitations)
+            if limitations
+            else "Limitations: none"
+        )
+        exhibits = list(payload.get("exhibits") or [])
+        self._report_exhibits = {str(item.get("exhibit_id")): item for item in exhibits}
+        self.report_chart_selector.blockSignals(True)
+        self.report_chart_selector.clear()
+        for item in exhibits:
+            self.report_chart_selector.addItem(
+                f"{item.get('title')} [{item.get('state')}]",
+                item.get("exhibit_id"),
+            )
+        preferred = next(
+            (index for index, item in enumerate(exhibits) if item.get("state") == "RENDERED"), 0
+        )
+        if exhibits:
+            self.report_chart_selector.setCurrentIndex(preferred)
+            self._show_report_exhibit(str(exhibits[preferred].get("exhibit_id") or ""))
+        self.report_chart_selector.blockSignals(False)
+        self._set_status(f"Report loaded ({payload.get('mode')}).")
+
+    @Slot(int)
+    def _report_chart_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        self._show_report_exhibit(str(self.report_chart_selector.itemData(index) or ""))
+
+    def _show_report_exhibit(self, exhibit_id: str) -> None:
+        exhibit = self._report_exhibits.get(exhibit_id)
+        if exhibit is None:
+            self.report_chart.set_exhibit(None)
+            self.report_chart_state.setText("Chart state: —")
+            return
+        self.report_chart.set_exhibit(exhibit)
+        self.report_chart_state.setText(
+            f"Chart state: {exhibit.get('state')}. {exhibit.get('reason') or ''}"
+        )
+
+    @Slot()
+    def _export_report_dialog(self) -> None:
+        if not self._report_payload:
+            self._set_status("Build a report before exporting.", error=True)
+            return
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Export HTML report",
+            "report.html",
+            "HTML (*.html)",
+        )
+        if not path:
+            return
+        try:
+            self.export_loaded_report(path)
+        except Exception as exc:  # noqa: BLE001 - export must not crash the window
+            self._set_status(f"Export failed: {exc}", error=True)
+
+    def export_loaded_report(self, path: str) -> str:
+        """Write the loaded report with the canonical HTML renderer. No second query."""
+        if not self._report_payload:
+            raise ValidationError("no report is loaded", hint="build a report before exporting")
+        write_report_html(path, self._report_payload)
+        return str(self._report_payload.get("identity") or "")
 
     @Slot(object)
     def _review_failed(self, error: WorkerError) -> None:

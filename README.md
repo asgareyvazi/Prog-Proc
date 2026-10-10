@@ -35,6 +35,7 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Decision pack: one deterministic, evidence-backed read model per well/field/project - execution vs plan, per-currency economics, stated risk, learning, patterns, recommendations, calculations, freshness, limitations and observations (`fields decision`) | **implemented, tested, query-count scale-certified at 41 SELECTs regardless of row count** (`docs/DECISIONS.md` ADR-35) |
 | Comparison pack: two or more wells side by side on the same recorded basis - per-metric values with `COMPARABLE`/`INCOMPARABLE`/`MISSING`/`UNRESOLVED` states, unit and risk-scale identity gates, offset-candidate discovery, forensic evidence, limitations (`fields compare`) | **implemented, tested, query-count scale-certified at 6 + 39 SELECTs per subject** (`docs/DECISIONS.md` ADR-36) |
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
+| Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, and a native workbench preview (`fields report`) | **implemented, tested** - charts plot certified cells only; no new dependency, no new table (`docs/DECISIONS.md` ADR-37) |
 | Domain CLI: `records`, `records rollup`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
 | Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented, read-only** — PySide6-Essentials is optional; it consumes `DomainReviewService`, supports current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model |
 | Skills, AI providers, and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
@@ -264,6 +265,10 @@ drillintel fields decision --field "North Cormorant"      # execution, economics
 drillintel fields decision --well A-3 --json              # the machine-readable decision substrate
 drillintel fields compare --well A-3 --well B-11          # the matrix: metric | A-3 | B-11 | state
 drillintel fields compare --anchor A-3 --json             # candidates discovered through recorded overlap
+drillintel fields report --well A-3 --output a3.html      # one-well report, offline HTML
+drillintel fields report --well A-3 --well B-11 --json    # comparison report; JSON is the service document
+drillintel fields report --anchor A-3 --offsets B-11 --output offsets.html
+drillintel fields report --anchor A-3 --output discovered.html
 drillintel analyze --list-questions                       # the fixed question catalog, with its contracts
 drillintel analyze --question npt_summary --well A-3      # one typed answer, JSON == the service document
 drillintel patterns find --field "North Cormorant"        # recurrence in the rows, not a prediction
@@ -297,6 +302,14 @@ method+scope reference. `drillintel analyze --question ...` is the machine-facin
 surface: a closed catalog of sixteen question ids with declared params, scope, evidence, lifecycle and
 missing-value semantics, answered as typed JSON. It is AI-*ready* shape, not AI: no prompts, no models,
 no confidence scores, and an unknown question fails with the list of real ids instead of a guess.
+
+`drillintel fields report` composes those packs into one offline HTML file. A single `--well` uses the
+decision pack; two or more wells, or `--anchor` / `--offsets`, use the comparison pack and its selection
+rules. Charts are inline SVG of cells the pack already states. Differing units are not plotted on one
+axis, a missing value is not drawn as zero, and the matrix in the file remains the authoritative
+comparison. `--json` prints `ReportPack.to_dict()`. `--output` writes HTML and does not change the
+report identity. There is no PDF, no remote asset, and no depth log: point-level curves are not in the
+certified packs.
 
 Read that last line as the layer's whole philosophy: the hours are what the records claim, each with the
 basis it was stated on, and the tool tells you which row to open rather than smoothing the number for you.

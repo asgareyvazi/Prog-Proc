@@ -1824,5 +1824,41 @@ instead of ids. Fixed at the source with `.scalars()` so every sample is the ide
 **Consequences.** Read-side only: no table, no migration, no promotion contract, no cache, no search
 index change; registry counts are untouched. New surface: `intelligence/comparison.py`,
 `intelligence/analyst.py`, `IntelligenceService.compare()` / `.analyze()`, CLI `fields compare` and
-`analyze`, a Comparison tab in the workbench (matrix table, no charting dependency - graphics are a
-documented deferral), and tests pinning semantics, negatives A-L, scale, fingerprint and CLI parity.
+`analyze`, a Comparison tab in the workbench (matrix table remains authoritative). The graphical view
+deferred here is delivered in V7.7 (ADR-37) as inline SVG and a native painter over the same exhibit
+contract, not as a second comparison. Tests pin semantics, negatives A-L, scale, fingerprint and CLI parity.
+
+## ADR-37 — V7.7: an engineering report is a rendering of certified packs, not a new calculation
+
+**Status:** accepted (2026-10-10)
+
+The decision pack and the comparison pack answer the engineering question. They do not hand an engineer
+a document they can file. V7.7 adds `ReportPack` (schema `engineering-report/1`) as a presentation
+contract composed from those packs, plus a standalone HTML export and chart exhibits that plot only
+values the source pack already states.
+
+Design decisions worth keeping:
+
+*   **Composition is not a second fold.** A single well calls `DecisionIntelligence.pack`. Every other
+    mode calls `ComparisonIntelligence.compare`, including named offsets and discovered offsets, so
+    selection, units, risk-scale identity, site-scoped HSE and truncation stay where V7.6 certified
+    them. The report copies cells. It does not re-sum NPT, convert currency, score risk, or execute a
+    stored calculation.
+*   **The matrix stays authoritative.** Comparative HTML renders the comparison matrix before any chart.
+    A chart is an exhibit specification (`horizontal_bar`, `grouped_bar`, or `state`) shared by the SVG
+    renderer and the workbench painter. `INCOMPARABLE` and `UNRESOLVED` rows are not drawn on one axis.
+    A null value is not a zero bar. Subject order is the selection order.
+*   **Depth and logging stay unsupported.** Figure records carry caption, page, bbox and recovered text,
+    not portable image bytes or curve samples. The report emits an explicit `UNSUPPORTED` depth exhibit
+    rather than a log drawn from endpoints. `LOGGING` and `SERVICE_REPORT` remain `NOT READY`. The
+    report does not issue a second timeline query.
+*   **The file is offline and deterministic.** HTML inlines its CSS and SVG. No script, no event
+    handler, no remote asset. Identity is `sha256_obj` of the report body; the output path and the
+    clock are not inputs. The same pack renders to the same bytes. Export from the CLI and the
+    workbench uses one renderer.
+*   **Nothing is stored.** No report table, no cache, no migration, no new runtime dependency. Rendering
+    adds no SQL on top of the pack it wraps.
+
+**Consequences.** New surface: `reporting/`, `IntelligenceService.report()`, CLI `fields report`
+(`--json` and `--output`), a Report page, and a chart strip on the Comparison page that does not hide
+the matrix. PDF is not in this release. A true depth plot waits on point-level data the packs do not have.

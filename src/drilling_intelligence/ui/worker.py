@@ -222,6 +222,66 @@ class ComparisonWorker(QObject):
         self.succeeded.emit(payload)
 
 
+class ReportWorker(QObject):
+    """Run one read-only report build outside the GUI event loop."""
+
+    succeeded = Signal(object)
+    failed = Signal(object)
+
+    def __init__(
+        self,
+        controller: ReviewController,
+        *,
+        well_ids: Sequence[str] = (),
+        anchor: str = "",
+        offsets: Sequence[str] = (),
+        parent: Any = None,
+    ) -> None:
+        super().__init__(parent)
+        self._controller = controller
+        self._well_ids = tuple(well_ids)
+        self._anchor = anchor
+        self._offsets = tuple(offsets)
+
+    @Slot()
+    def run(self) -> None:
+        if QThread.currentThread().isInterruptionRequested():
+            self.failed.emit(
+                WorkerError("cancelled", "Report build was cancelled before it started.")
+            )
+            return
+        try:
+            payload = self._controller.report(
+                well_ids=list(self._well_ids),
+                anchor=self._anchor,
+                offsets=list(self._offsets),
+            )
+        except ValidationError as exc:
+            self.failed.emit(
+                WorkerError(
+                    "input",
+                    str(exc),
+                    str(exc.context.get("hint") or exc.hint or "Check the selected wells."),
+                    type(exc).__name__,
+                )
+            )
+            return
+        except DrillingIntelligenceError as exc:
+            self.failed.emit(
+                WorkerError(
+                    "workspace",
+                    str(exc),
+                    str(exc.context.get("hint") or exc.hint or "The workspace could not answer."),
+                    type(exc).__name__,
+                )
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - the GUI boundary reports, it does not crash
+            self.failed.emit(WorkerError("internal", str(exc), "", type(exc).__name__))
+            return
+        self.succeeded.emit(payload)
+
+
 class CalculationWorker(QObject):
     """Run one explicit NPT V1 calculation outside the GUI event loop."""
 
@@ -387,6 +447,7 @@ __all__ = [
     "CalculationWorker",
     "ComparisonWorker",
     "DecisionWorker",
+    "ReportWorker",
     "ReviewActionWorker",
     "ReviewWorker",
     "WorkerError",
