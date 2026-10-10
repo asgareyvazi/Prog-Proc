@@ -146,6 +146,8 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
         run: |
           xvfb-run -a -s "-screen 0 1280x1024x24" python -c "from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName())"
 
@@ -153,6 +155,8 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
           PYTHONUNBUFFERED: "1"
           PYTHONFAULTHANDLER: "1"
         run: |
