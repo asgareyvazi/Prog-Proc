@@ -372,7 +372,8 @@ def test_workbench_errors_redact_before_they_reach_the_status_bar():
                 for item in node.body
             )
     assert found
-    assert "safe_detail" in source
+    assert "core.redact import safe_detail" in source
+    assert "reporting.audit import safe_detail" not in source
 
 
 def test_overall_status_does_not_depend_on_entry_order():

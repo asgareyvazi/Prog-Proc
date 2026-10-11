@@ -15,6 +15,7 @@ from ..core.errors import (
     ProviderUnavailableError,
     ValidationError,
 )
+from ..core.redact import safe_detail
 from ..database.integrity import KnowledgeIntegrityError
 from ..review import ReviewActionRequest
 from .controller import ReviewController
@@ -30,8 +31,6 @@ class WorkerError:
     exception_type: str = ""
 
     def __post_init__(self) -> None:
-        from ..reporting.audit import safe_detail
-
         object.__setattr__(self, "message", " ".join(safe_detail(self.message).split()))
         object.__setattr__(self, "hint", " ".join(safe_detail(self.hint).split()))
 

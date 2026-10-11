@@ -1980,4 +1980,5 @@ V8.0 closed the missing-coverage and bare-exit-134 holes. Three narrower gaps re
     required: a green workbench job cannot waive a missing artifact.
 
 **Consequences.** No schema bump, dependency, table, or migration. Alembic head stays `0019`.
-`PARTIALLY_VERIFIED` remains exit 0; `FAILED` and `INCOMPLETE` remain exit 1.
+`PARTIALLY_VERIFIED` remains exit 0; `FAILED` and `INCOMPLETE` remain exit 1. Workbench error
+text is redacted by `core.redact`, which does not import retrieval or the citation auditor.
