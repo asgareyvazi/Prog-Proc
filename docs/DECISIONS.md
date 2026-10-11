@@ -1957,3 +1957,27 @@ without keeping the first attempt or checking that the abort was the known runne
 
 **Consequences.** `report-evidence-audit/1` gains `operational_error`. No new dependency, table,
 or migration. Alembic head stays `0019`.
+
+## ADR-41 — V8.1: selected scope, redacted diagnostics, and required Qt logs
+
+**Status:** accepted (2026-10-11)
+
+V8.0 closed the missing-coverage and bare-exit-134 holes. Three narrower gaps remained.
+
+*   **Selected wells are the subject.** When the report subject names wells, `request.well_ids`
+    cannot add more. A request-only payload still uses those ids, because that is the only scope
+    the pack recorded. A date window still does not make a cost, risk, or lesson row historical.
+    A zero count with no sample remains count-only: the evidence reference does not carry a
+    separate "query ran" flag, and that state is not complete verification.
+*   **Diagnostics stay useful and path-free.** `safe_detail` removes tracebacks, absolute and
+    relative paths (including paths with spaces), URL userinfo, and assignment-shaped secrets.
+    Every isolated citation failure is kept, in identity order, up to five redacted lines. The
+    workbench status text passes through the same redaction. `operational_error` remains one
+    string on `report-evidence-audit/1`; its contents may now name more than the last failure.
+*   **Workbench evidence is accounted for.** Collection compares pytest node ids with an AST
+    inventory, so class methods, async tests, and parametrized cases are expected rather than
+    rejected. A missing, extra, or duplicate node fails the job. The attempt-log upload is
+    required: a green workbench job cannot waive a missing artifact.
+
+**Consequences.** No schema bump, dependency, table, or migration. Alembic head stays `0019`.
+`PARTIALLY_VERIFIED` remains exit 0; `FAILED` and `INCOMPLETE` remain exit 1.

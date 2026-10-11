@@ -131,6 +131,7 @@ class CitationAuditor:
     def __init__(self, *, workspace: Any) -> None:
         self._workspace = workspace
         self.isolated_error: BaseException | None = None
+        self.isolated_errors: tuple[BaseException, ...] = ()
 
     @classmethod
     def for_workspace(cls, workspace: Any) -> CitationAuditor:
@@ -166,6 +167,8 @@ class CitationAuditor:
         from ..documents.repository import DocumentRepository
 
         self.isolated_error = None
+        self.isolated_errors = ()
+        isolated: list[BaseException] = []
         material = tuple(sorted(items, key=lambda item: str(getattr(item, "identity", ""))))
         version_ids = sorted({vid for item in material for vid in self._cited_version_ids(item)})
         with self._workspace.database.read_only() as session:
@@ -189,6 +192,7 @@ class CitationAuditor:
                 except Exception as exc:
                     if not isolate:
                         raise
+                    isolated.append(exc)
                     self.isolated_error = exc
                     results.append(
                         CitationCheck(
@@ -199,6 +203,7 @@ class CitationAuditor:
                             detail=f"{type(exc).__name__}: {exc}",
                         )
                     )
+            self.isolated_errors = tuple(isolated)
             return tuple(results)
 
     @staticmethod

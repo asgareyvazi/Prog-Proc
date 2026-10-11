@@ -362,15 +362,16 @@ def _lineage_html(manifest: Mapping[str, Any], audit: Mapping[str, Any] | None) 
         )
     else:
         overall = str(audit.get("overall") or "")
+        operational = safe_detail(str(audit.get("operational_error") or ""))
         if overall not in {
             "FULLY_VERIFIED",
             "PARTIALLY_VERIFIED",
             "FAILED",
             "INCOMPLETE",
-        }:
+        } or (overall == "FULLY_VERIFIED" and operational):
             notice = (
                 "Citation verification was requested, but the audit did not return a "
-                "recognised status. That is not full verification."
+                "recognised successful status. That is not full verification."
             )
         else:
             notice = (
@@ -380,6 +381,8 @@ def _lineage_html(manifest: Mapping[str, Any], audit: Mapping[str, Any] | None) 
                 + "A certified report value is not changed when a citation cannot be re-read. "
                 + "An aggregate method is not a check of every row."
             )
+        if operational:
+            notice += " Operational failure: " + operational
     checks = _checks_by_ref(audit)
     rows = []
     for source in manifest.get("sources") or ():

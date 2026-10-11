@@ -548,3 +548,105 @@ def test_a_later_citation_error_keeps_the_earlier_conclusive_check(session, work
     assert later["check_completed"] is False
     assert audit.overall == "INCOMPLETE"
     assert "/opt/host-secret" not in str(audit.to_dict())
+
+
+def _statements(engine, fn) -> dict[str, int]:
+    counts = {"SELECT": 0, "INSERT": 0, "UPDATE": 0, "DELETE": 0, "OTHER": 0}
+
+    def before(_conn, _cursor, statement, *_args, **_kwargs) -> None:
+        head = str(statement).lstrip().split(None, 1)[0].upper()
+        counts[head if head in counts else "OTHER"] += 1
+
+    event.listen(engine, "before_cursor_execute", before)
+    try:
+        fn()
+    finally:
+        event.remove(engine, "before_cursor_execute", before)
+    return counts
+
+
+def test_cap_bounds_and_an_invalid_cap_do_not_read_past_the_ceiling(session, workspace):
+    left, _right = _plant(session, workspace)
+    samples = [f"structured:npt_record:missing-v81-{index}" for index in range(41)]
+    report = _report(left, [_ref("npt_record", samples, left, count=41, truncated=False)])
+    engine = workspace.database.engine
+    for cap, attempted, omitted in ((0, 0, 41), (1, 1, 40), (39, 39, 2), (40, 40, 1), (41, 41, 0)):
+        audit = verify_report_citations(workspace, report, cap=cap)
+        assert audit.eligible == 41
+        assert audit.attempted == attempted
+        assert audit.omitted == omitted
+        assert audit.overall != "FULLY_VERIFIED"
+        assert sum(1 for item in audit.entries if item["resolution"] == "OMITTED_BY_CAP") == omitted
+    zero = _statements(engine, lambda: verify_report_citations(workspace, report, cap=0))
+    negative = _statements(engine, lambda: verify_report_citations(workspace, report, cap=-4))
+    invalid = _statements(engine, lambda: verify_report_citations(workspace, report, cap="nope"))
+    assert zero["SELECT"] == negative["SELECT"] == invalid["SELECT"] == 0
+    assert zero["INSERT"] == zero["UPDATE"] == zero["DELETE"] == 0
+
+
+def test_audit_selects_do_not_grow_per_row_and_do_not_write(session, workspace):
+    left, _right = _plant(session, workspace)
+    engine = workspace.database.engine
+    one = _report(left, [_ref("npt_record", ["structured:npt_record:npt-v79-a"], left)])
+    many = _report(
+        left,
+        [
+            _ref(
+                "npt_record",
+                [
+                    "structured:npt_record:npt-v79-a",
+                    "structured:npt_record:npt-v79-rejected",
+                    *[f"structured:npt_record:npt-v79-cap-{index}" for index in range(3)],
+                ],
+                left,
+                count=5,
+            )
+        ],
+    )
+    before = _counts(session)
+    fingerprint = dict(one)
+    measured: dict[str, dict[str, int]] = {}
+
+    def run(name: str, report: dict) -> None:
+        measured[name] = _statements(engine, lambda: verify_report_citations(workspace, report))
+
+    run("one", one)
+    run("many", many)
+    assert measured["one"]["INSERT"] == measured["one"]["UPDATE"] == measured["one"]["DELETE"] == 0
+    assert (
+        measured["many"]["INSERT"] == measured["many"]["UPDATE"] == measured["many"]["DELETE"] == 0
+    )
+    assert measured["one"]["SELECT"] == measured["many"]["SELECT"] == 2, measured
+    assert one == fingerprint
+    assert _counts(session) == before
+
+
+def test_multiple_item_failures_are_all_recorded_and_redacted(session, workspace, monkeypatch):
+    from drilling_intelligence.evidence.verify import CitationAuditor
+
+    left, _right = _plant(session, workspace)
+    report = _report(
+        left,
+        [
+            _ref(
+                "npt_record",
+                ["structured:npt_record:npt-v79-a", "structured:npt_record:npt-v79-rejected"],
+                left,
+                count=2,
+            )
+        ],
+    )
+
+    def _both_fail(self, item, repository, versions, documents, hashes):
+        name = "first.txt" if str(item.identity).endswith("npt-v79-a") else "second.txt"
+        raise RuntimeError(f"cannot re-read /opt/host-secret/{name} password=s3cret")
+
+    monkeypatch.setattr(CitationAuditor, "_check_item", _both_fail)
+    audit = verify_report_citations(workspace, report)
+    rendered = str(audit.to_dict())
+    assert audit.overall == "INCOMPLETE"
+    assert "first.txt" in audit.operational_error
+    assert "second.txt" in audit.operational_error
+    assert "/opt/host-secret" not in rendered
+    assert "s3cret" not in rendered
+    assert audit.operational_error.index("first.txt") < audit.operational_error.index("second.txt")

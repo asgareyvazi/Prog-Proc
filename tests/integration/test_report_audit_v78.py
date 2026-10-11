@@ -77,7 +77,20 @@ def test_citation_audit_is_separate_read_only_and_not_a_silent_pass(session, gol
     audit_selects = _select_count(engine, _run)
     audit = holder["audit"]
     # Measured on the golden pair: 22 eligible samples, 10 batched SELECTs, not one per row.
-    assert audit_selects <= 20, audit_selects
+    assert audit_selects == 10, audit_selects
+    writes = {"n": 0}
+
+    def _write(_conn, _cursor, statement, *_args, **_kwargs) -> None:
+        head = str(statement).lstrip().split(None, 1)[0].upper()
+        if head in {"INSERT", "UPDATE", "DELETE"}:
+            writes["n"] += 1
+
+    event.listen(engine, "before_cursor_execute", _write)
+    try:
+        verify_report_citations(golden["workspace"], report)
+    finally:
+        event.remove(engine, "before_cursor_execute", _write)
+    assert writes["n"] == 0
     after = _counts(session)
     assert before == after
     payload = audit.to_dict()

@@ -98,26 +98,104 @@ _WINDOWED_DOMAINS = frozenset(
 )
 _COMPLETE_RELATIONSHIPS = frozenset({REL_DIRECT, REL_ENUMERATED})
 
-_PATH = re.compile(
-    r"(?ix)"
-    r"(?:file://+[^\s\"'<>|]+"
-    r"|\\\\[^\s\"'<>|]+"
-    r"|[A-Za-z]:[\\/][^\s\"'<>|]+"
-    r"|/(?:[^\s/\"'<>|]+/)+[^\s\"'<>|,;:)]+)"
+# A path segment may contain spaces when another separator follows. The final
+# segment does not swallow the rest of the sentence.
+_SEGMENT = r"[^\s/\\'\"<>|]+(?: [^\s/\\'\"<>|]+)*"
+# A final filename may contain spaces. Requiring an extension stops the match
+# before the next sentence word. A single token still matches a path with no extension.
+_LEAF = (
+    r"(?:(?:[^\s/\\'\"<>|,;:)]+ )*[^\s/\\'\"<>|,;:)]+\.[A-Za-z0-9]{1,8}"
+    r"|[^\s/\\'\"<>|,;:)]+)"
 )
+_PATH = re.compile(
+    r"(?i)"
+    r"(?:file://+[^\s\"'<>|]+"
+    rf"|\\\\(?:{_SEGMENT}\\)+{_LEAF}"
+    rf"|[A-Za-z]:[\\/](?:{_SEGMENT}[\\/])+{_LEAF}"
+    rf"|/(?:{_SEGMENT}/)+{_LEAF}"
+    rf"|(?:\.\.[\\/])+(?:{_SEGMENT}[\\/])*{_LEAF})"
+)
+_QUOTED_PATH = re.compile(
+    r"""(?x)
+    ["']
+    (?:[A-Za-z]:[\\/]|\\\\|\.\.[\\/]|/)
+    [^"'\n]+
+    ["']
+    """
+)
+_URL_USERINFO = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^/\s@]+)@")
+_CREDENTIAL_ASSIGN = re.compile(
+    r"(?i)\b(password|passwd|pwd|api[_-]?key|token|secret|access[_-]?key)\s*[=:]\s*\S+"
+)
+_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{8,}")
+_FILE_LINE = re.compile(r'^File ".+", line \d+')
+
+
+def _strip_traceback(text: str) -> str:
+    """Drop traceback frames. The exception line, if any, is kept for redaction."""
+    lines: list[str] = []
+    skipping = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Traceback (most recent call last)"):
+            lines.append("[traceback omitted]")
+            skipping = True
+            continue
+        if _FILE_LINE.match(stripped):
+            lines.append("[traceback omitted]")
+            skipping = True
+            continue
+        if skipping and (line.startswith((" ", "\t")) or stripped.startswith("File ")):
+            continue
+        skipping = False
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _path_leaf(token: str) -> str:
+    cleaned = token.strip("\"'").replace("\\", "/")
+    if cleaned.lower().startswith("file:"):
+        cleaned = cleaned.split("://", 1)[-1]
+    while cleaned.startswith("../"):
+        cleaned = cleaned[3:]
+    leaf = cleaned.rstrip("/").split("/")[-1]
+    return leaf or "[path]"
 
 
 def safe_detail(text: str) -> str:
-    """Replace host paths with a filename. The diagnostic stays; the machine path does not."""
+    """Keep a useful diagnostic and remove host paths, tracebacks, and secrets.
 
-    def _leaf(match: re.Match[str]) -> str:
-        token = match.group(0).replace("\\", "/")
-        if token.lower().startswith("file:"):
-            token = token.split("://", 1)[-1]
-        leaf = token.rstrip("/").split("/")[-1]
-        return leaf or "[path]"
+    A filename may remain. A directory, connection password, token, or traceback
+    frame may not. Relative paths and paths that contain spaces are included.
+    """
+    raw = _strip_traceback(str(text or ""))
+    raw = _URL_USERINFO.sub(r"\1[redacted]@", raw)
+    raw = _CREDENTIAL_ASSIGN.sub(r"\1=[redacted]", raw)
+    raw = _BEARER.sub("Bearer [redacted]", raw)
+    raw = _QUOTED_PATH.sub(lambda match: _path_leaf(match.group(0)), raw)
+    return _PATH.sub(lambda match: _path_leaf(match.group(0)), raw)
 
-    return _PATH.sub(_leaf, str(text or ""))
+
+def visible_diagnostic(exc: BaseException) -> str:
+    """The operator-facing form of an exception. No traceback and no host path."""
+    text = " ".join(safe_detail(str(exc) or "").split())
+    return text or type(exc).__name__
+
+
+def _operational_text(errors: list[BaseException]) -> str:
+    """A bounded, deterministic summary of every operational failure.
+
+    Identity order is the caller's order. Later failures do not replace earlier ones.
+    At most five diagnostics are written; the rest are counted.
+    """
+    if not errors:
+        return ""
+    shown = [safe_detail(f"{type(exc).__name__}: {exc}") for exc in errors[:5]]
+    text = "; ".join(shown)
+    extra = len(errors) - len(shown)
+    if extra:
+        text += f"; {extra} further operational failure(s) not listed"
+    return text
 
 
 def audit_exit_code(overall: str) -> int:
@@ -184,6 +262,10 @@ def report_subject_wells(payload: dict[str, Any]) -> set[str]:
             found.add(str(anchor["well_id"]))
         elif isinstance(anchor, str) and anchor and subject.get("basis_kind") == "well":
             found.add(anchor)
+    # A named subject is the report's selected scope. Request well ids fill in only
+    # when the subject names none; they must not add wells the report did not select.
+    if found:
+        return found
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     if isinstance(request, dict):
         for well_id in request.get("well_ids") or ():
@@ -351,7 +433,10 @@ def verify_report_citations(
     """
     report = dict(payload)
     manifest = traceability_manifest(report)
-    bound = max(0, int(cap))
+    try:
+        bound = AUDIT_CAP if cap is None else max(0, int(cap))
+    except (TypeError, ValueError):
+        bound = 0
     subjects = report_subject_wells(report)
     pairs: list[tuple[dict[str, Any], str, dict[str, str]]] = []
     retrieval_ids: list[str] = []
@@ -373,12 +458,12 @@ def verify_report_citations(
     retrieval = RetrievalService.for_workspace(workspace)
     resolved: dict[str, Any] = {}
     checks: tuple[Any, ...] | None = ()
-    failure: BaseException | None = None
+    failures: list[BaseException] = []
     if attempted_ids:
         try:
             resolved = retrieval.resolve_structured(attempted_ids, session=session)
         except Exception as exc:  # noqa: BLE001 - an unexpected read failure is an incomplete audit
-            failure = exc
+            failures.append(exc)
             resolved = {}
             checks = None
     if checks is not None:
@@ -392,12 +477,13 @@ def verify_report_citations(
             try:
                 checks = auditor.audit_items(items, isolate=True)
             except Exception as exc:  # noqa: BLE001 - a batch failure must not erase resolved rows
-                failure = exc
+                failures.append(exc)
                 checks = None
             else:
-                isolated = getattr(auditor, "isolated_error", None)
-                if isolated is not None:
-                    failure = isolated
+                isolated = list(getattr(auditor, "isolated_errors", ()) or [])
+                if not isolated and getattr(auditor, "isolated_error", None) is not None:
+                    isolated = [auditor.isolated_error]
+                failures.extend(isolated)
     by_identity = {check.identity: check for check in (checks or ())}
     entries: list[dict[str, Any]] = []
     seen_ref_notes: set[tuple[str, str]] = set()
@@ -420,12 +506,7 @@ def verify_report_citations(
                 )
             )
             continue
-        if (
-            action == "resolve"
-            and failure is not None
-            and not resolved
-            and identity in attempted_set
-        ):
+        if action == "resolve" and failures and not resolved and identity in attempted_set:
             entries.append(
                 _sample_entry(
                     source,
@@ -433,7 +514,7 @@ def verify_report_citations(
                     identity,
                     resolution=RES_NOT_ATTEMPTED,
                     citation="NOT_ATTEMPTED",
-                    detail=safe_detail(f"{type(failure).__name__}: {failure}"),
+                    detail=safe_detail(f"{type(failures[0]).__name__}: {failures[0]}"),
                     scope_status=SCOPE_NA,
                     lifecycle=LIFE_UNKNOWN,
                     domain_status=DOMAIN_NA,
@@ -478,9 +559,9 @@ def verify_report_citations(
         lifecycle, current = _lifecycle_of(item, report, str(source.get("domain") or ""))
         check = by_identity.get(identity)
         check_completed = False
-        if failure is not None and checks is None:
+        if failures and checks is None:
             citation = "NOT_ATTEMPTED"
-            detail = safe_detail(f"{type(failure).__name__}: {failure}")
+            detail = safe_detail(f"{type(failures[0]).__name__}: {failures[0]}")
         elif check is None:
             citation = "NOT_CHECKABLE"
             detail = "no citation check was recorded for the resolved row"
@@ -543,7 +624,7 @@ def verify_report_citations(
                 method=str(source.get("method") or ""),
             )
         )
-    if failure is not None and not entries:
+    if failures and not entries:
         entries.append(
             _entry(
                 "",
@@ -551,7 +632,7 @@ def verify_report_citations(
                 "",
                 RES_NOT_ATTEMPTED,
                 "NOT_ATTEMPTED",
-                safe_detail(f"{type(failure).__name__}: {failure}"),
+                safe_detail(f"{type(failures[0]).__name__}: {failures[0]}"),
                 scope_status=SCOPE_NA,
                 lifecycle=LIFE_UNKNOWN,
                 domain_status=DOMAIN_NA,
@@ -569,7 +650,7 @@ def verify_report_citations(
     completed = len(
         {str(entry.get("identity") or "") for entry in entries if entry.get("check_completed")}
     )
-    overall = overall_status(entries, omitted=len(omitted_ids), incomplete=failure is not None)
+    overall = overall_status(entries, omitted=len(omitted_ids), incomplete=bool(failures))
     return ReportEvidenceAudit(
         schema=AUDIT_SCHEMA,
         report_identity=str(report.get("identity") or ""),
@@ -583,9 +664,7 @@ def verify_report_citations(
         overall=overall,
         counts=counts,
         entries=tuple(entries),
-        operational_error=(
-            safe_detail(f"{type(failure).__name__}: {failure}") if failure is not None else ""
-        ),
+        operational_error=_operational_text(failures),
     )
 
 

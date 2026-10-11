@@ -155,6 +155,12 @@ def test_single_well_subject_is_a_scope_and_an_empty_list_is_not_every_well():
     assert report_subject_wells(comparison) == {"well-a", "well-b"}
     assert report_subject_wells({"subject": {"subjects": []}}) == set()
     assert report_subject_wells({"subject": {"kind": "well"}}) == set()
+    broadened = {
+        "subject": {"kind": "well", "id": "well-a"},
+        "request": {"well_ids": ["well-a", "well-foreign"]},
+    }
+    assert report_subject_wells(broadened) == {"well-a"}
+    assert report_subject_wells({"request": {"well_ids": ["well-only"]}}) == {"well-only"}
 
 
 def test_relationship_follows_the_producer_contract():
@@ -179,6 +185,7 @@ def test_relationship_follows_the_producer_contract():
         == "AGGREGATE_METHOD"
     )
     assert _relationship({"kind": "records", "count": 2, "sample": []}) == "COUNT_ONLY"
+    assert _relationship({"kind": "rows", "count": 0, "sample": []}) == "COUNT_ONLY"
     assert (
         _relationship({"kind": "records", "count": 1, "sample": ["kept"], "truncated": False})
         == REL_DIRECT
@@ -289,6 +296,33 @@ def test_html_export_failure_does_not_replace_a_finished_file(tmp_path, monkeypa
     assert "file://" not in text
     assert "secret.txt" in text
     assert "other.txt" in text
+    spaced = safe_detail("cannot open /home/user/My Documents/secret file.txt now")
+    assert "/home/user" not in spaced
+    assert "My Documents" not in spaced
+    assert "secret file.txt" in spaced
+    assert "now" in spaced
+    relative = safe_detail("missing ../private/secret.txt and ..\\share\\secret.txt")
+    assert "../private" not in relative
+    assert "..\\share" not in relative
+    quoted = safe_detail('quoted "/opt/host/My Documents/secret.txt" done')
+    assert "/opt/host" not in quoted
+    assert "secret.txt" in quoted
+    secret = safe_detail(
+        "postgresql://analyst:s3cret-token@db.internal/wells password=s3cret "
+        "api_key=abcd1234 Bearer abcdefghijklmnop"
+    )
+    assert "s3cret-token" not in secret
+    assert "s3cret" not in secret
+    assert "abcd1234" not in secret
+    assert "abcdefghijklmnop" not in secret
+    assert "[redacted]" in secret
+    traced = safe_detail(
+        'Traceback (most recent call last):\n  File "/opt/host/audit.py", line 3, in run\n'
+        "RuntimeError: cannot open /opt/host/secret.txt\n"
+    )
+    assert "Traceback" not in traced
+    assert "/opt/host/audit.py" not in traced
+    assert "secret.txt" in traced
 
 
 def test_missing_coverage_is_not_an_implied_complete_enumeration():
@@ -322,6 +356,62 @@ def test_whitespace_does_not_normalise_into_a_different_identity():
     assert padded["identity"] != "structured:npt_record:npt-1"
     assert classify_sample(ref, "structured:npt_record: ")["action"] == "malformed"
     assert classify_sample(ref, "structured: npt_record:npt-1")["action"] == "domain_mismatch"
+
+
+def test_workbench_errors_redact_before_they_reach_the_status_bar():
+    import ast
+    from pathlib import Path
+
+    source = Path("src/drilling_intelligence/ui/worker.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    found = False
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "WorkerError":
+            found = any(
+                isinstance(item, ast.FunctionDef) and item.name == "__post_init__"
+                for item in node.body
+            )
+    assert found
+    assert "safe_detail" in source
+
+
+def test_overall_status_does_not_depend_on_entry_order():
+    mismatch = _full(citation_status="MISMATCH")
+    match = _full()
+    assert overall_status([mismatch, match], omitted=0, incomplete=True) == "FAILED"
+    assert overall_status([match, mismatch], omitted=0, incomplete=True) == "FAILED"
+    gap = _full(coverage="")
+    assert overall_status([match, gap], omitted=0, incomplete=False) == "PARTIALLY_VERIFIED"
+    assert overall_status([gap, match], omitted=0, incomplete=False) == "PARTIALLY_VERIFIED"
+
+
+def test_a_full_status_with_an_operational_error_is_not_rendered_as_verification():
+    from drilling_intelligence.reporting.html import render_html
+
+    payload = {
+        "schema": "engineering-report/1",
+        "identity": "r",
+        "title": "Report",
+        "mode": "single_well",
+        "sections": [],
+        "exhibits": [],
+        "evidence": [],
+        "limitations": [],
+        "observations": [],
+        "freshness": {},
+    }
+    html = render_html(
+        payload,
+        audit={
+            "overall": "FULLY_VERIFIED",
+            "operational_error": "RuntimeError: cannot open /opt/host-secret/citation.txt",
+            "entries": [],
+        },
+    )
+    assert "FULLY_VERIFIED" not in html
+    assert "not full verification" in html
+    assert "/opt/host-secret" not in html
+    assert "citation.txt" in html
 
 
 def test_an_unrecognised_audit_status_is_not_rendered_as_verification():

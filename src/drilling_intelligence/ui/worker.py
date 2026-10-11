@@ -29,6 +29,12 @@ class WorkerError:
     hint: str = ""
     exception_type: str = ""
 
+    def __post_init__(self) -> None:
+        from ..reporting.audit import safe_detail
+
+        object.__setattr__(self, "message", " ".join(safe_detail(self.message).split()))
+        object.__setattr__(self, "hint", " ".join(safe_detail(self.hint).split()))
+
 
 class ReviewWorker(QObject):
     """Run one read-only review outside the GUI event loop."""

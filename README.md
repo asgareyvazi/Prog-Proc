@@ -35,7 +35,7 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Decision pack: one deterministic, evidence-backed read model per well/field/project - execution vs plan, per-currency economics, stated risk, learning, patterns, recommendations, calculations, freshness, limitations and observations (`fields decision`) | **implemented, tested, query-count scale-certified at 41 SELECTs regardless of row count** (`docs/DECISIONS.md` ADR-35) |
 | Comparison pack: two or more wells side by side on the same recorded basis - per-metric values with `COMPARABLE`/`INCOMPARABLE`/`MISSING`/`UNRESOLVED` states, unit and risk-scale identity gates, offset-candidate discovery, forensic evidence, limitations (`fields compare`) | **implemented, tested, query-count scale-certified at 6 + 39 SELECTs per subject** (`docs/DECISIONS.md` ADR-36) |
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
-| Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; a missing coverage field is not complete (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40) |
+| Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
 | Domain CLI: `records`, `records rollup`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
 | Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented, read-only** — PySide6-Essentials is optional; it consumes `DomainReviewService`, supports current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model |
 | Skills, AI providers, and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
@@ -114,8 +114,9 @@ No UI state is persisted and no review action mutates the workspace. The default
 not import Qt. On a host where Qt's native runtime libraries cannot load, `drillintel-ui` reports the
 missing runtime dependency and `pytest -m ui` skips with the preserved loader reason; the UI tests run
 offscreen on hosts with a working Qt installation. CI retries a workbench process only when the
-attempt log carries the recorded Qt/glibc abort signature and no assertion failure; both attempt
-logs are kept, and a zero-test or unaccounted collection fails the job (ADR-40).
+attempt log carries the recorded Qt/glibc abort signature and no assertion or collection failure;
+both attempt logs are kept, collection must account for every declared test, and the attempt-log
+artifact is required (ADR-40, ADR-41).
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,
 for callers embedding the library rather than driving the CLI:

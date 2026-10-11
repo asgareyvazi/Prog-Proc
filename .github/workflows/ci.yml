@@ -161,9 +161,10 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: python tools/qt_workbench.py
 
+      # The attempt logs are release evidence. A green workbench job must not
+      # waive a failed upload or a missing log directory.
       - name: Publish Qt attempt logs
         if: always()
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: qt-workbench-logs
