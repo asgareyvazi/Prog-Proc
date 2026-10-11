@@ -94,7 +94,7 @@ drilling_intelligence = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --strict-markers"
+addopts = "-q --strict-markers -p tools.pytest_totals"
 # `tests/conftest.py` imports `tests.fixtures.generate`, so the *repository root* has to be
 # importable.  `python -m pytest` puts the current directory on sys.path and hides this; the bare
 # `pytest` console script does not, and failed with "No module named 'tests'" - which is how CI

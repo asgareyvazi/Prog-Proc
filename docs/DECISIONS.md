@@ -1982,3 +1982,37 @@ V8.0 closed the missing-coverage and bare-exit-134 holes. Three narrower gaps re
 **Consequences.** No schema bump, dependency, table, or migration. Alembic head stays `0019`.
 `PARTIALLY_VERIFIED` remains exit 0; `FAILED` and `INCOMPLETE` remain exit 1. Workbench error
 text is redacted by `core.redact`, which does not import retrieval or the citation auditor.
+
+## ADR-42 — V8.2: prefixed secrets stay redacted, and CI totals are required
+
+**Status:** accepted (2026-10-11)
+
+V8.1 redacted `password=` and URL userinfo, but a word boundary treated `_` as part of the
+word. `OPENAI_API_KEY`, `GITHUB_TOKEN`, `CLIENT_SECRET`, `refresh_token`, and
+`POSTGRES_PASSWORD` therefore survived. Path redaction then ate the host of a `scheme://`
+URL after the password was removed.
+
+*   **Credential names may be prefixed.** An assignment is redacted when its name is a
+    credential term or ends in one with `_` or `-` (`API_KEY`, `SECRET`, `TOKEN`,
+    `PASSWORD`, `ACCESS_KEY`), and the same rule covers `DATABASE_URL` and connection
+    strings. A letter glued to the term, as in `notasecret`, is not an assignment.
+    Bearer and Basic authorization values are redacted. A bare connection URL keeps its
+    host after the userinfo is removed. Ordinary diagnostic text and filenames remain.
+*   **Test totals are an artifact, not a quiet-log side effect.** `pytest -q` on top of
+    `addopts = -q` was `-qq`, which suppresses the summary line. CI now runs one quiet
+    level. A session-finish hook writes the terminal-reporter counts, including xpass,
+    which JUnit does not label. JUnit is the cross-check. The job always records
+    collected, passed, failed, errors, skipped, xfailed, xpassed, exit, and runtime.
+    A missing file, a disagreement, a zero collection, or a failed suite fails the job.
+    The pytest log, the stats file, and the JUnit file are required artifacts. That
+    record is not a second retry and does not change the Qt abort policy.
+*   **Actions majors match the Node 24 runner.** `checkout`, `setup-python`, and
+    `upload-artifact` are v7. The inputs this workflow uses (`fetch-depth`,
+    `python-version`, `name`, `path`, `if-no-files-found`) remain. `setup-python` v7
+    removed `pip-install`; this workflow does not set it. The bump is not a retry and
+    not a way to hide a warning while keeping an unsupported action.
+
+**Consequences.** No schema bump, dependency, table, or migration. Alembic head stays
+`0019`. The Qt retry remains exit 134 plus the recorded abort signature, once, with both
+logs kept. A passing workbench job after the `core.redact` import move is not evidence
+that the historic abort is solved.

@@ -116,7 +116,10 @@ missing runtime dependency and `pytest -m ui` skips with the preserved loader re
 offscreen on hosts with a working Qt installation. CI retries a workbench process only when the
 attempt log carries the recorded Qt/glibc abort signature and no assertion or collection failure;
 both attempt logs are kept, collection must account for every declared test, and the attempt-log
-artifact is required (ADR-40, ADR-41).
+artifact is required (ADR-40, ADR-41). The headless jobs publish explicit pytest totals
+(collected, passed, failed, errors, skipped, xfailed, xpassed, exit, runtime) even when the
+suite fails; a missing total fails the job (ADR-42). Operator-facing errors redact prefixed
+credential names such as `OPENAI_API_KEY` without discarding a connection host.
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,
 for callers embedding the library rather than driving the CLI:

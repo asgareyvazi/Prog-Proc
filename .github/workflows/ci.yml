@@ -32,11 +32,11 @@ jobs:
       # database - a real guarantee against a report naming a commit that was never pushed - and a
       # shallow clone cannot answer it, so the test failed in CI while passing locally.  The fix
       # belongs here: the assertion is correct, the checkout was too thin to evaluate it.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -64,10 +64,33 @@ jobs:
       - name: Test suite
         # The desktop UI tests skip themselves when Qt cannot load, which is the intended headless
         # behaviour - this job does not install the optional `ui` extra, and a skip is reported as
-        # a skip rather than being dressed up as a pass.
+        # a skip rather than being dressed up as a pass. One quiet level comes from pytest addopts;
+        # a second -q would hide the summary line. The session-stats file and JUnit are the
+        # durable totals if that line is lost; both are required after the process exits.
         run: |
           set -o pipefail
-          pytest -q 2>&1 | tee pytest-output.txt
+          set +e
+          pytest --junitxml=pytest-junit.xml 2>&1 | tee pytest-output.txt
+          status=${PIPESTATUS[0]}
+          echo "$status" > pytest-exit.txt
+          exit "$status"
+
+      # Totals are required on a green run and still published when pytest fails midway.
+      - name: Record test totals
+        if: always()
+        run: python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt
+
+      - name: Publish pytest results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-cp${{ matrix.python-version }}
+          path: |
+            pytest-output.txt
+            pytest-junit.xml
+            pytest-totals.json
+            pytest-exit.txt
+          if-no-files-found: error
 
       # A red run has to say *what* failed without anyone having to open the raw log, so each
       # failure is re-emitted as a workflow annotation and a short summary lands on the run page.
@@ -92,9 +115,9 @@ jobs:
     name: clean install smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -114,11 +137,11 @@ jobs:
     name: workbench (offscreen Qt)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -165,7 +188,7 @@ jobs:
       # waive a failed upload or a missing log directory.
       - name: Publish Qt attempt logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qt-workbench-logs
           path: qt-logs/

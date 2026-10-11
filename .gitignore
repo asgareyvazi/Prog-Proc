@@ -11,6 +11,11 @@ venv*/
 # Tooling caches
 .pytest_cache/
 qt-logs/
+pytest-junit.xml
+pytest-totals.json
+pytest-totals.json.partial
+pytest-output.txt
+pytest-exit.txt
 .ruff_cache/
 .mypy_cache/
 .coverage

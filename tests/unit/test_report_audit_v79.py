@@ -316,6 +316,7 @@ def test_html_export_failure_does_not_replace_a_finished_file(tmp_path, monkeypa
     assert "abcd1234" not in secret
     assert "abcdefghijklmnop" not in secret
     assert "[redacted]" in secret
+    assert "db.internal" in secret
     traced = safe_detail(
         'Traceback (most recent call last):\n  File "/opt/host/audit.py", line 3, in run\n'
         "RuntimeError: cannot open /opt/host/secret.txt\n"
@@ -323,6 +324,66 @@ def test_html_export_failure_does_not_replace_a_finished_file(tmp_path, monkeypa
     assert "Traceback" not in traced
     assert "/opt/host/audit.py" not in traced
     assert "secret.txt" in traced
+
+
+def test_prefixed_credentials_are_redacted_and_url_hosts_remain():
+    sentinels = (
+        "sk-sentinel-openai",
+        "ghp_sentinel_github",
+        "sentinel-client-secret",
+        "sentinel-refresh",
+        "sentinel-pg-pass",
+        "sentinel-aws-secret",
+        "sentinel-dsn-pass",
+        "query-pass-sentinel",
+        "basic-sentinel",
+    )
+    text = safe_detail(
+        "OPENAI_API_KEY=sk-sentinel-openai "
+        "GITHUB_TOKEN=ghp_sentinel_github "
+        "CLIENT_SECRET=sentinel-client-secret "
+        "refresh_token=sentinel-refresh "
+        "POSTGRES_PASSWORD=sentinel-pg-pass "
+        "AWS_SECRET_ACCESS_KEY=sentinel-aws-secret "
+        "DATABASE_URL=postgresql://analyst:sentinel-dsn-pass@db.internal/wells "
+        "Authorization: Basic basic-sentinel "
+        "https://host.example/path?password=query-pass-sentinel "
+        "postgres://user:sentinel-pg-pass@localhost/db "
+        "notasecret=keep-this-label "
+        "connection failed; check the workspace path"
+    )
+    for sentinel in sentinels:
+        assert sentinel not in text
+    assert "OPENAI_API_KEY=[redacted]" in text
+    assert "DATABASE_URL=[redacted]" in text
+    assert "postgres://[redacted]@localhost/db" in text
+    assert "https://host.example/path?password=[redacted]" in text
+    assert "notasecret=keep-this-label" in text
+    assert "workspace path" in text
+    assert "/opt/secret" not in safe_detail("cannot open /opt/secret/dirname now")
+
+
+def test_core_redact_does_not_import_retrieval_or_the_auditor():
+    import subprocess
+    import sys
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys\n"
+            "import drilling_intelligence.core.redact as redact\n"
+            "assert redact.safe_detail('password=s3cret') == 'password=[redacted]'\n"
+            "loaded = set(sys.modules)\n"
+            "assert 'drilling_intelligence.reporting.audit' not in loaded\n"
+            "assert 'drilling_intelligence.reporting.retrieval' not in loaded\n"
+            "assert not any(name.startswith('drilling_intelligence.database') for name in loaded)\n",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, probe.stderr
 
 
 def test_missing_coverage_is_not_an_implied_complete_enumeration():
