@@ -10,6 +10,7 @@ venv*/
 
 # Tooling caches
 .pytest_cache/
+qt-logs/
 .ruff_cache/
 .mypy_cache/
 .coverage

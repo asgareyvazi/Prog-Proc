@@ -407,3 +407,144 @@ def test_failed_audit_does_not_write_and_single_well_scope_comes_from_the_pack(s
     assert foreign["scope_status"] == "OUT_OF_SCOPE"
     assert audited.report_identity == copied["identity"]
     assert AUDIT_CAP == 40
+
+
+def test_an_unexpected_resolve_failure_is_incomplete_and_does_not_leak_a_path(
+    session, workspace, monkeypatch
+):
+    from drilling_intelligence.core.hashing import sha256_obj
+    from drilling_intelligence.retrieval.service import RetrievalService
+
+    left, _right = _plant(session, workspace)
+    report = _report(left, [_ref("npt_record", ["structured:npt_record:npt-v79-a"], left)])
+    before = _counts(session)
+    fingerprint = sha256_obj(report)
+
+    def _boom(self, identities, *, session=None):
+        raise RuntimeError("cannot open /opt/host-secret/index.db")
+
+    monkeypatch.setattr(RetrievalService, "resolve_structured", _boom)
+    audit = verify_report_citations(workspace, report)
+    assert audit.overall == "INCOMPLETE"
+    assert audit.operational_error
+    rendered = audit.to_dict()
+    assert "/opt/host-secret" not in str(rendered)
+    assert "index.db" in audit.operational_error
+    assert sha256_obj(report) == fingerprint
+    assert _counts(session) == before
+
+
+def test_a_completed_mismatch_outranks_a_later_operational_citation_error(
+    session, workspace, monkeypatch
+):
+    from drilling_intelligence.evidence.verify import (
+        STATUS_MISMATCH,
+        CitationAuditor,
+        CitationCheck,
+    )
+
+    left, _right = _plant(session, workspace)
+    report = _report(left, [_ref("npt_record", ["structured:npt_record:npt-v79-a"], left)])
+
+    def _partial(self, items, *, isolate=False):
+        self.isolated_error = RuntimeError("cannot re-read /var/secret/citation.txt")
+        item = next(iter(items))
+        return (
+            CitationCheck(
+                identity=str(item.identity),
+                source_type="structured",
+                citation="source.txt",
+                status=STATUS_MISMATCH,
+                detail="bytes differ",
+            ),
+        )
+
+    monkeypatch.setattr(CitationAuditor, "audit_items", _partial)
+    audit = verify_report_citations(workspace, report)
+    assert audit.overall == "FAILED"
+    assert "/opt/host-secret" not in str(audit.to_dict())
+    row = audit.entries[0]
+    assert row["citation_status"] == "MISMATCH"
+    assert row["resolution"] == "RESOLVED"
+    assert row["check_completed"] is True
+
+
+def test_a_window_does_not_make_a_non_current_lesson_historical(session, workspace):
+    from drilling_intelligence.database.models import LessonLearned
+
+    left, _right = _plant(session, workspace)
+    session.add(
+        LessonLearned(
+            id="lesson-v79-old",
+            title="Superseded lesson",
+            lesson="The earlier revision is not the current lesson.",
+            is_current=False,
+            status="SUPERSEDED",
+            well_id=left,
+        )
+    )
+    session.commit()
+    report = _report(
+        left,
+        [_ref("lesson_learned", ["structured:lesson_learned:lesson-v79-old"], left)],
+        window=True,
+    )
+    audit = verify_report_citations(workspace, report)
+    row = audit.entries[0]
+    assert row["lifecycle"] == "NOT_CURRENT"
+    assert row["current"] is False
+    assert audit.overall != "FULLY_VERIFIED"
+
+
+def test_the_same_identity_keeps_distinct_scope_outcomes(session, workspace):
+    left, right = _plant(session, workspace)
+    report = _report(
+        left,
+        [
+            _ref("npt_record", ["structured:npt_record:npt-v79-a"], left),
+            _ref("npt_record", ["structured:npt_record:npt-v79-a"], right),
+        ],
+    )
+    audit = verify_report_citations(workspace, report)
+    by_scope = {item["scope_status"] for item in audit.entries}
+    assert "IN_SCOPE" in by_scope
+    assert "OUT_OF_SCOPE" in by_scope
+    assert len(audit.entries) == 2
+    assert audit.overall != "FULLY_VERIFIED"
+
+
+def test_a_later_citation_error_keeps_the_earlier_conclusive_check(session, workspace, monkeypatch):
+    from drilling_intelligence.evidence.verify import CitationAuditor
+
+    left, _right = _plant(session, workspace)
+    report = _report(
+        left,
+        [
+            _ref(
+                "npt_record",
+                ["structured:npt_record:npt-v79-a", "structured:npt_record:npt-v79-rejected"],
+                left,
+                count=2,
+            )
+        ],
+    )
+    real = CitationAuditor._check_item
+
+    def _second_fails(self, item, repository, versions, documents, hashes):
+        if str(item.identity).endswith("rejected"):
+            raise RuntimeError("cannot re-read /opt/host-secret/second.txt")
+        return real(self, item, repository, versions, documents, hashes)
+
+    monkeypatch.setattr(CitationAuditor, "_check_item", _second_fails)
+    audit = verify_report_citations(workspace, report)
+    by_identity = {item["identity"]: item for item in audit.entries}
+    earlier = by_identity["structured:npt_record:npt-v79-a"]
+    later = by_identity["structured:npt_record:npt-v79-rejected"]
+    assert earlier["resolution"] == "RESOLVED"
+    assert earlier["citation_status"] == "NOT_CHECKABLE"
+    assert earlier["check_completed"] is True
+    assert later["resolution"] == "RESOLVED"
+    assert later["citation_status"] == "NOT_ATTEMPTED"
+    assert later["check_completed"] is False
+    assert audit.overall == "INCOMPLETE"
+    assert "/opt/host-secret" not in str(audit.to_dict())

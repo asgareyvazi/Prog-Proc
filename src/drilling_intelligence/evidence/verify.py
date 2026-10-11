@@ -130,6 +130,7 @@ class CitationAuditor:
 
     def __init__(self, *, workspace: Any) -> None:
         self._workspace = workspace
+        self.isolated_error: BaseException | None = None
 
     @classmethod
     def for_workspace(cls, workspace: Any) -> CitationAuditor:
@@ -148,18 +149,23 @@ class CitationAuditor:
             checks=self.audit_items(entry.item for entry in package.items),
         )
 
-    def audit_items(self, items: Any) -> tuple[CitationCheck, ...]:
+    def audit_items(self, items: Any, *, isolate: bool = False) -> tuple[CitationCheck, ...]:
         """Re-read file citations on evidence items that already came from retrieval.
 
         The items must be the authoritative ``EvidenceItem`` values retrieval produced. This
         method does not construct them and does not accept a hand-built package. Check order is
         identity order, the same order ``audit`` has always used.
+
+        ``isolate`` is for the report audit only. A per-item operational error is recorded and
+        the remaining items are still checked, so one failure cannot erase a completed mismatch.
+        The default remains to raise, which is what search verification has always done.
         """
         from sqlalchemy import select
 
         from ..database.models import Document, DocumentVersion
         from ..documents.repository import DocumentRepository
 
+        self.isolated_error = None
         material = tuple(sorted(items, key=lambda item: str(getattr(item, "identity", ""))))
         version_ids = sorted({vid for item in material for vid in self._cited_version_ids(item)})
         with self._workspace.database.read_only() as session:
@@ -176,9 +182,24 @@ class CitationAuditor:
                     versions[str(version.id)] = version
                     documents[str(document.id)] = document
             hashes: dict[str, str] = {}
-            return tuple(
-                self._check_item(item, repository, versions, documents, hashes) for item in material
-            )
+            results: list[CitationCheck] = []
+            for item in material:
+                try:
+                    results.append(self._check_item(item, repository, versions, documents, hashes))
+                except Exception as exc:
+                    if not isolate:
+                        raise
+                    self.isolated_error = exc
+                    results.append(
+                        CitationCheck(
+                            identity=str(getattr(item, "identity", "") or ""),
+                            source_type=str(getattr(item, "source_type", "") or ""),
+                            citation="",
+                            status="NOT_ATTEMPTED",
+                            detail=f"{type(exc).__name__}: {exc}",
+                        )
+                    )
+            return tuple(results)
 
     @staticmethod
     def _cited_version_ids(item: Any) -> list[str]:

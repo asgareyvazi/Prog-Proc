@@ -159,44 +159,13 @@ jobs:
           QT_X11_NO_MITSHM: "1"
           PYTHONUNBUFFERED: "1"
           PYTHONFAULTHANDLER: "1"
-        run: |
-          # A single pytest process aborts (exit 134) during Qt shutdown on this runner
-          # after the tests have started. Each test therefore runs in its own process.
-          # A quiet collect or a zero-test loop is a failure, not a pass.
-          set +e
-          python -m pytest --collect-only --no-header tests/ui > nodes.txt 2>&1
-          status=0
-          count=0
-          while IFS= read -r node; do
-            case "$node" in
-              *::*) ;;
-              *) continue ;;
-            esac
-            count=$((count + 1))
-            code=1
-            for attempt in 1 2; do
-              xvfb-run -a -s "-screen 0 1280x1024x24" python -X faulthandler -m pytest -q "$node" --tb=line > one.txt 2>&1
-              code=$?
-              echo "::notice::NODE ${node} ATTEMPT ${attempt} EXIT ${code}"
-              if [ "$code" -eq 0 ]; then
-                break
-              fi
-              # 134 is a Qt/glibc abort with no Python frame. It is not tied to one test.
-              if [ "$code" -ne 134 ]; then
-                break
-              fi
-            done
-            if [ "$code" -ne 0 ] || grep -q "skipped" one.txt; then
-              status=1
-              echo "::error::NODE ${node} EXIT ${code}"
-              tail -8 one.txt | while IFS= read -r line; do
-                echo "::error::${node}: ${line}"
-              done
-            fi
-          done < nodes.txt
-          echo "::notice::workbench tests executed: ${count}"
-          if [ "$count" -lt 8 ]; then
-            echo "::error::workbench job executed ${count} tests; expected at least 8"
-            status=1
-          fi
-          exit "$status"
+        run: python tools/qt_workbench.py
+
+      - name: Publish Qt attempt logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-workbench-logs
+          path: qt-logs/
+          if-no-files-found: error

@@ -6,9 +6,11 @@ from drilling_intelligence.core.hashing import sha256_obj
 from drilling_intelligence.reporting.audit import (
     audit_exit_code,
     classify_sample,
+    expects_current,
     overall_status,
     report_subject_wells,
     safe_detail,
+    window_applied,
 )
 from drilling_intelligence.reporting.lineage import (
     REL_DIRECT,
@@ -287,3 +289,58 @@ def test_html_export_failure_does_not_replace_a_finished_file(tmp_path, monkeypa
     assert "file://" not in text
     assert "secret.txt" in text
     assert "other.txt" in text
+
+
+def test_missing_coverage_is_not_an_implied_complete_enumeration():
+    assert overall_status([_full(coverage="")], omitted=0, incomplete=False) == "PARTIALLY_VERIFIED"
+    assert (
+        overall_status([_full(relationship="")], omitted=0, incomplete=False)
+        == "PARTIALLY_VERIFIED"
+    )
+    bare = _full()
+    del bare["coverage"]
+    assert overall_status([bare], omitted=0, incomplete=False) == "PARTIALLY_VERIFIED"
+
+
+def test_an_explicit_unapplied_window_is_not_overridden_by_the_request():
+    payload = {
+        "subject": {"window": {"applied": False}},
+        "request": {"since": "2024-01-01"},
+    }
+    assert window_applied(payload) is False
+    assert expects_current(payload, "npt_record") is True
+    windowed = {"subject": {"window": {"applied": True}}, "request": {"since": "2024-01-01"}}
+    assert expects_current(windowed, "npt_record") is False
+    assert expects_current(windowed, "cost_item") is True
+    assert expects_current(windowed, "lesson_learned") is True
+
+
+def test_whitespace_does_not_normalise_into_a_different_identity():
+    ref = {"domain": "npt_record", "identity_kind": "structured"}
+    padded = classify_sample(ref, "structured:npt_record: npt-1")
+    assert padded["action"] == "resolve"
+    assert padded["identity"] != "structured:npt_record:npt-1"
+    assert classify_sample(ref, "structured:npt_record: ")["action"] == "malformed"
+    assert classify_sample(ref, "structured: npt_record:npt-1")["action"] == "domain_mismatch"
+
+
+def test_an_unrecognised_audit_status_is_not_rendered_as_verification():
+    from drilling_intelligence.reporting.html import render_html
+
+    payload = {
+        "schema": "engineering-report/1",
+        "identity": "r",
+        "title": "A <script> & title",
+        "mode": "single_well",
+        "sections": [],
+        "exhibits": [],
+        "evidence": [],
+        "limitations": [],
+        "observations": [],
+        "freshness": {},
+    }
+    html = render_html(payload, audit={"overall": "", "entries": []})
+    assert "FULLY_VERIFIED" not in html
+    assert "not full verification" in html
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html

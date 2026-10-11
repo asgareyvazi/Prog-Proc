@@ -361,13 +361,25 @@ def _lineage_html(manifest: Mapping[str, Any], audit: Mapping[str, Any] | None) 
             "verification."
         )
     else:
-        notice = (
-            "Citation verification was requested. Overall status: "
-            + str(audit.get("overall") or "")
-            + ". A citation match is not freshness, scope, or complete coverage. "
-            + "A certified report value is not changed when a citation cannot be re-read. "
-            + "An aggregate method is not a check of every row."
-        )
+        overall = str(audit.get("overall") or "")
+        if overall not in {
+            "FULLY_VERIFIED",
+            "PARTIALLY_VERIFIED",
+            "FAILED",
+            "INCOMPLETE",
+        }:
+            notice = (
+                "Citation verification was requested, but the audit did not return a "
+                "recognised status. That is not full verification."
+            )
+        else:
+            notice = (
+                "Citation verification was requested. Overall status: "
+                + overall
+                + ". A citation match is not freshness, scope, or complete coverage. "
+                + "A certified report value is not changed when a citation cannot be re-read. "
+                + "An aggregate method is not a check of every row."
+            )
     checks = _checks_by_ref(audit)
     rows = []
     for source in manifest.get("sources") or ():

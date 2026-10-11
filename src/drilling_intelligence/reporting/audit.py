@@ -29,13 +29,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy.exc import SQLAlchemyError
-
-from ..core.errors import DrillingIntelligenceError
 from ..core.hashing import sha256_obj
 from ..evidence.verify import (
     STATUS_MATCH,
     STATUS_MISMATCH,
+    STATUS_NOT_CHECKABLE,
     STATUS_UNREADABLE,
     CitationAuditor,
 )
@@ -162,9 +160,9 @@ def _all_fully_covered(entries: list[dict[str, Any]]) -> bool:
         if lifecycle not in {LIFE_CURRENT, LIFE_HISTORICAL}:
             return False
         relationship = str(item.get("relationship") or "")
-        if relationship and relationship not in _COMPLETE_RELATIONSHIPS:
-            return False
-        if str(item.get("coverage") or "COMPLETE") not in {"COMPLETE", ""}:
+        coverage = str(item.get("coverage") or "")
+        # A missing relationship or coverage is a gap, not an implied complete enumeration.
+        if relationship not in _COMPLETE_RELATIONSHIPS or coverage != "COMPLETE":
             return False
     return True
 
@@ -197,8 +195,8 @@ def report_subject_wells(payload: dict[str, Any]) -> set[str]:
 def window_applied(payload: dict[str, Any]) -> bool:
     subject = payload.get("subject") if isinstance(payload.get("subject"), dict) else {}
     window = subject.get("window") if isinstance(subject, dict) else None
-    if isinstance(window, dict) and window.get("applied"):
-        return True
+    if isinstance(window, dict) and "applied" in window:
+        return bool(window.get("applied"))
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
     return bool(isinstance(request, dict) and (request.get("since") or request.get("until")))
 
@@ -312,6 +310,7 @@ class ReportEvidenceAudit:
     overall: str
     counts: dict[str, int]
     entries: tuple[dict[str, Any], ...]
+    operational_error: str = ""
     identity: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -326,6 +325,7 @@ class ReportEvidenceAudit:
             "completed": self.completed,
             "omitted": self.omitted,
             "overall": self.overall,
+            "operational_error": self.operational_error,
             "counts": dict(sorted(self.counts.items())),
             "entries": [dict(item) for item in self.entries],
             "precedence": ["FAILED", "INCOMPLETE", "PARTIALLY_VERIFIED", "FULLY_VERIFIED"],
@@ -377,7 +377,7 @@ def verify_report_citations(
     if attempted_ids:
         try:
             resolved = retrieval.resolve_structured(attempted_ids, session=session)
-        except (OSError, SQLAlchemyError, DrillingIntelligenceError) as exc:
+        except Exception as exc:  # noqa: BLE001 - an unexpected read failure is an incomplete audit
             failure = exc
             resolved = {}
             checks = None
@@ -388,11 +388,16 @@ def verify_report_citations(
             if (item := resolved.get(identity)) is not None and item_agrees(item, identity)
         ]
         if items:
+            auditor = CitationAuditor.for_workspace(workspace)
             try:
-                checks = CitationAuditor.for_workspace(workspace).audit_items(items)
-            except (OSError, SQLAlchemyError, DrillingIntelligenceError) as exc:
+                checks = auditor.audit_items(items, isolate=True)
+            except Exception as exc:  # noqa: BLE001 - a batch failure must not erase resolved rows
                 failure = exc
                 checks = None
+            else:
+                isolated = getattr(auditor, "isolated_error", None)
+                if isolated is not None:
+                    failure = isolated
     by_identity = {check.identity: check for check in (checks or ())}
     entries: list[dict[str, Any]] = []
     seen_ref_notes: set[tuple[str, str]] = set()
@@ -482,7 +487,12 @@ def verify_report_citations(
         else:
             citation = check.status
             detail = safe_detail(check.detail)
-            check_completed = True
+            check_completed = citation in {
+                STATUS_MATCH,
+                STATUS_MISMATCH,
+                STATUS_UNREADABLE,
+                STATUS_NOT_CHECKABLE,
+            }
         if scope_detail:
             detail = (detail + "; " if detail else "") + scope_detail
         if lifecycle == LIFE_NOT_CURRENT:
@@ -573,6 +583,9 @@ def verify_report_citations(
         overall=overall,
         counts=counts,
         entries=tuple(entries),
+        operational_error=(
+            safe_detail(f"{type(failure).__name__}: {failure}") if failure is not None else ""
+        ),
     )
 
 

@@ -1931,3 +1931,29 @@ reach `FULLY_VERIFIED` from citation status alone. V7.9 keeps those facts separa
 schema and identity are unchanged. No migration. The workbench ignores an audit whose generation
 or report identity is no longer the one on screen. CI runs the real offscreen Qt tests in a
 separate job; a skip there is a failure of that job.
+
+## ADR-40 — V8.0: a missing coverage field is not complete, and exit 134 is not a retry
+
+**Status:** accepted (2026-10-11)
+
+V7.9 left two holes. An audit entry with no `coverage` or no `relationship` could still be
+treated as a complete enumeration, and the workbench job retried every process that exited 134
+without keeping the first attempt or checking that the abort was the known runner signature.
+
+*   **Coverage and relationship are explicit.** `FULLY_VERIFIED` requires `coverage=COMPLETE` and
+    a direct or enumerated relationship. A missing field is a gap. An explicit `window.applied:
+    false` is the report's window; a request date does not override it. A date window still does
+    not make a cost, risk, or lesson row historical.
+*   **Operational failures stay visible and path-free.** An unexpected exception during resolve or
+    citation checking becomes `INCOMPLETE` with a redacted `operational_error`, unless a completed
+    mismatch or unreadable citation already exists — that stays `FAILED`. A per-item citation
+    error is isolated inside the existing batched read so an earlier conclusive check is not
+    discarded. The audit does not write, and the report fingerprint is not rewritten.
+*   **The Qt retry is a recorded policy.** `tools/qt_workbench.py` collects the real `tests/ui`
+    nodes and fails if that set is empty, short, or does not match the declared tests. A node is
+    retried only when its exit code is 134 and its log contains the known abort signature and
+    does not contain an assertion or collection failure. Both attempt logs are kept. A retry
+    success is a pass only under that policy. A skip is still a failure of the job.
+
+**Consequences.** `report-evidence-audit/1` gains `operational_error`. No new dependency, table,
+or migration. Alembic head stays `0019`.
