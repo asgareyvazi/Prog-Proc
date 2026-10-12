@@ -84,8 +84,10 @@ def test_shutdown_child_cannot_disarm_the_parent_watchdog() -> None:
     assert "max_wait_ms" not in deadline
     assert "os._exit" not in deadline
     active = child.split("def quit_active", 1)[1].split("def quit_several", 1)[0]
-    assert active.index("app.exec()") < active.index("_after_exec")
+    assert active.index("_exec(app, probe)") < active.index("_after_exec")
     assert "quit()" not in active
+    sleeper = child.split("def _sleeper", 1)[1].split("def _window", 1)[0]
+    assert "time.sleep" in sleeper
     assert "timeout=" in parent
     assert "timeout=15" in parent
 
