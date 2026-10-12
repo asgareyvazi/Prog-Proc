@@ -19,7 +19,10 @@ from ``QApplication.exec()`` — ``quit()``, ``exit()``, or the last window
 closing — and then ``application_shutdown``. A platform or library path that
 destroys the process without returning from ``exec()`` is not intercepted.
 A ``quit()`` issued before ``exec()`` has started has no effect and is not
-evidence of an external shutdown.
+evidence of an external shutdown. ``QApplication`` also ignores a quit that
+has started when a visible window refuses ``close()``, so ``exec()`` would
+never return and this budget would never start. ``create_application`` accepts
+that quit without closing windows inside the quit sequence.
 """
 
 from __future__ import annotations
@@ -241,6 +244,38 @@ def finish_qt_application(
         deadline_ms=ceiling,
         on_expire="fail_closed",
     )
+
+
+def create_application(argv: list[str]) -> Any:
+    """The ``QApplication`` used by ``drillintel-ui`` and the shutdown proof.
+
+    Qt delivers ``quit()`` as ``QEvent::Quit``. ``QApplication`` closes every
+    visible window and ignores that event if one window remains. A worker that
+    refuses ``close()`` would then leave ``exec()`` running forever. Accepting
+    the quit only leaves the loop. ``application_shutdown`` releases windows
+    afterwards and is allowed to fail closed. Closing them in this filter would
+    re-enter the path Qt uses to cancel the quit.
+    """
+    from PySide6.QtCore import QCoreApplication, QEvent, QObject
+    from PySide6.QtWidgets import QApplication
+
+    class _AcceptQuit(QObject):
+        def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+            if event.type() == QEvent.Type.Quit:
+                # Do not close windows here. A refused close makes Qt ignore
+                # the quit, and the offscreen close path does not return while
+                # a worker is still running.
+                QCoreApplication.exit(0)
+                return True
+            return super().eventFilter(watched, event)
+
+    application = QApplication(argv)
+    accept_quit = _AcceptQuit(application)
+    application.installEventFilter(accept_quit)
+    # The Python wrapper must outlive the filter. Parenting alone is not enough
+    # if the wrapper is collected and shiboken deletes the C++ object.
+    application._accept_quit = accept_quit  # type: ignore[attr-defined]
+    return application
 
 
 def application_shutdown(

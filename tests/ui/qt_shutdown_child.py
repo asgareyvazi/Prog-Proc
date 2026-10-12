@@ -7,8 +7,11 @@ A quit issued before ``exec()`` does not stop the loop. The request is therefore
 posted only from a ``QObject`` method that a ``QTimer`` delivers after ``exec()``
 is already pumping events. A second timer, created inside that method, posts
 ``quit()`` or ``exit()`` as its own event so the call is not swallowed inside the
-first timer slot. A daemon thread repeats the request if ``exec()`` has still
-not returned; it cannot turn that failure into a pass.
+first timer slot. The application is ``create_application``: Qt would otherwise
+ignore that quit when a window refuses ``close()``, and ``exec()`` would not
+return. A daemon thread calls ``os._exit(6)`` if the loop never returns. That
+is a failed proof. It does not call into Qt, and it does not disarm the parent
+timeout.
 """
 
 from __future__ import annotations
@@ -119,58 +122,40 @@ def _start_timer(owner: object, method: object, delay_ms: int) -> object:
     return timer
 
 
+def _application(name: str) -> object:
+    """Same object ``drillintel-ui`` constructs, so the quit proof is production."""
+    from drilling_intelligence.ui.lifetime import create_application
+
+    return create_application([name])
+
+
 def _arm_exec_watchdog(owner: object) -> None:
-    """Fail closed on the GUI thread if exec() is still running after 8s.
+    """Fail the proof if ``exec()`` is still running after 6s.
 
-    This is the timer connection the CI host has already delivered. It does
-    not disable the parent subprocess timeout, and a normal return stops it.
+    A ``QTimer`` cannot fire while the GUI thread is stuck inside ``quit()``.
+    This thread does not call Qt, so it can still ``os._exit(6)``. Exit 6 is
+    a failed proof, not a pass, and it does not disarm the parent timeout.
     """
-    from PySide6.QtCore import QObject, QTimer
 
-    class Watch(QObject):
-        def abort(self) -> None:
-            print("FAIL exec did not return within 8s", flush=True)
+    def _abort() -> None:
+        if not owner.exec_returned.wait(6):  # type: ignore[attr-defined]
+            print("FAIL exec did not return within 6s", flush=True)
             os._exit(6)
 
-    watch = Watch()
-    timer = QTimer()
-    timer.setSingleShot(True)
-    timer.timeout.connect(watch.abort)
-    timer.start(8_000)
-    owner._watch = watch  # type: ignore[attr-defined]
-    owner._watch_timer = timer  # type: ignore[attr-defined]
+    threading.Thread(target=_abort, daemon=True, name="qt-exec-watchdog").start()
 
 
-def _stop_exec_watchdog(owner: object) -> None:
-    timer = getattr(owner, "_watch_timer", None)
-    if timer is not None:
-        timer.stop()
+def _guard_exec(probe: object) -> None:
+    """Record that the loop never started. Do not call ``quit()`` from here.
 
-
-def _guard_exec(probe: object, *, followup: str) -> None:
-    """Repeat quit or exit from another thread if the in-loop request is ignored.
-
-    ``QCoreApplication.quit`` is thread-safe. Exit 6 is a failed proof, not a
-    successful shutdown, and it does not disable the parent's timeout.
+    A non-GUI quit flushes the window-system queue and waits for the GUI
+    thread. On this host that wait does not return while the first quit is
+    stuck, so the child never reached ``os._exit``.
     """
 
     def run() -> None:
         if not probe.started.wait(5):  # type: ignore[attr-defined]
             print("FAIL loop did not start within 5s", flush=True)
-            os._exit(6)
-        if followup == "none":
-            return
-        if probe.exec_returned.wait(1):  # type: ignore[attr-defined]
-            return
-        from PySide6.QtCore import QCoreApplication
-
-        print("QUIT_FROM_THREAD", flush=True)
-        if followup == "exit":
-            QCoreApplication.exit(7)
-        else:
-            QCoreApplication.quit()
-        if not probe.exec_returned.wait(3):  # type: ignore[attr-defined]
-            print("FAIL exec did not return after quit", flush=True)
             os._exit(6)
 
     threading.Thread(target=run, daemon=True).start()
@@ -178,11 +163,11 @@ def _guard_exec(probe: object, *, followup: str) -> None:
 
 def refused() -> int:
     import shiboken6
-    from PySide6.QtWidgets import QApplication, QWidget
+    from PySide6.QtWidgets import QWidget
 
     from drilling_intelligence.ui.lifetime import release_top_level_widgets
 
-    app = QApplication(["shutdown-refused"])
+    app = _application("shutdown-refused")
     other = QWidget()
     other.setObjectName("other-window")
     other.show()
@@ -272,12 +257,9 @@ def _probe(application: object) -> object:
 
 
 def _exec(application: object, probe: object) -> int:
-    print("STEP before-exec", flush=True)
     _arm_exec_watchdog(probe)
-    print("STEP entering-exec", flush=True)
     code = int(application.exec())  # type: ignore[attr-defined]
     probe.exec_returned.set()  # type: ignore[attr-defined]
-    _stop_exec_watchdog(probe)
     return code
 
 
@@ -296,14 +278,12 @@ def _after_exec(application: object, window: object, code: int, *, deadline_ms: 
 
 
 def quit_idle() -> int:
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication(["shutdown-quit-idle"])
+    app = _application("shutdown-quit-idle")
     window = _window("workbench", 40)
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    _guard_exec(probe, followup="quit")
+    _guard_exec(probe)
     held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
     code = _exec(app, probe)
     del held
@@ -315,24 +295,17 @@ def quit_idle() -> int:
 
 def quit_active() -> int:
     import shiboken6
-    from PySide6.QtWidgets import QApplication
 
-    print("STEP active-start", flush=True)
-    app = QApplication(["shutdown-quit-active"])
-    print("STEP active-app", flush=True)
+    app = _application("shutdown-quit-active")
     window = _window("workbench", 40)
-    print("STEP active-window", flush=True)
     thread = _sleeper(300)
     window._review_thread = thread  # type: ignore[attr-defined]
     thread.start()  # type: ignore[attr-defined]
-    print("STEP active-started", flush=True)
     window.show()  # type: ignore[attr-defined]
-    print("STEP active-shown", flush=True)
     app.processEvents()
-    print("STEP active-pumped", flush=True)
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    _guard_exec(probe, followup="quit")
+    _guard_exec(probe)
     held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
     code = _exec(app, probe)
     del held
@@ -350,9 +323,7 @@ def quit_active() -> int:
 
 
 def quit_several() -> int:
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication(["shutdown-quit-several"])
+    app = _application("shutdown-quit-several")
     window = _window("workbench", 40)
     review = _sleeper(450)
     decision = _sleeper(150)
@@ -363,7 +334,7 @@ def quit_several() -> int:
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    _guard_exec(probe, followup="quit")
+    _guard_exec(probe)
     held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
     code = _exec(app, probe)
     del held
@@ -379,9 +350,7 @@ def quit_several() -> int:
 
 
 def last_window() -> int:
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication(["shutdown-last-window"])
+    app = _application("shutdown-last-window")
     app.setQuitOnLastWindowClosed(True)
     window = _window("workbench", 40)
     thread = _sleeper(400)
@@ -390,7 +359,7 @@ def last_window() -> int:
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    _guard_exec(probe, followup="none")
+    _guard_exec(probe)
     held = _start_timer(probe, probe.close_once_running, 200)  # type: ignore[attr-defined]
     code = _exec(app, probe)
     del held
@@ -402,14 +371,12 @@ def last_window() -> int:
 
 
 def exit_route() -> int:
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication(["shutdown-exit"])
+    app = _application("shutdown-exit")
     window = _window("workbench", 40)
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    _guard_exec(probe, followup="exit")
+    _guard_exec(probe)
     held = _start_timer(probe, probe.exit_once_running, 200)  # type: ignore[attr-defined]
     code = _exec(app, probe)
     del held
@@ -424,11 +391,9 @@ def exit_route() -> int:
 
 def production_deadline() -> int:
     """Production terminal with a short ceiling. A return is a failed test."""
-    from PySide6.QtWidgets import QApplication
-
     from drilling_intelligence.ui.lifetime import application_shutdown
 
-    app = QApplication(["shutdown-deadline"])
+    app = _application("shutdown-deadline")
     window = _window("workbench", 40)
     thread = _sleeper(30_000)
     window._review_thread = thread  # type: ignore[attr-defined]
@@ -436,7 +401,7 @@ def production_deadline() -> int:
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    _guard_exec(probe, followup="quit")
+    _guard_exec(probe)
     held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
     code = _exec(app, probe)
     del held
@@ -448,11 +413,10 @@ def production_deadline() -> int:
 
 def bounded_incomplete() -> int:
     import shiboken6
-    from PySide6.QtWidgets import QApplication
 
     from drilling_intelligence.ui.lifetime import SHUTDOWN_INCOMPLETE_EXIT, finish_qt_application
 
-    app = QApplication(["shutdown-bound"])
+    app = _application("shutdown-bound")
     window = _window("workbench", 30)
     thread = _qt_sleeper(5_000)
     window._review_thread = thread  # type: ignore[attr-defined]

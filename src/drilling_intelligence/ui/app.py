@@ -25,8 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        from PySide6.QtWidgets import QApplication
-
+        from .lifetime import application_shutdown, create_application
         from .main_window import MainWindow
     except (ImportError, OSError, RuntimeError) as exc:
         print(
@@ -37,7 +36,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    app = QApplication(["drillintel-ui", *(argv or sys.argv[1:])])
+    app = create_application(["drillintel-ui", *(argv or sys.argv[1:])])
     app.setApplicationName("Prog-Proc Review Workbench")
     window = MainWindow(
         startup_workspace=args.workspace or "",
@@ -48,8 +47,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     code = int(app.exec())
     # Do not return while a top-level widget is still valid. This is the same
     # production shutdown the external-quit test runs after exec() returns.
-    from .lifetime import application_shutdown
-
     exit_code = application_shutdown(app, code)
     del window
     return exit_code

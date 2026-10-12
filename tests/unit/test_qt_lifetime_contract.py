@@ -49,6 +49,8 @@ def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     fixture = Path("tests/ui/test_workbench.py").read_text(encoding="utf-8")
     lifetime = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
     assert "application_shutdown" in app
+    assert "create_application" in app
+    assert "QApplication(" not in app
     assert "os._exit" not in app
     shutdown = lifetime.split("def application_shutdown", 1)[1].split("def fixture_teardown", 1)[0]
     assert "finish_qt_application" in shutdown
@@ -73,6 +75,11 @@ def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     assert "thread.wait(limit)" in window
     assert "def owned_workers_running" in window
     assert "owned_workers_running" in lifetime
+    accept = lifetime.split("def create_application", 1)[1].split("def application_shutdown", 1)[0]
+    assert "QCoreApplication.exit(0)" in accept
+    assert "installEventFilter" in accept
+    assert "closeAllWindows" not in accept
+    assert "thread.wait" not in accept
 
 
 def test_shutdown_child_cannot_disarm_the_parent_watchdog() -> None:
@@ -81,6 +88,9 @@ def test_shutdown_child_cannot_disarm_the_parent_watchdog() -> None:
     assert "SIG_IGN" not in child
     assert "signal.signal" not in child
     assert "application_shutdown" in child
+    assert "create_application" in child
+    assert "QApplication(" not in child
+    assert "QCoreApplication.quit()" not in child
     deadline = child.split("def production_deadline", 1)[1].split("def bounded_incomplete", 1)[0]
     assert "deadline_ms=400" in deadline
     assert "max_wait_ms" not in deadline

@@ -124,8 +124,8 @@ runtime) even when the suite fails. A supplied exit file must exist and agree wi
 session exit; an unexpected pass, or a skip that is not a headless UI test missing Qt,
 fails the job (ADR-42, ADR-43). The workbench job also runs a no-retry stability
 qualification of both nodes that have aborted in `destroyQCoreApplication`. A refused close
-keeps the window, and the production shutdown budget is one 120s clock, not a fresh wait per
-poll (ADR-45). Operator-facing errors redact prefixed and quoted credential assignments without
+keeps the window. An external quit still leaves the event loop, and the production shutdown
+budget is one 120s clock, not a fresh wait per poll (ADR-45). Operator-facing errors redact prefixed and quoted credential assignments without
 discarding a connection host.
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,

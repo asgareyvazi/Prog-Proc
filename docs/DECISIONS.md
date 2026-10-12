@@ -2098,7 +2098,14 @@ only after that loop returned. A sticky quit, or a loop with no quit at all,
 could make the deadline either useless or unreachable.
 
 *   **The loop has to start.** The external-quit test arms a `QTimer` whose
-    slot calls `QCoreApplication.quit()` only after `exec()` is pumping events.
+    slot calls `quit()` only after `exec()` is pumping events. `QApplication`
+    handles that quit by closing visible windows and ignoring it if one
+    remains. A worker that refuses `close()` would then leave `exec()` running,
+    so the budget would never start. `create_application` accepts the quit and
+    calls `QCoreApplication.exit(0)` without closing windows inside the quit
+    sequence. The same `application_shutdown` path releases them afterwards.
+    A non-GUI quit is not used to force the loop: on this host it waits for a
+    GUI flush that does not return while the first quit is stuck.
     The parent subprocess timeout is the watchdog. The child does not install a
     signal handler and cannot disarm it. After `exec()` returns, the test calls
     `application_shutdown`, the same function `drillintel-ui` calls. A quit
