@@ -31,20 +31,45 @@ def _drop_thread(thread: object) -> None:
 
 
 def _sleeper(duration_ms: int) -> object:
+    """A QThread-shaped worker that does not start an operating-system thread.
+
+    A real ``QThread.start()`` plus ``QApplication.exec()`` did not return on
+    the CI host, and the quit timer never fired. ``closeEvent`` only calls
+    ``isRunning``, ``requestInterruption``, ``quit`` and ``wait``. Those methods
+    honor the caller's timeout, so a refused close cannot block past the
+    shutdown budget.
+    """
     from PySide6.QtCore import QThread
 
-    class Sleeper(QThread):
+    class Busy(QThread):
         def __init__(self, duration: int) -> None:
             super().__init__()
-            self._duration_ms = duration
+            self._until = time.monotonic() + duration / 1000
 
-        def run(self) -> None:
-            # time.sleep releases the GIL and does not take a Qt mutex.
-            # QThread.msleep from this override deadlocked QApplication.exec
-            # on the CI host, so the quit timer never ran.
-            time.sleep(self._duration_ms / 1000)
+        def isRunning(self) -> bool:
+            return time.monotonic() < self._until
 
-    return Sleeper(duration_ms)
+        def requestInterruption(self) -> None:
+            return None
+
+        def quit(self) -> None:
+            return None
+
+        def start(self, priority: object = None) -> None:  # type: ignore[override]
+            return None
+
+        def wait(self, msecs: int = -1) -> bool:  # type: ignore[override]
+            if not self.isRunning():
+                return True
+            if msecs == 0:
+                return False
+            limit = 30.0 if msecs < 0 else msecs / 1000
+            deadline = min(self._until, time.monotonic() + limit)
+            while self.isRunning() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            return not self.isRunning()
+
+    return Busy(duration_ms)
 
 
 def _window(name: str, join_ms: int) -> object:
