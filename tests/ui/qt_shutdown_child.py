@@ -27,6 +27,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 def _drop_thread(thread: object) -> None:
     if thread.isRunning():  # type: ignore[attr-defined]
         thread.wait()  # type: ignore[attr-defined]
+    # The exec-path stand-in is a plain object. ``isValid`` does not reject it
+    # on the CI host, and ``delete`` then raises ``TypeError``.
+    try:
+        from PySide6.QtCore import QObject
+    except (ImportError, OSError):
+        return
+    if not isinstance(thread, QObject):
+        return
     try:
         import shiboken6
     except (ImportError, OSError):
