@@ -3,10 +3,14 @@
 
 The CI log uses one quiet level, which still prints a summary when the process
 finishes. This record is what remains when that line is missing or the suite
-failed: collected, passed, failed, errors, skipped, xfailed, xpassed, runtime,
-and the process exit code. JUnit does not mark an xpass, so the session stats
-are the authority and JUnit is the cross-check. A green workflow cannot omit
-either file, and a disagreement fails the job.
+failed. JUnit does not mark an xpass, so the session stats are the authority
+and JUnit is the cross-check. When ``--exit-file`` is supplied, that file is a
+required independent record: a missing, empty, or malformed file fails the
+publisher, and its integer is compared with the session exit. A green JSON/JUnit
+pair must not conceal it.
+
+An unexpected pass fails the record. A skip is expected only for a headless UI
+test whose reason says Qt could not load. Every other skip fails the record.
 """
 
 from __future__ import annotations
@@ -14,12 +18,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 _XFAIL_TYPE = "pytest.xfail"
 _XPASS_MESSAGE = "xfail-marked test passes unexpectedly"
+_EXIT_LINE = re.compile(r"-?\d+")
+_HEADLESS_SKIP_REASON = "QtWidgets unavailable"
 _KEYS = (
     "collected",
     "passed",
@@ -31,6 +38,10 @@ _KEYS = (
     "exit",
     "runtime",
 )
+
+
+class ExitRecordError(ValueError):
+    """A supplied shell-exit file is missing or not one integer."""
 
 
 def _int(value: object) -> int:
@@ -123,7 +134,47 @@ def disagreements(
     junit_passed = _int(junit.get("passed")) + _int(junit.get("xpassed"))
     if recorded_passed != junit_passed:
         problems.append(f"passed+xpassed: stats {recorded_passed} != junit {junit_passed}")
+    accounted = (
+        _int(recorded.get("passed"))
+        + _int(recorded.get("failed"))
+        + _int(recorded.get("errors"))
+        + _int(recorded.get("skipped"))
+        + _int(recorded.get("xfailed"))
+        + _int(recorded.get("xpassed"))
+    )
+    if accounted != _int(recorded.get("collected")):
+        problems.append(f"accounted {accounted} != collected {recorded.get('collected')}")
     return problems
+
+
+def skip_is_expected(classname: str, name: str, message: str) -> bool:
+    """Headless CI may skip UI tests only because Qt itself cannot load."""
+    identity = f"{classname} {name}"
+    ui = "tests.ui." in classname or classname.startswith("tests.ui") or "tests/ui/" in identity
+    return ui and _HEADLESS_SKIP_REASON in (message or "")
+
+
+def unexpected_skips(path: Path) -> list[str]:
+    """JUnit skips that are not the known headless Qt skip."""
+    root = ET.parse(path).getroot()  # noqa: S314
+    found: list[str] = []
+    for case in root.iter("testcase"):
+        skipped = case.find("skipped")
+        if skipped is None:
+            continue
+        kind = skipped.attrib.get("type") or ""
+        if kind == _XFAIL_TYPE:
+            continue
+        message = skipped.attrib.get("message") or ""
+        if message.startswith(_XPASS_MESSAGE):
+            continue
+        classname = case.attrib.get("classname") or ""
+        name = case.attrib.get("name") or ""
+        if skip_is_expected(classname, name, message):
+            continue
+        reason = " ".join(message.split())[:120] or "no reason"
+        found.append(f"{classname}::{name}: {reason}")
+    return found
 
 
 def format_totals(totals: dict[str, int | float | None]) -> str:
@@ -133,13 +184,24 @@ def format_totals(totals: dict[str, int | float | None]) -> str:
     return "\n".join(lines)
 
 
-def _read_exit(path: Path | None) -> int | None:
-    if path is None or not path.is_file():
-        return None
-    raw = path.read_text(encoding="utf-8").strip()
-    if raw == "":
-        return None
-    return int(raw)
+def read_exit_file(path: Path) -> int:
+    """Read one integer. A supplied path that is missing or malformed is an error.
+
+    Omitting the path is the standalone contract. Supplying it, as CI does, means
+    the file is required and is not replaced by the session-recorded exit.
+    """
+    if not path.is_file():
+        raise ExitRecordError("exit file missing")
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ExitRecordError("exit file unreadable") from exc
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if not lines:
+        raise ExitRecordError("exit file empty")
+    if len(lines) != 1 or _EXIT_LINE.fullmatch(lines[0]) is None:
+        raise ExitRecordError("exit file is not one integer")
+    return int(lines[0])
 
 
 def _write_summary(summary_path: Path | None, text: str) -> None:
@@ -151,10 +213,10 @@ def _write_summary(summary_path: Path | None, text: str) -> None:
         handle.write("### Pytest totals\n\n```\n" + text + "\n```\n")
 
 
-def _load_stats(path: Path, exit_code: int | None) -> dict[str, int | float | None]:
+def _load_stats(path: Path) -> dict[str, int | float | None]:
     payload = json.loads(path.read_text(encoding="utf-8"))
-    totals = {key: payload[key] for key in _KEYS if key != "exit"}
-    totals["exit"] = exit_code if exit_code is not None else payload.get("exit")
+    totals = {key: payload[key] for key in _KEYS}
+    totals["session_exit"] = payload.get("exit")
     return totals
 
 
@@ -164,30 +226,54 @@ def publish(
     exit_file: Path | None,
     summary_path: Path | None,
 ) -> int:
-    """Print totals and fail unless both records exist, agree, and the suite passed."""
-    exit_code = _read_exit(exit_file)
-    if not stats_path.is_file() or not junit_path.is_file():
+    """Print totals and fail unless the required records exist, agree, and passed.
+
+    ``exit_file is None`` is the standalone library contract. A path, including a
+    path that does not exist, is a required shell record.
+    """
+    shell_exit: int | None = None
+    exit_problem = ""
+    if exit_file is not None:
+        try:
+            shell_exit = read_exit_file(exit_file)
+        except ExitRecordError as exc:
+            exit_problem = str(exc)
+    if not stats_path.is_file() or not junit_path.is_file() or exit_problem:
         text = "\n".join(
             [
                 "pytest totals",
                 f"stats: {'present' if stats_path.is_file() else 'missing'}",
                 f"junit: {'present' if junit_path.is_file() else 'missing'}",
-                f"exit: {exit_code if exit_code is not None else 'unknown'}",
+                f"shell_exit: {exit_problem or shell_exit if exit_file is not None else 'not-requested'}",
             ]
         )
         _write_summary(summary_path, text)
         return 1
-    recorded = _load_stats(stats_path, exit_code)
-    junit = totals_from_junit(junit_path, exit_code)
+    recorded = _load_stats(stats_path)
+    session_exit = recorded.get("session_exit")
+    junit = totals_from_junit(junit_path, shell_exit)
     problems = disagreements(recorded, junit)
+    if shell_exit is not None and _int(session_exit) != shell_exit:
+        problems.append(f"exit: shell {shell_exit} != session {session_exit}")
+    if _int(recorded.get("xpassed")):
+        problems.append(f"xpassed: {recorded.get('xpassed')} unexpected pass is not a release pass")
+    skips = unexpected_skips(junit_path)
+    if skips:
+        problems.append("unexpected skip:\n" + "\n".join(skips))
+    recorded = dict(recorded)
+    recorded["shell_exit"] = shell_exit if shell_exit is not None else "not-requested"
+    recorded["session_exit"] = session_exit
+    recorded["exit"] = shell_exit if shell_exit is not None else session_exit
     text = format_totals(recorded)
+    text += f"\nshell_exit: {recorded['shell_exit']}\nsession_exit: {session_exit}"
     if problems:
-        text += "\njunit disagreement:\n" + "\n".join(problems)
+        text += "\ndisagreement:\n" + "\n".join(problems)
     _write_summary(summary_path, text)
     failed = _int(recorded.get("failed"))
     errors = _int(recorded.get("errors"))
     collected = _int(recorded.get("collected"))
-    if problems or failed or errors or collected <= 0 or exit_code not in (None, 0):
+    exit_bad = shell_exit not in (None, 0) or (shell_exit is None and _int(session_exit) != 0)
+    if problems or failed or errors or collected <= 0 or exit_bad:
         return 1
     return 0
 
@@ -235,8 +321,8 @@ def main(argv: list[str] | None = None) -> int:
         summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
     try:
         return publish(args.stats, args.junit, args.exit_file, summary)
-    except (ET.ParseError, ValueError, OSError, json.JSONDecodeError, KeyError) as exc:
-        print(f"pytest totals\nrecord: unreadable\n{exc}")
+    except (ET.ParseError, ValueError, OSError, json.JSONDecodeError, KeyError):
+        print("pytest totals\nrecord: unreadable")
         return 1
 
 

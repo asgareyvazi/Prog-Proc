@@ -143,6 +143,20 @@ def _configure_table(table: QTableView, model: Any) -> None:
         table.setColumnWidth(column, definition.width)
 
 
+# Every QThread attribute created in MainWindow.__init__. closeEvent must wait
+# for all of them. Omitting the decision or comparison thread deletes a live
+# child QThread when the window is destroyed.
+_WORKER_THREAD_ATTRS = (
+    "_review_thread",
+    "_decision_thread",
+    "_comparison_thread",
+    "_report_thread",
+    "_report_audit_thread",
+    "_action_thread",
+    "_calculation_thread",
+)
+
+
 class MainWindow(QMainWindow):
     """The first read-only desktop consumer of the Domain Review contract."""
 
@@ -183,6 +197,8 @@ class MainWindow(QMainWindow):
         self._conflict_actions: tuple[ReviewAction, ...] = ()
         self._selected_source_path = ""
         self._config_path = config_path
+        self._startup_workspace = startup_workspace
+        self._startup_well = startup_well
 
         self.setWindowTitle("Prog-Proc — Review Workbench")
         self.resize(1500, 900)
@@ -190,7 +206,7 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self._set_status("Open a workspace to begin.")
         if startup_workspace:
-            QTimer.singleShot(0, lambda: self.open_workspace_path(startup_workspace, startup_well))
+            QTimer.singleShot(0, self._open_startup_workspace)
 
     # -- construction -----------------------------------------------------
     def _build_ui(self) -> None:
@@ -221,13 +237,13 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.lifecycle_combo)
 
         self.load_button = QPushButton("Load review")
-        self.load_button.clicked.connect(lambda: self.request_review(verify_citations=False))
+        self.load_button.clicked.connect(self._load_current_review)
         controls.addWidget(self.load_button)
         self.verify_button = QPushButton("Verify citations")
         self.verify_button.setToolTip(
             "Re-read recorded source-file citations through CitationAuditor"
         )
-        self.verify_button.clicked.connect(lambda: self.request_review(verify_citations=True))
+        self.verify_button.clicked.connect(self._verify_citations_from_button)
         controls.addWidget(self.verify_button)
         root.addLayout(controls)
 
@@ -2031,17 +2047,20 @@ class MainWindow(QMainWindow):
         self.banner.setObjectName("warningBanner")
         self.banner.setVisible(True)
 
+    def _open_startup_workspace(self) -> None:
+        self.open_workspace_path(self._startup_workspace, self._startup_well)
+
+    def _load_current_review(self) -> None:
+        self.request_review(verify_citations=False)
+
+    def _verify_citations_from_button(self) -> None:
+        self.request_review(verify_citations=True)
+
     def closeEvent(self, event: QCloseEvent) -> None:
         threads = [
             thread
-            for thread in (
-                self._review_thread,
-                self._action_thread,
-                self._calculation_thread,
-                self._report_thread,
-                self._report_audit_thread,
-            )
-            if thread is not None
+            for name in _WORKER_THREAD_ATTRS
+            if (thread := getattr(self, name, None)) is not None
         ]
         for thread in threads:
             if thread.isRunning():

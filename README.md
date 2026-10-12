@@ -117,9 +117,12 @@ offscreen on hosts with a working Qt installation. CI retries a workbench proces
 attempt log carries the recorded Qt/glibc abort signature and no assertion or collection failure;
 both attempt logs are kept, collection must account for every declared test, and the attempt-log
 artifact is required (ADR-40, ADR-41). The headless jobs publish explicit pytest totals
-(collected, passed, failed, errors, skipped, xfailed, xpassed, exit, runtime) even when the
-suite fails; a missing total fails the job (ADR-42). Operator-facing errors redact prefixed
-credential names such as `OPENAI_API_KEY` without discarding a connection host.
+(collected, passed, failed, errors, skipped, xfailed, xpassed, shell exit, session exit,
+runtime) even when the suite fails. A supplied exit file must exist and agree with the
+session exit; an unexpected pass, or a skip that is not a headless UI test missing Qt,
+fails the job (ADR-42, ADR-43). The workbench job also runs a no-retry stability
+qualification of the node that has aborted in `destroyQCoreApplication`. Operator-facing
+errors redact prefixed and quoted credential assignments without discarding a connection host.
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,
 for callers embedding the library rather than driving the CLI:

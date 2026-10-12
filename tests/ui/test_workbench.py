@@ -39,7 +39,13 @@ def qt_app():
         pytest.skip(f"QtWidgets unavailable for UI tests: {exc}")
     application = QApplication.instance() or QApplication(["pytest-review-workbench"])
     yield application
+    # Delete windows before quit. close() does not destroy them, and PySide 6.12
+    # aborts if destroyQCoreApplication finds them still alive.
+    from drilling_intelligence.ui.lifetime import release_top_level_widgets
+
+    release_top_level_widgets(application)
     application.quit()
+    application.processEvents()
 
 
 def test_default_package_is_import_light() -> None:

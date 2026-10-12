@@ -363,6 +363,32 @@ def test_prefixed_credentials_are_redacted_and_url_hosts_remain():
     assert "/opt/secret" not in safe_detail("cannot open /opt/secret/dirname now")
 
 
+def test_quoted_and_encoded_credentials_are_redacted_without_eating_the_sentence():
+    text = safe_detail(
+        'password="two word secret" host remains. '
+        "API_KEY='token value with spaces' done. "
+        'DATABASE_URL="postgresql://user:quoted-dsn-secret@db.internal/wells" next. '
+        "postgres://user:s3cret%3Avalue@localhost/db "
+        "https://host.example/path?token=query%20sentinel&kept=1 "
+        "cannot open /opt/secret/dirname now"
+    )
+    for sentinel in (
+        "two word secret",
+        "token value with spaces",
+        "quoted-dsn-secret",
+        "s3cret%3Avalue",
+        "query%20sentinel",
+    ):
+        assert sentinel not in text
+    assert "host remains." in text
+    assert "done." in text
+    assert "next." in text
+    assert "postgres://[redacted]@localhost/db" in text
+    assert "kept=1" in text
+    assert "dirname" in text
+    assert "/opt/secret" not in text
+
+
 def test_core_redact_does_not_import_retrieval_or_the_auditor():
     import subprocess
     import sys

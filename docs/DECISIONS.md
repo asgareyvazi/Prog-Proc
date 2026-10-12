@@ -2016,3 +2016,36 @@ URL after the password was removed.
 `0019`. The Qt retry remains exit 134 plus the recorded abort signature, once, with both
 logs kept. A passing workbench job after the `core.redact` import move is not evidence
 that the historic abort is solved.
+
+## ADR-43 — V8.3: Qt shutdown ownership, required exit records, and quoted secrets
+
+**Status:** accepted (2026-10-12)
+
+V8.2 left three residual holes.
+
+*   **A closed window is not a destroyed window.** The workbench job still saw
+    `QObject: shared QObject was deleted directly` and then
+    `malloc_consolidate(): unaligned fastbin chunk detected` on
+    `test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail`,
+    exit 134, followed by the one allowed retry. That warning is Qt's shared-ownership
+    destructor. PySide 6.12, released 2026-10-08 and allowed by `PySide6-Essentials>=6.6,<7`,
+    aborts in `destroyQCoreApplication` when a top-level widget is still alive at
+    interpreter shutdown. `close()` only hides the window. The application and the UI
+    fixture now delete top-level widgets with `shiboken6.delete` while `QApplication`
+    is alive. Button callbacks are methods, not self-capturing lambdas. `closeEvent`
+    waits for the decision and comparison threads as well as the others. A separate
+    15-iteration qualification runs that node with no retry. A warning, abort, skip,
+    or assertion in any iteration fails the job. The regular runner still retries only
+    exit 134 plus the recorded abort signature, once.
+*   **A missing shell-exit file is not a pass.** When `--exit-file` is supplied, the
+    file must exist and contain one integer. That integer is compared with the session
+    exit. Session stats do not replace a missing file. An unexpected pass fails the
+    record. A skip is expected only when a headless UI test cannot load Qt. Quoted
+    credential values, including values with spaces, are redacted without consuming
+    the following sentence.
+*   **No schema change.** Alembic head stays `0019`. Audit precedence, scope, and the
+    one-retry policy are unchanged.
+
+**Consequences.** A stability pass is evidence, not a proof that a native fault cannot
+recur. The publisher's standalone mode, with no exit file argument, remains available
+to tests. CI always passes `--exit-file`.

@@ -39,8 +39,12 @@ _URL_USERINFO = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^/\s@]+)@")
 # term, as in notasecret, is not an assignment.
 _CRED_TERM = r"(?:password|passwd|pwd|api[_-]?key|token|secret|access[_-]?key)"
 _CONN_TERM = r"(?:database[_-]url|connection[_-](?:string|url)|[a-z0-9]+[_-]dsn)"
+# A quoted value may contain spaces. An unquoted value stops at whitespace so a
+# later diagnostic sentence is not swallowed. Escaped quotes stay inside the value.
+_QUOTED_VALUE = r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*')"
 _CREDENTIAL_ASSIGN = re.compile(
-    rf"(?i)(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*(?:{_CRED_TERM}|{_CONN_TERM})\s*[=:]\s*\S+"
+    rf"(?i)(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*(?:{_CRED_TERM}|{_CONN_TERM})"
+    rf"\s*[=:]\s*(?:{_QUOTED_VALUE}|[^\s&]+)"
 )
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{8,}")
 _BASIC = re.compile(r"(?i)\b(authorization\s*:\s*basic\s+)\S+")

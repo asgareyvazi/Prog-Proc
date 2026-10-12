@@ -83,6 +83,41 @@ def test_attempt_result_distinguishes_a_retry_pass():
     assert qt_workbench.attempt_result([(1, 134), (2, 134)]) == "FAILED"
 
 
+def test_stability_qualification_keeps_every_failed_attempt():
+    warning = (
+        "QObject: shared QObject was deleted directly. The program is malformed and may crash."
+    )
+    assert "shared QObject" in qt_workbench.stability_failure(0, warning)
+    assert qt_workbench.stability_failure(0, "loaded 4 records") == ""
+    assert "exit 134" in qt_workbench.stability_failure(134, "Fatal Python error: Aborted")
+    assert "assertion" in qt_workbench.stability_failure(
+        1, "AssertionError: chart\nFAILED tests/ui/x"
+    )
+    # A later pass does not erase the first abort. Retry policy is not applied.
+    status, summary = qt_workbench.qualify_stability(
+        [(1, 134, "exit 134; abort signature"), (2, 0, "")]
+    )
+    assert status == 1
+    assert "ATTEMPT 1 EXIT 134 FAIL" in summary
+    assert "ATTEMPT 2 EXIT 0 PASS" in summary
+    assert "stability failed: 1" in summary
+    clean, clean_summary = qt_workbench.qualify_stability([(1, 0, ""), (2, 0, "")])
+    assert clean == 0
+    assert "stability result: PASS" in clean_summary
+
+
+def test_the_normal_runner_still_retries_only_a_qualifying_abort():
+    assert (
+        qt_workbench.qualifies_for_abort_retry(134, qt_workbench.QOBJECT_DELETED_DIRECTLY) is False
+    )
+    assert (
+        qt_workbench.qualifies_for_abort_retry(
+            134, "malloc_consolidate(): unaligned fastbin chunk detected"
+        )
+        is True
+    )
+
+
 def test_collected_node_parser_ignores_the_summary_line():
     text = "tests/ui/test_workbench.py::test_alpha\n\n2 tests collected in 0.01s\n"
     assert qt_workbench.parse_collected_nodes(text) == ["tests/ui/test_workbench.py::test_alpha"]

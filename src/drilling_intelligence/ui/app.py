@@ -45,7 +45,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         config_path=args.config or "",
     )
     window.show()
-    return int(app.exec())
+    code = int(app.exec())
+    # Drop the window while this QApplication is still the living owner.
+    # Leaving it for interpreter shutdown is the PySide 6.12 abort path.
+    from .lifetime import release_top_level_widgets
+
+    release_top_level_widgets(app)
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

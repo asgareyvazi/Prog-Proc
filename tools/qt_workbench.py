@@ -21,6 +21,8 @@ ABORT_SIGNATURES = (
     "terminate called without an active exception",
     "Aborted (core dumped)",
 )
+# The warning is the lifetime fault. It is not, by itself, a retry qualifier.
+QOBJECT_DELETED_DIRECTLY = "QObject: shared QObject was deleted directly"
 PRODUCT_FAILURE_MARKERS = (
     "AssertionError",
     "FAILED tests/",
@@ -111,6 +113,41 @@ def account_for_collection(expected: list[str], nodes: list[str]) -> str:
             f"missing={missing or '-'} extra={extra or '-'}"
         )
     return ""
+
+
+def stability_failure(exit_code: int, output: str) -> str:
+    """Why one no-retry qualification attempt failed, or an empty string.
+
+    A later passing iteration must not erase this. The normal one-retry policy
+    is not consulted.
+    """
+    text = output or ""
+    reasons: list[str] = []
+    if exit_code != 0:
+        reasons.append(f"exit {exit_code}")
+    if QOBJECT_DELETED_DIRECTLY in text:
+        reasons.append("shared QObject deleted directly")
+    if any(marker in text for marker in ABORT_SIGNATURES):
+        reasons.append("abort signature")
+    if any(marker in text for marker in PRODUCT_FAILURE_MARKERS):
+        reasons.append("assertion or collection failure")
+    if _SKIPPED.search(text):
+        reasons.append("skipped")
+    return "; ".join(reasons)
+
+
+def qualify_stability(attempts: list[tuple[int, int, str]]) -> tuple[int, str]:
+    """Return (exit, summary). Any failed attempt fails the qualification."""
+    lines = [f"stability attempts: {len(attempts)}"]
+    failed = 0
+    for ordinal, code, reason in attempts:
+        state = "FAIL" if reason else "PASS"
+        if reason:
+            failed += 1
+        lines.append(f"ATTEMPT {ordinal} EXIT {code} {state} {reason}".rstrip())
+    lines.append(f"stability failed: {failed}")
+    lines.append("stability result: " + ("FAIL" if failed else "PASS"))
+    return (1 if failed else 0), "\n".join(lines) + "\n"
 
 
 def attempt_result(attempts: list[tuple[int, int]]) -> str:

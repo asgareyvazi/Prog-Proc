@@ -172,7 +172,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           QT_X11_NO_MITSHM: "1"
         run: |
-          xvfb-run -a -s "-screen 0 1280x1024x24" python -c "from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName())"
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -c "import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName(), 'pyside', PySide6.__version__, 'qt', qVersion())"
 
       - name: Offscreen workbench tests
         env:
@@ -183,6 +183,18 @@ jobs:
           PYTHONUNBUFFERED: "1"
           PYTHONFAULTHANDLER: "1"
         run: python tools/qt_workbench.py
+
+      # Qualification, not a silent rerun. Each iteration is independent. A
+      # failed iteration fails the job even if a later one passes.
+      - name: Qt stability qualification
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: python tools/qt_stability.py --repeats 15
 
       # The attempt logs are release evidence. A green workbench job must not
       # waive a failed upload or a missing log directory.
