@@ -1,16 +1,21 @@
 """Subprocess body for the Qt shutdown contract. Not a pytest module.
 
 The parent process owns the watchdog via ``subprocess`` timeout. This process
-does not install a signal handler and cannot disarm that timeout. A quit or
-exit request is made from a ``QObject`` method connected with
-``QTimer.timeout``. That method cannot run until ``exec()`` is pumping events.
-Calling ``quit()`` before ``exec()`` is not this test.
+does not install a signal handler and cannot disarm that timeout.
+
+A quit issued before ``exec()`` does not stop the loop. The request is therefore
+posted only from a ``QObject`` method that a ``QTimer`` delivers after ``exec()``
+is already pumping events. A second timer, created inside that method, posts
+``quit()`` or ``exit()`` as its own event so the call is not swallowed inside the
+first timer slot. A daemon thread repeats the request if ``exec()`` has still
+not returned; it cannot turn that failure into a pass.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import threading
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -47,14 +52,53 @@ def _window(name: str, join_ms: int) -> object:
     return window
 
 
-def _start_timer(parent: object, method: object, delay_ms: int) -> object:
+def _start_timer(owner: object, method: object, delay_ms: int) -> object:
+    """Unparented timer, same connection the CI watchdog was able to deliver.
+
+    The Python reference is kept by the caller. Parenting the timer, or using
+    ``singleShot(0)`` before ``exec()``, did not stop the loop on this host.
+    """
     from PySide6.QtCore import QTimer
 
-    timer = QTimer(parent)  # type: ignore[arg-type]
+    timer = QTimer()
     timer.setSingleShot(True)
     timer.timeout.connect(method)  # type: ignore[arg-type]
     timer.start(delay_ms)
+    timers = getattr(owner, "_timers", None)
+    if timers is None:
+        owner._timers = []  # type: ignore[attr-defined]
+        timers = owner._timers  # type: ignore[attr-defined]
+    timers.append(timer)
     return timer
+
+
+def _guard_exec(probe: object, *, followup: str) -> None:
+    """Repeat quit or exit from another thread if the in-loop request is ignored.
+
+    ``QCoreApplication.quit`` is thread-safe. Exit 6 is a failed proof, not a
+    successful shutdown, and it does not disable the parent's timeout.
+    """
+
+    def run() -> None:
+        if not probe.started.wait(5):  # type: ignore[attr-defined]
+            print("FAIL loop did not start within 5s", flush=True)
+            os._exit(6)
+        if followup == "none":
+            return
+        if probe.exec_returned.wait(1):  # type: ignore[attr-defined]
+            return
+        from PySide6.QtCore import QCoreApplication
+
+        print("QUIT_FROM_THREAD", flush=True)
+        if followup == "exit":
+            QCoreApplication.exit(7)
+        else:
+            QCoreApplication.quit()
+        if not probe.exec_returned.wait(3):  # type: ignore[attr-defined]
+            print("FAIL exec did not return after quit", flush=True)
+            os._exit(6)
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def refused() -> int:
@@ -98,10 +142,12 @@ def _probe(application: object) -> object:
 
     class Probe(QObject):
         def __init__(self) -> None:
-            super().__init__(application)  # type: ignore[arg-type]
+            super().__init__()
             self.application = application
             self.window: object | None = None
-            self._later: object | None = None
+            self.started = threading.Event()
+            self.exec_returned = threading.Event()
+            self._timers: list[object] = []
 
         def note_still_valid(self) -> None:
             import shiboken6
@@ -112,24 +158,32 @@ def _probe(application: object) -> object:
                 return
             print("ABOUT_TO_QUIT_WINDOW_GONE", flush=True)
 
-        def quit_once_running(self) -> None:
-            from PySide6.QtCore import QCoreApplication
-
+        def mark_loop_started(self) -> None:
             print("LOOP_STARTED", flush=True)
+            self.started.set()
+
+        def post_quit(self) -> None:
             print("QUIT_REQUESTED", flush=True)
-            QCoreApplication.quit()
+            self.application.quit()  # type: ignore[attr-defined]
 
-        def exit_once_running(self) -> None:
-            print("LOOP_STARTED", flush=True)
+        def post_exit(self) -> None:
             print("EXIT_REQUESTED", flush=True)
             self.application.exit(7)  # type: ignore[attr-defined]
 
+        def quit_once_running(self) -> None:
+            self.mark_loop_started()
+            _start_timer(self, self.post_quit, 30)
+
+        def exit_once_running(self) -> None:
+            self.mark_loop_started()
+            _start_timer(self, self.post_exit, 30)
+
         def close_once_running(self) -> None:
-            print("LOOP_STARTED", flush=True)
+            self.mark_loop_started()
             window = self.window
             accepted = window.close()  # type: ignore[attr-defined]
             print("CLOSE_REFUSED" if accepted is False else "CLOSE_ACCEPTED", flush=True)
-            self._later = _start_timer(self, self.close_after_worker, 700)
+            _start_timer(self, self.close_after_worker, 700)
 
         def close_after_worker(self) -> None:
             window = self.window
@@ -164,8 +218,10 @@ def quit_idle() -> int:
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    held = _start_timer(probe, probe.quit_once_running, 10)  # type: ignore[attr-defined]
+    _guard_exec(probe, followup="quit")
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
     code = int(app.exec())
+    probe.exec_returned.set()  # type: ignore[attr-defined]
     del held
     if _after_exec(app, window, code, deadline_ms=2_000) != 0:
         return 1
@@ -186,8 +242,10 @@ def quit_active() -> int:
     app.processEvents()
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    held = _start_timer(probe, probe.quit_once_running, 10)  # type: ignore[attr-defined]
+    _guard_exec(probe, followup="quit")
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
     code = int(app.exec())
+    probe.exec_returned.set()  # type: ignore[attr-defined]
     del held
     if not shiboken6.isValid(window):
         print("FAIL exec destroyed the live window", file=sys.stderr)
@@ -216,8 +274,10 @@ def quit_several() -> int:
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    held = _start_timer(probe, probe.quit_once_running, 10)  # type: ignore[attr-defined]
+    _guard_exec(probe, followup="quit")
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
     code = int(app.exec())
+    probe.exec_returned.set()  # type: ignore[attr-defined]
     del held
     if _after_exec(app, window, code, deadline_ms=4_000) != 0:
         return 1
@@ -242,8 +302,10 @@ def last_window() -> int:
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    held = _start_timer(probe, probe.close_once_running, 10)  # type: ignore[attr-defined]
+    _guard_exec(probe, followup="none")
+    held = _start_timer(probe, probe.close_once_running, 200)  # type: ignore[attr-defined]
     code = int(app.exec())
+    probe.exec_returned.set()  # type: ignore[attr-defined]
     del held
     if _after_exec(app, window, code, deadline_ms=2_000) != 0:
         return 1
@@ -260,8 +322,10 @@ def exit_route() -> int:
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    held = _start_timer(probe, probe.exit_once_running, 10)  # type: ignore[attr-defined]
+    _guard_exec(probe, followup="exit")
+    held = _start_timer(probe, probe.exit_once_running, 200)  # type: ignore[attr-defined]
     code = int(app.exec())
+    probe.exec_returned.set()  # type: ignore[attr-defined]
     del held
     if code != 7:
         print("FAIL exit code was not preserved", code, file=sys.stderr)
@@ -286,8 +350,10 @@ def production_deadline() -> int:
     window.show()  # type: ignore[attr-defined]
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
-    held = _start_timer(probe, probe.quit_once_running, 10)  # type: ignore[attr-defined]
+    _guard_exec(probe, followup="quit")
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
     code = int(app.exec())
+    probe.exec_returned.set()  # type: ignore[attr-defined]
     del held
     print("EXEC_RETURNED", flush=True)
     application_shutdown(app, code, deadline_ms=400)
