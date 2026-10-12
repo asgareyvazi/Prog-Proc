@@ -22,28 +22,31 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 def _drop_thread(thread: object) -> None:
-    import shiboken6
-
     if thread.isRunning():  # type: ignore[attr-defined]
         thread.wait()  # type: ignore[attr-defined]
-    if shiboken6.isValid(thread):
+    try:
+        import shiboken6
+    except (ImportError, OSError):
+        return
+    try:
+        valid = shiboken6.isValid(thread)
+    except (TypeError, RuntimeError):
+        return
+    if valid:
         shiboken6.delete(thread)
 
 
 def _sleeper(duration_ms: int) -> object:
-    """A QThread-shaped worker that does not start an operating-system thread.
+    """Worker visible to ``closeEvent`` without a live ``QThread``.
 
-    A real ``QThread.start()`` plus ``QApplication.exec()`` did not return on
-    the CI host, and the quit timer never fired. ``closeEvent`` only calls
-    ``isRunning``, ``requestInterruption``, ``quit`` and ``wait``. Those methods
-    honor the caller's timeout, so a refused close cannot block past the
-    shutdown budget.
+    On the CI host, constructing a ``QThread`` and then entering ``exec()``
+    stopped timer delivery, so quit never ran. ``closeEvent`` only calls
+    ``isRunning``, ``requestInterruption``, ``quit`` and ``wait``. ``wait``
+    honors the caller's timeout.
     """
-    from PySide6.QtCore import QThread
 
-    class Busy(QThread):
+    class Busy:
         def __init__(self, duration: int) -> None:
-            super().__init__()
             self._until = time.monotonic() + duration / 1000
 
         def isRunning(self) -> bool:
@@ -55,10 +58,10 @@ def _sleeper(duration_ms: int) -> object:
         def quit(self) -> None:
             return None
 
-        def start(self, priority: object = None) -> None:  # type: ignore[override]
+        def start(self, priority: object = None) -> None:
             return None
 
-        def wait(self, msecs: int = -1) -> bool:  # type: ignore[override]
+        def wait(self, msecs: int = -1) -> bool:
             if not self.isRunning():
                 return True
             if msecs == 0:
@@ -70,6 +73,21 @@ def _sleeper(duration_ms: int) -> object:
             return not self.isRunning()
 
     return Busy(duration_ms)
+
+
+def _qt_sleeper(duration_ms: int) -> object:
+    """Real ``QThread`` for the close tests that do not enter ``exec()``."""
+    from PySide6.QtCore import QThread
+
+    class Sleeper(QThread):
+        def __init__(self, duration: int) -> None:
+            super().__init__()
+            self._duration_ms = duration
+
+        def run(self) -> None:
+            time.sleep(self._duration_ms / 1000)
+
+    return Sleeper(duration_ms)
 
 
 def _window(name: str, join_ms: int) -> object:
@@ -169,7 +187,7 @@ def refused() -> int:
     other.setObjectName("other-window")
     other.show()
     window = _window("workbench", 40)
-    thread = _sleeper(250)
+    thread = _qt_sleeper(250)
     window._review_thread = thread  # type: ignore[attr-defined]
     thread.start()  # type: ignore[attr-defined]
     window.show()  # type: ignore[attr-defined]
@@ -428,7 +446,7 @@ def bounded_incomplete() -> int:
 
     app = QApplication(["shutdown-bound"])
     window = _window("workbench", 30)
-    thread = _sleeper(5_000)
+    thread = _qt_sleeper(5_000)
     window._review_thread = thread  # type: ignore[attr-defined]
     thread.start()  # type: ignore[attr-defined]
     window.show()  # type: ignore[attr-defined]
