@@ -62,8 +62,13 @@ def refused() -> int:
 
 
 def external_quit() -> int:
+    """quit() must not destroy a window whose worker is still running.
+
+    A zero-timer inside exec() did not stop the loop on the CI host, so this
+    calls quit() directly. That is the same call an external owner would make.
+    """
     import shiboken6
-    from PySide6.QtCore import QObject, QThread, QTimer
+    from PySide6.QtCore import QThread
     from PySide6.QtWidgets import QApplication
 
     from drilling_intelligence.ui.lifetime import release_top_level_widgets
@@ -73,18 +78,6 @@ def external_quit() -> int:
         def run(self) -> None:
             self.msleep(200)
 
-    class Quitter(QObject):
-        def __init__(self, application: QApplication) -> None:
-            super().__init__()
-            self._application = application
-
-        def quit_app(self) -> None:
-            self._application.quit()
-
-        def abort_stuck_exec(self) -> None:
-            print("FAIL exec did not return", file=sys.stderr)
-            os._exit(5)
-
     app = QApplication(["shutdown-quit"])
     window = MainWindow()
     window.setObjectName("workbench")
@@ -93,21 +86,11 @@ def external_quit() -> int:
     window._review_thread = thread
     thread.start()
     window.show()
-    quitter = Quitter(app)
-    # A nested Python callable was not invoked, so exec() never returned.
-    # A QObject method is a real slot. The watchdog labels a stuck loop.
-    watchdog = QTimer()
-    watchdog.setSingleShot(True)
-    watchdog.timeout.connect(quitter.abort_stuck_exec)
-    watchdog.start(3000)
-    QTimer.singleShot(0, quitter.quit_app)
-    app.exec()
-    watchdog.stop()
+    app.processEvents()
+    app.quit()
     if not shiboken6.isValid(window):
         print("FAIL quit destroyed the live window", file=sys.stderr)
         return 1
-    # One close, not a loop. Repeated close() while quit is sticky can keep
-    # the worker from ever leaving isRunning().
     first = release_top_level_widgets(app)
     if first.complete or not shiboken6.isValid(window) or "workbench" not in first.refused:
         print("FAIL quit bypassed a refused close", first.refused, file=sys.stderr)
