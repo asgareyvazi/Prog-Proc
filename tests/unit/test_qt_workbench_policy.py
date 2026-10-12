@@ -106,6 +106,12 @@ def test_stability_qualification_keeps_every_failed_attempt():
     assert "stability result: PASS" in clean_summary
 
 
+def test_stability_does_not_consult_the_retry_policy():
+    source = Path("tools/qt_stability.py").read_text(encoding="utf-8")
+    assert "qualifies_for_abort_retry" not in source
+    assert "write_evidence_manifest" in source
+
+
 def test_the_normal_runner_still_retries_only_a_qualifying_abort():
     assert (
         qt_workbench.qualifies_for_abort_retry(134, qt_workbench.QOBJECT_DELETED_DIRECTLY) is False

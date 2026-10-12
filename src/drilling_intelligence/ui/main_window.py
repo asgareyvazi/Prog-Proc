@@ -199,6 +199,7 @@ class MainWindow(QMainWindow):
         self._config_path = config_path
         self._startup_workspace = startup_workspace
         self._startup_well = startup_well
+        self._worker_join_timeout_ms = 10_000
 
         self.setWindowTitle("Prog-Proc — Review Workbench")
         self.resize(1500, 900)
@@ -2066,7 +2067,7 @@ class MainWindow(QMainWindow):
             if thread.isRunning():
                 thread.requestInterruption()
                 thread.quit()
-                if not thread.wait(10000):
+                if not thread.wait(self._worker_join_timeout_ms):
                     self._set_status("Waiting for a review worker to finish.", error=True)
                     event.ignore()
                     return

@@ -9,8 +9,11 @@ not proof that a native fault can never recur.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
+import json
 import os
+import platform
 import sys
 import time
 from pathlib import Path
@@ -27,6 +30,50 @@ def _workbench():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def runtime_versions() -> dict[str, str]:
+    """Qt and Python versions. A missing toolkit is recorded, not invented."""
+    versions = {"python": platform.python_version()}
+    try:
+        import PySide6
+        from PySide6.QtCore import qVersion
+    except (ImportError, OSError, RuntimeError):
+        versions["pyside"] = "unavailable"
+        versions["qt"] = "unavailable"
+        return versions
+    versions["pyside"] = str(PySide6.__version__)
+    versions["qt"] = str(qVersion())
+    return versions
+
+
+def write_evidence_manifest(log_dir: Path, versions: dict[str, str]) -> Path:
+    """Hash every evidence file already written. Relative names only."""
+    files: list[dict[str, int | str]] = []
+    for path in sorted(log_dir.rglob("*")):
+        if not path.is_file() or path.name in {"manifest.json", "manifest.sha256"}:
+            continue
+        files.append(
+            {
+                "name": path.relative_to(log_dir).as_posix(),
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    destination = log_dir / "manifest.json"
+    attempts = len(list(log_dir.glob("attempt-*.txt")))
+    destination.write_text(
+        json.dumps(
+            {"attempts": attempts, "files": files, "versions": versions},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+    (log_dir / "manifest.sha256").write_text(f"{digest}  manifest.json\n", encoding="utf-8")
+    return destination
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,6 +105,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"::error::stability attempt {ordinal} failed: {reason}")
     status, summary = workbench.qualify_stability(records)
     (args.log_dir / "summary.txt").write_text(summary, encoding="utf-8")
+    manifest = write_evidence_manifest(args.log_dir, runtime_versions())
+    manifest_line = (args.log_dir / "manifest.sha256").read_text(encoding="utf-8").strip()
+    summary += f"stability manifest: {manifest.name}\nstability manifest {manifest_line}\n"
     print(summary, end="")
     for line in summary.splitlines():
         if line.startswith("ATTEMPT ") or line.startswith("stability "):

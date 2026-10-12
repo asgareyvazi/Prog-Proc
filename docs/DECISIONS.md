@@ -2049,3 +2049,39 @@ V8.2 left three residual holes.
 **Consequences.** A stability pass is evidence, not a proof that a native fault cannot
 recur. The publisher's standalone mode, with no exit file argument, remains available
 to tests. CI always passes `--exit-file`.
+
+## ADR-44 — V8.4: a refused close is not a finished shutdown
+
+**Status:** accepted (2026-10-12)
+
+V8.3 deleted a top-level widget after `close()` and then continued. `close()` can
+return false while a worker still holds the window. Counting that call and then
+`quit()` or returning from `main` leaves a valid widget for interpreter shutdown,
+which is the abort path. It is not a lifecycle.
+
+*   **Validity, not a count.** `release_top_level_widgets` returns the widgets that
+    are still valid after the pass. An accepted close is deleted with
+    `shiboken6.delete` while `QApplication` is alive. A refused close is left valid.
+    Production `finish_qt_application` does not return while one remains: it re-enters
+    the event loop so the worker can finish. A sticky quit that would otherwise spin
+    stops at 120s with process exit 4. That exit is a failed shutdown. It does not
+    delete the live widget, it does not call `QThread.terminate`, and it is not
+    evidence that the abort cannot recur. The fixture uses the same helper with a
+    bounded wait and exits 3 if a widget is still valid. It does not `quit()` on that
+    path. The production worker join stays 10s; tests may lower it only on the
+    instance they construct.
+*   **Evidence.** The stability runner still does not use the one-retry policy. It
+    writes a manifest of relative log names, byte sizes, and SHA-256 hashes, plus
+    the Python, PySide, and Qt versions when the toolkit loads. The workbench probe
+    also writes `qt-logs/versions.txt`. A hash in the manifest is not a downloaded
+    artifact, and a green qualification is still not a proof.
+*   **Records.** A real pytest process exit recorded by the shell is compared with
+    the session exit. The publisher does not rewrite either file. JSON and JUnit
+    cannot conceal a missing, empty, or malformed exit file. Redaction covers a
+    JSON-shaped assignment and a connection-string field without consuming the next
+    field or sentence. A module whose name contains "ui" is not an expected skip
+    unless it is a `tests.ui` case that could not load Qt.
+*   **No schema change.** Alembic head stays `0019`. No new runtime dependency.
+
+**Consequences.** Ordinary teardown must not complete while an owned top-level
+widget is still a valid Qt object. The historical abort is not claimed to be gone.

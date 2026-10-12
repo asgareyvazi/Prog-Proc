@@ -390,6 +390,51 @@ def test_quoted_and_encoded_credentials_are_redacted_without_eating_the_sentence
     assert "/opt/secret" not in text
 
 
+def test_adversarial_credentials_stay_out_of_the_visible_diagnostic():
+    sentinels = (
+        "json-sentinel",
+        "odbc-sentinel",
+        "mixed-sentinel",
+        "srv-sentinel",
+        "bearer-sentinel-token",
+        "quoted-bearer-sentinel",
+        "basic-sentinel-value",
+        "query-access-sentinel",
+        "hyphen-pass-sentinel",
+    )
+    text = safe_detail(
+        'status failed "password": "json-sentinel" well remains. '
+        "Driver=ODBC;Pwd=odbc-sentinel;Server=db.internal "
+        "Api-Key: mixed-sentinel next sentence stays. "
+        "mongodb+srv://user:srv-sentinel@cluster.example/db "
+        "Authorization: bearer bearer-sentinel-token after bearer. "
+        'Authorization: Bearer "quoted-bearer-sentinel" after quoted bearer. '
+        "authorization: basic basic-sentinel-value workspace stays. "
+        "https://host.example/path?access_key=query-access-sentinel&well=A-3 "
+        "POSTGRES-PASSWORD=hyphen-pass-sentinel "
+        "tokenizer=keep-this secretive note stays the well is 10.2 ppg"
+    )
+    for sentinel in sentinels:
+        assert sentinel not in text
+    assert "well remains." in text
+    assert "Server=db.internal" in text
+    assert "next sentence stays." in text
+    assert "mongodb+srv://[redacted]@cluster.example/db" in text
+    assert "after bearer." in text
+    assert "after quoted bearer." in text
+    assert "workspace stays." in text
+    assert "well=A-3" in text
+    assert "tokenizer=keep-this" in text
+    assert "secretive note stays" in text
+    assert "10.2 ppg" in text
+    detail = visible_diagnostic(
+        RuntimeError('load failed "password": "json-sentinel" check the workspace path')
+    )
+    assert "json-sentinel" not in detail
+    assert "[redacted]" in detail
+    assert "workspace path" in detail
+
+
 def test_visible_diagnostic_redacts_a_quoted_secret_and_keeps_the_exception_type():
     detail = visible_diagnostic(RuntimeError('password="two word secret" check the workspace path'))
     assert "two word secret" not in detail

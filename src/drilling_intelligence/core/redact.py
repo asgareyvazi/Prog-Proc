@@ -42,11 +42,14 @@ _CONN_TERM = r"(?:database[_-]url|connection[_-](?:string|url)|[a-z0-9]+[_-]dsn)
 # A quoted value may contain spaces. An unquoted value stops at whitespace so a
 # later diagnostic sentence is not swallowed. Escaped quotes stay inside the value.
 _QUOTED_VALUE = r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*')"
+# An optional quote covers ``"password": "value"`` without treating the quote as
+# the start of the value. Unquoted values stop at whitespace, ``&``, and ``;``
+# so a connection-string field or the next sentence is not swallowed.
 _CREDENTIAL_ASSIGN = re.compile(
     rf"(?i)(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*(?:{_CRED_TERM}|{_CONN_TERM})"
-    rf"\s*[=:]\s*(?:{_QUOTED_VALUE}|[^\s&]+)"
+    rf"\s*[\"']?\s*[=:]\s*(?:{_QUOTED_VALUE}|[^\s&;]+)"
 )
-_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._\-]{8,}")
+_BEARER = re.compile(r"(?i)\bBearer\s+[\"']?[A-Za-z0-9._\-]{8,}[\"']?")
 _BASIC = re.compile(r"(?i)\b(authorization\s*:\s*basic\s+)\S+")
 # A path token can begin at the second slash of scheme://, so the prefix is
 # "scheme:/" rather than "scheme:". file: remains a path, not a connection URL.
@@ -86,7 +89,10 @@ def _path_leaf(token: str) -> str:
 
 
 def _redact_assignment(match: re.Match[str]) -> str:
-    head, sep, _value = re.split(r"(\s*[=:]\s*)", match.group(0), maxsplit=1)
+    parts = re.split(r"(\s*[=:]\s*)", match.group(0), maxsplit=1)
+    if len(parts) != 3:
+        return "[redacted]"
+    head, sep, _value = parts
     return f"{head}{sep}[redacted]"
 
 

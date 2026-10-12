@@ -215,6 +215,7 @@ _NOTICE_PREFIXES = (
     "exit:",
     "shell_exit:",
     "session_exit:",
+    "disagreement:",
     "runtime:",
     "stats:",
     "junit:",

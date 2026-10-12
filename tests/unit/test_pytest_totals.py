@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -168,6 +169,12 @@ def test_unexpected_xpass_and_skip_fail_an_otherwise_green_record(tmp_path: Path
         "QtWidgets unavailable for UI tests: libGL",
     )
     assert not skip_is_expected("tests.integration.test_x", "test_y", "symlinks")
+    assert not skip_is_expected(
+        "tests.ui.test_workbench", "test_real", "skipped for another reason"
+    )
+    assert not skip_is_expected(
+        "tests.unit.test_ui_helper", "test_x", "QtWidgets unavailable for UI tests: libGL"
+    )
     stats = tmp_path / "pytest-totals.json"
     junit = tmp_path / "pytest-junit.xml"
     _stats_file(
@@ -389,6 +396,159 @@ def test_a_fixture_error_and_a_strict_xpass_are_real_pytest_outcomes(tmp_path: P
         + payload["xpassed"]
     )
     assert accounted == payload["collected"]
+
+
+def test_a_real_shell_exit_is_not_replaced_when_the_session_disagrees(tmp_path: Path) -> None:
+    suite = tmp_path / "test_real_exit.py"
+    suite.write_text("def test_bad():\n    assert False\n", encoding="utf-8")
+    stats = tmp_path / "totals.json"
+    junit = tmp_path / "junit.xml"
+    exit_file = tmp_path / "pytest-exit.txt"
+    summary = tmp_path / "summary.md"
+    env = os.environ.copy()
+    env["PYTEST_TOTALS_PATH"] = str(stats)
+    env.pop("PYTEST_TOTALS_DISABLE", None)
+    command = (
+        f"{shlex.quote(sys.executable)} -m pytest {shlex.quote(str(suite))} "
+        "-p tools.pytest_totals --noconftest -o addopts= -q --tb=no "
+        f"--junitxml={shlex.quote(str(junit))}; "
+        f'status=$?; echo "$status" > {shlex.quote(str(exit_file))}; exit "$status"'
+    )
+    completed = subprocess.run(
+        ["/bin/bash", "-c", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=Path(__file__).resolve().parents[2],
+    )
+    recorded = exit_file.read_text(encoding="utf-8")
+    assert recorded == f"{completed.returncode}\n"
+    assert completed.returncode != 0
+    payload = json.loads(stats.read_text(encoding="utf-8"))
+    assert payload["exit"] == completed.returncode
+    assert payload["failed"] >= 1
+    before = (stats.read_bytes(), junit.read_bytes(), exit_file.read_bytes())
+    assert (
+        main(
+            [
+                "--stats",
+                str(stats),
+                "--junit",
+                str(junit),
+                "--exit-file",
+                str(exit_file),
+                "--summary",
+                str(summary),
+            ]
+        )
+        == 1
+    )
+    assert (stats.read_bytes(), junit.read_bytes(), exit_file.read_bytes()) == before
+    agreed = summary.read_text(encoding="utf-8")
+    assert "shell_exit: 1" in agreed or f"shell_exit: {completed.returncode}" in agreed
+    assert "session_exit:" in agreed
+    assert f"shell {completed.returncode} != session" not in agreed
+
+    exit_file.write_text("0\n", encoding="utf-8")
+    assert (
+        main(
+            [
+                "--stats",
+                str(stats),
+                "--junit",
+                str(junit),
+                "--exit-file",
+                str(exit_file),
+                "--summary",
+                str(summary),
+            ]
+        )
+        == 1
+    )
+    mismatch = summary.read_text(encoding="utf-8")
+    assert "shell 0 != session 1" in mismatch
+    assert exit_file.read_text(encoding="utf-8") == "0\n"
+    assert json.loads(stats.read_text(encoding="utf-8"))["exit"] == completed.returncode
+    assert "session_exit: 1" in mismatch
+
+    for contents, marker in (("\n", "empty"), ("0\n1\n", "integer"), ("nope\n", "integer")):
+        exit_file.write_text(contents, encoding="utf-8")
+        summary.write_text("", encoding="utf-8")
+        assert (
+            main(
+                [
+                    "--stats",
+                    str(stats),
+                    "--junit",
+                    str(junit),
+                    "--exit-file",
+                    str(exit_file),
+                    "--summary",
+                    str(summary),
+                ]
+            )
+            == 1
+        )
+        hidden = summary.read_text(encoding="utf-8")
+        assert marker in hidden
+        assert "passed:" not in hidden
+        assert exit_file.read_text(encoding="utf-8") == contents
+
+    missing = tmp_path / "missing-exit.txt"
+    summary.write_text("", encoding="utf-8")
+    assert (
+        main(
+            [
+                "--stats",
+                str(stats),
+                "--junit",
+                str(junit),
+                "--exit-file",
+                str(missing),
+                "--summary",
+                str(summary),
+            ]
+        )
+        == 1
+    )
+    concealed = summary.read_text(encoding="utf-8")
+    assert "exit file missing" in concealed
+    assert "passed:" not in concealed
+    assert "junit: present" in concealed
+    assert "stats: present" in concealed
+
+
+def test_standalone_publish_without_an_exit_file_keeps_its_contract(tmp_path: Path) -> None:
+    suite = tmp_path / "test_ok.py"
+    suite.write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    stats = tmp_path / "totals.json"
+    junit = tmp_path / "junit.xml"
+    env = os.environ.copy()
+    env["PYTEST_TOTALS_PATH"] = str(stats)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(suite),
+            "-p",
+            "tools.pytest_totals",
+            "--noconftest",
+            "-o",
+            "addopts=",
+            "-q",
+            "--tb=no",
+            f"--junitxml={junit}",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=Path(__file__).resolve().parents[2],
+    )
+    assert completed.returncode == 0
+    assert main(["--stats", str(stats), "--junit", str(junit)]) == 0
 
 
 def test_a_disagreement_or_a_failed_suite_fails_the_record(tmp_path: Path) -> None:

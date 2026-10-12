@@ -172,7 +172,10 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           QT_X11_NO_MITSHM: "1"
         run: |
-          xvfb-run -a -s "-screen 0 1280x1024x24" python -c "import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName(), 'pyside', PySide6.__version__, 'qt', qVersion())"
+          set -o pipefail
+          mkdir -p qt-logs
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -c "import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName(), 'pyside', PySide6.__version__, 'qt', qVersion())" | tee qt-logs/versions.txt
+          test -s qt-logs/versions.txt
 
       - name: Offscreen workbench tests
         env:
