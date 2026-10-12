@@ -106,10 +106,31 @@ def test_stability_qualification_keeps_every_failed_attempt():
     assert "stability result: PASS" in clean_summary
 
 
+def test_required_jobs_stay_on_ubuntu_24_04_and_actions_v7() -> None:
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "runs-on: ubuntu-latest" not in workflow
+    assert workflow.count("runs-on: ubuntu-24.04") == 3
+    assert "actions/checkout@v7" in workflow
+    assert "actions/setup-python@v7" in workflow
+    assert "actions/upload-artifact@v7" in workflow
+    assert "continue-on-error" not in workflow
+
+
 def test_stability_does_not_consult_the_retry_policy():
     source = Path("tools/qt_stability.py").read_text(encoding="utf-8")
     assert "qualifies_for_abort_retry" not in source
     assert "write_evidence_manifest" in source
+    assert "test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail" in source
+    assert "test_presentation_filter_conflict_detail_and_explicit_error_states" in source
+
+
+def test_an_attempt_after_ordinal_9_still_fails_the_qualification():
+    attempts = [(ordinal, 0, "") for ordinal in range(1, 10)]
+    attempts.append((10, 134, "exit 134"))
+    status, summary = qt_workbench.qualify_stability(attempts)
+    assert status == 1
+    assert "ATTEMPT 10 EXIT 134 FAIL" in summary
+    assert "ATTEMPT 9 EXIT 0 PASS" in summary
 
 
 def test_the_normal_runner_still_retries_only_a_qualifying_abort():

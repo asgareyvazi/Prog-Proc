@@ -46,13 +46,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     window.show()
     code = int(app.exec())
-    # Do not return while a top-level widget is still valid. Production finish
-    # keeps the event loop when a worker refuses close. It does not quit.
-    from .lifetime import fail_closed_shutdown, finish_qt_application
+    # Do not return while a top-level widget is still valid. This is the same
+    # production shutdown the external-quit test runs after exec() returns.
+    from .lifetime import application_shutdown
 
-    exit_code, result = finish_qt_application(app, code)
-    if not result.complete:
-        fail_closed_shutdown(result)
+    exit_code = application_shutdown(app, code)
     del window
     return exit_code
 

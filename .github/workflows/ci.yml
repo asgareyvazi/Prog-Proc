@@ -19,7 +19,10 @@ concurrency:
 jobs:
   test:
     name: test (cp${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # ubuntu-latest moves to Ubuntu 26 on 2026-10-19. Required jobs stay on
+    # ubuntu-24.04, the image this Qt and headless suite has actually run on.
+    # ubuntu-26.04 is not a release image until that job has been run there.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -113,7 +116,7 @@ jobs:
 
   release-smoke:
     name: clean install smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -135,7 +138,7 @@ jobs:
 
   workbench:
     name: workbench (offscreen Qt)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:

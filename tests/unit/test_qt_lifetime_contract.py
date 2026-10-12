@@ -48,17 +48,61 @@ def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     app = Path("src/drilling_intelligence/ui/app.py").read_text(encoding="utf-8")
     fixture = Path("tests/ui/test_workbench.py").read_text(encoding="utf-8")
     lifetime = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
-    assert "finish_qt_application" in app
-    assert "fail_closed_shutdown" in app
+    assert "application_shutdown" in app
+    assert "os._exit" not in app
+    shutdown = lifetime.split("def application_shutdown", 1)[1].split("def fixture_teardown", 1)[0]
+    assert "finish_qt_application" in shutdown
+    assert "fail_closed_shutdown" in shutdown
+    assert "deadline_ms=deadline_ms" in shutdown
     assert "fixture_teardown" in fixture
     assert "application.quit()" not in fixture.split("yield application", 1)[1]
     assert "shiboken6.delete" in lifetime
-    assert "if widget.close() is False" in lifetime
+    assert "widget.close() is not False" in lifetime
     assert "shiboken6.isValid" in lifetime
     assert "PRODUCTION_SHUTDOWN_WAIT_MS = 120_000" in lifetime
-    assert "os._exit" not in app
+    coordinate = lifetime.split("def _coordinate", 1)[1].split("def finish_qt_application", 1)[0]
+    assert ".exec()" not in coordinate
+    assert "QEventLoop()" not in coordinate
+    assert coordinate.count("elapsed.start()") == 1
+    assert "PRODUCTION_SHUTDOWN_WAIT_MS" not in coordinate
     teardown = lifetime.split("def fixture_teardown", 1)[1]
     assert teardown.index("os._exit") < teardown.index("application.quit()")
     window = Path("src/drilling_intelligence/ui/main_window.py").read_text(encoding="utf-8")
     assert "self._worker_join_timeout_ms = 10_000" in window
-    assert "thread.wait(self._worker_join_timeout_ms)" in window
+    assert "_shutdown_join_budget_ms" in window
+    assert "thread.wait(limit)" in window
+
+
+def test_shutdown_child_cannot_disarm_the_parent_watchdog() -> None:
+    child = Path("tests/ui/qt_shutdown_child.py").read_text(encoding="utf-8")
+    parent = Path("tests/ui/test_qt_shutdown.py").read_text(encoding="utf-8")
+    assert "SIG_IGN" not in child
+    assert "signal.signal" not in child
+    assert "application_shutdown" in child
+    deadline = child.split("def production_deadline", 1)[1].split("def bounded_incomplete", 1)[0]
+    assert "deadline_ms=400" in deadline
+    assert "max_wait_ms" not in deadline
+    assert "os._exit" not in deadline
+    active = child.split("def quit_active", 1)[1].split("def quit_several", 1)[0]
+    assert active.index("app.exec()") < active.index("_after_exec")
+    assert "quit()" not in active
+    assert "timeout=" in parent
+    assert "timeout=15" in parent
+
+
+def test_one_shutdown_budget_is_not_restarted_and_does_not_shrink_a_covered_join() -> None:
+    from drilling_intelligence.ui.lifetime import (
+        remaining_budget_ms,
+        wait_slice_ms,
+        worker_join_limit_ms,
+    )
+
+    assert remaining_budget_ms(120_000, 10_000) == 110_000
+    assert remaining_budget_ms(250, 250) == 0
+    assert remaining_budget_ms(250, 300) < 0
+    # The production 10s join is unchanged while the 120s ceiling still covers it.
+    assert worker_join_limit_ms(10_000, 120_000) == 10_000
+    assert worker_join_limit_ms(10_000, 50) == 50
+    assert worker_join_limit_ms(40, 0) == 0
+    assert wait_slice_ms(5) == 5
+    assert wait_slice_ms(0) == 0

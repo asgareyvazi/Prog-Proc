@@ -435,6 +435,21 @@ def test_adversarial_credentials_stay_out_of_the_visible_diagnostic():
     assert "workspace path" in detail
 
 
+def test_json_object_credential_keeps_the_following_sentence() -> None:
+    sentinel = "object-secret-sentinel"
+    text = safe_detail(
+        'token={"nested": {"value": "' + sentinel + '"}} host remains. '
+        'api_key = { "key" : "' + sentinel + '" } next field stays. '
+        "password = 'two word secret' after the quoted value."
+    )
+    assert sentinel not in text
+    assert "two word secret" not in text
+    assert "host remains." in text
+    assert "next field stays." in text
+    assert "after the quoted value." in text
+    assert "[redacted]" in text
+
+
 def test_visible_diagnostic_redacts_a_quoted_secret_and_keeps_the_exception_type():
     detail = visible_diagnostic(RuntimeError('password="two word secret" check the workspace path'))
     assert "two word secret" not in detail

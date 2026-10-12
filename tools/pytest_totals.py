@@ -44,6 +44,13 @@ class ExitRecordError(ValueError):
     """A supplied shell-exit file is missing or not one integer."""
 
 
+class RecordError(ValueError):
+    """A stats or JUnit record has the wrong shape.
+
+    The message is a category. It must not include the file body.
+    """
+
+
 def _int(value: object) -> int:
     try:
         return int(value or 0)  # type: ignore[arg-type]
@@ -57,26 +64,52 @@ def _suites(root: ET.Element) -> list[ET.Element]:
     return list(root.findall("testsuite"))
 
 
+def _nonnegative_int(raw: str | None, label: str) -> int:
+    if raw is None or raw == "":
+        return 0
+    if re.fullmatch(r"[0-9]+", raw) is None:
+        raise RecordError(f"{label} is not a non-negative integer")
+    return int(raw)
+
+
+def _nonnegative_float(raw: str | None, label: str) -> float:
+    if raw is None or raw == "":
+        return 0.0
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RecordError(f"{label} is not a finite non-negative number") from exc
+    if value != value or value < 0 or value == float("inf"):
+        raise RecordError(f"{label} is not a finite non-negative number")
+    return value
+
+
 def totals_from_junit(path: Path, exit_code: int | None = None) -> dict[str, int | float | None]:
     """Count outcomes. xfail is split out of the skipped bucket.
 
     An unexpected pass is a normal ``testcase`` in JUnit, so ``xpassed`` here
-    stays 0. ``totals_from_stats`` is the authority for that count.
+    stays 0. ``totals_from_stats`` is the authority for that count. A wrong
+    root or a non-numeric count fails closed without the document body.
     """
     # The file is pytest's own JUnit artifact, not an external document.
-    root = ET.parse(path).getroot()  # noqa: S314
+    try:
+        root = ET.parse(path).getroot()  # noqa: S314
+    except ET.ParseError as exc:
+        raise RecordError("junit is not xml") from exc
+    if root.tag not in {"testsuite", "testsuites"}:
+        raise RecordError("junit root is not a testsuite")
     suites = _suites(root)
     if not suites:
-        raise ValueError(f"{path} has no testsuite element")
+        raise RecordError("junit has no testsuite")
     collected = failures = errors = skipped_attr = 0
     runtime = 0.0
     xfailed = xpassed = 0
     for suite in suites:
-        collected += _int(suite.attrib.get("tests"))
-        failures += _int(suite.attrib.get("failures"))
-        errors += _int(suite.attrib.get("errors"))
-        skipped_attr += _int(suite.attrib.get("skipped"))
-        runtime += float(suite.attrib.get("time") or 0)
+        collected += _nonnegative_int(suite.attrib.get("tests"), "junit tests")
+        failures += _nonnegative_int(suite.attrib.get("failures"), "junit failures")
+        errors += _nonnegative_int(suite.attrib.get("errors"), "junit errors")
+        skipped_attr += _nonnegative_int(suite.attrib.get("skipped"), "junit skipped")
+        runtime += _nonnegative_float(suite.attrib.get("time"), "junit time")
         for skipped in suite.iter("skipped"):
             kind = skipped.attrib.get("type") or ""
             message = skipped.attrib.get("message") or ""
@@ -244,10 +277,28 @@ def _write_summary(summary_path: Path | None, text: str) -> None:
         handle.write("### Pytest totals\n\n```\n" + text + "\n```\n")
 
 
-def _load_stats(path: Path) -> dict[str, int | float | None]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    totals = {key: payload[key] for key in _KEYS}
-    totals["session_exit"] = payload.get("exit")
+def _load_stats(path: Path) -> dict[str, int | float]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RecordError("stats is not json") from exc
+    if not isinstance(payload, dict):
+        raise RecordError("stats root is not an object")
+    totals: dict[str, int | float] = {}
+    for key in _KEYS:
+        if key not in payload:
+            raise RecordError(f"stats missing {key}")
+        value = payload[key]
+        if key == "runtime":
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise RecordError("stats runtime is not a finite non-negative number")
+            if value != value or value < 0 or value in (float("inf"), float("-inf")):
+                raise RecordError("stats runtime is not a finite non-negative number")
+            totals[key] = float(value)
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise RecordError(f"stats {key} is not a non-negative integer")
+        totals[key] = value
     return totals
 
 
@@ -280,15 +331,24 @@ def publish(
         )
         _write_summary(summary_path, text)
         return 1
-    recorded = _load_stats(stats_path)
-    session_exit = recorded.get("session_exit")
-    junit = totals_from_junit(junit_path, shell_exit)
+    try:
+        recorded = _load_stats(stats_path)
+        junit = totals_from_junit(junit_path, shell_exit)
+        skips = unexpected_skips(junit_path)
+    except RecordError as exc:
+        text = "pytest totals\nrecord: unreadable\n" + str(exc)
+        _write_summary(summary_path, text)
+        return 1
+    except ET.ParseError:
+        text = "pytest totals\nrecord: unreadable\njunit is not xml"
+        _write_summary(summary_path, text)
+        return 1
+    session_exit = recorded["exit"]
     problems = disagreements(recorded, junit)
     if shell_exit is not None and _int(session_exit) != shell_exit:
         problems.append(f"exit: shell {shell_exit} != session {session_exit}")
     if _int(recorded.get("xpassed")):
         problems.append(f"xpassed: {recorded.get('xpassed')} unexpected pass is not a release pass")
-    skips = unexpected_skips(junit_path)
     if skips:
         problems.append("unexpected skip:\n" + "\n".join(skips))
     recorded = dict(recorded)
@@ -352,7 +412,17 @@ def main(argv: list[str] | None = None) -> int:
         summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
     try:
         return publish(args.stats, args.junit, args.exit_file, summary)
-    except (ET.ParseError, ValueError, OSError, json.JSONDecodeError, KeyError):
+    except (
+        ET.ParseError,
+        ValueError,
+        OSError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        RecordError,
+    ):
+        # TypeError is a backstop. Known bad shapes are rejected by RecordError
+        # before this handler, and this line does not print the exception.
         print("pytest totals\nrecord: unreadable")
         return 1
 

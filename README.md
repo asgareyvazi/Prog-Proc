@@ -59,10 +59,11 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ```
 
 The same gates run in CI on both supported runtimes - the CPython 3.11 floor and the 3.14 product
-target named in `docs/DECISIONS.md` ADR-0002 - see `.github/workflows/ci.yml`.  The desktop UI tests
-skip themselves when Qt cannot load, so a headless run reports skips rather than pretending to have
-executed them. A Qt stability pass is evidence of reliability, not proof that a native abort cannot
-recur.
+target named in `docs/DECISIONS.md` ADR-0002 - see `.github/workflows/ci.yml`. Required jobs pin
+`ubuntu-24.04` so the 2026-10-19 `ubuntu-latest` move does not change the Qt image before that
+image has been run (ADR-45). The desktop UI tests skip themselves when Qt cannot load, so a
+headless run reports skips rather than pretending to have executed them. A Qt stability pass is
+evidence of reliability, not proof that a native abort cannot recur.
 
 To check the *installed* product rather than this source tree:
 
@@ -122,8 +123,10 @@ artifact is required (ADR-40, ADR-41). The headless jobs publish explicit pytest
 runtime) even when the suite fails. A supplied exit file must exist and agree with the
 session exit; an unexpected pass, or a skip that is not a headless UI test missing Qt,
 fails the job (ADR-42, ADR-43). The workbench job also runs a no-retry stability
-qualification of the node that has aborted in `destroyQCoreApplication`. Operator-facing
-errors redact prefixed and quoted credential assignments without discarding a connection host.
+qualification of both nodes that have aborted in `destroyQCoreApplication`. A refused close
+keeps the window, and the production shutdown budget is one 120s clock, not a fresh wait per
+poll (ADR-45). Operator-facing errors redact prefixed and quoted credential assignments without
+discarding a connection host.
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,
 for callers embedding the library rather than driving the CLI:

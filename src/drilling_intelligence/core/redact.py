@@ -39,16 +39,15 @@ _URL_USERINFO = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^/\s@]+)@")
 # term, as in notasecret, is not an assignment.
 _CRED_TERM = r"(?:password|passwd|pwd|api[_-]?key|token|secret|access[_-]?key)"
 _CONN_TERM = r"(?:database[_-]url|connection[_-](?:string|url)|[a-z0-9]+[_-]dsn)"
-# A quoted value may contain spaces. An unquoted value stops at whitespace so a
-# later diagnostic sentence is not swallowed. Escaped quotes stay inside the value.
-_QUOTED_VALUE = r"(?:\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*')"
 # An optional quote covers ``"password": "value"`` without treating the quote as
-# the start of the value. Unquoted values stop at whitespace, ``&``, and ``;``
-# so a connection-string field or the next sentence is not swallowed.
-_CREDENTIAL_ASSIGN = re.compile(
-    rf"(?i)(?<![A-Za-z0-9])(?:[A-Za-z0-9]+[_-])*(?:{_CRED_TERM}|{_CONN_TERM})"
-    rf"\s*[\"']?\s*[=:]\s*(?:{_QUOTED_VALUE}|[^\s&;]+)"
+# the start of the value. Quoted values may contain spaces. Unquoted values stop
+# at whitespace, ``&``, and ``;`` so the next sentence is not swallowed. A
+# single-line JSON object or array is consumed only up to its closer.
+_ASSIGN_HEAD = re.compile(
+    rf"(?i)(?<![A-Za-z0-9])((?:[A-Za-z0-9]+[_-])*(?:{_CRED_TERM}|{_CONN_TERM})"
+    rf"\s*[\"']?\s*[=:]\s*)"
 )
+_VALUE_LIMIT = 400
 _BEARER = re.compile(r"(?i)\bBearer\s+[\"']?[A-Za-z0-9._\-]{8,}[\"']?")
 _BASIC = re.compile(r"(?i)\b(authorization\s*:\s*basic\s+)\S+")
 # A path token can begin at the second slash of scheme://, so the prefix is
@@ -88,12 +87,89 @@ def _path_leaf(token: str) -> str:
     return leaf or "[path]"
 
 
-def _redact_assignment(match: re.Match[str]) -> str:
-    parts = re.split(r"(\s*[=:]\s*)", match.group(0), maxsplit=1)
-    if len(parts) != 3:
-        return "[redacted]"
-    head, sep, _value = parts
-    return f"{head}{sep}[redacted]"
+def _quoted_value_end(text: str, start: int) -> int | None:
+    quote = text[start]
+    if quote not in "\"'":
+        return None
+    index = start + 1
+    limit = min(len(text), start + _VALUE_LIMIT)
+    while index < limit:
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "\n":
+            return None
+        if char == quote:
+            return index + 1
+        index += 1
+    return None
+
+
+def _container_value_end(text: str, start: int) -> int | None:
+    """A single-line JSON object or array, including one level of nesting.
+
+    The scan stops at a newline or at ``_VALUE_LIMIT`` so a missing closer
+    cannot consume the next sentence. An unbalanced value is left for the
+    unquoted rule, which stops at whitespace.
+    """
+    opener = text[start]
+    if opener not in "{[":
+        return None
+    closer = "}" if opener == "{" else "]"
+    depth = 0
+    index = start
+    limit = min(len(text), start + _VALUE_LIMIT)
+    while index < limit:
+        char = text[index]
+        if char == "\n":
+            return None
+        if char in "{[":
+            depth += 1
+        elif char in "}]":
+            depth -= 1
+            if depth == 0:
+                return index + 1 if char == closer else None
+            if depth < 0:
+                return None
+        index += 1
+    return None
+
+
+def _unquoted_value_end(text: str, start: int) -> int:
+    index = start
+    limit = min(len(text), start + _VALUE_LIMIT)
+    while index < limit and text[index] not in " \t\r\n&;":
+        index += 1
+    return index
+
+
+def _assignment_value_end(text: str, start: int) -> int:
+    if start >= len(text):
+        return start
+    quoted = _quoted_value_end(text, start)
+    if quoted is not None:
+        return quoted
+    container = _container_value_end(text, start)
+    if container is not None:
+        return container
+    return _unquoted_value_end(text, start)
+
+
+def _redact_assignments(text: str) -> str:
+    pieces: list[str] = []
+    cursor = 0
+    for match in _ASSIGN_HEAD.finditer(text):
+        if match.start() < cursor:
+            continue
+        value_end = _assignment_value_end(text, match.end())
+        if value_end <= match.end():
+            continue
+        pieces.append(text[cursor : match.start()])
+        pieces.append(match.group(1) + "[redacted]")
+        cursor = value_end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
 
 
 def _redact_paths(text: str) -> str:
@@ -122,7 +198,7 @@ def safe_detail(text: str) -> str:
     spaces are included.
     """
     raw = _strip_traceback(str(text or ""))
-    raw = _CREDENTIAL_ASSIGN.sub(_redact_assignment, raw)
+    raw = _redact_assignments(raw)
     raw = _URL_USERINFO.sub(r"\1[redacted]@", raw)
     raw = _BEARER.sub("Bearer [redacted]", raw)
     raw = _BASIC.sub(r"\1[redacted]", raw)

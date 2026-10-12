@@ -38,6 +38,32 @@ def test_manifest_hashes_every_attempt_and_records_versions(tmp_path: Path) -> N
         assert "/" not in str(item["name"])
     recorded = (log_dir / "manifest.sha256").read_text(encoding="utf-8").split()[0]
     assert recorded == hashlib.sha256(manifest.read_bytes()).hexdigest()
+    assert payload["nodes"] == []
+
+
+def test_a_late_failure_on_one_historic_node_fails_the_gate(tmp_path: Path) -> None:
+    history = "tests/ui/test_workbench.py::test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail"
+    presentation = "tests/ui/test_workbench.py::test_presentation_filter_conflict_detail_and_explicit_error_states"
+    history_attempts = [(ordinal, 0, "") for ordinal in range(1, 16)]
+    presentation_attempts = [(ordinal, 0, "") for ordinal in range(1, 15)]
+    presentation_attempts.append((15, 1, "assertion"))
+    status, summary = qt_stability.qualify_nodes(
+        [(history, history_attempts), (presentation, presentation_attempts)]
+    )
+    assert status == 1
+    assert "ATTEMPT 15 EXIT 1 FAIL assertion" in summary
+    assert history in summary
+    assert presentation in summary
+    assert "stability nodes failed: 1" in summary
+    log_dir = tmp_path / "stability"
+    nested = log_dir / "presentation-deadbeef"
+    nested.mkdir(parents=True)
+    (nested / "attempt-15.txt").write_text("ATTEMPT 15 EXIT 1 FAIL\n", encoding="utf-8")
+    manifest = qt_stability.write_evidence_manifest(log_dir, {"python": "3.11.0"})
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["files"][0]["name"] == "presentation-deadbeef/attempt-15.txt"
+    assert not payload["files"][0]["name"].startswith("/")
+    assert ".." not in payload["files"][0]["name"]
     (log_dir / "attempt-01.txt").write_text("changed\n", encoding="utf-8")
     changed = hashlib.sha256((log_dir / "attempt-01.txt").read_bytes()).hexdigest()
     assert changed != payload["files"][0]["sha256"]

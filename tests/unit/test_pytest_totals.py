@@ -551,6 +551,94 @@ def test_standalone_publish_without_an_exit_file_keeps_its_contract(tmp_path: Pa
     assert main(["--stats", str(stats), "--junit", str(junit)]) == 0
 
 
+def test_malformed_records_fail_closed_without_the_body_or_a_traceback(
+    tmp_path: Path, capsys: object
+) -> None:
+    junit = tmp_path / "pytest-junit.xml"
+    junit.write_text(_JUNIT, encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    sentinel = "SECRET_SENTINEL"
+    cases = {
+        "array": "[" + json.dumps(sentinel) + "]",
+        "null": "null",
+        "string-count": json.dumps(
+            {
+                "collected": "1\n::error::" + sentinel,
+                "passed": 0,
+                "failed": 0,
+                "errors": 0,
+                "skipped": 0,
+                "xfailed": 0,
+                "xpassed": 0,
+                "exit": 0,
+                "runtime": 0,
+            }
+        ),
+        "negative": json.dumps(
+            {
+                "collected": -1,
+                "passed": 0,
+                "failed": 0,
+                "errors": 0,
+                "skipped": 0,
+                "xfailed": 0,
+                "xpassed": 0,
+                "exit": 0,
+                "runtime": 0,
+            }
+        ),
+        "bool": json.dumps(
+            {
+                "collected": True,
+                "passed": 0,
+                "failed": 0,
+                "errors": 0,
+                "skipped": 0,
+                "xfailed": 0,
+                "xpassed": 0,
+                "exit": 0,
+                "runtime": 0,
+            }
+        ),
+    }
+    expected = {
+        "array": "stats root is not an object",
+        "null": "stats root is not an object",
+        "string-count": "stats collected is not a non-negative integer",
+        "negative": "stats collected is not a non-negative integer",
+        "bool": "stats collected is not a non-negative integer",
+    }
+    for name, body in cases.items():
+        stats = tmp_path / f"{name}.json"
+        stats.write_text(body, encoding="utf-8")
+        assert publish(stats, junit, None, summary) == 1
+        captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+        assert sentinel not in captured
+        assert "Traceback" not in captured
+        assert expected[name] in captured
+        assert "record: unreadable" in captured
+    broken = tmp_path / "broken.json"
+    broken.write_text('{"collected": ' + sentinel, encoding="utf-8")
+    assert publish(broken, junit, None, summary) == 1
+    captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert sentinel not in captured
+    assert "stats is not json" in captured
+    html = tmp_path / "page.xml"
+    html.write_text("<html>" + sentinel + "</html>", encoding="utf-8")
+    _stats_file(tmp_path / "ok.json")
+    assert publish(tmp_path / "ok.json", html, None, summary) == 1
+    captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert sentinel not in captured
+    assert "junit root is not a testsuite" in captured
+    assert "Traceback" not in captured
+    not_xml = tmp_path / "not.xml"
+    not_xml.write_text(sentinel + " <not xml", encoding="utf-8")
+    assert publish(tmp_path / "ok.json", not_xml, None, summary) == 1
+    captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert sentinel not in captured
+    assert "junit is not xml" in captured
+
+
 def test_a_disagreement_or_a_failed_suite_fails_the_record(tmp_path: Path) -> None:
     junit = tmp_path / "pytest-junit.xml"
     junit.write_text(_JUNIT, encoding="utf-8")

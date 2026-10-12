@@ -2085,3 +2085,49 @@ which is the abort path. It is not a lifecycle.
 
 **Consequences.** Ordinary teardown must not complete while an owned top-level
 widget is still a valid Qt object. The historical abort is not claimed to be gone.
+
+## ADR-45 — V8.5: one shutdown budget, and the loop must have started
+
+**Status:** accepted (2026-10-12)
+
+V8.4 could report an external quit that never entered `QApplication.exec()`.
+Qt ignores `quit()` before the loop starts, so that case did not exercise the
+route that returns from `exec()` and then releases windows. The production
+finish path also waited on a local event loop and checked the 120s ceiling
+only after that loop returned. A sticky quit, or a loop with no quit at all,
+could make the deadline either useless or unreachable.
+
+*   **The loop has to start.** The external-quit test arms a `QTimer` whose
+    slot calls `QCoreApplication.quit()` only after `exec()` is pumping events.
+    The parent subprocess timeout is the watchdog. The child does not install a
+    signal handler and cannot disarm it. After `exec()` returns, the test calls
+    `application_shutdown`, the same function `drillintel-ui` calls. A quit
+    issued before `exec()` is not evidence.
+*   **One clock.** Close, worker join, poll, and `processEvents` share the
+    deadline. The production ceiling stays 120s and the worker join stays 10s
+    while that ceiling still covers the join. A later attempt cannot start a
+    join longer than the time still left. Waiting is `QThread.msleep` of the
+    remaining slice. There is no local `QEventLoop.exec()` on this path.
+    Destruction uses `shiboken6.delete`, not `deleteLater`. A short injected
+    deadline uses the same production terminal and changes only the duration.
+    Exit 4 is a failed shutdown. It is not `QThread.terminate()`.
+*   **What is not intercepted.** `aboutToQuit` runs inside the quit sequence.
+    Joining a worker or deleting a window there can deadlock, so that signal
+    does not release widgets. `quit()`, `exit()`, and last-window-closed are
+    handled when they return from `exec()`. A library or platform path that
+    destroys the process without returning is not intercepted.
+*   **Stability.** Both historic workbench nodes are qualified with no retry,
+    fifteen fresh attempts each. A failure at any ordinal, including after 9,
+    fails the gate. A later pass does not erase it. The manifest records node,
+    ordinal, exit, duration, reason, and a relative-path SHA-256. Fifteen
+    passes are not proof the abort cannot recur.
+*   **Records and image.** The publisher validates the JSON root and field
+    types. A wrong shape fails closed without the file body, a traceback, or a
+    secret sentinel. Required jobs pin `ubuntu-24.04`. `ubuntu-latest` moves
+    to Ubuntu 26 on 2026-10-19; that image is not a release image until the
+    Qt job has been run on it. Actions stay at v7.
+*   **No schema change.** Alembic head stays `0019`. No new runtime dependency.
+
+**Consequences.** A green external-quit case is evidence only when the log
+shows the loop started before the quit request. The historical abort is still
+not claimed to be gone.

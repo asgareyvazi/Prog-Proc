@@ -2067,7 +2067,14 @@ class MainWindow(QMainWindow):
             if thread.isRunning():
                 thread.requestInterruption()
                 thread.quit()
-                if not thread.wait(self._worker_join_timeout_ms):
+                # The configured join stays 10s. A shutdown budget, when set, is
+                # the time still left on the one monotonic ceiling and can only
+                # shorten this attempt. It is not a second, restarted timeout.
+                limit = self._worker_join_timeout_ms
+                budget = getattr(self, "_shutdown_join_budget_ms", None)
+                if isinstance(budget, int):
+                    limit = min(limit, max(0, budget))
+                if not thread.wait(limit):
                     self._set_status("Waiting for a review worker to finish.", error=True)
                     event.ignore()
                     return
