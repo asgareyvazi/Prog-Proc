@@ -31,7 +31,7 @@ def _run(mode: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         env=env,
-        timeout=60,
+        timeout=20,
     )
 
 
