@@ -91,7 +91,7 @@ def test_shutdown_child_cannot_disarm_the_parent_watchdog() -> None:
     sleeper = child.split("def _sleeper", 1)[1].split("def _window", 1)[0]
     assert "time.sleep" in sleeper
     assert "timeout=" in parent
-    assert "timeout=15" in parent
+    assert "timeout=8" in parent
 
 
 def test_one_shutdown_budget_is_not_restarted_and_does_not_shrink_a_covered_join() -> None:

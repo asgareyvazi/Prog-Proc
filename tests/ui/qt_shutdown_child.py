@@ -272,7 +272,9 @@ def _probe(application: object) -> object:
 
 
 def _exec(application: object, probe: object) -> int:
+    print("STEP before-exec", flush=True)
     _arm_exec_watchdog(probe)
+    print("STEP entering-exec", flush=True)
     code = int(application.exec())  # type: ignore[attr-defined]
     probe.exec_returned.set()  # type: ignore[attr-defined]
     _stop_exec_watchdog(probe)
@@ -315,13 +317,19 @@ def quit_active() -> int:
     import shiboken6
     from PySide6.QtWidgets import QApplication
 
+    print("STEP active-start", flush=True)
     app = QApplication(["shutdown-quit-active"])
+    print("STEP active-app", flush=True)
     window = _window("workbench", 40)
+    print("STEP active-window", flush=True)
     thread = _sleeper(300)
     window._review_thread = thread  # type: ignore[attr-defined]
     thread.start()  # type: ignore[attr-defined]
+    print("STEP active-started", flush=True)
     window.show()  # type: ignore[attr-defined]
+    print("STEP active-shown", flush=True)
     app.processEvents()
+    print("STEP active-pumped", flush=True)
     probe = _probe(app)
     probe.window = window  # type: ignore[attr-defined]
     _guard_exec(probe, followup="quit")

@@ -31,14 +31,24 @@ def _qt_or_skip() -> None:
 def _run(mode: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
-    return subprocess.run(
-        [sys.executable, str(_CHILD), mode],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=timeout,
-    )
+    env["PYTHONUNBUFFERED"] = "1"
+    try:
+        return subprocess.run(
+            [sys.executable, str(_CHILD), mode],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        pytest.fail(f"child timed out after {timeout}s\nSTDOUT:\n{stdout[-800:]}\nSTDERR:\n{stderr[-800:]}")
 
 
 def _detail(completed: subprocess.CompletedProcess[str]) -> str:
@@ -139,7 +149,7 @@ def test_a_bounded_wait_reports_incomplete_until_the_worker_finishes() -> None:
 def test_production_deadline_exits_4_and_the_parent_bounds_the_wait() -> None:
     _qt_or_skip()
     started = time.monotonic()
-    completed = _run("deadline", timeout=15)
+    completed = _run("deadline", timeout=8)
     elapsed = time.monotonic() - started
     assert completed.returncode == 4, _detail(completed)
     assert elapsed < 12, elapsed
