@@ -232,9 +232,18 @@ def main() -> int:
         if code != 0 or skipped:
             status = 1
             print(f"::error::NODE {node} EXIT {code}")
-            tail = "\n".join(output.splitlines()[-8:])
-            if tail:
-                print(f"::error::{node}: {tail}")
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            interesting = [
+                line
+                for line in lines
+                if any(
+                    token in line
+                    for token in ("AssertionError", "FAIL ", "Error", "Traceback", "E   ")
+                )
+            ]
+            chosen = interesting[-1] if interesting else (lines[-1] if lines else "")
+            if chosen:
+                print(f"::error::{node}: {chosen[:500]}")
     summary.append(f"workbench tests executed: {len(nodes)}")
     print(f"::notice::workbench tests executed: {len(nodes)}")
     text = "\n".join(summary) + "\n"

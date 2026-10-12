@@ -94,21 +94,23 @@ def finish_qt_application(
     expires, the result is incomplete and the widgets that refused close are
     still valid. Neither path calls ``quit()`` or deletes a refused widget.
     """
-    from PySide6.QtCore import QElapsedTimer, QEventLoop, QTimer
+    from PySide6.QtCore import QElapsedTimer, QEventLoop, QThread
 
     result = release_top_level_widgets(application)
     if result.complete:
         return code, result
     if max_wait_ms is not None:
+        # msleep, not a nested QEventLoop. QApplication.quit() can make a new
+        # loop return immediately, which would otherwise burn the bound without
+        # waiting for the worker.
         elapsed = QElapsedTimer()
         elapsed.start()
         while elapsed.elapsed() < max_wait_ms:
-            loop = QEventLoop()
-            QTimer.singleShot(50, loop.quit)
-            loop.exec()
+            application.processEvents()
             result = release_top_level_widgets(application)
             if result.complete:
                 return code, result
+            QThread.msleep(50)
         return SHUTDOWN_INCOMPLETE_EXIT, result
 
     elapsed = QElapsedTimer()
@@ -122,9 +124,8 @@ def finish_qt_application(
         if spin.elapsed() < 5:
             if elapsed.elapsed() >= PRODUCTION_SHUTDOWN_WAIT_MS:
                 fail_closed_shutdown(result)
-            pause = QEventLoop()
-            QTimer.singleShot(200, pause.quit)
-            pause.exec()
+            QThread.msleep(200)
+            application.processEvents()
         result = release_top_level_widgets(application)
         if result.complete:
             return code, result

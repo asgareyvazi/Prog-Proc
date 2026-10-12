@@ -62,10 +62,11 @@ def refused() -> int:
 
 
 def external_quit() -> int:
+    import shiboken6
     from PySide6.QtCore import QThread, QTimer
     from PySide6.QtWidgets import QApplication
 
-    from drilling_intelligence.ui.lifetime import finish_qt_application
+    from drilling_intelligence.ui.lifetime import release_top_level_widgets
     from drilling_intelligence.ui.main_window import MainWindow
 
     class Sleeper(QThread):
@@ -80,11 +81,27 @@ def external_quit() -> int:
     window._review_thread = thread
     thread.start()
     window.show()
-    QTimer.singleShot(0, app.quit)
+
+    def _quit() -> None:
+        app.quit()
+
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(_quit)
+    timer.start(0)
     app.exec()
-    code, result = finish_qt_application(app, 0, max_wait_ms=5000)
-    if code != 0 or not result.complete:
-        print("FAIL external quit bypassed shutdown", code, result.refused, file=sys.stderr)
+    if not shiboken6.isValid(window):
+        print("FAIL quit destroyed the live window", file=sys.stderr)
+        return 1
+    first = release_top_level_widgets(app)
+    if first.complete or not shiboken6.isValid(window) or "workbench" not in first.refused:
+        print("FAIL quit bypassed a refused close", first.refused, file=sys.stderr)
+        return 1
+    print("QUIT_KEPT_ALIVE")
+    thread.wait()
+    second = release_top_level_widgets(app)
+    if not second.complete or shiboken6.isValid(window):
+        print("FAIL cleanup after quit", second.refused, file=sys.stderr)
         return 1
     _drop_thread(thread)
     print("EXTERNAL_QUIT_OK")

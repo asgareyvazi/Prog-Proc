@@ -48,8 +48,16 @@ def test_a_refused_close_keeps_the_window_and_a_later_pass_deletes_it() -> None:
 def test_external_quit_does_not_bypass_widget_release() -> None:
     _qt_or_skip()
     completed = _run("quit")
-    assert completed.returncode == 0, completed.stderr
-    assert "EXTERNAL_QUIT_OK" in completed.stdout, completed.stdout + completed.stderr
+    detail = " | ".join(
+        line.strip()
+        for line in f"{completed.stderr}\n{completed.stdout}".splitlines()
+        if line.strip()
+    )[-400:]
+    if completed.returncode != 0 or "EXTERNAL_QUIT_OK" not in completed.stdout:
+        print(f"::error::external quit shutdown failed: {detail}")
+    assert completed.returncode == 0, detail
+    assert "EXTERNAL_QUIT_OK" in completed.stdout, detail
+    assert "QUIT_KEPT_ALIVE" in completed.stdout, detail
 
 
 def test_a_bounded_wait_reports_incomplete_until_the_worker_finishes() -> None:
