@@ -204,8 +204,38 @@ def read_exit_file(path: Path) -> int:
     return int(lines[0])
 
 
+_NOTICE_PREFIXES = (
+    "collected:",
+    "passed:",
+    "failed:",
+    "errors:",
+    "skipped:",
+    "xfailed:",
+    "xpassed:",
+    "exit:",
+    "shell_exit:",
+    "session_exit:",
+    "runtime:",
+    "stats:",
+    "junit:",
+)
+
+
+def notice_lines(text: str) -> list[str]:
+    """Short annotation lines. They must not include file contents or secrets."""
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_NOTICE_PREFIXES):
+            lines.append(stripped[:200])
+    return lines
+
+
 def _write_summary(summary_path: Path | None, text: str) -> None:
     print(text)
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        for line in notice_lines(text):
+            print(f"::notice::{line}")
     if summary_path is None:
         return
     summary_path.parent.mkdir(parents=True, exist_ok=True)

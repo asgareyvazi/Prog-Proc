@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from drilling_intelligence.core.hashing import sha256_obj
+from drilling_intelligence.core.redact import visible_diagnostic
 from drilling_intelligence.reporting.audit import (
     audit_exit_code,
     classify_sample,
@@ -389,6 +390,14 @@ def test_quoted_and_encoded_credentials_are_redacted_without_eating_the_sentence
     assert "/opt/secret" not in text
 
 
+def test_visible_diagnostic_redacts_a_quoted_secret_and_keeps_the_exception_type():
+    detail = visible_diagnostic(RuntimeError('password="two word secret" check the workspace path'))
+    assert "two word secret" not in detail
+    assert "password=[redacted]" in detail
+    assert "workspace path" in detail
+    assert visible_diagnostic(RuntimeError("")) == "RuntimeError"
+
+
 def test_core_redact_does_not_import_retrieval_or_the_auditor():
     import subprocess
     import sys
@@ -500,6 +509,17 @@ def test_a_full_status_with_an_operational_error_is_not_rendered_as_verification
     assert "not full verification" in html
     assert "/opt/host-secret" not in html
     assert "citation.txt" in html
+    quoted = render_html(
+        payload,
+        audit={
+            "overall": "INCOMPLETE",
+            "operational_error": 'RuntimeError: password="two word secret" after the assignment',
+            "entries": [],
+        },
+    )
+    assert "two word secret" not in quoted
+    assert "Operational failure:" in quoted
+    assert "after the assignment" in quoted
 
 
 def test_an_unrecognised_audit_status_is_not_rendered_as_verification():

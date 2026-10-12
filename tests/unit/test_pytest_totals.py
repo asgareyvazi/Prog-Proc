@@ -12,6 +12,8 @@ from tools.pytest_totals import (
     ExitRecordError,
     disagreements,
     format_totals,
+    main,
+    notice_lines,
     publish,
     read_exit_file,
     skip_is_expected,
@@ -278,6 +280,115 @@ def test_real_pytest_accounts_for_pass_fail_skip_xfail_and_xpass(tmp_path: Path)
     )
     parsed = totals_from_junit(junit, exit_code=1)
     assert disagreements(payload, parsed) == []
+
+
+def test_zero_collected_malformed_exit_and_unreadable_records_fail_closed(
+    tmp_path: Path, capsys: object
+) -> None:
+    stats = tmp_path / "pytest-totals.json"
+    junit = tmp_path / "pytest-junit.xml"
+    _stats_file(
+        stats,
+        collected=0,
+        passed=0,
+        failed=0,
+        errors=0,
+        skipped=0,
+        xfailed=0,
+        xpassed=0,
+        exit=0,
+    )
+    junit.write_text(_clean_junit(tests=0), encoding="utf-8")
+    exit_file = tmp_path / "pytest-exit.txt"
+    exit_file.write_text("0\n", encoding="utf-8")
+    assert publish(stats, junit, exit_file, None) == 1
+    exit_file.write_text("0\nextra\n", encoding="utf-8")
+    try:
+        read_exit_file(exit_file)
+    except ExitRecordError as exc:
+        assert "integer" in str(exc)
+    else:
+        raise AssertionError("extra exit-file content must fail")
+    _stats_file(
+        stats,
+        collected=1,
+        passed=0,
+        failed=1,
+        errors=0,
+        skipped=0,
+        xfailed=0,
+        xpassed=0,
+        exit=1,
+    )
+    junit.write_text(_clean_junit(tests=1, failed=1), encoding="utf-8")
+    exit_file.write_text("1\n", encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    assert publish(stats, junit, exit_file, summary) == 1
+    assert "shell 1 != session" not in summary.read_text(encoding="utf-8")
+    sentinel = "quoted-dsn-marker"
+    (tmp_path / "broken.json").write_text('{"leak":"' + sentinel, encoding="utf-8")
+    (tmp_path / "broken.xml").write_text("<not-xml " + sentinel, encoding="utf-8")
+    code = main(["--stats", str(tmp_path / "broken.json"), "--junit", str(tmp_path / "broken.xml")])
+    assert code == 1
+    captured = capsys.readouterr()  # type: ignore[attr-defined]
+    assert "unreadable" in captured.out
+    assert sentinel not in captured.out
+    assert notice_lines("collected: 4\npassed: 3\nshell_exit: 0\n") == [
+        "collected: 4",
+        "passed: 3",
+        "shell_exit: 0",
+    ]
+
+
+def test_a_fixture_error_and_a_strict_xpass_are_real_pytest_outcomes(tmp_path: Path) -> None:
+    suite = tmp_path / "test_edges.py"
+    suite.write_text(
+        "import pytest\n"
+        "@pytest.fixture\n"
+        "def broken():\n"
+        "    raise RuntimeError('fixture-setup')\n"
+        "def test_setup(broken):\n"
+        "    pass\n"
+        "@pytest.mark.xfail(strict=True, reason='stale')\n"
+        "def test_strict_xpass():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    totals = tmp_path / "totals.json"
+    env = os.environ.copy()
+    env["PYTEST_TOTALS_PATH"] = str(totals)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(suite),
+            "-p",
+            "tools.pytest_totals",
+            "--noconftest",
+            "-o",
+            "addopts=",
+            "-q",
+            "--tb=no",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert completed.returncode != 0
+    payload = json.loads(totals.read_text(encoding="utf-8"))
+    assert payload["errors"] >= 1
+    assert payload["failed"] >= 1
+    accounted = (
+        payload["passed"]
+        + payload["failed"]
+        + payload["errors"]
+        + payload["skipped"]
+        + payload["xfailed"]
+        + payload["xpassed"]
+    )
+    assert accounted == payload["collected"]
 
 
 def test_a_disagreement_or_a_failed_suite_fails_the_record(tmp_path: Path) -> None:

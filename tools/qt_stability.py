@@ -59,6 +59,9 @@ def main(argv: list[str] | None = None) -> int:
     status, summary = workbench.qualify_stability(records)
     (args.log_dir / "summary.txt").write_text(summary, encoding="utf-8")
     print(summary, end="")
+    for line in summary.splitlines():
+        if line.startswith("ATTEMPT ") or line.startswith("stability "):
+            print(f"::notice::{line}")
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary:
         with Path(step_summary).open("a", encoding="utf-8") as handle:
