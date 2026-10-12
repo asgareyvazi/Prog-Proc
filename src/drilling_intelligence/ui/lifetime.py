@@ -123,6 +123,13 @@ def release_top_level_widgets(
     for widget in list(QApplication.topLevelWidgets()):
         if not shiboken6.isValid(widget):
             continue
+        # After exec() has returned, joining a still-running worker from close()
+        # can fail to return on this host. Poll isRunning() instead, and close
+        # only once the worker has finished. A user close while the loop is
+        # still running still uses the 10s join inside closeEvent.
+        running = getattr(widget, "owned_workers_running", None)
+        if remaining_ms is not None and callable(running) and running():
+            continue
         if remaining_ms is not None:
             _apply_join_budget(widget, remaining_ms)
         accepted = widget.close() is not False

@@ -2057,6 +2057,19 @@ class MainWindow(QMainWindow):
     def _verify_citations_from_button(self) -> None:
         self.request_review(verify_citations=True)
 
+    def owned_workers_running(self) -> bool:
+        """True when a close would have to join a live worker.
+
+        The post-``exec()`` coordinator uses this so it does not enter
+        ``thread.wait()`` after quit. On the CI host that wait does not return
+        while the worker is still alive, which would defeat the shutdown budget.
+        """
+        return any(
+            thread.isRunning()
+            for name in _WORKER_THREAD_ATTRS
+            if (thread := getattr(self, name, None)) is not None
+        )
+
     def closeEvent(self, event: QCloseEvent) -> None:
         threads = [
             thread

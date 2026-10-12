@@ -71,6 +71,8 @@ def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     assert "self._worker_join_timeout_ms = 10_000" in window
     assert "_shutdown_join_budget_ms" in window
     assert "thread.wait(limit)" in window
+    assert "def owned_workers_running" in window
+    assert "owned_workers_running" in lifetime
 
 
 def test_shutdown_child_cannot_disarm_the_parent_watchdog() -> None:
