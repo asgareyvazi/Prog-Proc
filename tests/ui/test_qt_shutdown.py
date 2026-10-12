@@ -48,7 +48,10 @@ def _run(mode: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
             stdout = stdout.decode("utf-8", errors="replace")
         if isinstance(stderr, bytes):
             stderr = stderr.decode("utf-8", errors="replace")
-        pytest.fail(f"child timed out after {timeout}s\nSTDOUT:\n{stdout[-800:]}\nSTDERR:\n{stderr[-800:]}")
+        steps = " | ".join(
+            line.strip() for line in f"{stdout}\n{stderr}".splitlines() if line.strip()
+        )
+        pytest.fail(f"child timed out after {timeout}s :: {steps[-350:]}")
 
 
 def _detail(completed: subprocess.CompletedProcess[str]) -> str:
