@@ -59,7 +59,18 @@ def _archive(tmp_path: Path, *, repeats: int = 2, poison: str = "") -> Path:
     blocks.append("stability nodes failed: 0")
     blocks.append("stability result: PASS")
     (stability_root / "summary.txt").write_text("\n".join(blocks) + "\n", encoding="utf-8")
-    stability.write_evidence_manifest(stability_root, {"python": "3.11"})
+    nodes = [
+        {
+            "node": historic,
+            "attempts": repeats,
+            "failed": 0,
+            "records": [
+                {"ordinal": ordinal, "exit": 0, "reason": ""} for ordinal in range(1, repeats + 1)
+            ],
+        }
+        for historic in stability.HISTORIC_NODES
+    ]
+    stability.write_evidence_manifest(stability_root, {"python": "3.11"}, nodes=nodes)
     return root
 
 
@@ -107,3 +118,90 @@ def test_a_success_claim_with_an_abort_signature_or_a_missing_attempt_fails(
     (escaped / "evidence.sha256").write_text(f"{digest}  evidence.json\n", encoding="utf-8")
     problems = evidence.verify_archive(escaped, repeats=2)
     assert any("unsafe" in problem or "does not match" in problem for problem in problems)
+
+
+def test_a_self_consistent_false_nested_manifest_still_fails(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    nested = root / "stability" / "manifest.json"
+    document = json.loads(nested.read_text(encoding="utf-8"))
+    document["files"][0]["sha256"] = "0" * 64
+    nested.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    digest = hashlib.sha256(nested.read_bytes()).hexdigest()
+    checksum = root / "stability" / "manifest.sha256"
+    checksum.write_text(f"{digest}  manifest.json\n", encoding="utf-8")
+    before = nested.read_bytes()
+    evidence.write_manifest(root)
+    problems = evidence.verify_archive(root, repeats=2)
+    assert any("does not match file" in problem for problem in problems)
+    again = evidence.main([str(root), "--repeats", "2"])
+    assert again == 1
+    assert nested.read_bytes() == before
+
+
+def test_malformed_or_incomplete_nested_manifests_fail_without_a_traceback(
+    tmp_path: Path,
+) -> None:
+    evidence = _evidence()
+    broken = _archive(tmp_path / "broken")
+    nested = broken / "stability" / "manifest.json"
+    nested.write_text("{", encoding="utf-8")
+    digest = hashlib.sha256(nested.read_bytes()).hexdigest()
+    (broken / "stability" / "manifest.sha256").write_text(
+        f"{digest}  manifest.json\n", encoding="utf-8"
+    )
+    evidence.write_manifest(broken)
+    problems = evidence.verify_archive(broken, repeats=2)
+    assert any("not json" in problem for problem in problems)
+    assert "Traceback" not in "\n".join(problems)
+    typed = _archive(tmp_path / "typed")
+    document = json.loads((typed / "stability" / "manifest.json").read_text(encoding="utf-8"))
+    document["attempts"] = True
+    document["files"].append(document["files"][0])
+    (typed / "stability" / "manifest.json").write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256((typed / "stability" / "manifest.json").read_bytes()).hexdigest()
+    (typed / "stability" / "manifest.sha256").write_text(
+        f"{digest}  manifest.json\n", encoding="utf-8"
+    )
+    evidence.write_manifest(typed)
+    problems = evidence.verify_archive(typed, repeats=2)
+    assert any("attempt count" in problem or "duplicate" in problem for problem in problems)
+    absent = _archive(tmp_path / "absent")
+    (absent / "stability" / "manifest.json").unlink()
+    evidence.write_manifest(absent)
+    problems = evidence.verify_archive(absent, repeats=2)
+    assert any("missing" in problem for problem in problems)
+
+
+def test_a_tampered_shutdown_transcript_fails_and_a_valid_one_is_hashed(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    transcript = root / "shutdown" / "real-qthread.json"
+    transcript.parent.mkdir()
+    transcript.write_text(
+        json.dumps(
+            {
+                "mode": "real-qthread",
+                "exit_code": 0,
+                "markers": [
+                    "LOOP_STARTED",
+                    "QUIT_REQUESTED",
+                    "EXEC_RETURNED",
+                    "SHUTDOWN_CODE 0",
+                ],
+                "result": "observed",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence.write_manifest(root)
+    assert evidence.verify_archive(root, repeats=2) == []
+    listed = json.loads((root / "evidence.json").read_text(encoding="utf-8"))["files"]
+    assert any(item["path"] == "shutdown/real-qthread.json" for item in listed)
+    transcript.write_text(transcript.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
+    problems = evidence.verify_archive(root, repeats=2)
+    assert any("hash or size mismatch" in problem for problem in problems)

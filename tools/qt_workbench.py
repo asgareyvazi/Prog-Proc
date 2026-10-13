@@ -189,6 +189,7 @@ def main() -> int:
     ui_dir = root / "tests" / "ui"
     log_dir = root / "qt-logs"
     log_dir.mkdir(exist_ok=True)
+    os.environ["QT_EVIDENCE_DIR"] = str(log_dir)
     expected = declared_stems(ui_dir)
     collected = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "--no-header", "tests/ui"],

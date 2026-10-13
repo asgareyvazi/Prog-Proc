@@ -2187,3 +2187,50 @@ slice the coordinator asked for, so that slice is not a hard process bound.
 **Consequences.** A green real-thread case is evidence only for the routes the
 child actually ran. Fifteen stability passes are still not proof the abort
 cannot recur.
+
+## ADR-47 — V8.7: deadline completion is not success after expiry
+
+**Status:** accepted (2026-10-13)
+
+V8.6 armed a monotonic monitor, but `disarm()` set a done flag without reading
+the deadline. If cleanup crossed the deadline and the coordinator disarmed the
+monitor before that thread woke, the process could return success after the
+budget was spent. The nested stability checksum had the same shape of bug: a
+checksum can match a JSON document whose file entries do not match the logs.
+
+*   **One deadline.** The coordinator and the monitor share one absolute
+    monotonic timestamp. `now < deadline` may accept a completed cleanup.
+    `now >= deadline` is expired, even if every widget is already gone. The
+    clock is read inside the same lock as the completion flag. A late `disarm`
+    returns false and does not suppress exit 4. A repeated `disarm` keeps the
+    first decision. The production join stays 10s and the ceiling stays 120s.
+*   **What the monitor does not guarantee.** It does not call Qt, delete a
+    widget, or `QThread.terminate()`. Its diagnostic write is non-blocking so
+    a full pipe cannot postpone `os._exit(4)`. A callback that holds the GIL,
+    or a native call that stops Python threads, can delay the monitor until
+    that call returns. The process must still fail closed afterwards. This is
+    not a hard real-time guarantee, and it does not intercept a platform path
+    that never returns from `exec()`.
+*   **Thread identity.** `request_quit` compares the C++ thread with
+    `shiboken6.getCppPointer`. Python wrapper identity is not thread identity.
+    A cross-thread caller still uses a queued `invokeMethod`. `exit(7)` stays 7.
+*   **Evidence.** Verification does not rewrite a manifest. The nested
+    stability manifest's entries are checked against the files they name, so a
+    checksum that matches a false inventory still fails. Workbench summary
+    rows must be unique and must match the collection inventory and the
+    documented retry rule. Successful shutdown transcripts are structured,
+    redacted with `safe_detail`, and hashed with the rest of the archive.
+    Stability remains 15 attempts on each historic node, with no retry.
+*   **Image and schema.** The release baseline remains explicit `ubuntu-24.04`.
+    Ubuntu 26.04 remains a required CPython 3.11 compatibility lane. CPython
+    3.14 on Ubuntu 26.04 is not certified. Alembic head stays `0019`.
+*   **CPython 3.14 datetime warnings.** The 166 warnings in the V8.6 CPython
+    3.14 run come from the stdlib sqlite3 default datetime adapter, which
+    CPython deprecated in 3.12, when SQLAlchemy binds a datetime. They are not
+    hidden by a warning filter. A follow-up may register an explicit ISO
+    adapter on the SQLite connection after proving the stored text still
+    round-trips; that is not part of this shutdown fix.
+
+**Consequences.** A green shutdown is evidence only that completion was accepted
+before the deadline in the routes that ran. Fifteen stability passes are still
+not proof the native abort cannot recur.

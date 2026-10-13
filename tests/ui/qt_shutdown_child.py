@@ -506,6 +506,37 @@ def real_qthread_quit() -> int:
     return 0
 
 
+def quit_gui() -> int:
+    """request_quit from the GUI thread must see the application's thread."""
+    import shiboken6
+    from PySide6.QtCore import QThread
+
+    from drilling_intelligence.ui.lifetime import request_quit
+
+    app = _application("shutdown-quit-gui")
+    window = _window("workbench", 40)
+    window.show()  # type: ignore[attr-defined]
+    probe = _probe(app)
+    probe.window = window  # type: ignore[attr-defined]
+    _guard_exec(probe)
+
+    def on_gui() -> None:
+        probe.mark_loop_started()  # type: ignore[attr-defined]
+        current = QThread.currentThread()
+        owner = app.thread()  # type: ignore[attr-defined]
+        same = shiboken6.getCppPointer(current) == shiboken6.getCppPointer(owner)
+        print("GUI_THREAD_MATCH" if same else "GUI_THREAD_MISS", flush=True)
+        request_quit(app)
+
+    held = _start_timer(probe, on_gui, 200)  # type: ignore[arg-type]
+    code = _exec(app, probe)
+    del held
+    if _after_exec(app, window, code, deadline_ms=2_000) != 0:
+        return 1
+    print("GUI_QUIT_OK", flush=True)
+    return 0
+
+
 def quit_queued() -> int:
     """A non-GUI thread queues quit. It does not call quit itself."""
     import shiboken6
@@ -639,6 +670,29 @@ def repeat_cleanup() -> int:
     return 0
 
 
+def pump_cpu() -> int:
+    """A GIL-holding callback is not preempted. It must still fail closed afterwards."""
+    from PySide6.QtCore import QTimer
+
+    from drilling_intelligence.ui.lifetime import application_shutdown
+
+    app = _application("shutdown-pump-cpu")
+    window = _window("workbench", 40)
+    window.show()  # type: ignore[attr-defined]
+
+    def burn() -> None:
+        print("CPU_BLOCKED", flush=True)
+        end = time.monotonic() + 0.4
+        while time.monotonic() < end:
+            pass
+
+    QTimer.singleShot(0, burn)
+    print("CPU_ARMED", flush=True)
+    application_shutdown(app, 0, deadline_ms=80)
+    print("FAIL cpu block returned", file=sys.stderr)
+    return 1
+
+
 def pump_block() -> int:
     """A queued callback longer than processEvents' allowance must still exit 4."""
     from PySide6.QtCore import QTimer
@@ -696,11 +750,13 @@ def main() -> int:
         "bound": bounded_incomplete,
         "real-qthread": real_qthread_quit,
         "quit-queued": quit_queued,
+        "quit-gui": quit_gui,
         "quit-before": quit_before_exec,
         "real-several": real_several,
         "finish-race": finish_race,
         "repeat": repeat_cleanup,
         "pump-block": pump_block,
+        "pump-cpu": pump_cpu,
     }
     return actions[sys.argv[1]]()
 

@@ -10,9 +10,14 @@ The wait between attempts is ``QThread.msleep`` of the time still left, so a
 quiet loop cannot block past the deadline. There is no local ``QEventLoop``
 whose deadline is checked only after it returns. ``processEvents`` can still
 run one already-queued callback for longer than the allowance it was given.
-A daemon thread sleeping on the monotonic clock is the process-exit ceiling
-for that case. It does not call Qt, delete a widget, or stop a worker. Exit 4
-from that thread is a failed shutdown, not a clean lifecycle. Widget destruction uses
+A daemon thread waiting on the same monotonic deadline is the process-exit
+ceiling for that case. Completion is accepted only while ``now < deadline``,
+and that decision shares one lock with the monitor, so a late ``disarm`` cannot
+turn an expired cleanup into success. The monitor does not call Qt, delete a
+widget, or stop a worker. Exit 4 from that thread is a failed shutdown, not a
+clean lifecycle. It is a practical ceiling under ordinary scheduling, not a
+hard real-time guarantee: a callback that holds the GIL, or a native call that
+stops Python threads, can delay the monitor until that call returns. Widget destruction uses
 ``shiboken6.delete``, not ``deleteLater``, so cleanup does not depend on a
 deferred-delete event. Worker completion is observed by ``QThread.wait``.
 
@@ -31,10 +36,12 @@ that quit without closing windows inside the quit sequence.
 
 from __future__ import annotations
 
+import fcntl
 import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -175,43 +182,91 @@ def fail_closed_shutdown(result: ReleaseResult) -> None:
     os._exit(SHUTDOWN_INCOMPLETE_EXIT)
 
 
-class _ShutdownDeadline:
-    """Exit 4 if production cleanup is still armed when the clock expires.
+def _terminal_exit() -> None:
+    """Best-effort diagnostic, then exit 4. A blocked write must not delay it."""
+    message = b"Qt shutdown incomplete; deadline elapsed before release finished\n"
+    try:
+        fd = sys.stderr.fileno()
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        os.write(fd, message)
+    except (AttributeError, OSError, ValueError):
+        pass
+    os._exit(SHUTDOWN_INCOMPLETE_EXIT)
 
-    The GUI thread can be inside ``processEvents`` or ``close()``. This thread
-    waits on ``time.monotonic`` and does not take a Qt lock. ``disarm`` and the
-    expiry check share one lock, so a cleanup that finished before the deadline
-    cannot lose the race to a stale expiry.
+
+class _ShutdownDeadline:
+    """One absolute monotonic deadline for the coordinator and its monitor.
+
+    ``now < deadline`` may accept a completed cleanup. ``now >= deadline`` is
+    expired. ``disarm`` and ``enforce`` share one lock and read the clock inside
+    it, so a completion that crosses the boundary cannot disarm an expiry that
+    has already been observed, and a late ``disarm`` cannot suppress exit 4.
+    A repeated ``disarm`` keeps the first decision. The monitor does not call Qt.
     """
 
-    def __init__(self, deadline_ms: int) -> None:
-        self._deadline = time.monotonic() + max(0, deadline_ms) / 1000
+    def __init__(
+        self,
+        deadline_ms: int,
+        *,
+        clock: Callable[[], float] | None = None,
+        terminal: Callable[[], None] | None = None,
+        armed: bool = True,
+    ) -> None:
+        self._clock = clock or time.monotonic
+        self._deadline = self._clock() + max(0, deadline_ms) / 1000
+        self._terminal = terminal or _terminal_exit
         self._lock = threading.Lock()
         self._done = False
-        self._thread = threading.Thread(
-            target=self._run,
-            name="qt-shutdown-deadline",
-            daemon=True,
-        )
-        self._thread.start()
+        self._expired = False
+        self._exited = False
+        self._wake = threading.Event()
+        if armed:
+            threading.Thread(
+                target=self._run,
+                name="qt-shutdown-deadline",
+                daemon=True,
+            ).start()
 
-    def disarm(self) -> None:
+    def remaining_ms(self) -> int:
+        return int((self._deadline - self._clock()) * 1000)
+
+    def disarm(self) -> bool:
+        """Accept completion only if it is still strictly before the deadline."""
         with self._lock:
+            if self._done:
+                return True
+            if self._expired or self._clock() >= self._deadline:
+                self._expired = True
+                self._wake.set()
+                return False
             self._done = True
+            self._wake.set()
+            return True
+
+    def enforce(self) -> bool:
+        """Own the terminal exit if the deadline is spent and completion was not accepted."""
+        with self._lock:
+            if self._done or self._exited:
+                return False
+            if self._clock() < self._deadline:
+                return False
+            self._expired = True
+            self._exited = True
+        self._terminal()
+        return True
 
     def _run(self) -> None:
         while True:
             with self._lock:
                 if self._done:
                     return
-                remaining = self._deadline - time.monotonic()
-                if remaining <= 0:
-                    print(
-                        "Qt shutdown incomplete; deadline elapsed before release finished",
-                        file=sys.stderr,
-                    )
-                    os._exit(SHUTDOWN_INCOMPLETE_EXIT)
-            time.sleep(min(0.05, remaining))
+                remaining = self._deadline - self._clock()
+                due = remaining <= 0
+            if due:
+                self.enforce()
+                return
+            self._wake.wait(min(0.05, remaining))
 
 
 def _coordinate(
@@ -226,38 +281,32 @@ def _coordinate(
     The timer is started once. Later iterations subtract from that clock;
     they do not open a fresh production ceiling.
     """
-    from PySide6.QtCore import QElapsedTimer, QThread
+    from PySide6.QtCore import QThread
 
-    # Only the production terminal. The fixture path must be able to return.
-    guard = _ShutdownDeadline(deadline_ms) if on_expire == "fail_closed" else None
-    elapsed = QElapsedTimer()
-    elapsed.start()
+    # One deadline. The fixture path uses it without arming the process exit.
+    guard = _ShutdownDeadline(deadline_ms, armed=on_expire == "fail_closed")
 
     def _finish(exit_code: int, result: ReleaseResult) -> tuple[int, ReleaseResult]:
-        if guard is not None:
-            guard.disarm()
+        if not guard.disarm():
+            return _expired(exit_code, result, on_expire)
         return exit_code, result
 
     while True:
-        remaining = remaining_budget_ms(deadline_ms, int(elapsed.elapsed()))
+        remaining = guard.remaining_ms()
         if remaining <= 0:
             result = release_top_level_widgets(application, remaining_ms=0)
             if result.complete:
                 return _finish(code, result)
-            if guard is not None:
-                guard.disarm()
             return _expired(code, result, on_expire)
         result = release_top_level_widgets(application, remaining_ms=remaining)
         if result.complete:
             return _finish(code, result)
-        remaining = remaining_budget_ms(deadline_ms, int(elapsed.elapsed()))
+        remaining = guard.remaining_ms()
         pause = wait_slice_ms(remaining)
         if pause <= 0:
-            if guard is not None:
-                guard.disarm()
             return _expired(code, result, on_expire)
         QThread.msleep(pause)
-        _pump(application, remaining_budget_ms(deadline_ms, int(elapsed.elapsed())))
+        _pump(application, guard.remaining_ms())
 
 
 def _expired(
@@ -344,9 +393,14 @@ def request_quit(application: Any) -> None:
     connection runs ``quit()`` on the GUI thread, where the event filter accepts
     it. ``exit(code)`` is a different call and is not rewritten to status 0.
     """
+    import shiboken6
     from PySide6.QtCore import QMetaObject, Qt, QThread
 
-    if QThread.currentThread() is application.thread():
+    # A new Python wrapper is not the same object as ``application.thread()``.
+    # Compare the C++ thread, not wrapper identity.
+    current = QThread.currentThread()
+    owner = application.thread()
+    if shiboken6.getCppPointer(current) == shiboken6.getCppPointer(owner):
         application.quit()
         return
     queued = QMetaObject.invokeMethod(

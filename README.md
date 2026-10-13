@@ -127,7 +127,9 @@ qualification of both nodes that have aborted in `destroyQCoreApplication`. A re
 keeps the window. An external quit still leaves the event loop, and the production shutdown
 budget is one 120s clock, not a fresh wait per poll (ADR-45). The real-thread proof owns a
 `QThread`; a synthetic worker is not that proof. A queued callback cannot outrun the
-shutdown deadline into a hang, and exit 4 remains a failed shutdown (ADR-46). The release
+shutdown deadline into a hang, and exit 4 remains a failed shutdown (ADR-46). A cleanup
+that reaches the deadline is not a success, including when the monitor thread has not
+yet been scheduled (ADR-47). The release
 image stays `ubuntu-24.04`. Ubuntu 26.04 is a required compatibility lane, not a silent
 move of `ubuntu-latest`, and CPython 3.14 on that image is not yet certified. Operator-facing errors redact prefixed and quoted credential assignments without
 discarding a connection host.

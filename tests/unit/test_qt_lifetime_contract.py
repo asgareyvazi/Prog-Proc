@@ -65,7 +65,9 @@ def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     coordinate = lifetime.split("def _coordinate", 1)[1].split("def finish_qt_application", 1)[0]
     assert ".exec()" not in coordinate
     assert "QEventLoop()" not in coordinate
-    assert coordinate.count("elapsed.start()") == 1
+    assert "elapsed.start()" not in coordinate
+    assert coordinate.count("_ShutdownDeadline(") == 1
+    assert "if not guard.disarm()" in coordinate
     assert "PRODUCTION_SHUTDOWN_WAIT_MS" not in coordinate
     teardown = lifetime.split("def fixture_teardown", 1)[1]
     assert teardown.index("os._exit") < teardown.index("application.quit()")
@@ -80,6 +82,8 @@ def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     assert "installEventFilter" in accept
     assert "closeAllWindows" not in accept
     assert "thread.wait" not in accept
+    assert "currentThread() is " not in accept
+    assert "getCppPointer" in accept
     assert "_ShutdownDeadline" in coordinate
     assert "disarm" in coordinate
 
@@ -164,3 +168,92 @@ def test_deadline_guard_exits_4_and_a_disarmed_guard_does_not() -> None:
     assert elapsed < 1.5, elapsed
     assert "deadline elapsed" in completed.stderr
     assert "Traceback" not in completed.stderr
+
+
+class _Clock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_completion_is_accepted_only_strictly_before_the_deadline() -> None:
+    from drilling_intelligence.ui.lifetime import _ShutdownDeadline
+
+    clock = _Clock(10.0)
+    before = _ShutdownDeadline(1_000, clock=clock, armed=False)
+    assert before.disarm() is True
+    assert before.disarm() is True
+    assert before.enforce() is False
+    at_deadline = _ShutdownDeadline(0, clock=clock, armed=False)
+    assert at_deadline.disarm() is False
+    assert at_deadline.disarm() is False
+    after = _ShutdownDeadline(500, clock=_Clock(10.0), armed=False)
+    after_clock = after._clock
+    assert after_clock() < after._deadline
+    after._clock = _Clock(after._deadline + 0.001)
+    assert after.disarm() is False
+
+
+def test_a_late_disarm_cannot_suppress_the_terminal_exit() -> None:
+    from drilling_intelligence.ui.lifetime import _ShutdownDeadline
+
+    exits: list[int] = []
+    clock = _Clock(5.0)
+    guard = _ShutdownDeadline(0, clock=clock, terminal=lambda: exits.append(4), armed=False)
+    assert guard.disarm() is False
+    assert guard.enforce() is True
+    assert exits == [4]
+    assert guard.enforce() is False
+    assert guard.disarm() is False
+
+
+def test_a_completion_and_expiry_race_cannot_report_success() -> None:
+    import threading
+
+    from drilling_intelligence.ui.lifetime import _ShutdownDeadline
+
+    clock = _Clock(8.0)
+    guard = _ShutdownDeadline(0, clock=clock, terminal=lambda: None, armed=False)
+    barrier = threading.Barrier(2)
+    results: dict[str, bool] = {}
+
+    def complete() -> None:
+        barrier.wait()
+        results["complete"] = guard.disarm()
+
+    def expire() -> None:
+        barrier.wait()
+        results["expire"] = guard.enforce()
+
+    threads = [threading.Thread(target=complete), threading.Thread(target=expire)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert results["complete"] is False
+
+
+def test_zero_deadline_exits_4_without_waiting_out_the_parent() -> None:
+    import subprocess
+    import sys
+    import time
+
+    script = (
+        "from drilling_intelligence.ui.lifetime import _ShutdownDeadline\n"
+        "import time\n"
+        "_ShutdownDeadline(0)\n"
+        "time.sleep(3)\n"
+        "raise SystemExit(0)\n"
+    )
+    started = time.monotonic()
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert completed.returncode == 4, completed.stderr
+    assert time.monotonic() - started < 1.5

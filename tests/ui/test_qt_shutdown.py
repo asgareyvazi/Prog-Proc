@@ -6,6 +6,7 @@ install a signal handler, and the timeout is not read from the child.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -28,12 +29,37 @@ def _qt_or_skip() -> None:
         pytest.skip(f"QtWidgets unavailable for UI tests: {exc}")
 
 
+def _write_transcript(
+    mode: str, completed: subprocess.CompletedProcess[str], duration_s: float
+) -> None:
+    root = os.environ.get("QT_EVIDENCE_DIR")
+    if not root:
+        return
+    from drilling_intelligence.core.redact import safe_detail
+
+    directory = Path(root) / "shutdown"
+    directory.mkdir(parents=True, exist_ok=True)
+    markers = [safe_detail(line.strip()) for line in completed.stdout.splitlines() if line.strip()]
+    payload = {
+        "mode": mode,
+        "exit_code": completed.returncode,
+        "duration_s": round(duration_s, 3),
+        "markers": markers[:40],
+        "result": "observed",
+    }
+    (directory / f"{mode}.json").write_text(
+        safe_detail(json.dumps(payload, indent=2) + "\n"),
+        encoding="utf-8",
+    )
+
+
 def _run(mode: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
     env["PYTHONUNBUFFERED"] = "1"
+    started = time.monotonic()
     try:
-        return subprocess.run(
+        completed = subprocess.run(
             [sys.executable, str(_CHILD), mode],
             check=False,
             capture_output=True,
@@ -52,6 +78,8 @@ def _run(mode: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
             line.strip() for line in f"{stdout}\n{stderr}".splitlines() if line.strip()
         )
         pytest.fail(f"child timed out after {timeout}s :: {steps[-350:]}")
+    _write_transcript(mode, completed, time.monotonic() - started)
+    return completed
 
 
 def _detail(completed: subprocess.CompletedProcess[str]) -> str:
@@ -193,6 +221,18 @@ def test_real_qthread_external_quit_uses_application_shutdown() -> None:
     _assert_no_abort(completed)
 
 
+def test_gui_thread_quit_compares_the_cpp_thread_not_the_wrapper() -> None:
+    _qt_or_skip()
+    completed = _run("quit-gui", timeout=20)
+    assert completed.returncode == 0, _detail(completed)
+    assert "GUI_THREAD_MATCH" in completed.stdout
+    assert "GUI_THREAD_MISS" not in completed.stdout
+    _assert_order(
+        completed.stdout, "LOOP_STARTED", "GUI_THREAD_MATCH", "EXEC_RETURNED", "GUI_QUIT_OK"
+    )
+    _assert_no_abort(completed)
+
+
 def test_queued_quit_from_another_thread_runs_on_the_gui_thread() -> None:
     _qt_or_skip()
     completed = _run("quit-queued", timeout=20)
@@ -264,4 +304,17 @@ def test_a_blocking_callback_cannot_defeat_the_shutdown_deadline() -> None:
     assert "FAIL pump block returned" not in completed.stderr + completed.stdout
     assert "PUMP_ARMED" in completed.stdout
     assert "PUMP_BLOCKED" in completed.stdout
+    _assert_no_abort(completed)
+
+
+def test_a_gil_holding_callback_is_not_preempted_but_still_fails_closed() -> None:
+    _qt_or_skip()
+    started = time.monotonic()
+    completed = _run("pump-cpu", timeout=8)
+    elapsed = time.monotonic() - started
+    assert completed.returncode == 4, _detail(completed)
+    assert elapsed >= 0.3, elapsed
+    assert elapsed < 3, elapsed
+    assert "CPU_BLOCKED" in completed.stdout
+    assert "FAIL cpu block returned" not in completed.stdout + completed.stderr
     _assert_no_abort(completed)
