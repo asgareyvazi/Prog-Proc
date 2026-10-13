@@ -23,6 +23,8 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from drilling_intelligence.core.redact import safe_detail
+
 _XFAIL_TYPE = "pytest.xfail"
 _XPASS_MESSAGE = "xfail-marked test passes unexpectedly"
 _EXIT_LINE = re.compile(r"-?\d+")
@@ -52,10 +54,10 @@ class RecordError(ValueError):
 
 
 def _int(value: object) -> int:
-    try:
-        return int(value or 0)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0
+    """A count that has already been schema-checked. Booleans are not counts."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RecordError("count is not an integer")
+    return value
 
 
 def _suites(root: ET.Element) -> list[ET.Element]:
@@ -266,6 +268,7 @@ def notice_lines(text: str) -> list[str]:
 
 
 def _write_summary(summary_path: Path | None, text: str) -> None:
+    text = safe_detail(text)
     print(text)
     if os.environ.get("GITHUB_ACTIONS") == "true":
         for line in notice_lines(text):

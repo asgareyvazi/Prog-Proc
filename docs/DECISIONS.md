@@ -2138,3 +2138,52 @@ could make the deadline either useless or unreachable.
 **Consequences.** A green external-quit case is evidence only when the log
 shows the loop started before the quit request. The historical abort is still
 not claimed to be gone.
+
+## ADR-46 — V8.6: real QThread shutdown, one deadline, Ubuntu 26.04 lane
+
+**Status:** accepted (2026-10-13)
+
+V8.5 proved the quit filter with a synthetic worker. That is not a `QThread`
+integration test. A callback queued into `processEvents` can also outrun the
+slice the coordinator asked for, so that slice is not a hard process bound.
+
+*   **Real workers.** The external-quit, queued-quit, several-worker, and
+    finish-race proofs own a `QThread` on a shown window. The loop marker is
+    printed only after `exec()` is pumping. A quit from another thread is
+    `QMetaObject.invokeMethod` with a queued connection, not a cross-thread
+    `QCoreApplication.quit()`. `exit(7)` stays 7. A quit before `exec()` is
+    recorded and is not a live-loop proof. The synthetic `Busy` modes remain
+    and are labeled as not QThread integration. The parent subprocess timeout
+    is a failed test, not exit 4.
+*   **One monotonic budget.** The production join stays 10s and the ceiling
+    stays 120s. Tests inject only the duration. The coordinator still starts
+    one `QElapsedTimer`. A daemon thread sleeping on `time.monotonic` is armed
+    only for the fail-closed path. It calls `os._exit(4)` and does not call
+    Qt, delete a widget, or `QThread.terminate()`. `disarm` runs before a
+    successful return so a finished cleanup cannot be turned into exit 4.
+    Exit 4 is a failed shutdown.
+*   **What is still not intercepted.** A platform or library path that never
+    returns from `exec()` is not intercepted. This change does not claim that
+    every `exit()` route is caught, and it does not claim the native abort is
+    gone.
+*   **Records.** Counts are integers. A boolean, a float, a list, a string, or
+    a missing key is an unreadable record, not a zero. Diagnostics, skip
+    reasons, and the step summary go through `safe_detail`. The sentinel is
+    absent and the category remains.
+*   **Evidence.** `tools/qt_evidence.py` hashes every release file under
+    `qt-logs/`, including both historic nodes and the stability manifest.
+    `evidence.sha256` is separate. A success claim with a failed attempt or an
+    abort signature fails the gate. The manifest is not rebuilt from an
+    unverified summary. Stability still has no retry.
+*   **Image.** The release baseline remains explicit `ubuntu-24.04`. Actions
+    stay at v7. `ubuntu-26.04` is a required compatibility job: install, Qt
+    probe, genuine-QThread shutdown, the deadline subprocess, workbench,
+    no-retry stability, publisher negatives, clean-install smoke, and a
+    distinct evidence artifact. A failure fails the workflow. CPython 3.14 on
+    Ubuntu 26.04 is uncertified until a runner executes it. `ubuntu-latest`
+    moving to 26 on 2026-10-19 does not move the release baseline.
+*   **No schema change.** Alembic head stays `0019`. No new runtime dependency.
+
+**Consequences.** A green real-thread case is evidence only for the routes the
+child actually ran. Fifteen stability passes are still not proof the abort
+cannot recur.

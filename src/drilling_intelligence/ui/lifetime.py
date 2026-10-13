@@ -8,7 +8,11 @@ The caller must not quit or return while that widget is a live Qt object.
 One monotonic budget covers close, worker join, polling, and ``processEvents``.
 The wait between attempts is ``QThread.msleep`` of the time still left, so a
 quiet loop cannot block past the deadline. There is no local ``QEventLoop``
-whose deadline is checked only after it returns. Widget destruction uses
+whose deadline is checked only after it returns. ``processEvents`` can still
+run one already-queued callback for longer than the allowance it was given.
+A daemon thread sleeping on the monotonic clock is the process-exit ceiling
+for that case. It does not call Qt, delete a widget, or stop a worker. Exit 4
+from that thread is a failed shutdown, not a clean lifecycle. Widget destruction uses
 ``shiboken6.delete``, not ``deleteLater``, so cleanup does not depend on a
 deferred-delete event. Worker completion is observed by ``QThread.wait``.
 
@@ -29,6 +33,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -169,14 +175,43 @@ def fail_closed_shutdown(result: ReleaseResult) -> None:
     os._exit(SHUTDOWN_INCOMPLETE_EXIT)
 
 
-def _expired(
-    code: int,
-    result: ReleaseResult,
-    on_expire: str,
-) -> tuple[int, ReleaseResult]:
-    if on_expire == "fail_closed":
-        fail_closed_shutdown(result)
-    return SHUTDOWN_INCOMPLETE_EXIT, result
+class _ShutdownDeadline:
+    """Exit 4 if production cleanup is still armed when the clock expires.
+
+    The GUI thread can be inside ``processEvents`` or ``close()``. This thread
+    waits on ``time.monotonic`` and does not take a Qt lock. ``disarm`` and the
+    expiry check share one lock, so a cleanup that finished before the deadline
+    cannot lose the race to a stale expiry.
+    """
+
+    def __init__(self, deadline_ms: int) -> None:
+        self._deadline = time.monotonic() + max(0, deadline_ms) / 1000
+        self._lock = threading.Lock()
+        self._done = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name="qt-shutdown-deadline",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def disarm(self) -> None:
+        with self._lock:
+            self._done = True
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                if self._done:
+                    return
+                remaining = self._deadline - time.monotonic()
+                if remaining <= 0:
+                    print(
+                        "Qt shutdown incomplete; deadline elapsed before release finished",
+                        file=sys.stderr,
+                    )
+                    os._exit(SHUTDOWN_INCOMPLETE_EXIT)
+            time.sleep(min(0.05, remaining))
 
 
 def _coordinate(
@@ -193,24 +228,46 @@ def _coordinate(
     """
     from PySide6.QtCore import QElapsedTimer, QThread
 
+    # Only the production terminal. The fixture path must be able to return.
+    guard = _ShutdownDeadline(deadline_ms) if on_expire == "fail_closed" else None
     elapsed = QElapsedTimer()
     elapsed.start()
+
+    def _finish(exit_code: int, result: ReleaseResult) -> tuple[int, ReleaseResult]:
+        if guard is not None:
+            guard.disarm()
+        return exit_code, result
+
     while True:
         remaining = remaining_budget_ms(deadline_ms, int(elapsed.elapsed()))
         if remaining <= 0:
             result = release_top_level_widgets(application, remaining_ms=0)
             if result.complete:
-                return code, result
+                return _finish(code, result)
+            if guard is not None:
+                guard.disarm()
             return _expired(code, result, on_expire)
         result = release_top_level_widgets(application, remaining_ms=remaining)
         if result.complete:
-            return code, result
+            return _finish(code, result)
         remaining = remaining_budget_ms(deadline_ms, int(elapsed.elapsed()))
         pause = wait_slice_ms(remaining)
         if pause <= 0:
+            if guard is not None:
+                guard.disarm()
             return _expired(code, result, on_expire)
         QThread.msleep(pause)
         _pump(application, remaining_budget_ms(deadline_ms, int(elapsed.elapsed())))
+
+
+def _expired(
+    code: int,
+    result: ReleaseResult,
+    on_expire: str,
+) -> tuple[int, ReleaseResult]:
+    if on_expire == "fail_closed":
+        fail_closed_shutdown(result)
+    return SHUTDOWN_INCOMPLETE_EXIT, result
 
 
 def finish_qt_application(
@@ -276,6 +333,29 @@ def create_application(argv: list[str]) -> Any:
     # if the wrapper is collected and shiboken deletes the C++ object.
     application._accept_quit = accept_quit  # type: ignore[attr-defined]
     return application
+
+
+def request_quit(application: Any) -> None:
+    """Queue ``quit()`` onto the GUI thread.
+
+    A direct quit from another thread asks the platform plugin for synchronous
+    termination and then waits for a GUI flush. That wait does not return while
+    the GUI thread is already inside quit. ``invokeMethod`` with a queued
+    connection runs ``quit()`` on the GUI thread, where the event filter accepts
+    it. ``exit(code)`` is a different call and is not rewritten to status 0.
+    """
+    from PySide6.QtCore import QMetaObject, Qt, QThread
+
+    if QThread.currentThread() is application.thread():
+        application.quit()
+        return
+    queued = QMetaObject.invokeMethod(
+        application,
+        "quit",
+        Qt.ConnectionType.QueuedConnection,
+    )
+    if not queued:
+        raise RuntimeError("could not queue application quit onto the GUI thread")
 
 
 def application_shutdown(

@@ -19,9 +19,9 @@ concurrency:
 jobs:
   test:
     name: test (cp${{ matrix.python-version }})
-    # ubuntu-latest moves to Ubuntu 26 on 2026-10-19. Required jobs stay on
-    # ubuntu-24.04, the image this Qt and headless suite has actually run on.
-    # ubuntu-26.04 is not a release image until that job has been run there.
+    # ubuntu-latest moves to Ubuntu 26 starting 2026-10-19. The release baseline
+    # stays ubuntu-24.04. ubuntu-26.04 is a separate required compatibility lane,
+    # not a substitute for this job. A failure there fails the workflow.
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -202,6 +202,13 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: python tools/qt_stability.py --repeats 15
 
+      # Hash the logs that exist. A mismatch, a missing attempt, or an abort
+      # signature inside a successful record fails the job. The checksum is not
+      # an entry in the manifest it covers.
+      - name: Verify Qt evidence archive
+        if: always()
+        run: python tools/qt_evidence.py qt-logs --write --repeats 15
+
       # The attempt logs are release evidence. A green workbench job must not
       # waive a failed upload or a missing log directory.
       - name: Publish Qt attempt logs
@@ -209,5 +216,99 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: qt-workbench-logs
+          path: qt-logs/
+          if-no-files-found: error
+
+  ubuntu-2604:
+    name: Ubuntu 26.04 compatibility
+    # Required lane. A failure here fails the workflow. It does not move the
+    # ubuntu-24.04 release baseline. CPython 3.14 on this image is uncertified
+    # until a runner executes it; this job is 3.11.
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1 libegl1 libglib2.0-0 libdbus-1-3 libfontconfig1 libx11-6 \
+            libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-shm0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+            libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxtst6 libnss3 libsm6 libice6
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+
+      - name: Install (editable, with the ui extra)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,ui]"
+
+      - name: Probe the real Qt platform
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
+        run: |
+          set -o pipefail
+          mkdir -p qt-logs
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -c "import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName(), 'pyside', PySide6.__version__, 'qt', qVersion())" | tee qt-logs/versions.txt
+          test -s qt-logs/versions.txt
+
+      - name: Genuine QThread shutdown, deadline, and publisher negatives
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest \
+            tests/ui/test_qt_shutdown.py \
+            tests/unit/test_qt_lifetime_contract.py \
+            tests/unit/test_pytest_totals.py \
+            tests/unit/test_qt_evidence.py
+
+      - name: Offscreen workbench tests
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: python tools/qt_workbench.py
+
+      - name: Qt stability qualification
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: python tools/qt_stability.py --repeats 15
+
+      - name: Clean-install smoke
+        run: python tools/release_smoke.py
+
+      - name: Verify Qt evidence archive
+        if: always()
+        run: python tools/qt_evidence.py qt-logs --write --repeats 15
+
+      - name: Publish Ubuntu 26.04 Qt evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qt-ubuntu-2604-logs
           path: qt-logs/
           if-no-files-found: error

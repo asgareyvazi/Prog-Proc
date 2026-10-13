@@ -1,7 +1,11 @@
 """Subprocess body for the Qt shutdown contract. Not a pytest module.
 
 The parent process owns the watchdog via ``subprocess`` timeout. This process
-does not install a signal handler and cannot disarm that timeout.
+does not install a signal handler and cannot disarm that timeout. Modes named
+``quit-active`` and ``deadline-synthetic`` use the ``Busy`` stand-in and are not
+QThread integration. ``real-qthread``, ``quit-queued``, ``real-several``,
+``finish-race`` and ``deadline`` own a real ``QThread``. A quit before
+``exec()`` is recorded and is not a live-loop proof.
 
 A quit issued before ``exec()`` does not stop the loop. The request is therefore
 posted only from a ``QObject`` method that a ``QTimer`` delivers after ``exec()``
@@ -99,6 +103,27 @@ def _qt_sleeper(duration_ms: int) -> object:
             time.sleep(self._duration_ms / 1000)
 
     return Sleeper(duration_ms)
+
+
+def _real_thread(duration_ms: int) -> object:
+    """A genuine ``QThread``. Not the synthetic ``Busy`` stand-in.
+
+    ``run`` sleeps so the test controls the lifetime without a worker that
+    needs the GUI thread. ``start`` returns immediately. This object is what
+    the external-quit integration and the production deadline proof own.
+    """
+    from PySide6.QtCore import QThread
+
+    class Worker(QThread):
+        def __init__(self, duration: int) -> None:
+            super().__init__()
+            self._duration_ms = duration
+
+        def run(self) -> None:
+            time.sleep(self._duration_ms / 1000)
+            print("WORKER_FINISHED", flush=True)
+
+    return Worker(duration_ms)
 
 
 def _window(name: str, join_ms: int) -> object:
@@ -403,7 +428,8 @@ def production_deadline() -> int:
 
     app = _application("shutdown-deadline")
     window = _window("workbench", 40)
-    thread = _sleeper(30_000)
+    print("REAL_QTHREAD", flush=True)
+    thread = _real_thread(30_000)
     window._review_thread = thread  # type: ignore[attr-defined]
     thread.start()  # type: ignore[attr-defined]
     window.show()  # type: ignore[attr-defined]
@@ -446,6 +472,217 @@ def bounded_incomplete() -> int:
     return 0
 
 
+def real_qthread_quit() -> int:
+    """External quit while a genuine QThread is running. Production cleanup."""
+    import shiboken6
+
+    app = _application("shutdown-real-qthread")
+    window = _window("workbench", 40)
+    thread = _real_thread(3_000)
+    window._review_thread = thread  # type: ignore[attr-defined]
+    thread.start()  # type: ignore[attr-defined]
+    window.show()  # type: ignore[attr-defined]
+    probe = _probe(app)
+    probe.window = window  # type: ignore[attr-defined]
+    _guard_exec(probe)
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
+    code = _exec(app, probe)
+    del held
+    print("EXEC_RETURNED", flush=True)
+    if not shiboken6.isValid(window):
+        print("FAIL exec destroyed the live window", file=sys.stderr)
+        return 1
+    if thread.isRunning() is not True:  # type: ignore[attr-defined]
+        print("FAIL worker finished before exec returned", file=sys.stderr)
+        return 1
+    from drilling_intelligence.ui.lifetime import application_shutdown
+
+    exit_code = application_shutdown(app, code, deadline_ms=4_000)
+    if exit_code != 0 or shiboken6.isValid(window) or thread.isRunning():  # type: ignore[attr-defined]
+        print("FAIL real QThread shutdown", exit_code, file=sys.stderr)
+        return 1
+    print("SHUTDOWN_CODE 0", flush=True)
+    print("REAL_QTHREAD_QUIT_OK", flush=True)
+    return 0
+
+
+def quit_queued() -> int:
+    """A non-GUI thread queues quit. It does not call quit itself."""
+    import shiboken6
+
+    from drilling_intelligence.ui.lifetime import request_quit
+
+    app = _application("shutdown-quit-queued")
+    window = _window("workbench", 40)
+    thread = _real_thread(500)
+    window._review_thread = thread  # type: ignore[attr-defined]
+    thread.start()  # type: ignore[attr-defined]
+    window.show()  # type: ignore[attr-defined]
+    probe = _probe(app)
+    probe.window = window  # type: ignore[attr-defined]
+    _guard_exec(probe)
+
+    def queued() -> None:
+        if not probe.started.wait(5):  # type: ignore[attr-defined]
+            print("FAIL loop did not start within 5s", flush=True)
+            os._exit(6)
+        print("QUIT_REQUESTED", flush=True)
+        request_quit(app)
+
+    threading.Thread(target=queued, daemon=True).start()
+    held = _start_timer(probe, probe.mark_loop_started, 200)  # type: ignore[attr-defined]
+    code = _exec(app, probe)
+    del held
+    if not shiboken6.isValid(window):
+        print("FAIL exec destroyed the live window", file=sys.stderr)
+        return 1
+    if _after_exec(app, window, code, deadline_ms=4_000) != 0:
+        return 1
+    print("QUEUED_QUIT_OK", flush=True)
+    return 0
+
+
+def quit_before_exec() -> int:
+    """A quit issued before exec() must not be treated as a live-loop quit."""
+    app = _application("shutdown-quit-before")
+    window = _window("workbench", 40)
+    window.show()  # type: ignore[attr-defined]
+    app.quit()  # type: ignore[attr-defined]
+    print("PRE_EXEC_QUIT", flush=True)
+    probe = _probe(app)
+    probe.window = window  # type: ignore[attr-defined]
+    _guard_exec(probe)
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
+    code = _exec(app, probe)
+    del held
+    if _after_exec(app, window, code, deadline_ms=2_000) != 0:
+        return 1
+    # Either the pre-exec quit was ignored and the timer quit the live loop, or
+    # exec() returned without pumping. Neither result is a live-loop proof.
+    print("PRE_EXEC_NOT_A_LIVE_LOOP_PROOF", flush=True)
+    return 0
+
+
+def real_several() -> int:
+    import shiboken6
+
+    app = _application("shutdown-real-several")
+    window = _window("workbench", 40)
+    review = _real_thread(300)
+    decision = _real_thread(500)
+    window._review_thread = review  # type: ignore[attr-defined]
+    window._decision_thread = decision  # type: ignore[attr-defined]
+    review.start()  # type: ignore[attr-defined]
+    decision.start()  # type: ignore[attr-defined]
+    window.show()  # type: ignore[attr-defined]
+    probe = _probe(app)
+    probe.window = window  # type: ignore[attr-defined]
+    _guard_exec(probe)
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
+    code = _exec(app, probe)
+    del held
+    if not shiboken6.isValid(window):
+        print("FAIL exec destroyed the live window", file=sys.stderr)
+        return 1
+    if _after_exec(app, window, code, deadline_ms=4_000) != 0:
+        return 1
+    if review.isRunning() or decision.isRunning():  # type: ignore[attr-defined]
+        print("FAIL a real worker was still running", file=sys.stderr)
+        return 1
+    _drop_thread(review)
+    _drop_thread(decision)
+    print("REAL_SEVERAL_OK", flush=True)
+    return 0
+
+
+def finish_race() -> int:
+    """Quit while a real worker is about to finish. Either side of the race is success."""
+    app = _application("shutdown-finish-race")
+    window = _window("workbench", 40)
+    thread = _real_thread(180)
+    window._review_thread = thread  # type: ignore[attr-defined]
+    thread.start()  # type: ignore[attr-defined]
+    window.show()  # type: ignore[attr-defined]
+    probe = _probe(app)
+    probe.window = window  # type: ignore[attr-defined]
+    _guard_exec(probe)
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
+    code = _exec(app, probe)
+    del held
+    if _after_exec(app, window, code, deadline_ms=4_000) != 0:
+        return 1
+    print("RACE_OK", flush=True)
+    return 0
+
+
+def repeat_cleanup() -> int:
+    from drilling_intelligence.ui.lifetime import application_shutdown
+
+    app = _application("shutdown-repeat")
+    window = _window("workbench", 40)
+    window.show()  # type: ignore[attr-defined]
+    probe = _probe(app)
+    probe.window = window  # type: ignore[attr-defined]
+    _guard_exec(probe)
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
+    code = _exec(app, probe)
+    del held
+    if _after_exec(app, window, code, deadline_ms=2_000) != 0:
+        return 1
+    again = application_shutdown(app, 0, deadline_ms=1_000)
+    if again != 0:
+        print("FAIL repeated cleanup", again, file=sys.stderr)
+        return 1
+    app.quit()  # type: ignore[attr-defined]
+    print("AFTER_REPEAT_QUIT", flush=True)
+    print("REPEAT_OK", flush=True)
+    return 0
+
+
+def pump_block() -> int:
+    """A queued callback longer than processEvents' allowance must still exit 4."""
+    from PySide6.QtCore import QTimer
+
+    from drilling_intelligence.ui.lifetime import application_shutdown
+
+    app = _application("shutdown-pump-block")
+    window = _window("workbench", 40)
+    window.show()  # type: ignore[attr-defined]
+
+    def block() -> None:
+        print("PUMP_BLOCKED", flush=True)
+        time.sleep(30)
+
+    QTimer.singleShot(0, block)
+    print("PUMP_ARMED", flush=True)
+    application_shutdown(app, 0, deadline_ms=300)
+    print("FAIL pump block returned", file=sys.stderr)
+    return 1
+
+
+def deadline_synthetic() -> int:
+    """Supplementary coordinator deadline. Not a QThread integration proof."""
+    from drilling_intelligence.ui.lifetime import application_shutdown
+
+    app = _application("shutdown-deadline-synthetic")
+    window = _window("workbench", 40)
+    thread = _sleeper(30_000)
+    window._review_thread = thread  # type: ignore[attr-defined]
+    thread.start()  # type: ignore[attr-defined]
+    window.show()  # type: ignore[attr-defined]
+    probe = _probe(app)
+    probe.window = window  # type: ignore[attr-defined]
+    _guard_exec(probe)
+    held = _start_timer(probe, probe.quit_once_running, 200)  # type: ignore[attr-defined]
+    code = _exec(app, probe)
+    del held
+    print("EXEC_RETURNED", flush=True)
+    print("SYNTHETIC_DEADLINE", flush=True)
+    application_shutdown(app, code, deadline_ms=400)
+    print("FAIL deadline returned", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     actions = {
         "refused": refused,
@@ -455,7 +692,15 @@ def main() -> int:
         "last-window": last_window,
         "exit-route": exit_route,
         "deadline": production_deadline,
+        "deadline-synthetic": deadline_synthetic,
         "bound": bounded_incomplete,
+        "real-qthread": real_qthread_quit,
+        "quit-queued": quit_queued,
+        "quit-before": quit_before_exec,
+        "real-several": real_several,
+        "finish-race": finish_race,
+        "repeat": repeat_cleanup,
+        "pump-block": pump_block,
     }
     return actions[sys.argv[1]]()
 

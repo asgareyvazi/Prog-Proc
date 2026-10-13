@@ -111,6 +111,12 @@ def write_evidence_manifest(
     return destination
 
 
+def stability_dirname(node: str) -> str:
+    digest = hashlib.sha256(node.encode("utf-8")).hexdigest()[:8]
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", node.rsplit("::", 1)[-1])[:48]
+    return f"{stem}-{digest}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repeats", type=int, default=15)
@@ -126,9 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     groups: list[tuple[str, list[tuple[int, int, str]]]] = []
     node_records: list[dict[str, object]] = []
     for node in selected:
-        digest = hashlib.sha256(node.encode("utf-8")).hexdigest()[:8]
-        stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", node.rsplit("::", 1)[-1])[:48]
-        node_dir = args.log_dir / f"{stem}-{digest}"
+        node_dir = args.log_dir / stability_dirname(node)
         node_dir.mkdir(parents=True, exist_ok=True)
         records: list[tuple[int, int, str]] = []
         written: list[dict[str, object]] = []

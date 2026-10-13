@@ -158,5 +158,110 @@ def test_production_deadline_exits_4_and_the_parent_bounds_the_wait() -> None:
     assert elapsed < 12, elapsed
     assert "Qt shutdown incomplete" in completed.stderr
     assert "FAIL deadline returned" not in completed.stderr + completed.stdout
+    assert "REAL_QTHREAD" in completed.stdout
     _assert_order(completed.stdout, "LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED")
+    _assert_no_abort(completed)
+
+
+def test_synthetic_deadline_is_supplementary_not_the_qthread_proof() -> None:
+    _qt_or_skip()
+    started = time.monotonic()
+    completed = _run("deadline-synthetic", timeout=8)
+    elapsed = time.monotonic() - started
+    assert completed.returncode == 4, _detail(completed)
+    assert elapsed < 6, elapsed
+    assert "SYNTHETIC_DEADLINE" in completed.stdout
+    assert "Qt shutdown incomplete" in completed.stderr
+    _assert_no_abort(completed)
+
+
+def test_real_qthread_external_quit_uses_application_shutdown() -> None:
+    """Integration proof. The Busy stand-in in quit-active is not this test."""
+    _qt_or_skip()
+    completed = _run("real-qthread", timeout=20)
+    assert completed.returncode == 0, _detail(completed)
+    _assert_order(
+        completed.stdout,
+        "LOOP_STARTED",
+        "QUIT_REQUESTED",
+        "ABOUT_TO_QUIT_WINDOW_VALID",
+        "EXEC_RETURNED",
+        "WORKER_FINISHED",
+        "SHUTDOWN_CODE 0",
+        "REAL_QTHREAD_QUIT_OK",
+    )
+    _assert_no_abort(completed)
+
+
+def test_queued_quit_from_another_thread_runs_on_the_gui_thread() -> None:
+    _qt_or_skip()
+    completed = _run("quit-queued", timeout=20)
+    assert completed.returncode == 0, _detail(completed)
+    _assert_order(
+        completed.stdout,
+        "LOOP_STARTED",
+        "QUIT_REQUESTED",
+        "ABOUT_TO_QUIT_WINDOW_VALID",
+        "EXEC_RETURNED",
+        "QUEUED_QUIT_OK",
+    )
+    _assert_no_abort(completed)
+
+
+def test_quit_before_exec_is_not_a_live_loop_quit() -> None:
+    _qt_or_skip()
+    completed = _run("quit-before", timeout=20)
+    assert completed.returncode == 0, _detail(completed)
+    assert "PRE_EXEC_QUIT" in completed.stdout
+    assert "PRE_EXEC_NOT_A_LIVE_LOOP_PROOF" in completed.stdout
+    assert "REAL_QTHREAD_QUIT_OK" not in completed.stdout
+    if "LOOP_STARTED" in completed.stdout:
+        _assert_order(
+            completed.stdout,
+            "PRE_EXEC_QUIT",
+            "LOOP_STARTED",
+            "QUIT_REQUESTED",
+            "EXEC_RETURNED",
+        )
+    else:
+        assert "QUIT_REQUESTED" not in completed.stdout
+        assert "EXEC_RETURNED" in completed.stdout
+    _assert_no_abort(completed)
+
+
+def test_several_real_qthreads_and_a_finish_race_use_production_shutdown() -> None:
+    _qt_or_skip()
+    several = _run("real-several", timeout=20)
+    assert several.returncode == 0, _detail(several)
+    _assert_order(
+        several.stdout, "LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED", "REAL_SEVERAL_OK"
+    )
+    _assert_no_abort(several)
+    raced = _run("finish-race", timeout=20)
+    assert raced.returncode == 0, _detail(raced)
+    assert "RACE_OK" in raced.stdout
+    _assert_no_abort(raced)
+
+
+def test_repeated_cleanup_and_a_quit_after_exec_do_not_hang() -> None:
+    _qt_or_skip()
+    completed = _run("repeat", timeout=20)
+    assert completed.returncode == 0, _detail(completed)
+    _assert_order(
+        completed.stdout, "EXEC_RETURNED", "SHUTDOWN_CODE 0", "AFTER_REPEAT_QUIT", "REPEAT_OK"
+    )
+    _assert_no_abort(completed)
+
+
+def test_a_blocking_callback_cannot_defeat_the_shutdown_deadline() -> None:
+    _qt_or_skip()
+    started = time.monotonic()
+    completed = _run("pump-block", timeout=8)
+    elapsed = time.monotonic() - started
+    assert completed.returncode == 4, _detail(completed)
+    assert elapsed < 3, elapsed
+    assert "deadline elapsed" in completed.stderr
+    assert "FAIL pump block returned" not in completed.stderr + completed.stdout
+    assert "PUMP_ARMED" in completed.stdout
+    assert "PUMP_BLOCKED" in completed.stdout
     _assert_no_abort(completed)

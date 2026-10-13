@@ -125,7 +125,11 @@ session exit; an unexpected pass, or a skip that is not a headless UI test missi
 fails the job (ADR-42, ADR-43). The workbench job also runs a no-retry stability
 qualification of both nodes that have aborted in `destroyQCoreApplication`. A refused close
 keeps the window. An external quit still leaves the event loop, and the production shutdown
-budget is one 120s clock, not a fresh wait per poll (ADR-45). Operator-facing errors redact prefixed and quoted credential assignments without
+budget is one 120s clock, not a fresh wait per poll (ADR-45). The real-thread proof owns a
+`QThread`; a synthetic worker is not that proof. A queued callback cannot outrun the
+shutdown deadline into a hang, and exit 4 remains a failed shutdown (ADR-46). The release
+image stays `ubuntu-24.04`. Ubuntu 26.04 is a required compatibility lane, not a silent
+move of `ubuntu-latest`, and CPython 3.14 on that image is not yet certified. Operator-facing errors redact prefixed and quoted credential assignments without
 discarding a connection host.
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,

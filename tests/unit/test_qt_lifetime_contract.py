@@ -80,6 +80,8 @@ def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     assert "installEventFilter" in accept
     assert "closeAllWindows" not in accept
     assert "thread.wait" not in accept
+    assert "_ShutdownDeadline" in coordinate
+    assert "disarm" in coordinate
 
 
 def test_shutdown_child_cannot_disarm_the_parent_watchdog() -> None:
@@ -102,6 +104,16 @@ def test_shutdown_child_cannot_disarm_the_parent_watchdog() -> None:
     assert "time.sleep" in sleeper
     assert "timeout=" in parent
     assert "timeout=8" in parent
+    assert "class Worker(QThread)" in child
+    assert "real-qthread" in child
+    assert "REAL_QTHREAD_QUIT_OK" in child
+    assert "request_quit" in child
+    assert "QCoreApplication.quit()" not in child
+    deadline_body = child.split("def production_deadline", 1)[1].split("def bounded_incomplete", 1)[
+        0
+    ]
+    assert "_real_thread" in deadline_body
+    assert "_sleeper" not in deadline_body
 
 
 def test_one_shutdown_budget_is_not_restarted_and_does_not_shrink_a_covered_join() -> None:
@@ -120,3 +132,35 @@ def test_one_shutdown_budget_is_not_restarted_and_does_not_shrink_a_covered_join
     assert worker_join_limit_ms(40, 0) == 0
     assert wait_slice_ms(5) == 5
     assert wait_slice_ms(0) == 0
+
+
+def test_deadline_guard_exits_4_and_a_disarmed_guard_does_not() -> None:
+    import subprocess
+    import sys
+    import time
+
+    from drilling_intelligence.ui.lifetime import _ShutdownDeadline
+
+    guard = _ShutdownDeadline(80)
+    guard.disarm()
+    time.sleep(0.2)
+    script = (
+        "from drilling_intelligence.ui.lifetime import _ShutdownDeadline\n"
+        "import time\n"
+        "_ShutdownDeadline(150)\n"
+        "time.sleep(3)\n"
+        "raise SystemExit(0)\n"
+    )
+    started = time.monotonic()
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    elapsed = time.monotonic() - started
+    assert completed.returncode == 4, completed.stderr
+    assert elapsed < 1.5, elapsed
+    assert "deadline elapsed" in completed.stderr
+    assert "Traceback" not in completed.stderr

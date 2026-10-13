@@ -639,6 +639,109 @@ def test_malformed_records_fail_closed_without_the_body_or_a_traceback(
     assert "junit is not xml" in captured
 
 
+def _valid_stats(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "collected": 1,
+        "passed": 1,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "xfailed": 0,
+        "xpassed": 0,
+        "exit": 0,
+        "runtime": 0.1,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_invalid_stats_roots_and_field_types_fail_closed_without_the_body(
+    tmp_path: Path, capsys: object
+) -> None:
+    junit = tmp_path / "pytest-junit.xml"
+    junit.write_text(_clean_junit(tests=1), encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    sentinel = "password=SENTINEL_VALUE"
+    long_secret = "token=" + ("Z" * 5000) + "SENTINEL_TAIL"
+    cases = {
+        "empty": ("", "stats is not json"),
+        "syntax": ("{not json " + sentinel, "stats is not json"),
+        "null": ("null", "stats root is not an object"),
+        "array": ("[" + json.dumps(sentinel) + "]", "stats root is not an object"),
+        "string": (json.dumps(sentinel), "stats root is not an object"),
+        "number": ("1", "stats root is not an object"),
+        "missing": (json.dumps({"collected": 1}), "stats missing passed"),
+        "float-count": (json.dumps(_valid_stats(collected=1.5)), "not a non-negative integer"),
+        "list-count": (json.dumps(_valid_stats(passed=[1])), "not a non-negative integer"),
+        "bool-exit": (json.dumps(_valid_stats(exit=True)), "not a non-negative integer"),
+        "negative-runtime": (json.dumps(_valid_stats(runtime=-1)), "not a finite non-negative"),
+        "infinite-runtime": (
+            json.dumps(_valid_stats(runtime=0.1)).replace("0.1", "1e309"),
+            "not a finite non-negative",
+        ),
+        "string-exit": (json.dumps(_valid_stats(exit="0")), "not a non-negative integer"),
+        "hostile": (
+            json.dumps(_valid_stats(collected=long_secret)),
+            "not a non-negative integer",
+        ),
+    }
+    for name, (body, expected) in cases.items():
+        stats = tmp_path / f"{name}.json"
+        stats.write_text(body, encoding="utf-8")
+        assert publish(stats, junit, None, summary) == 1
+        captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+        assert "record: unreadable" in captured
+        assert expected in captured
+        assert "Traceback" not in captured
+        assert "SENTINEL" not in captured
+        assert long_secret not in captured
+    bad_junit = tmp_path / "bad-count.xml"
+    bad_junit.write_text(
+        '<?xml version="1.0"?><testsuites><testsuite tests="nope"></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    ok = tmp_path / "ok.json"
+    ok.write_text(json.dumps(_valid_stats()), encoding="utf-8")
+    assert publish(ok, bad_junit, None, summary) == 1
+    captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert "junit tests is not a non-negative integer" in captured
+    assert "Traceback" not in captured
+    empty_suite = tmp_path / "empty.xml"
+    empty_suite.write_text('<?xml version="1.0"?><testsuites></testsuites>', encoding="utf-8")
+    assert publish(ok, empty_suite, None, summary) == 1
+    captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert "junit has no testsuite" in captured
+    exit_file = tmp_path / "exit.txt"
+    exit_file.write_text("", encoding="utf-8")
+    assert publish(ok, junit, exit_file, summary) == 1
+    captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert "exit file empty" in captured
+    exit_file.write_text("1\n2\n", encoding="utf-8")
+    assert publish(ok, junit, exit_file, summary) == 1
+    captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert "exit file is not one integer" in captured
+    mismatched = tmp_path / "mismatch.json"
+    mismatched.write_text(json.dumps(_valid_stats(collected=2, passed=1)), encoding="utf-8")
+    exit_file.write_text("0\n", encoding="utf-8")
+    assert publish(mismatched, junit, exit_file, summary) == 1
+    captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert "accounted" in captured
+    secret_skip = tmp_path / "skip.xml"
+    secret_skip.write_text(
+        '<?xml version="1.0"?>'
+        '<testsuite tests="1" failures="0" errors="0" skipped="1" time="0.1">'
+        '<testcase classname="tests.unit.demo" name="hidden">'
+        '<skipped type="pytest.skip" message="password=SENTINEL_VALUE later"/>'
+        "</testcase></testsuite>",
+        encoding="utf-8",
+    )
+    assert publish(ok, secret_skip, exit_file, summary) == 1
+    captured = capsys.readouterr().out + summary.read_text(encoding="utf-8")  # type: ignore[attr-defined]
+    assert "unexpected skip" in captured
+    assert "SENTINEL_VALUE" not in captured
+    assert "password=[redacted]" in captured
+
+
 def test_a_disagreement_or_a_failed_suite_fails_the_record(tmp_path: Path) -> None:
     junit = tmp_path / "pytest-junit.xml"
     junit.write_text(_JUNIT, encoding="utf-8")

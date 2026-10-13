@@ -110,6 +110,9 @@ def test_required_jobs_stay_on_ubuntu_24_04_and_actions_v7() -> None:
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "runs-on: ubuntu-latest" not in workflow
     assert workflow.count("runs-on: ubuntu-24.04") == 3
+    assert "runs-on: ubuntu-26.04" in workflow
+    assert "qt-ubuntu-2604-logs" in workflow
+    assert "tools/qt_evidence.py" in workflow
     assert "actions/checkout@v7" in workflow
     assert "actions/setup-python@v7" in workflow
     assert "actions/upload-artifact@v7" in workflow
