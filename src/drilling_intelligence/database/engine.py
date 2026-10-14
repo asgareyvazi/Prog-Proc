@@ -8,7 +8,9 @@ module may assume SQLite beyond the pragma block, which is guarded.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import create_engine, event, make_url, text
@@ -29,6 +31,45 @@ def ensure_parent_dir(url: str | URL) -> Path | None:
         return None
     path = Path(database).expanduser()
     return path.parent
+
+
+def adapt_sqlite_value(value: object) -> object:
+    """Match the historical sqlite3 datetime adapter without registering one.
+
+    The default adapter writes ``isoformat(" ")`` and is deprecated on CPython
+    3.12+. SQLAlchemy's DateTime bind processor already returns its own text;
+    this only converts a datetime that would otherwise reach sqlite3.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat(" ")
+    return value
+
+
+def adapt_sqlite_parameters(parameters: object, *, executemany: bool) -> object:
+    if executemany and isinstance(parameters, Sequence) and not isinstance(parameters, str | bytes):
+        return type(parameters)(
+            adapt_sqlite_parameters(item, executemany=False) for item in parameters
+        )
+    if isinstance(parameters, Mapping):
+        return {key: adapt_sqlite_value(value) for key, value in parameters.items()}
+    if isinstance(parameters, Sequence) and not isinstance(parameters, str | bytes):
+        return type(parameters)(adapt_sqlite_value(item) for item in parameters)
+    return adapt_sqlite_value(parameters)
+
+
+def install_sqlite_datetime_bind(engine: Engine) -> None:
+    """Bind datetimes on this engine only. Do not change the process-global adapter."""
+
+    @event.listens_for(engine, "before_cursor_execute", retval=True)
+    def _bind_datetimes(
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        parameters: object,
+        _context: object,
+        executemany: bool,
+    ) -> tuple[str, object]:
+        return statement, adapt_sqlite_parameters(parameters, executemany=executemany)
 
 
 def build_engine(settings: Settings, url: str | None = None, *, echo: bool | None = None) -> Engine:
@@ -63,6 +104,8 @@ def build_engine(settings: Settings, url: str | None = None, *, echo: bool | Non
                 cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.execute(f"PRAGMA busy_timeout={busy_timeout}")
+
+        install_sqlite_datetime_bind(engine)
 
     return engine
 

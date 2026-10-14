@@ -18,6 +18,8 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
+import re
 from pathlib import Path
 
 _MANIFEST = "evidence.json"
@@ -86,6 +88,150 @@ def _integer(value: object) -> int | None:
     return value
 
 
+def _finite(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    return math.isfinite(value) and value >= 0
+
+
+def _ordered(markers: list[str], required: tuple[str, ...]) -> bool:
+    position = -1
+    for item in required:
+        if item not in markers:
+            return False
+        found = markers.index(item)
+        if found <= position:
+            return False
+        position = found
+    return True
+
+
+# Child-process exit, then the markers that must appear in that order.
+# A scenario can observe Qt exit 4 or 7 while the child process itself returns 0.
+_TRANSCRIPTS: dict[str, tuple[int, tuple[str, ...]]] = {
+    "refused": (0, ("REFUSED_KEPT_ALIVE", "SHUTDOWN_OK")),
+    "quit-idle": (0, ("LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED", "IDLE_QUIT_OK")),
+    "quit-active": (0, ("LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED", "EXTERNAL_QUIT_OK")),
+    "quit-several": (0, ("LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED", "SEVERAL_OK")),
+    "last-window": (
+        0,
+        (
+            "LOOP_STARTED",
+            "CLOSE_REFUSED",
+            "CLOSE_AGAIN_ACCEPTED",
+            "EXEC_RETURNED",
+            "LAST_WINDOW_OK",
+        ),
+    ),
+    "exit-route": (
+        0,
+        ("LOOP_STARTED", "EXIT_REQUESTED", "EXEC_RETURNED", "SHUTDOWN_CODE 7", "EXIT_ROUTE_OK"),
+    ),
+    "deadline": (4, ("REAL_QTHREAD", "LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED")),
+    "deadline-synthetic": (4, ("SYNTHETIC_DEADLINE",)),
+    "bound": (0, ("BOUNDED_INCOMPLETE", "RESUME_OK")),
+    "real-qthread": (
+        0,
+        (
+            "LOOP_STARTED",
+            "QUIT_REQUESTED",
+            "EXEC_RETURNED",
+            "SHUTDOWN_CODE 0",
+            "REAL_QTHREAD_QUIT_OK",
+        ),
+    ),
+    "quit-queued": (0, ("LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED", "QUEUED_QUIT_OK")),
+    "quit-gui": (0, ("LOOP_STARTED", "GUI_THREAD_MATCH", "EXEC_RETURNED", "GUI_QUIT_OK")),
+    "quit-before": (0, ("PRE_EXEC_QUIT", "PRE_EXEC_NOT_A_LIVE_LOOP_PROOF")),
+    "real-several": (0, ("LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED", "REAL_SEVERAL_OK")),
+    "finish-race": (0, ("LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED", "RACE_OK")),
+    "repeat": (0, ("EXEC_RETURNED", "SHUTDOWN_CODE 0", "AFTER_REPEAT_QUIT", "REPEAT_OK")),
+    "pump-block": (4, ("PUMP_ARMED", "PUMP_BLOCKED")),
+    "pump-cpu": (4, ("CPU_ARMED", "CPU_BLOCKED")),
+}
+_FAILURE_MODES = {"deadline", "deadline-synthetic", "pump-block", "pump-cpu"}
+_HEADER = re.compile(r"ordinal=(\d+) node=(\S+) exit=(-?\d+) duration_s=(\S+) reason=(.*)$")
+
+
+def _verify_attempt_records(
+    stability_root: Path,
+    stability: object,
+    node: str,
+    records: list[object],
+    *,
+    repeats: int,
+    failed: int,
+    claimed_pass: bool,
+) -> list[str]:
+    """Match every nested attempt record to its log, not to a recomputed checksum."""
+    problems: list[str] = []
+    dirname = stability.stability_dirname(node)  # type: ignore[attr-defined]
+    summary_path = stability_root / "summary.txt"
+    summary = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
+    seen: set[int] = set()
+    failed_records = 0
+    for record in records:
+        if not isinstance(record, dict):
+            problems.append(f"stability attempt record is not an object: {node}")
+            continue
+        ordinal = _integer(record.get("ordinal"))
+        exit_code = _integer(record.get("exit"))
+        reason = record.get("reason")
+        log_name = record.get("log")
+        digest = record.get("sha256")
+        expected_log = f"{dirname}/attempt-{ordinal:02d}.txt" if ordinal is not None else ""
+        if (
+            ordinal is None
+            or ordinal < 1
+            or ordinal > repeats
+            or ordinal in seen
+            or exit_code is None
+            or not _finite(record.get("duration_s"))
+            or not isinstance(reason, str)
+            or _unsafe(log_name)
+            or log_name != expected_log
+            or not isinstance(digest, str)
+        ):
+            problems.append(f"stability attempt record fields are wrong: {node}")
+            continue
+        seen.add(ordinal)
+        path = stability_root / str(log_name)
+        if not path.is_file():
+            problems.append(f"stability attempt log is missing: {log_name}")
+            continue
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            problems.append(f"stability attempt record hash does not match: {log_name}")
+            continue
+        header = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        match = _HEADER.match(header[0]) if header else None
+        duration = float(match.group(4)) if match else None
+        header_reason = (
+            "" if match and match.group(5) == "-" else (match.group(5) if match else None)
+        )
+        if (
+            match is None
+            or int(match.group(1)) != ordinal
+            or int(match.group(3)) != exit_code
+            or duration is None
+            or not math.isclose(duration, float(record["duration_s"]), rel_tol=0, abs_tol=0.001)
+            or header_reason != reason
+        ):
+            problems.append(f"stability attempt record does not match its log: {log_name}")
+        state = "FAIL" if reason else "PASS"
+        summary_line = f"ATTEMPT {ordinal} EXIT {exit_code} {state}"
+        if reason:
+            summary_line = f"{summary_line} {reason}"
+        if summary_line not in summary:
+            problems.append(f"stability attempt record does not match the summary: {log_name}")
+        if reason:
+            failed_records += 1
+        if claimed_pass and (exit_code != 0 or reason):
+            problems.append(f"successful stability record has a failed attempt: {path.name}")
+    if seen != set(range(1, repeats + 1)) or failed_records != failed:
+        problems.append(f"stability attempt records do not match the node summary: {node}")
+    return problems
+
+
 def _verify_nested_stability(root: Path, *, repeats: int, claimed_pass: bool) -> list[str]:
     """Check the nested manifest against the files, not only against its checksum."""
     stability = _load("qt_stability.py")
@@ -105,7 +251,15 @@ def _verify_nested_stability(root: Path, *, repeats: int, claimed_pass: bool) ->
         return [*problems, "stability manifest is not json"]
     if not isinstance(document, dict):
         return [*problems, "stability manifest root is not an object"]
+    versions = document.get("versions")
+    if (
+        not isinstance(versions, dict)
+        or not isinstance(versions.get("python"), str)
+        or not versions.get("python")
+    ):
+        problems.append("stability manifest versions are missing or malformed")
     attempts = _integer(document.get("attempts"))
+    stability_root = root / "stability"
     expected_attempts = repeats * len(stability.HISTORIC_NODES)
     if attempts != expected_attempts:
         problems.append("stability manifest attempt count is wrong")
@@ -128,8 +282,18 @@ def _verify_nested_stability(root: Path, *, repeats: int, claimed_pass: bool) ->
         seen_nodes.add(name)
         if count != repeats or failed is None or not isinstance(records, list):
             problems.append(f"stability manifest node fields are wrong: {name}")
-        if claimed_pass and failed not in (None, 0):
-            problems.append(f"successful stability record has a failed node: {name}")
+            continue
+        problems.extend(
+            _verify_attempt_records(
+                stability_root,
+                stability,
+                name,
+                records,
+                repeats=repeats,
+                failed=failed,
+                claimed_pass=claimed_pass,
+            )
+        )
     if seen_nodes != set(stability.HISTORIC_NODES):
         problems.append("stability manifest nodes do not match the historic nodes")
     entries = document.get("files")
@@ -145,7 +309,6 @@ def _verify_nested_stability(root: Path, *, repeats: int, claimed_pass: bool) ->
             problems.append("stability manifest path is duplicate or unsafe")
             continue
         listed[str(name)] = entry
-    stability_root = root / "stability"
     on_disk = {
         path.relative_to(stability_root).as_posix(): path
         for path in stability_root.rglob("*")
@@ -229,8 +392,18 @@ def _verify_workbench_summary(root: Path, listed: dict[str, dict[str, object]]) 
         second = attempts.get((node, "2"))
         if result == "FIRST_PASS" and (first != "0" or second is not None):
             problems.append(f"FIRST_PASS does not match attempts: {node}")
-        elif result == "RETRY_PASS" and not (first == "134" and second == "0"):
-            problems.append(f"RETRY_PASS does not match the one abort retry: {node}")
+        elif result == "RETRY_PASS":
+            log_name = f"{workbench._safe(node)}.attempt-1.txt"
+            body = ""
+            log_path = root / log_name
+            if log_path.is_file():
+                body = log_path.read_text(encoding="utf-8", errors="replace")
+            if (
+                first != "134"
+                or second != "0"
+                or not workbench.qualifies_for_abort_retry(134, body)
+            ):
+                problems.append(f"RETRY_PASS is not an eligible abort retry: {node}")
         elif result not in {"FIRST_PASS", "RETRY_PASS"}:
             problems.append(f"workbench result is not a pass: {node}")
         extra = [
@@ -241,11 +414,8 @@ def _verify_workbench_summary(root: Path, listed: dict[str, dict[str, object]]) 
     return problems
 
 
-def _verify_transcripts(root: Path, listed: dict[str, dict[str, object]]) -> list[str]:
+def _verify_transcript_files(directory: Path, listed: dict[str, dict[str, object]]) -> list[str]:
     problems: list[str] = []
-    directory = root / "shutdown"
-    if not directory.is_dir():
-        return problems
     for path in sorted(directory.glob("*.json")):
         name = f"shutdown/{path.name}"
         if name not in listed:
@@ -269,18 +439,40 @@ def _verify_transcripts(root: Path, listed: dict[str, dict[str, object]]) -> lis
         ):
             problems.append(f"shutdown transcript fields are wrong: {path.name}")
             continue
-        if path.stem == "real-qthread":
-            required = ("LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED", "SHUTDOWN_CODE 0")
-            positions = [markers.index(item) for item in required if item in markers]
-            if len(positions) != len(required) or positions != sorted(positions):
-                problems.append("real-qthread transcript is missing the live-loop order")
+        contract = _TRANSCRIPTS.get(path.stem)
+        schema = payload.get("schema_version", 1)
+        if (
+            contract is None
+            or schema != 1
+            or exit_code != contract[0]
+            or not _finite(payload.get("duration_s"))
+            or payload.get("result") != "observed"
+            or not _ordered(markers, contract[1])
+        ):
+            problems.append(f"shutdown transcript contract failed: {path.name}")
+            continue
+        if path.stem in _FAILURE_MODES and (
+            "SHUTDOWN_CODE 0" in markers or "REAL_QTHREAD_QUIT_OK" in markers
+        ):
+            problems.append(f"shutdown failure was recorded as a clean shutdown: {path.name}")
+        if path.stem == "quit-before" and "REAL_QTHREAD_QUIT_OK" in markers:
+            problems.append("quit-before transcript claims a live-loop proof")
+        if path.stem == "quit-gui" and "GUI_THREAD_MISS" in markers:
+            problems.append("quit-gui transcript ran on the wrong thread")
+    return problems
+
+
+def _verify_transcripts(root: Path, listed: dict[str, dict[str, object]]) -> list[str]:
+    problems: list[str] = []
+    directory = root / "shutdown"
+    if directory.is_dir():
+        problems.extend(_verify_transcript_files(directory, listed))
     summary = root / "summary.txt"
-    needs_transcript = summary.is_file() and (
-        "test_real_qthread_external_quit_uses_application_shutdown"
-        in summary.read_text(encoding="utf-8")
-    )
-    if needs_transcript and "shutdown/real-qthread.json" not in listed:
-        problems.append("real-qthread transcript is missing from the release archive")
+    summary_text = summary.read_text(encoding="utf-8") if summary.is_file() else ""
+    if "tests/ui/test_qt_shutdown.py" in summary_text:
+        for mode in _TRANSCRIPTS:
+            if f"shutdown/{mode}.json" not in listed:
+                problems.append(f"required shutdown transcript is missing: {mode}")
     return problems
 
 
@@ -348,7 +540,9 @@ def verify_archive(root: Path, *, repeats: int) -> list[str]:
         claimed = False
     else:
         text = stability_summary.read_text(encoding="utf-8")
-        claimed = "stability result: PASS" in text
+        claimed = "stability result: PASS" in text and "stability result: FAIL" not in text
+        if "RETRY_PASS" in text:
+            problems.append("stability summary claims a retry")
         for node in stability.HISTORIC_NODES:
             if node not in text:
                 problems.append(f"stability summary omits {node}")

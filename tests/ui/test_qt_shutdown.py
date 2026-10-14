@@ -44,6 +44,7 @@ def _write_transcript(
         "mode": mode,
         "exit_code": completed.returncode,
         "duration_s": round(duration_s, 3),
+        "schema_version": 1,
         "markers": markers[:40],
         "result": "observed",
     }

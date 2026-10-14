@@ -45,31 +45,35 @@ def _archive(tmp_path: Path, *, repeats: int = 2, poison: str = "") -> Path:
         encoding="utf-8",
     )
     stability_root = root / "stability"
-    blocks = []
+    groups = []
+    nodes = []
     for historic in stability.HISTORIC_NODES:
         node_dir = stability_root / stability.stability_dirname(historic)
         node_dir.mkdir(parents=True)
         for ordinal in range(1, repeats + 1):
-            body = f"ordinal={ordinal} node={historic} exit=0 duration_s=0.1 reason=-\n"
+            body = f"ordinal={ordinal} node={historic} exit=0 duration_s=0.100 reason=-\n"
             if poison and ordinal == repeats:
                 body += poison + "\n"
             (node_dir / f"attempt-{ordinal:02d}.txt").write_text(body, encoding="utf-8")
-        blocks.append(f"NODE {historic}\nATTEMPT 1 exit=0 reason=-\n")
-    blocks.append("stability nodes: 2")
-    blocks.append("stability nodes failed: 0")
-    blocks.append("stability result: PASS")
-    (stability_root / "summary.txt").write_text("\n".join(blocks) + "\n", encoding="utf-8")
-    nodes = [
-        {
-            "node": historic,
-            "attempts": repeats,
-            "failed": 0,
-            "records": [
-                {"ordinal": ordinal, "exit": 0, "reason": ""} for ordinal in range(1, repeats + 1)
-            ],
-        }
-        for historic in stability.HISTORIC_NODES
-    ]
+        records = []
+        attempts = []
+        for ordinal in range(1, repeats + 1):
+            path = node_dir / f"attempt-{ordinal:02d}.txt"
+            records.append(
+                {
+                    "ordinal": ordinal,
+                    "exit": 0,
+                    "duration_s": 0.1,
+                    "reason": "",
+                    "log": f"{node_dir.name}/attempt-{ordinal:02d}.txt",
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+            attempts.append((ordinal, 0, ""))
+        groups.append((historic, attempts))
+        nodes.append({"node": historic, "attempts": repeats, "failed": 0, "records": records})
+    _status, summary = stability.qualify_nodes(groups)
+    (stability_root / "summary.txt").write_text(summary, encoding="utf-8")
     stability.write_evidence_manifest(stability_root, {"python": "3.11"}, nodes=nodes)
     return root
 
@@ -186,11 +190,13 @@ def test_a_tampered_shutdown_transcript_fails_and_a_valid_one_is_hashed(tmp_path
             {
                 "mode": "real-qthread",
                 "exit_code": 0,
+                "duration_s": 0.2,
                 "markers": [
                     "LOOP_STARTED",
                     "QUIT_REQUESTED",
                     "EXEC_RETURNED",
                     "SHUTDOWN_CODE 0",
+                    "REAL_QTHREAD_QUIT_OK",
                 ],
                 "result": "observed",
             }
@@ -205,3 +211,103 @@ def test_a_tampered_shutdown_transcript_fails_and_a_valid_one_is_hashed(tmp_path
     transcript.write_text(transcript.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
     problems = evidence.verify_archive(root, repeats=2)
     assert any("hash or size mismatch" in problem for problem in problems)
+
+
+def _rehash(root: Path, evidence) -> None:
+    nested = root / "stability" / "manifest.json"
+    digest = hashlib.sha256(nested.read_bytes()).hexdigest()
+    (root / "stability" / "manifest.sha256").write_text(
+        f"{digest}  manifest.json\n", encoding="utf-8"
+    )
+    evidence.write_manifest(root)
+
+
+def test_a_rehashed_false_attempt_record_fails(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    nested = root / "stability" / "manifest.json"
+    document = json.loads(nested.read_text(encoding="utf-8"))
+    document["nodes"][0]["records"][0]["exit"] = 7
+    nested.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    _rehash(root, evidence)
+    problems = evidence.verify_archive(root, repeats=2)
+    rendered = "\n".join(problems)
+    assert any("does not match its log" in problem for problem in problems)
+    assert "Traceback" not in rendered
+    assert "{" not in rendered
+    assert evidence.main([str(root), "--repeats", "2", "--write"]) == 1
+    rewritten = json.loads(nested.read_text(encoding="utf-8"))
+    assert rewritten["nodes"][0]["records"][0]["exit"] == 7
+
+
+def test_retry_pass_requires_the_attempt_log_not_only_exit_codes(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    node = "tests/ui/test_workbench.py::test_one"
+    (root / "summary.txt").write_text(
+        "collected 1 workbench tests\n"
+        f"NODE {node} ATTEMPT 1 EXIT 134\n"
+        f"NODE {node} ATTEMPT 2 EXIT 0\n"
+        f"NODE {node} RESULT RETRY_PASS\n"
+        "workbench tests executed: 1\n",
+        encoding="utf-8",
+    )
+    first = root / "tests_ui_test_workbench.py_test_one.attempt-1.txt"
+    second = root / "tests_ui_test_workbench.py_test_one.attempt-2.txt"
+    first.write_text("exit 134 without an abort signature\n", encoding="utf-8")
+    second.write_text("passed\n", encoding="utf-8")
+    evidence.write_manifest(root)
+    problems = evidence.verify_archive(root, repeats=2)
+    assert any("eligible abort retry" in problem for problem in problems)
+    first.write_text("Fatal Python error: Aborted\n", encoding="utf-8")
+    evidence.write_manifest(root)
+    assert evidence.verify_archive(root, repeats=2) == []
+
+
+def test_verify_only_does_not_change_archive_bytes(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    evidence.write_manifest(root)
+    before = {
+        path.relative_to(root).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    assert evidence.main([str(root), "--repeats", "2"]) == 0
+    after = {
+        path.relative_to(root).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    assert before == after
+
+
+def test_a_missing_shutdown_route_fails_when_that_module_ran(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    summary = root / "summary.txt"
+    summary.write_text(
+        summary.read_text(encoding="utf-8") + "tests/ui/test_qt_shutdown.py::test_one\n",
+        encoding="utf-8",
+    )
+    evidence.write_manifest(root)
+    problems = evidence.verify_archive(root, repeats=2)
+    assert any("pump-cpu" in problem for problem in problems)
+    deadline = root / "shutdown" / "deadline.json"
+    deadline.parent.mkdir()
+    deadline.write_text(
+        json.dumps(
+            {
+                "mode": "deadline",
+                "exit_code": 0,
+                "duration_s": 0.4,
+                "markers": ["REAL_QTHREAD", "LOOP_STARTED", "QUIT_REQUESTED", "EXEC_RETURNED"],
+                "result": "observed",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence.write_manifest(root)
+    problems = evidence.verify_archive(root, repeats=2)
+    assert any("contract failed" in problem for problem in problems)

@@ -63,7 +63,9 @@ target named in `docs/DECISIONS.md` ADR-0002 - see `.github/workflows/ci.yml`. R
 `ubuntu-24.04` so the 2026-10-19 `ubuntu-latest` move does not change the Qt image before that
 image has been run (ADR-45). The desktop UI tests skip themselves when Qt cannot load, so a
 headless run reports skips rather than pretending to have executed them. A Qt stability pass is
-evidence of reliability, not proof that a native abort cannot recur.
+evidence of reliability, not proof that a native abort cannot recur. The release
+verifier reads each stability attempt record and the Workbench retry log; a
+checksum that matches a false record still fails (ADR-48).
 
 To check the *installed* product rather than this source tree:
 

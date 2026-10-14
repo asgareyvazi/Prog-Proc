@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ..config.settings import Settings
 from .base import Base
-from .engine import ensure_parent_dir
+from .engine import ensure_parent_dir, install_sqlite_datetime_bind
 
 
 class Database:
@@ -55,6 +55,8 @@ class Database:
                     cursor.execute(f"PRAGMA busy_timeout={busy}")
                 finally:
                     cursor.close()
+
+            install_sqlite_datetime_bind(engine)
 
         return cls(engine, settings=settings)
 

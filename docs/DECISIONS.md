@@ -2234,3 +2234,54 @@ checksum can match a JSON document whose file entries do not match the logs.
 **Consequences.** A green shutdown is evidence only that completion was accepted
 before the deadline in the routes that ran. Fifteen stability passes are still
 not proof the native abort cannot recur.
+
+## ADR-48 — V8.8: a matching checksum is not an attempt record
+
+**Status:** accepted (2026-10-14)
+
+V8.7 checked nested file hashes and workbench exit codes. It did not check that
+each `nodes[].records` entry agreed with its attempt log, and it accepted
+`RETRY_PASS` from the summary pair `134` then `0` without reading attempt 1.
+A shutdown transcript could also exist without distinguishing the child-process
+exit from the Qt code.
+
+*   **Attempt records.** Every historic node has ordinals `1..15` once, in
+    order. `exit` is an integer, not a boolean. `duration_s` is finite and
+    non-negative. `log` is the safe relative attempt path, and `sha256` is the
+    hash of that file. The header's exit and reason, and the summary
+    `ATTEMPT` line, must match the record. Recomputing the checksum after
+    changing a record does not make it true. `versions.python` is required.
+    The file inventory check remains separate. A successful V8.7 archive that
+    already has this shape stays valid; the verifier does not rewrite it.
+*   **Retry.** Workbench `RETRY_PASS` is one eligible abort, using the same
+    `qualifies_for_abort_retry()` policy on the attempt-1 log bytes, then one
+    success. Exit codes alone are not enough. `FIRST_PASS` is attempt 1 only
+    and exit 0. Stability has no retry. The evidence tool loads the workbench
+    module by path and does not run tests on import.
+*   **Transcripts.** Each required shutdown mode has a versioned contract.
+    Missing `schema_version` means version 1, so a V8.7 transcript still
+    passes. The child-process exit, the Qt code in the markers, and the
+    scenario result stay distinct. A child exit 0 that observed Qt exit 4 is
+    not a clean shutdown. If the workbench summary shows
+    `tests/ui/test_qt_shutdown.py`, every required transcript must be present.
+    Transcripts stay redacted through `safe_detail`.
+*   **Verify-only.** Verification does not change archive bytes, timestamps,
+    JSON, paths, or checksums. `--write` hashes the files that exist and then
+    verifies. It does not invent attempts or repair nested records.
+    `evidence.json` and `evidence.sha256` stay separate.
+*   **SQLite datetimes.** On the SQLite engines built by `build_engine` and
+    `Database.from_url`, a datetime that would otherwise reach sqlite3 is
+    written with the historical `isoformat(" ")` text. This is not a
+    process-global adapter and not a warning filter. SQLAlchemy's own DateTime
+    text, `YYYY-MM-DD HH:MM:SS.ffffff`, is left unchanged, including the
+    existing naive read-back of timezone-aware values. No migration. The
+    historical count of 166 CPython 3.14 warnings is confirmed only by that
+    job's log for this commit, not by a local 3.11 run.
+*   **Unchanged.** The release image stays `ubuntu-24.04`. Ubuntu 26.04 remains
+    the required CPython 3.11 lane. CPython 3.14 on Ubuntu 26.04 is not
+    certified. Actions stay at v7. Alembic head stays `0019`. No new runtime
+    dependency. A stability pass is still not proof the native abort cannot
+    recur.
+
+**Consequences.** A green evidence check means the records, logs, and
+transcripts agree. It does not mean a future native abort is impossible.
