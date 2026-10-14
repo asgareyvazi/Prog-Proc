@@ -151,6 +151,136 @@ _TRANSCRIPTS: dict[str, tuple[int, tuple[str, ...]]] = {
 }
 _FAILURE_MODES = {"deadline", "deadline-synthetic", "pump-block", "pump-cpu"}
 _HEADER = re.compile(r"ordinal=(\d+) node=(\S+) exit=(-?\d+) duration_s=(\S+) reason=(.*)$")
+_ATTEMPT_LINE = re.compile(r"ATTEMPT (\d+) EXIT (-?\d+) (PASS|FAIL)(?: (.*))?$")
+
+
+class _SummaryAttempt:
+    def __init__(self, ordinal: int, exit_code: int, state: str, reason: str) -> None:
+        self.ordinal = ordinal
+        self.exit_code = exit_code
+        self.state = state
+        self.reason = reason
+
+
+class _SummaryNode:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.attempts: list[_SummaryAttempt] = []
+        self.failed = 0
+        self.result = ""
+
+
+class _SummaryFooter:
+    def __init__(self, nodes: int, failed: int, result: str) -> None:
+        self.nodes = nodes
+        self.failed = failed
+        self.result = result
+
+
+def _parse_stability_summary(
+    text: str, *, repeats: int, expected_nodes: set[str]
+) -> tuple[dict[str, _SummaryNode], _SummaryFooter | None, list[str]]:
+    """Parse node sections. A matching line in another section is not evidence."""
+    problems: list[str] = []
+    lines = text.splitlines()
+    sections: dict[str, _SummaryNode] = {}
+    index = 0
+    while index < len(lines) and lines[index].startswith("NODE "):
+        name = lines[index].removeprefix("NODE ")
+        index += 1
+        if not name or name in sections:
+            problems.append("stability summary node is missing or duplicate")
+        section = _SummaryNode(name or "<missing>")
+        if name and name not in sections:
+            sections[name] = section
+        if index >= len(lines) or not lines[index].startswith("stability attempts: "):
+            problems.append(f"stability summary attempt count is missing: {section.name}")
+            break
+        declared = lines[index].removeprefix("stability attempts: ")
+        if not declared.isdigit() or int(declared) != repeats:
+            problems.append(f"stability summary attempt count is wrong: {section.name}")
+        index += 1
+        while index < len(lines) and lines[index].startswith("ATTEMPT "):
+            match = _ATTEMPT_LINE.match(lines[index])
+            index += 1
+            if match is None:
+                problems.append(f"stability summary attempt line is malformed: {section.name}")
+                continue
+            ordinal = int(match.group(1))
+            if section.attempts and ordinal != section.attempts[-1].ordinal + 1:
+                problems.append(f"stability summary attempts are out of order: {section.name}")
+            if (
+                any(item.ordinal == ordinal for item in section.attempts)
+                or not 1 <= ordinal <= repeats
+            ):
+                problems.append(f"stability summary attempt ordinal is wrong: {section.name}")
+            section.attempts.append(
+                _SummaryAttempt(ordinal, int(match.group(2)), match.group(3), match.group(4) or "")
+            )
+        if index >= len(lines) or not lines[index].startswith("stability failed: "):
+            problems.append(f"stability summary node failure count is missing: {section.name}")
+            break
+        failed_text = lines[index].removeprefix("stability failed: ")
+        index += 1
+        if not failed_text.isdigit():
+            problems.append(f"stability summary node failure count is wrong: {section.name}")
+            failed = -1
+        else:
+            failed = int(failed_text)
+        section.failed = failed
+        if index >= len(lines) or not lines[index].startswith("stability result: "):
+            problems.append(f"stability summary node result is missing: {section.name}")
+            break
+        result = lines[index].removeprefix("stability result: ")
+        index += 1
+        if result not in {"PASS", "FAIL"}:
+            problems.append(f"stability summary node result is wrong: {section.name}")
+        section.result = result
+        actual_failed = sum(1 for item in section.attempts if item.state == "FAIL")
+        if (
+            failed != actual_failed
+            or (result == "PASS" and actual_failed != 0)
+            or (result == "FAIL" and actual_failed == 0)
+            or [item.ordinal for item in section.attempts] != list(range(1, repeats + 1))
+        ):
+            problems.append(
+                f"stability summary node result does not match its attempts: {section.name}"
+            )
+    if index >= len(lines) or not lines[index].startswith("stability nodes: "):
+        problems.append("stability summary footer is missing")
+        return sections, None, problems
+    nodes_text = lines[index].removeprefix("stability nodes: ")
+    index += 1
+    if index >= len(lines) or not lines[index].startswith("stability nodes failed: "):
+        problems.append("stability summary footer is missing")
+        return sections, None, problems
+    failed_nodes_text = lines[index].removeprefix("stability nodes failed: ")
+    index += 1
+    if index >= len(lines) or not lines[index].startswith("stability result: "):
+        problems.append("stability summary terminal result is missing")
+        return sections, None, problems
+    terminal = lines[index].removeprefix("stability result: ")
+    index += 1
+    if index != len(lines):
+        problems.append("stability summary has extra lines")
+    if (
+        not nodes_text.isdigit()
+        or not failed_nodes_text.isdigit()
+        or terminal not in {"PASS", "FAIL"}
+    ):
+        problems.append("stability summary footer is malformed")
+        return sections, None, problems
+    footer = _SummaryFooter(int(nodes_text), int(failed_nodes_text), terminal)
+    node_failures = sum(1 for section in sections.values() if section.failed)
+    if footer.nodes != len(expected_nodes) or set(sections) != expected_nodes:
+        problems.append("stability summary nodes do not match the historic nodes")
+    if (
+        footer.failed != node_failures
+        or (terminal == "PASS" and (footer.failed or node_failures))
+        or (terminal == "FAIL" and footer.failed == 0)
+    ):
+        problems.append("stability summary terminal result contradicts its nodes")
+    return sections, footer, problems
 
 
 def _verify_attempt_records(
@@ -158,16 +288,17 @@ def _verify_attempt_records(
     stability: object,
     node: str,
     records: list[object],
+    section: _SummaryNode | None,
     *,
     repeats: int,
     failed: int,
     claimed_pass: bool,
 ) -> list[str]:
-    """Match every nested attempt record to its log, not to a recomputed checksum."""
+    """Match every nested attempt record to its own node section and log."""
     problems: list[str] = []
     dirname = stability.stability_dirname(node)  # type: ignore[attr-defined]
-    summary_path = stability_root / "summary.txt"
-    summary = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
+    if section is None:
+        problems.append(f"stability summary omits {node}")
     seen: set[int] = set()
     failed_records = 0
     for record in records:
@@ -217,11 +348,17 @@ def _verify_attempt_records(
             or header_reason != reason
         ):
             problems.append(f"stability attempt record does not match its log: {log_name}")
-        state = "FAIL" if reason else "PASS"
-        summary_line = f"ATTEMPT {ordinal} EXIT {exit_code} {state}"
-        if reason:
-            summary_line = f"{summary_line} {reason}"
-        if summary_line not in summary:
+        summary_attempt = (
+            next((item for item in section.attempts if item.ordinal == ordinal), None)
+            if section is not None
+            else None
+        )
+        if (
+            summary_attempt is None
+            or summary_attempt.exit_code != exit_code
+            or summary_attempt.reason != reason
+            or (summary_attempt.state == "FAIL") != bool(reason)
+        ):
             problems.append(f"stability attempt record does not match the summary: {log_name}")
         if reason:
             failed_records += 1
@@ -229,6 +366,50 @@ def _verify_attempt_records(
             problems.append(f"successful stability record has a failed attempt: {path.name}")
     if seen != set(range(1, repeats + 1)) or failed_records != failed:
         problems.append(f"stability attempt records do not match the node summary: {node}")
+    return problems
+
+
+def _version_token(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, str) or not value.strip():
+        return None
+    if value.strip().lower() == "unavailable":
+        return None
+    return value.strip()
+
+
+def _toolkit_tokens(text: str) -> dict[str, str]:
+    tokens = text.split()
+    found: dict[str, str] = {}
+    for index, token in enumerate(tokens[:-1]):
+        if token in {"pyside", "qt", "python"} and token not in found:
+            found[token] = tokens[index + 1]
+    return found
+
+
+def _verify_version_metadata(root: Path, versions: object, *, claimed_pass: bool) -> list[str]:
+    """A successful Qt run must name Python, PySide6, and Qt. ``unavailable`` is not a success."""
+    problems: list[str] = []
+    if not isinstance(versions, dict) or _version_token(versions.get("python")) is None:
+        problems.append("stability manifest versions are missing or malformed")
+        versions = {}
+    workbench = root / "summary.txt"
+    workbench_text = workbench.read_text(encoding="utf-8") if workbench.is_file() else ""
+    claimed_qt = claimed_pass or any(
+        token in workbench_text for token in ("RESULT FIRST_PASS", "RESULT RETRY_PASS")
+    )
+    if not claimed_qt or not isinstance(versions, dict):
+        return problems
+    versions_file = root / "versions.txt"
+    file_tokens = (
+        _toolkit_tokens(versions_file.read_text(encoding="utf-8"))
+        if versions_file.is_file()
+        else {}
+    )
+    for key in ("pyside", "qt"):
+        manifest_token = _version_token(versions.get(key))
+        file_token = _version_token(file_tokens.get(key))
+        if manifest_token is None or file_token is None or manifest_token != file_token:
+            problems.append(f"successful Qt archive is missing a {key} version")
     return problems
 
 
@@ -252,14 +433,19 @@ def _verify_nested_stability(root: Path, *, repeats: int, claimed_pass: bool) ->
     if not isinstance(document, dict):
         return [*problems, "stability manifest root is not an object"]
     versions = document.get("versions")
-    if (
-        not isinstance(versions, dict)
-        or not isinstance(versions.get("python"), str)
-        or not versions.get("python")
-    ):
-        problems.append("stability manifest versions are missing or malformed")
-    attempts = _integer(document.get("attempts"))
     stability_root = root / "stability"
+    summary_path = stability_root / "summary.txt"
+    summary_text = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
+    sections, footer, summary_problems = _parse_stability_summary(
+        summary_text, repeats=repeats, expected_nodes=set(stability.HISTORIC_NODES)
+    )
+    problems.extend(summary_problems)
+    if footer is not None and footer.result == "PASS":
+        claimed_pass = True
+    elif summary_problems:
+        claimed_pass = False
+    problems.extend(_verify_version_metadata(root, versions, claimed_pass=claimed_pass))
+    attempts = _integer(document.get("attempts"))
     expected_attempts = repeats * len(stability.HISTORIC_NODES)
     if attempts != expected_attempts:
         problems.append("stability manifest attempt count is wrong")
@@ -289,6 +475,7 @@ def _verify_nested_stability(root: Path, *, repeats: int, claimed_pass: bool) ->
                 stability,
                 name,
                 records,
+                sections.get(name),
                 repeats=repeats,
                 failed=failed,
                 claimed_pass=claimed_pass,
@@ -443,6 +630,8 @@ def _verify_transcript_files(directory: Path, listed: dict[str, dict[str, object
         schema = payload.get("schema_version", 1)
         if (
             contract is None
+            or isinstance(schema, bool)
+            or not isinstance(schema, int)
             or schema != 1
             or exit_code != contract[0]
             or not _finite(payload.get("duration_s"))

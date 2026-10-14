@@ -23,6 +23,7 @@ from sqlalchemy import Engine, inspect, text
 
 from ..core.logging import get_logger
 from .base import Base
+from .engine import install_sqlite_datetime_bind
 
 log = get_logger("database.migrations")
 
@@ -124,6 +125,7 @@ def upgrade(
     a database - so it requires ``allow_downgrade``; without it the status says
     ``downgrade-required`` instead of silently reporting that nothing needed doing.
     """
+    install_sqlite_datetime_bind(engine)
     directory = find_migrations_dir()
     existing = set(inspect(engine).get_table_names())
     if not existing:

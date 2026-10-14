@@ -2275,8 +2275,11 @@ exit from the Qt code.
     process-global adapter and not a warning filter. SQLAlchemy's own DateTime
     text, `YYYY-MM-DD HH:MM:SS.ffffff`, is left unchanged, including the
     existing naive read-back of timezone-aware values. No migration. The
-    historical count of 166 CPython 3.14 warnings is confirmed only by that
-    job's log for this commit, not by a local 3.11 run.
+    V8.8 CPython 3.14 artifact reported 154 warnings, not 166. All 154 were
+    this same adapter: 24 in `test_migration_0005.py` and 130 in
+    `test_migration_0008.py`. The 166 figure is the earlier V8.6 note, not
+    that artifact. Those suites used a bare `create_engine`, so the new bind
+    did not cover the writes.
 *   **Unchanged.** The release image stays `ubuntu-24.04`. Ubuntu 26.04 remains
     the required CPython 3.11 lane. CPython 3.14 on Ubuntu 26.04 is not
     certified. Actions stay at v7. Alembic head stays `0019`. No new runtime
@@ -2285,3 +2288,56 @@ exit from the Qt code.
 
 **Consequences.** A green evidence check means the records, logs, and
 transcripts agree. It does not mean a future native abort is impossible.
+
+## ADR-49 — V8.9: the warning path and the node section
+
+**Status:** accepted (2026-10-14)
+
+V8.8 bound datetimes on `build_engine` and `Database.from_url`. The CPython
+3.14 artifact for that commit still reported 154 deprecated sqlite3 datetime
+adapter warnings. It did not report 166. The 154 warnings were 24 in
+`tests/integration/test_migration_0005.py` and 130 in
+`tests/integration/test_migration_0008.py`. Those tests insert Python
+datetimes through `text()` on a bare `create_engine`, which never received
+the engine-scoped bind. SQLAlchemy's own `DateTime` processor was not the
+source.
+
+*   **SQLite.** `open_sqlite()` is the migration-fixture engine: the datetime
+    bind, and no desktop pragmas, so foreign keys stay at SQLite's default.
+    `upgrade()` installs the same bind on any SQLite engine it is given.
+    Alembic's own online engine does too. A non-SQLite dialect is not
+    rewritten. There is no process-global `sqlite3.register_adapter` and no
+    warning filter. An unbound datetime still becomes `isoformat(" ")`. A
+    value SQLAlchemy has already rendered as `YYYY-MM-DD HH:MM:SS.ffffff`
+    is left unchanged. A raw `create_engine` that does not call the helper
+    remains outside the guarantee.
+*   **Warning count.** The V8.8 artifact count was 154, all of that adapter.
+    The CPython 3.14 job reads `pytest-output.txt` and fails if that warning
+    remains. A green job means that file contains zero occurrences. Any other
+    warning total is the notice published from the same file, not a claim
+    that the suite is warning-free. A local CPython 3.11 run cannot emit the
+    3.12 deprecation and is not that proof.
+*   **Stability summary.** An `ATTEMPT` line counts only inside its own `NODE`
+    section. Each historic node appears once, with ordinals `1..repeats` in
+    order, and the node failure count, node result, and single terminal
+    result must agree. A line copied into another section does not satisfy
+    the source node. Recomputing checksums does not hide a false line.
+    Stability stays no-retry. The CI contract is still 15 attempts per
+    historic node.
+*   **Transcripts and versions.** `schema_version` must be the integer 1.
+    A boolean, float, or string does not pass because it compares equal to 1.
+    A missing version remains version 1, which is the V8.7 transcript.
+    A successful Qt run must record nonempty Python, PySide6, and Qt versions
+    in both `versions.txt` and the stability manifest, and those toolkit
+    versions must agree. `unavailable` is not a successful run. CPython 3.14
+    on Ubuntu 26.04 remains uncertified.
+*   **Unchanged.** Release image `ubuntu-24.04`. Ubuntu 26.04 is the required
+    CPython 3.11 lane. Five required jobs. Alembic head `0019`. No new
+    migration or runtime dependency. Verify-only still changes nothing.
+    `--write` still does not invent attempts. A stability pass is not proof
+    the native abort cannot recur.
+
+**Consequences.** The migration fixtures and the application migration engine
+now share the datetime bind. A green evidence check means each summary line
+belongs to its node. It still does not mean a future native abort is
+impossible.

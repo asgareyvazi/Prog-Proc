@@ -78,6 +78,26 @@ jobs:
           echo "$status" > pytest-exit.txt
           exit "$status"
 
+      # The artifact host is not a substitute for this check. The step reads the
+      # pytest output the job just wrote and fails if the deprecated adapter remains.
+      - name: Count datetime adapter warnings
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f pytest-output.txt
+          adapter=$(grep -c "default datetime adapter" pytest-output.txt || true)
+          summary=$(grep -E "[0-9]+ warnings? in " pytest-output.txt | tail -1 || true)
+          echo "::notice::datetime-adapter-warnings: ${adapter}"
+          if [ -n "${summary}" ]; then
+            echo "::notice::${summary}"
+          else
+            echo "::notice::pytest warning summary line absent"
+          fi
+          if [ "${adapter}" != "0" ]; then
+            echo "::error::deprecated sqlite datetime adapter warning remains: ${adapter}"
+            exit 1
+          fi
+
       # Totals are required on a green run and still published when pytest fails midway.
       - name: Record test totals
         if: always()

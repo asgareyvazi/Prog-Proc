@@ -12,6 +12,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from weakref import WeakSet
 
 from sqlalchemy import create_engine, event, make_url, text
 from sqlalchemy.engine import URL, Engine
@@ -57,8 +58,23 @@ def adapt_sqlite_parameters(parameters: object, *, executemany: bool) -> object:
     return adapt_sqlite_value(parameters)
 
 
+_BOUND_ENGINES: WeakSet[Engine] = WeakSet()
+
+
+def sqlite_datetime_bind_installed(engine: Engine) -> bool:
+    return engine in _BOUND_ENGINES
+
+
 def install_sqlite_datetime_bind(engine: Engine) -> None:
-    """Bind datetimes on this engine only. Do not change the process-global adapter."""
+    """Bind datetimes on this SQLite engine only. Do not change the process-global adapter.
+
+    A non-SQLite engine is left alone. A second call on the same engine does not
+    add another listener, so a migration runner can install the bind on an engine
+    that already has it.
+    """
+    if engine.dialect.name != "sqlite" or engine in _BOUND_ENGINES:
+        return
+    _BOUND_ENGINES.add(engine)
 
     @event.listens_for(engine, "before_cursor_execute", retval=True)
     def _bind_datetimes(
@@ -70,6 +86,19 @@ def install_sqlite_datetime_bind(engine: Engine) -> None:
         executemany: bool,
     ) -> tuple[str, object]:
         return statement, adapt_sqlite_parameters(parameters, executemany=executemany)
+
+
+def open_sqlite(url: str) -> Engine:
+    """Open a SQLite file the way the migration fixtures do, with the datetime bind.
+
+    Desktop pragmas stay off. A legacy insert must keep SQLite's default foreign-key
+    behavior. The datetime bind is still required: these fixtures pass Python
+    datetime values through ``text()``, and a bare ``create_engine`` lets those
+    values hit the deprecated stdlib adapter.
+    """
+    engine = create_engine(url)
+    install_sqlite_datetime_bind(engine)
+    return engine
 
 
 def build_engine(settings: Settings, url: str | None = None, *, echo: bool | None = None) -> Engine:

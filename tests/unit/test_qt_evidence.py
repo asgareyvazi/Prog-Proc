@@ -31,7 +31,9 @@ def _archive(tmp_path: Path, *, repeats: int = 2, poison: str = "") -> Path:
     root = tmp_path / "qt-logs"
     root.mkdir(parents=True)
     (root / "collection.txt").write_text("tests/ui/test_workbench.py::test_one\n", encoding="utf-8")
-    (root / "versions.txt").write_text("qt-platform offscreen\n", encoding="utf-8")
+    (root / "versions.txt").write_text(
+        "qt-platform offscreen pyside 6.6.0 qt 6.6.0\n", encoding="utf-8"
+    )
     node = "tests/ui/test_workbench.py::test_one"
     (root / "summary.txt").write_text(
         "collected 1 workbench tests\n"
@@ -74,7 +76,11 @@ def _archive(tmp_path: Path, *, repeats: int = 2, poison: str = "") -> Path:
         nodes.append({"node": historic, "attempts": repeats, "failed": 0, "records": records})
     _status, summary = stability.qualify_nodes(groups)
     (stability_root / "summary.txt").write_text(summary, encoding="utf-8")
-    stability.write_evidence_manifest(stability_root, {"python": "3.11"}, nodes=nodes)
+    stability.write_evidence_manifest(
+        stability_root,
+        {"python": "3.11", "pyside": "6.6.0", "qt": "6.6.0"},
+        nodes=nodes,
+    )
     return root
 
 
@@ -311,3 +317,171 @@ def test_a_missing_shutdown_route_fails_when_that_module_ran(tmp_path: Path) -> 
     evidence.write_manifest(root)
     problems = evidence.verify_archive(root, repeats=2)
     assert any("contract failed" in problem for problem in problems)
+
+
+def _refresh_stability_file(root: Path, evidence, name: str) -> None:
+    nested_path = root / "stability" / "manifest.json"
+    document = json.loads(nested_path.read_text(encoding="utf-8"))
+    target = root / "stability" / name
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    for entry in document["files"]:
+        if entry.get("name") == name:
+            entry["bytes"] = target.stat().st_size
+            entry["sha256"] = digest
+    nested_path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _rehash(root, evidence)
+
+
+def _write_summary(root: Path, evidence, lines: list[str]) -> None:
+    (root / "stability" / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _refresh_stability_file(root, evidence, "summary.txt")
+
+
+def _semantic_problems(root: Path, evidence, *, repeats: int = 2) -> list[str]:
+    problems = evidence.verify_archive(root, repeats=repeats)
+    rendered = "\n".join(problems)
+    assert "hash or size mismatch" not in rendered
+    assert "does not match file" not in rendered
+    assert "Traceback" not in rendered
+    assert "{" not in rendered
+    return problems
+
+
+def test_stability_summary_lines_must_belong_to_their_node(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    evidence.write_manifest(root)
+    lines = (root / "stability" / "summary.txt").read_text(encoding="utf-8").splitlines()
+    moved = lines.pop(
+        next(index for index, line in enumerate(lines) if line.startswith("ATTEMPT 2 "))
+    )
+    firsts = [index for index, line in enumerate(lines) if line.startswith("ATTEMPT 1 ")]
+    lines.insert(firsts[1] + 1, moved)
+    _write_summary(root, evidence, lines)
+    problems = _semantic_problems(root, evidence)
+    assert any("attempt" in problem or "ordinal" in problem for problem in problems)
+
+
+def test_duplicate_or_missing_summary_sections_fail(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    evidence.write_manifest(root)
+    lines = (root / "stability" / "summary.txt").read_text(encoding="utf-8").splitlines()
+    footer = next(index for index, line in enumerate(lines) if line.startswith("stability nodes:"))
+    duplicated = lines[:footer] + lines[: footer // 2] + lines[footer:]
+    _write_summary(root, evidence, duplicated)
+    assert any("duplicate" in problem for problem in _semantic_problems(root, evidence))
+    second = next(index for index, line in enumerate(lines) if line.startswith("NODE ") and index)
+    _write_summary(root, evidence, lines[second:])
+    assert any(
+        "historic nodes" in problem or "omits" in problem
+        for problem in _semantic_problems(root, evidence)
+    )
+
+
+def test_contradictory_or_repeated_terminal_results_fail(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    evidence.write_manifest(root)
+    lines = (root / "stability" / "summary.txt").read_text(encoding="utf-8").splitlines()
+    _write_summary(root, evidence, [*lines, "stability result: FAIL"])
+    assert any("extra" in problem for problem in _semantic_problems(root, evidence))
+    _write_summary(root, evidence, [*lines, "stability result: PASS", "stability result: FAIL"])
+    assert any("extra" in problem for problem in _semantic_problems(root, evidence))
+
+
+def test_summary_counts_and_reasons_must_match_the_records(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    evidence.write_manifest(root)
+    lines = (root / "stability" / "summary.txt").read_text(encoding="utf-8").splitlines()
+    counted = lines[:]
+    counted[counted.index("stability failed: 0")] = "stability failed: 1"
+    _write_summary(root, evidence, counted)
+    assert any(
+        "does not match its attempts" in problem for problem in _semantic_problems(root, evidence)
+    )
+    changed = lines[:]
+    changed[changed.index("ATTEMPT 1 EXIT 0 PASS")] = "ATTEMPT 1 EXIT 0 FAIL changed"
+    _write_summary(root, evidence, changed)
+    problems = _semantic_problems(root, evidence)
+    assert any("does not match" in problem for problem in problems)
+    swapped = lines[:]
+    first = swapped.index("ATTEMPT 1 EXIT 0 PASS")
+    second = swapped.index("ATTEMPT 2 EXIT 0 PASS")
+    swapped[first], swapped[second] = swapped[second], swapped[first]
+    _write_summary(root, evidence, swapped)
+    assert any(
+        "out of order" in problem or "ordinal" in problem
+        for problem in _semantic_problems(root, evidence)
+    )
+
+
+def test_an_extra_attempt_after_ordinal_15_fails(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path, repeats=15)
+    evidence.write_manifest(root)
+    lines = (root / "stability" / "summary.txt").read_text(encoding="utf-8").splitlines()
+    failed = lines.index("stability failed: 0")
+    lines.insert(failed, "ATTEMPT 16 EXIT 0 PASS")
+    _write_summary(root, evidence, lines)
+    problems = _semantic_problems(root, evidence, repeats=15)
+    assert any(
+        "ordinal" in problem or "attempt count" in problem or "does not match" in problem
+        for problem in problems
+    )
+
+
+def test_schema_version_must_be_an_integer(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    transcript = root / "shutdown" / "real-qthread.json"
+    transcript.parent.mkdir()
+    payload = {
+        "mode": "real-qthread",
+        "exit_code": 0,
+        "duration_s": 0.2,
+        "markers": [
+            "LOOP_STARTED",
+            "QUIT_REQUESTED",
+            "EXEC_RETURNED",
+            "SHUTDOWN_CODE 0",
+            "REAL_QTHREAD_QUIT_OK",
+        ],
+        "result": "observed",
+    }
+    transcript.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    evidence.write_manifest(root)
+    assert evidence.verify_archive(root, repeats=2) == []
+    for bad in (True, False, 1.0, "1", 2):
+        payload["schema_version"] = bad
+        transcript.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        evidence.write_manifest(root)
+        problems = evidence.verify_archive(root, repeats=2)
+        assert any("contract failed" in problem for problem in problems), bad
+    payload.pop("schema_version")
+    transcript.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    evidence.write_manifest(root)
+    assert evidence.verify_archive(root, repeats=2) == []
+    transcript.write_text("[]\n", encoding="utf-8")
+    evidence.write_manifest(root)
+    problems = evidence.verify_archive(root, repeats=2)
+    assert any("not an object" in problem for problem in problems)
+
+
+def test_a_successful_qt_archive_cannot_omit_toolkit_versions(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    evidence.write_manifest(root)
+    nested = root / "stability" / "manifest.json"
+    document = json.loads(nested.read_text(encoding="utf-8"))
+    document["versions"]["pyside"] = "unavailable"
+    document["versions"]["qt"] = "unavailable"
+    nested.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (root / "versions.txt").write_text(
+        "qt-platform offscreen pyside unavailable qt unavailable\n", encoding="utf-8"
+    )
+    _rehash(root, evidence)
+    problems = evidence.verify_archive(root, repeats=2)
+    assert any("missing a pyside" in problem for problem in problems)
+    assert "Traceback" not in "\n".join(problems)

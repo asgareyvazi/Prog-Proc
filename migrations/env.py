@@ -35,6 +35,7 @@ if str(SRC) not in sys.path:
 from drilling_intelligence.config.settings import Settings  # noqa: E402
 from drilling_intelligence.database import models  # noqa: F401,E402  (registers the tables)
 from drilling_intelligence.database.base import Base  # noqa: E402
+from drilling_intelligence.database.engine import install_sqlite_datetime_bind  # noqa: E402
 
 target_metadata = Base.metadata
 
@@ -111,6 +112,7 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    install_sqlite_datetime_bind(connectable)
     with connectable.connect() as connection:
         context.configure(
             connection=connection,

@@ -29,10 +29,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from sqlalchemy import MetaData, create_engine, func, inspect, select, text
+from sqlalchemy import MetaData, func, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
+from drilling_intelligence.database.engine import open_sqlite
 from drilling_intelligence.database.migrations import (
     METADATA_REVISION,
     heads,
@@ -147,7 +148,7 @@ def snapshot(engine: Engine) -> list[tuple]:
 
 
 def test_the_upgrade_adds_the_columns_and_leaves_the_rows_alone(tmp_path) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'legacy.db'}")
     try:
         build_legacy_database(engine)
         add_calculation(engine, "calc-legacy-1")
@@ -198,7 +199,7 @@ def test_the_identity_index_is_unique_and_null_friendly(tmp_path) -> None:
     to find the row it wrote rather than append a twin.  And a hand-entered one-off has no content identity
     to claim, so a unique index that treated NULLs as equal would make the second one an error.
     """
-    engine = create_engine(f"sqlite:///{tmp_path / 'identity.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'identity.db'}")
     try:
         build_legacy_database(engine)
         upgrade(engine, "0005")
@@ -240,7 +241,7 @@ def test_the_migrated_calculation_table_is_the_one_the_models_describe(tmp_path)
     """
     from drilling_intelligence.database.models import Base
 
-    migrated = create_engine(f"sqlite:///{tmp_path / 'parity-migrated.db'}")
+    migrated = open_sqlite(f"sqlite:///{tmp_path / 'parity-migrated.db'}")
     try:
         build_legacy_database(migrated)
         # Parity is claimed for a *workspace*, and a workspace is upgraded to the head of the chain -
@@ -250,7 +251,7 @@ def test_the_migrated_calculation_table_is_the_one_the_models_describe(tmp_path)
         upgrade(migrated, "head")
     finally:
         migrated.dispose()
-    from_models = create_engine(f"sqlite:///{tmp_path / 'parity-models.db'}")
+    from_models = open_sqlite(f"sqlite:///{tmp_path / 'parity-models.db'}")
     try:
         Base.metadata.create_all(from_models, tables=[Base.metadata.tables["calculation"]])
         for getter in (
@@ -289,7 +290,7 @@ def test_a_dangling_citation_is_reported_on_a_migrated_file(tmp_path) -> None:
 
     from drilling_intelligence.database.integrity import check_operational_integrity
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'dangling.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'dangling.db'}")
     try:
         build_legacy_database(engine)
         add_calculation(engine, "calc-no-evidence")
@@ -325,7 +326,7 @@ def test_a_dangling_citation_is_reported_on_a_migrated_file(tmp_path) -> None:
 
 def test_the_downgrade_is_the_exact_inverse(tmp_path) -> None:
     """Rolling back leaves the table as 0004 built it - rows, foreign keys and all - and the way up works."""
-    engine = create_engine(f"sqlite:///{tmp_path / 'reverse.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'reverse.db'}")
     try:
         build_legacy_database(engine)
         add_calculation(engine, "calc-1")
@@ -431,7 +432,7 @@ def test_head_still_matches_the_models_and_the_knowledge_layer_is_intact(tmp_pat
     round trip untouched, which is what "no loss of Knowledge facts" has to mean for a migration this far
     along the chain.
     """
-    engine = create_engine(f"sqlite:///{tmp_path / 'head.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'head.db'}")
     try:
         build_legacy_database(engine)
         add_calculation(engine, "calc-1")

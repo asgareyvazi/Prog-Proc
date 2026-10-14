@@ -27,9 +27,10 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
+from drilling_intelligence.database.engine import open_sqlite
 from drilling_intelligence.database.migrations import (
     METADATA_REVISION,
     heads,
@@ -138,7 +139,7 @@ def identity_keys(engine: Engine) -> list[tuple]:
 
 
 def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_path) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'legacy.db'}")
     try:
         build_legacy_database(engine)
         for index, (subject, _kind, _id) in enumerate(CASES):
@@ -198,7 +199,7 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
 
 def test_the_backfill_resolves_only_what_it_can_recognise(tmp_path) -> None:
     """Each shape lands where it should, and nothing is parsed approximately."""
-    engine = create_engine(f"sqlite:///{tmp_path / 'backfill.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'backfill.db'}")
     try:
         build_legacy_database(engine)
         for index, (subject, _kind, _id) in enumerate(CASES):
@@ -230,7 +231,7 @@ def test_the_backfill_resolves_only_what_it_can_recognise(tmp_path) -> None:
 
 def test_a_null_subject_is_left_null(tmp_path) -> None:
     """An input that named no subject is not a dependency, and 0008 does not invent one."""
-    engine = create_engine(f"sqlite:///{tmp_path / 'nulls.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'nulls.db'}")
     try:
         build_legacy_database(engine)
         add_input(engine, "cain-null", None)
@@ -254,7 +255,7 @@ def test_a_null_subject_is_left_null(tmp_path) -> None:
 
 def test_the_downgrade_is_the_exact_inverse(tmp_path) -> None:
     """Back to 0007: the columns and the index go, and every original value survives."""
-    engine = create_engine(f"sqlite:///{tmp_path / 'roundtrip.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'roundtrip.db'}")
     try:
         build_legacy_database(engine)
         for index, (subject, _kind, _id) in enumerate(CASES):
@@ -313,7 +314,7 @@ def test_the_backfill_and_the_write_path_agree_on_every_shape(tmp_path) -> None:
     """
     from drilling_intelligence.engineering.repository import resolve_input_subject
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'agree.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'agree.db'}")
     try:
         build_legacy_database(engine)
         for index, (subject, _kind, _identifier) in enumerate(CASES):
@@ -357,7 +358,7 @@ def test_the_backfill_and_the_write_path_agree_on_every_shape(tmp_path) -> None:
 
 def test_the_backfill_never_promotes_free_text_to_an_identity(tmp_path) -> None:
     """A string that merely *starts* with a known prefix is not a reference to that thing."""
-    engine = create_engine(f"sqlite:///{tmp_path / 'noguess.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'noguess.db'}")
     try:
         build_legacy_database(engine)
         # None of these is a canonical key; all of them begin with a real anchor kind.
@@ -426,7 +427,7 @@ def test_the_backfill_covers_the_canonical_vocabulary(tmp_path) -> None:
     ]
     assert len(generated) == len(ANCHOR_KINDS) >= 5
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'vocab.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'vocab.db'}")
     try:
         build_legacy_database(engine)
         for index, subject in enumerate(generated):
@@ -491,7 +492,7 @@ def test_the_escape_guard_does_not_depend_on_like_semantics(tmp_path) -> None:
     assert "instr(calculation_input.subject_key, '\\')" in sql, sql
 
     # And it still does its job: an escaped key stays legacy rather than being resolved wrongly.
-    engine = create_engine(f"sqlite:///{tmp_path / 'guard.db'}")
+    engine = open_sqlite(f"sqlite:///{tmp_path / 'guard.db'}")
     try:
         build_legacy_database(engine)
         add_input(engine, "cain-esc", "well:w\\|1|property:x")
