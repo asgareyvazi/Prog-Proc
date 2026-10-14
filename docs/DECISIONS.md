@@ -2341,3 +2341,39 @@ source.
 now share the datetime bind. A green evidence check means each summary line
 belongs to its node. It still does not mean a future native abort is
 impossible.
+
+## ADR-50 — V8.10: versions, headers, and record order
+
+**Status:** accepted (2026-10-14)
+
+V8.9 required PySide and Qt versions to agree, and it required a Python
+version in the stability manifest. `versions.txt` did not record Python, and
+the verifier did not compare that manifest value with the file. An attempt
+log's `node=` token was not compared with the historic node that owned the
+file. A reordered `records` array still passed if the set of ordinals was
+complete.
+
+*   **Versions.** The Qt probe writes `python`, `pyside`, and `qt` from the
+    same interpreter that later writes the stability manifest:
+    `platform.python_version()`, `PySide6.__version__`, and `qVersion()`.
+    A successful archive must have all three as nonempty strings, not
+    `unavailable`, in both `versions.txt` and the nested manifest, and the
+    two sources must agree. A missing or contradictory value fails after the
+    checksums are regenerated.
+*   **Headers.** Each attempt log's `node=` must be the historic node that
+    owns that directory and record. A header that names the other historic
+    node fails even when the path, hash, ordinal, exit, duration, and reason
+    still match.
+*   **Order.** `records` must be exactly ordinals `1..repeats` in that order.
+    A swapped array fails after its checksum is regenerated. Summary-line
+    order remains a separate check. Stability stays 15 no-retry attempts per
+    historic node in CI. That is evidence about the runs that finished, not
+    proof a future native abort cannot occur.
+*   **Unchanged.** No new migration, runtime dependency, or retry policy.
+    Alembic head stays `0019`. The SQLite datetime bind is unchanged. The
+    V8.8 artifact still reported 154 adapter warnings, not 166. CPython 3.14
+    on Ubuntu 26.04 remains uncertified.
+
+**Consequences.** A green evidence check means the version sources agree and
+each attempt belongs to its node in order. It does not certify a platform
+that was not run.

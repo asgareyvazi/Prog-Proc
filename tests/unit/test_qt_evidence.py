@@ -32,7 +32,7 @@ def _archive(tmp_path: Path, *, repeats: int = 2, poison: str = "") -> Path:
     root.mkdir(parents=True)
     (root / "collection.txt").write_text("tests/ui/test_workbench.py::test_one\n", encoding="utf-8")
     (root / "versions.txt").write_text(
-        "qt-platform offscreen pyside 6.6.0 qt 6.6.0\n", encoding="utf-8"
+        "qt-platform offscreen python 3.11 pyside 6.6.0 qt 6.6.0\n", encoding="utf-8"
     )
     node = "tests/ui/test_workbench.py::test_one"
     (root / "summary.txt").write_text(
@@ -479,9 +479,117 @@ def test_a_successful_qt_archive_cannot_omit_toolkit_versions(tmp_path: Path) ->
     document["versions"]["qt"] = "unavailable"
     nested.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (root / "versions.txt").write_text(
-        "qt-platform offscreen pyside unavailable qt unavailable\n", encoding="utf-8"
+        "qt-platform offscreen python 3.11 pyside unavailable qt unavailable\n",
+        encoding="utf-8",
     )
     _rehash(root, evidence)
     problems = evidence.verify_archive(root, repeats=2)
     assert any("missing a pyside" in problem for problem in problems)
     assert "Traceback" not in "\n".join(problems)
+
+
+def _set_versions(root: Path, evidence, *, line: str, versions: dict[str, str]) -> None:
+    (root / "versions.txt").write_text(line, encoding="utf-8")
+    nested = root / "stability" / "manifest.json"
+    document = json.loads(nested.read_text(encoding="utf-8"))
+    document["versions"] = versions
+    nested.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _rehash(root, evidence)
+
+
+def test_python_versions_must_agree_after_rehash(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    evidence.write_manifest(root)
+    matching = {
+        "python": "3.11",
+        "pyside": "6.6.0",
+        "qt": "6.6.0",
+    }
+    line = "qt-platform offscreen python 3.11 pyside 6.6.0 qt 6.6.0\n"
+    cases = (
+        (
+            "qt-platform offscreen pyside 6.6.0 qt 6.6.0\n",
+            matching,
+            "missing a python",
+        ),
+        (
+            line,
+            {"pyside": "6.6.0", "qt": "6.6.0"},
+            "missing a python",
+        ),
+        (
+            "qt-platform offscreen python unavailable pyside 6.6.0 qt 6.6.0\n",
+            {"python": "unavailable", "pyside": "6.6.0", "qt": "6.6.0"},
+            "missing a python",
+        ),
+        (
+            "qt-platform offscreen python 3.12 pyside 6.6.0 qt 6.6.0\n",
+            matching,
+            "python versions do not agree",
+        ),
+        (
+            "qt-platform offscreen python 3.11 pyside 6.7.0 qt 6.6.0\n",
+            matching,
+            "pyside versions do not agree",
+        ),
+        (
+            "qt-platform offscreen python 3.11 pyside 6.6.0 qt 6.7.0\n",
+            matching,
+            "qt versions do not agree",
+        ),
+    )
+    for file_line, manifest_versions, expected in cases:
+        _set_versions(root, evidence, line=file_line, versions=manifest_versions)
+        problems = evidence.verify_archive(root, repeats=2)
+        rendered = "\n".join(problems)
+        assert any(expected in problem for problem in problems), (expected, problems)
+        assert "hash or size mismatch" not in rendered
+        assert "does not match file" not in rendered
+    _set_versions(root, evidence, line=line, versions=matching)
+    assert evidence.verify_archive(root, repeats=2) == []
+
+
+def test_an_attempt_header_must_name_its_historic_node(tmp_path: Path) -> None:
+    evidence = _evidence()
+    stability = _stability()
+    root = _archive(tmp_path)
+    evidence.write_manifest(root)
+    first, second = stability.HISTORIC_NODES
+    relative = f"{stability.stability_dirname(first)}/attempt-01.txt"
+    log = root / "stability" / relative
+    log.write_text(log.read_text(encoding="utf-8").replace(f"node={first}", f"node={second}", 1))
+    nested = root / "stability" / "manifest.json"
+    document = json.loads(nested.read_text(encoding="utf-8"))
+    digest = hashlib.sha256(log.read_bytes()).hexdigest()
+    for node in document["nodes"]:
+        if node["node"] == first:
+            node["records"][0]["sha256"] = digest
+    for entry in document["files"]:
+        if entry["name"] == relative:
+            entry["bytes"] = log.stat().st_size
+            entry["sha256"] = digest
+    nested.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _rehash(root, evidence)
+    problems = evidence.verify_archive(root, repeats=2)
+    rendered = "\n".join(problems)
+    assert any("wrong node" in problem for problem in problems)
+    assert "hash or size mismatch" not in rendered
+    assert "does not match file" not in rendered
+
+
+def test_reordered_attempt_records_fail_after_rehash(tmp_path: Path) -> None:
+    evidence = _evidence()
+    root = _archive(tmp_path)
+    evidence.write_manifest(root)
+    nested = root / "stability" / "manifest.json"
+    document = json.loads(nested.read_text(encoding="utf-8"))
+    records = document["nodes"][0]["records"]
+    records[0], records[1] = records[1], records[0]
+    nested.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _rehash(root, evidence)
+    problems = evidence.verify_archive(root, repeats=2)
+    rendered = "\n".join(problems)
+    assert any("out of order" in problem for problem in problems)
+    assert "hash or size mismatch" not in rendered
+    assert "does not match file" not in rendered

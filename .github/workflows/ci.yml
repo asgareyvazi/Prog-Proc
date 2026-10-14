@@ -197,7 +197,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p qt-logs
-          xvfb-run -a -s "-screen 0 1280x1024x24" python -c "import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName(), 'pyside', PySide6.__version__, 'qt', qVersion())" | tee qt-logs/versions.txt
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -c "import platform; import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName(), 'python', platform.python_version(), 'pyside', PySide6.__version__, 'qt', qVersion())" | tee qt-logs/versions.txt
           test -s qt-logs/versions.txt
 
       - name: Offscreen workbench tests
@@ -280,7 +280,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p qt-logs
-          xvfb-run -a -s "-screen 0 1280x1024x24" python -c "import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName(), 'pyside', PySide6.__version__, 'qt', qVersion())" | tee qt-logs/versions.txt
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -c "import platform; import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); print('qt-platform', app.platformName(), 'python', platform.python_version(), 'pyside', PySide6.__version__, 'qt', qVersion())" | tee qt-logs/versions.txt
           test -s qt-logs/versions.txt
 
       - name: Genuine QThread shutdown, deadline, and publisher negatives

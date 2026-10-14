@@ -342,12 +342,15 @@ def _verify_attempt_records(
         if (
             match is None
             or int(match.group(1)) != ordinal
+            or match.group(2) != node
             or int(match.group(3)) != exit_code
             or duration is None
             or not math.isclose(duration, float(record["duration_s"]), rel_tol=0, abs_tol=0.001)
             or header_reason != reason
         ):
             problems.append(f"stability attempt record does not match its log: {log_name}")
+        if match is not None and match.group(2) != node:
+            problems.append(f"stability attempt log names the wrong node: {log_name}")
         summary_attempt = (
             next((item for item in section.attempts if item.ordinal == ordinal), None)
             if section is not None
@@ -364,6 +367,11 @@ def _verify_attempt_records(
             failed_records += 1
         if claimed_pass and (exit_code != 0 or reason):
             problems.append(f"successful stability record has a failed attempt: {path.name}")
+    ordinals = [
+        _integer(record.get("ordinal")) if isinstance(record, dict) else None for record in records
+    ]
+    if ordinals != list(range(1, repeats + 1)):
+        problems.append(f"stability attempt records are out of order: {node}")
     if seen != set(range(1, repeats + 1)) or failed_records != failed:
         problems.append(f"stability attempt records do not match the node summary: {node}")
     return problems
@@ -405,11 +413,13 @@ def _verify_version_metadata(root: Path, versions: object, *, claimed_pass: bool
         if versions_file.is_file()
         else {}
     )
-    for key in ("pyside", "qt"):
-        manifest_token = _version_token(versions.get(key))
+    for key in ("python", "pyside", "qt"):
+        manifest_token = _version_token(versions.get(key)) if isinstance(versions, dict) else None
         file_token = _version_token(file_tokens.get(key))
-        if manifest_token is None or file_token is None or manifest_token != file_token:
+        if manifest_token is None or file_token is None:
             problems.append(f"successful Qt archive is missing a {key} version")
+        elif manifest_token != file_token:
+            problems.append(f"successful Qt archive {key} versions do not agree")
     return problems
 
 
