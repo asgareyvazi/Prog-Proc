@@ -261,6 +261,26 @@ def test_zero_deadline_exits_4_without_waiting_out_the_parent() -> None:
     assert time.monotonic() - started < 1.5
 
 
+def test_a_release_exception_still_fails_closed(monkeypatch) -> None:
+    from drilling_intelligence.ui import lifetime
+
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("wrapped C/C++ object has been deleted")
+
+    seen: list[lifetime.ReleaseResult] = []
+
+    def _stop(result: lifetime.ReleaseResult) -> None:
+        seen.append(result)
+        raise SystemExit(lifetime.SHUTDOWN_INCOMPLETE_EXIT)
+
+    monkeypatch.setattr(lifetime, "finish_qt_application", _raise)
+    monkeypatch.setattr(lifetime, "fail_closed_shutdown", _stop)
+    with pytest.raises(SystemExit) as caught:
+        lifetime.application_shutdown(object(), 0, deadline_ms=400)
+    assert caught.value.code == lifetime.SHUTDOWN_INCOMPLETE_EXIT
+    assert seen[0].refused == ("release-exception",)
+
+
 def test_lifetime_does_not_import_fcntl_at_module_scope() -> None:
     source = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

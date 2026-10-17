@@ -459,7 +459,14 @@ def application_shutdown(
     process exit 4. A successful release returns ``code`` and does not quit
     again; the caller already left ``exec()``.
     """
-    exit_code, result = finish_qt_application(application, code, deadline_ms=deadline_ms)
+    try:
+        exit_code, result = finish_qt_application(application, code, deadline_ms=deadline_ms)
+    except Exception:  # noqa: BLE001 - any release failure must still exit 4
+        # A deleted wrapper or a native error during release must not return
+        # into interpreter teardown. The diagnostic stays a fixed token: a
+        # traceback would include a local path.
+        fail_closed_shutdown(ReleaseResult(0, ("release-exception",)))
+        return SHUTDOWN_INCOMPLETE_EXIT
     if not result.complete:
         fail_closed_shutdown(result)
     return exit_code
