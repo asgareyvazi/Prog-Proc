@@ -8,6 +8,7 @@ The response body is never copied into an error string.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -23,6 +24,7 @@ from .contract import (
     configured_status,
     endpoint_problem,
     identity_for,
+    request_origin,
 )
 
 _PROBE_TIMEOUT_CAP_S = 5.0
@@ -33,33 +35,47 @@ _EMBED = "/api/embed"
 
 
 def probe_timeout(config: object) -> float:
-    """A probe must not inherit a multi-minute generation timeout."""
-    raw = getattr(config, "timeout_seconds", _PROBE_TIMEOUT_CAP_S)
-    try:
-        timeout = float(raw)
-    except (TypeError, ValueError):
-        timeout = _PROBE_TIMEOUT_CAP_S
-    if timeout <= 0:
-        timeout = _PROBE_TIMEOUT_CAP_S
+    """A probe must not inherit a multi-minute or non-finite generation timeout."""
+    timeout = _finite_timeout(getattr(config, "timeout_seconds", _PROBE_TIMEOUT_CAP_S))
+    if timeout is None:
+        return _PROBE_TIMEOUT_CAP_S
     return min(timeout, _PROBE_TIMEOUT_CAP_S)
+
+
+def _finite_timeout(raw: object) -> float | None:
+    if isinstance(raw, bool):
+        return None
+    try:
+        timeout = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(timeout) or timeout <= 0:
+        return None
+    return timeout
 
 
 def _retry_limit(config: object) -> int:
     raw = getattr(config, "retries", 0)
+    if isinstance(raw, bool):
+        return 0
     try:
         retries = int(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
     return min(max(retries, 0), _RETRY_CAP)
 
 
 def _backoff(config: object) -> float:
     raw = getattr(config, "retry_backoff_seconds", 0.0)
+    if isinstance(raw, bool):
+        return 0.0
     try:
         value = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
-    return max(value, 0.0)
+    if not math.isfinite(value) or value < 0:
+        return 0.0
+    return value
 
 
 class OllamaAdapter:
@@ -85,12 +101,12 @@ class OllamaAdapter:
             return refused
         if _text(getattr(self._config, "provider", "")).lower() != "ollama":
             return refused
-        endpoint = _text(getattr(self._config, "endpoint", ""))
-        if endpoint_problem(endpoint) is not None:
+        origin = request_origin(_text(getattr(self._config, "endpoint", "")))
+        if origin is None:
             return refused
         response = self._send(
             "GET",
-            endpoint.rstrip("/") + _TAGS,
+            origin + _TAGS,
             json_body=None,
             timeout=probe_timeout(self._config),
             retries=0,
@@ -129,11 +145,20 @@ class OllamaAdapter:
                 "num_predict": int(getattr(self._config, "max_output_tokens", 0) or 0),
             },
         }
+        origin = request_origin(_text(getattr(self._config, "endpoint", "")))
+        timeout = _finite_timeout(getattr(self._config, "timeout_seconds", 30.0))
+        if origin is None or timeout is None:
+            return Completion(
+                state=ProviderState.UNSUPPORTED,
+                identity=identity,
+                model=requested,
+                reason="endpoint or timeout is not usable; no request is sent",
+            )
         response = self._send(
             "POST",
-            _text(getattr(self._config, "endpoint", "")).rstrip("/") + _GENERATE,
+            origin + _GENERATE,
             json_body=body,
-            timeout=float(getattr(self._config, "timeout_seconds", 30.0) or 30.0),
+            timeout=timeout,
             retries=_retry_limit(self._config),
         )
         if response.state is not None:
@@ -186,18 +211,28 @@ class OllamaAdapter:
                 model="",
                 reason="embedding model is empty; no request is sent",
             )
+        origin = request_origin(_text(getattr(self._config, "endpoint", "")))
+        timeout = _finite_timeout(getattr(self._config, "timeout_seconds", 30.0))
+        if origin is None or timeout is None:
+            return EmbeddingResult(
+                state=ProviderState.UNSUPPORTED,
+                identity=identity,
+                model=requested,
+                reason="endpoint or timeout is not usable; no request is sent",
+            )
+        accepted = tuple(texts)
         response = self._send(
             "POST",
-            _text(getattr(self._config, "endpoint", "")).rstrip("/") + _EMBED,
-            json_body={"model": requested, "input": list(texts)},
-            timeout=float(getattr(self._config, "timeout_seconds", 30.0) or 30.0),
+            origin + _EMBED,
+            json_body={"model": requested, "input": list(accepted)},
+            timeout=timeout,
             retries=_retry_limit(self._config),
         )
         if response.state is not None:
             return EmbeddingResult(
                 state=response.state, identity=identity, model=requested, reason=response.reason
             )
-        return self._vectors_from(response.payload, requested)
+        return self._vectors_from(response.payload, requested, len(accepted))
 
     def _call_refused(self) -> ProviderStatus | None:
         provider = _text(getattr(self._config, "provider", "")).lower()
@@ -260,63 +295,68 @@ class OllamaAdapter:
             limitations=base.limitations,
         )
 
-    def _vectors_from(self, payload: object, requested: str) -> EmbeddingResult:
+    def _vectors_from(
+        self, payload: object, requested: str, expected_count: int
+    ) -> EmbeddingResult:
         identity = identity_for(self._config)
         rows = payload.get("embeddings") if isinstance(payload, dict) else None
         if not isinstance(rows, list) or not rows:
-            return EmbeddingResult(
-                state=ProviderState.UNSUPPORTED,
-                identity=identity,
-                model=requested,
-                reason="provider response did not contain embeddings",
+            return self._rejected_embedding(
+                requested, "provider response did not contain embeddings"
             )
         vectors: list[tuple[float, ...]] = []
         width: int | None = None
         for row in rows:
-            if not _numeric_vector(row):
-                return EmbeddingResult(
-                    state=ProviderState.UNSUPPORTED,
-                    identity=identity,
-                    model=requested,
-                    reason="provider embeddings were not numeric vectors",
+            parsed = finite_vector(row)
+            if parsed is None:
+                return self._rejected_embedding(
+                    requested, "provider embeddings were not finite numeric vectors"
                 )
             if width is None:
-                width = len(row)
-            elif len(row) != width:
-                return EmbeddingResult(
-                    state=ProviderState.UNSUPPORTED,
-                    identity=identity,
-                    model=requested,
-                    reason="provider embeddings did not share one dimension",
+                width = len(parsed)
+            elif len(parsed) != width:
+                return self._rejected_embedding(
+                    requested, "provider embeddings did not share one dimension"
                 )
-            vectors.append(tuple(float(item) for item in row))
+            vectors.append(parsed)
+        if len(vectors) != expected_count:
+            return self._rejected_embedding(
+                requested, "embedding count does not match the input count"
+            )
         expected = getattr(self._config, "embedding_dimensions", 0)
         try:
             expected_width = int(expected or 0)
-        except (TypeError, ValueError):
-            expected_width = 0
+        except (TypeError, ValueError, OverflowError):
+            expected_width = -1
+        if isinstance(expected, bool) or expected_width < 0:
+            return self._rejected_embedding(
+                requested, "configured embedding dimension is not usable"
+            )
         if expected_width and width != expected_width:
-            return EmbeddingResult(
-                state=ProviderState.UNSUPPORTED,
-                identity=identity,
-                model=requested,
-                dimensions=width or 0,
-                reason=f"embedding dimension {width} does not match configured {expected_width}",
+            return self._rejected_embedding(
+                requested,
+                f"embedding dimension {width} does not match configured {expected_width}",
             )
         answered = payload.get("model") if isinstance(payload, dict) else None
-        if isinstance(answered, str) and answered and answered != requested:
-            return EmbeddingResult(
-                state=ProviderState.UNSUPPORTED,
-                identity=identity,
-                model=requested,
-                reason="provider response did not identify the requested embedding model",
+        if not isinstance(answered, str) or not answered.strip() or answered != requested:
+            return self._rejected_embedding(
+                requested, "provider response did not identify the requested embedding model"
             )
         return EmbeddingResult(
             state=ProviderState.SUCCESSFUL,
             identity=identity,
-            model=requested,
+            model=answered,
             dimensions=width or 0,
             vectors=tuple(vectors),
+        )
+
+    def _rejected_embedding(self, requested: str, reason: str) -> EmbeddingResult:
+        return EmbeddingResult(
+            state=ProviderState.UNSUPPORTED,
+            identity=identity_for(self._config),
+            model=requested,
+            vectors=(),
+            reason=reason,
         )
 
     def _send(
@@ -404,10 +444,22 @@ def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _numeric_vector(row: object) -> bool:
+def finite_vector(row: object) -> tuple[float, ...] | None:
+    """One finite numeric row, or None. Booleans, NaN, and infinities are rejected."""
     if not isinstance(row, list) or not row:
-        return False
-    return all(not isinstance(item, bool) and isinstance(item, (int, float)) for item in row)
+        return None
+    values: list[float] = []
+    for item in row:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        try:
+            number = float(item)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(number):
+            return None
+        values.append(number)
+    return tuple(values)
 
 
 def probe_provider(
@@ -423,4 +475,4 @@ def probe_provider(
     return OllamaAdapter(config, client=client, sleeper=sleeper).probe()
 
 
-__all__ = ["OllamaAdapter", "probe_provider", "probe_timeout"]
+__all__ = ["OllamaAdapter", "finite_vector", "probe_provider", "probe_timeout"]

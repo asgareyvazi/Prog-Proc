@@ -176,27 +176,60 @@ def identity_for(config: object) -> ProviderIdentity:
 
 
 def public_endpoint(raw: str) -> str:
-    """Drop a URL that carries userinfo so a status document cannot echo it."""
-    text = raw.strip()
-    if not text:
+    """Origin only. Userinfo, query, fragment, and a rejected URL are not returned."""
+    parsed = _parsed_endpoint(raw)
+    if parsed is None:
         return ""
-    parsed = urlparse(text)
-    if parsed.username or parsed.password:
-        return ""
-    return text
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def endpoint_problem(raw: str) -> str | None:
-    """Why this endpoint must not be requested, or None when it may be."""
+    """Why this endpoint must not be requested, or None when it may be.
+
+    A usable Ollama base is an http(s) origin. A path, query, or fragment is
+    refused so the adapter cannot append ``/api/tags`` onto a different URL.
+    """
     text = raw.strip()
     if not text:
         return "endpoint is empty"
+    if any(character.isspace() for character in text):
+        return "endpoint must not contain whitespace"
     parsed = urlparse(text)
-    if parsed.username or parsed.password:
+    if parsed.username or parsed.password or "@" in parsed.netloc:
         return "endpoint must not carry credentials"
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         return "endpoint must be an http or https URL"
+    if parsed.query or parsed.fragment:
+        return "endpoint must not include a query or fragment"
+    if parsed.path not in {"", "/"}:
+        return "endpoint must be an origin, not a path"
     return None
+
+
+def request_origin(raw: str) -> str | None:
+    """Canonical origin for a request, or None when the endpoint is refused."""
+    if endpoint_problem(raw) is not None:
+        return None
+    parsed = urlparse(raw.strip())
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _parsed_endpoint(raw: str):
+    text = raw.strip()
+    if not text or any(character.isspace() for character in text):
+        return None
+    parsed = urlparse(text)
+    if (
+        parsed.username
+        or parsed.password
+        or "@" in parsed.netloc
+        or parsed.query
+        or parsed.fragment
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+    ):
+        return None
+    return parsed
 
 
 def configured_status(config: object) -> ProviderStatus:
@@ -286,4 +319,5 @@ __all__ = [
     "endpoint_problem",
     "identity_for",
     "public_endpoint",
+    "request_origin",
 ]

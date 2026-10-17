@@ -15,6 +15,7 @@ Rules the codebase follows:
 
 from __future__ import annotations
 
+import math
 import os
 import tomllib
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
@@ -343,15 +344,19 @@ class Settings:
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 continue  # a bool or a string here is a type error, reported by _coerce
+            if isinstance(value, float) and not math.isfinite(value):
+                problems.append(f"{dotted} must be a finite number, got {value!r}")
+                continue
             if value < minimum:
                 problems.append(f"{dotted} must be >= {minimum}, got {value!r}")
         for dotted, low, high in _RANGES:
             value = flat.get(dotted)
-            if (
-                isinstance(value, (int, float))
-                and not isinstance(value, bool)
-                and not low <= value <= high
-            ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            if isinstance(value, float) and not math.isfinite(value):
+                problems.append(f"{dotted} must be a finite number, got {value!r}")
+                continue
+            if not low <= value <= high:
                 problems.append(f"{dotted} must be between {low} and {high}, got {value!r}")
         for dotted, allowed in _CHOICES.items():
             value = flat.get(dotted)

@@ -16,8 +16,13 @@ from drilling_intelligence.integrations.ai.contract import (
     ProviderState,
     UnavailableVectorStore,
     configured_status,
+    request_origin,
 )
-from drilling_intelligence.integrations.ai.ollama import OllamaAdapter, probe_provider
+from drilling_intelligence.integrations.ai.ollama import (
+    OllamaAdapter,
+    finite_vector,
+    probe_provider,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SENTINEL = "sk-live-sentinel-should-not-leak"
@@ -374,6 +379,302 @@ def test_live_probe_refuses_without_the_opt_in(monkeypatch: pytest.MonkeyPatch) 
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert module.main() == 2
+
+
+def _embedding_client(body: bytes) -> httpx.Client:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body, headers={"content-type": "application/json"})
+
+    return _client(handler)
+
+
+def test_a_finite_embedding_matches_each_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = b'{"model":"nomic-embed-text","embeddings":[[1.0,2.0],[3.0,4.0]]}'
+    injected = _embedding_client(body)
+    _forbid_network(monkeypatch)
+    result = OllamaAdapter(_config(embedding_dimensions=2), client=injected).embed(
+        ("mud", "weight")
+    )
+    assert result.state is ProviderState.SUCCESSFUL
+    assert result.vectors == ((1.0, 2.0), (3.0, 4.0))
+    assert result.authoritative is False
+    assert result.model == "nomic-embed-text"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"model":"nomic-embed-text","embeddings":[[1e309]]}',
+        b'{"model":"nomic-embed-text","embeddings":[[-1e309]]}',
+        b'{"model":"nomic-embed-text","embeddings":[[NaN]]}',
+        b'{"model":"nomic-embed-text","embeddings":[[Infinity]]}',
+        b'{"model":"nomic-embed-text","embeddings":[[-Infinity]]}',
+    ],
+)
+def test_non_finite_embeddings_are_rejected(monkeypatch: pytest.MonkeyPatch, body: bytes) -> None:
+    injected = _embedding_client(body)
+    _forbid_network(monkeypatch)
+    result = OllamaAdapter(_config(), client=injected).embed(("mud",))
+    assert result.state is ProviderState.UNSUPPORTED
+    assert result.vectors == ()
+    assert result.authoritative is False
+    assert "NaN" not in result.reason
+    assert "Infinity" not in result.reason
+
+
+def test_an_overflowing_integer_embedding_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    huge = b'{"model":"nomic-embed-text","embeddings":[[' + b"9" * 5000 + b"]]}"
+    injected = _embedding_client(huge)
+    _forbid_network(monkeypatch)
+    result = OllamaAdapter(_config(), client=injected).embed(("mud",))
+    assert result.state is ProviderState.UNSUPPORTED
+    assert result.vectors == ()
+
+
+def test_embedding_cardinality_must_match_the_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    short = _embedding_client(b'{"model":"nomic-embed-text","embeddings":[[1.0,2.0]]}')
+    extra = _embedding_client(b'{"model":"nomic-embed-text","embeddings":[[1.0],[2.0]]}')
+    empty = _embedding_client(b'{"model":"nomic-embed-text","embeddings":[]}')
+    _forbid_network(monkeypatch)
+    adapter = OllamaAdapter(_config(), client=short)
+    short_result = adapter.embed(("one", "two"))
+    assert short_result.state is ProviderState.UNSUPPORTED
+    assert short_result.vectors == ()
+    assert "count" in short_result.reason
+    extra_result = OllamaAdapter(_config(), client=extra).embed(("one",))
+    assert extra_result.state is ProviderState.UNSUPPORTED
+    assert extra_result.vectors == ()
+    empty_result = OllamaAdapter(_config(), client=empty).embed(("one",))
+    assert empty_result.state is ProviderState.UNSUPPORTED
+    assert empty_result.vectors == ()
+
+
+def test_a_missing_embedding_model_is_not_assumed(monkeypatch: pytest.MonkeyPatch) -> None:
+    injected = _embedding_client(b'{"embeddings":[[1.0,2.0]]}')
+    _forbid_network(monkeypatch)
+    result = OllamaAdapter(_config(), client=injected).embed(("mud",))
+    assert result.state is ProviderState.UNSUPPORTED
+    assert result.vectors == ()
+    assert "model" in result.reason
+
+
+def test_inconsistent_embedding_widths_are_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = b'{"model":"nomic-embed-text","embeddings":[[1.0,2.0],[3.0]]}'
+    injected = _embedding_client(body)
+    _forbid_network(monkeypatch)
+    result = OllamaAdapter(_config(), client=injected).embed(("one", "two"))
+    assert result.state is ProviderState.UNSUPPORTED
+    assert result.vectors == ()
+    assert "dimension" in result.reason
+
+
+def test_finite_vector_rejects_non_finite_python_numbers() -> None:
+    assert finite_vector([1, 2.5]) == (1.0, 2.5)
+    assert finite_vector([float("nan")]) is None
+    assert finite_vector([float("inf")]) is None
+    assert finite_vector([float("-inf")]) is None
+    assert finite_vector([True]) is None
+    assert finite_vector([]) is None
+    try:
+        huge = 10**10000
+    except OverflowError:
+        huge = None
+    if huge is not None:
+        assert finite_vector([huge]) is None
+
+
+def test_a_non_origin_endpoint_sends_no_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    _forbid_network(monkeypatch)
+    refused = (
+        "http://127.0.0.1:11434/v1",
+        "http://127.0.0.1:11434?token=secret",
+        "http://127.0.0.1:11434#fragment",
+        "http://127.0.0.1:11434 /extra",
+        "file:///tmp/ollama",
+        "http://",
+        "http://user:secret@127.0.0.1:11434",
+    )
+    for endpoint in refused:
+        status = probe_provider(_config(endpoint=endpoint))
+        rendered = json.dumps(status.to_dict())
+        assert status.available is False, endpoint
+        assert status.probed is False, endpoint
+        assert "secret" not in rendered
+        assert "token=" not in rendered
+        assert request_origin(endpoint) is None
+
+
+def test_an_ipv6_origin_is_requested_without_adding_a_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"models": [{"name": "qwen3:8b"}]})
+
+    injected = _client(handler)
+    _forbid_network(monkeypatch)
+    status = probe_provider(_config(endpoint="http://[::1]:11434"), client=injected)
+    assert status.state is ProviderState.SUCCESSFUL
+    assert calls == ["http://[::1]:11434/api/tags"]
+
+
+def _watch_timeout(client: httpx.Client) -> list[float]:
+    seen: list[float] = []
+    original = client.request
+
+    def wrapped(*args: object, **kwargs: object) -> httpx.Response:
+        seen.append(float(kwargs["timeout"]))  # type: ignore[arg-type]
+        return original(*args, **kwargs)
+
+    client.request = wrapped  # type: ignore[method-assign]
+    return seen
+
+
+def test_probe_timeout_is_capped_and_completion_uses_the_configured_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"models": [{"name": "qwen3:8b"}]})
+
+    def generate(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"model": "qwen3:8b", "response": "note"})
+
+    injected = _client(handler)
+    completion_client = _client(generate)
+    seen = _watch_timeout(injected)
+    completion_seen = _watch_timeout(completion_client)
+    _forbid_network(monkeypatch)
+    assert probe_provider(_config(timeout_seconds=120), client=injected).available is True
+    assert seen == [5.0]
+    result = OllamaAdapter(_config(timeout_seconds=12), client=completion_client).complete("prompt")
+    assert result.state is ProviderState.SUCCESSFUL
+    assert completion_seen == [12.0]
+
+
+def test_a_non_finite_timeout_sends_no_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    injected = _client(lambda _request: pytest.fail("request sent"))
+    _forbid_network(monkeypatch)
+    result = OllamaAdapter(_config(timeout_seconds=float("nan")), client=injected).complete(
+        "prompt"
+    )
+    assert result.state is ProviderState.UNSUPPORTED
+    assert result.text == ""
+
+
+def test_summary_does_not_call_the_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("summary probed")
+
+    monkeypatch.setattr("drilling_intelligence.integrations.ai.ollama.probe_provider", boom)
+    summary = Settings.load().summary()["ai"]
+    assert summary["probed"] is False
+    assert summary["available"] is False
+
+
+def test_engineering_modules_do_not_import_the_adapter_by_ast() -> None:
+    import ast
+
+    roots = (
+        "extraction",
+        "knowledge",
+        "operations",
+        "reporting",
+        "retrieval",
+        "search",
+        "engineering",
+        "intelligence",
+        "documents",
+        "review",
+        "ingestion",
+    )
+    offenders: list[str] = []
+    for name in roots:
+        for path in (ROOT / "src" / "drilling_intelligence" / name).rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                module = ""
+                if isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                elif isinstance(node, ast.Import):
+                    module = " ".join(alias.name for alias in node.names)
+                if "integrations.ai" in module or module.endswith(".ai"):
+                    offenders.append(path.relative_to(ROOT).as_posix())
+    assert offenders == []
+
+
+def test_doctor_function_does_not_call_the_probe() -> None:
+    import ast
+
+    tree = ast.parse(
+        (ROOT / "src" / "drilling_intelligence" / "cli" / "app.py").read_text(encoding="utf-8")
+    )
+    doctor = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "command_doctor"
+    )
+    called = {
+        node.func.id
+        for node in ast.walk(doctor)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    called.update(
+        node.func.attr
+        for node in ast.walk(doctor)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    )
+    assert "probe_provider" not in called
+    assert "OllamaAdapter" not in called
+
+
+def test_a_rejected_embedding_does_not_change_workspace_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from sqlalchemy import func, select
+
+    from drilling_intelligence.database.models import Document, KnowledgeItem, Well
+    from drilling_intelligence.wells.repository import WellRepository
+    from drilling_intelligence.wells.workspace import Workspace
+
+    def counts(session: object) -> dict[str, int]:
+        found: dict[str, int] = {}
+        for name, model in (("well", Well), ("document", Document), ("knowledge", KnowledgeItem)):
+            found[name] = int(session.scalar(select(func.count()).select_from(model)) or 0)  # type: ignore[attr-defined]
+        return found
+
+    workspace = Workspace.create(tmp_path / "ws")
+    try:
+        with workspace.database.session() as session:
+            WellRepository(session).create_well("A-1")
+            session.commit()
+            before = counts(session)
+        injected = _embedding_client(b'{"model":"other","embeddings":[[1e309]]}')
+
+        def boom(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("embedding opened its own client")
+
+        monkeypatch.setattr("drilling_intelligence.integrations.ai.ollama.httpx.Client", boom)
+        result = OllamaAdapter(workspace.settings.ai, client=injected).embed(("mud",))
+        assert result.state is ProviderState.UNSUPPORTED
+        assert result.vectors == ()
+        assert result.authoritative is False
+        with workspace.database.session() as session:
+            after = counts(session)
+        assert before["well"] == 1
+        assert after == before
+    finally:
+        workspace.close()
+
+
+def test_a_non_finite_timeout_is_rejected_by_settings() -> None:
+    from drilling_intelligence.core.errors import ConfigurationError
+
+    settings = Settings.load()
+    settings.ai.timeout_seconds = float("nan")
+    with pytest.raises(ConfigurationError, match="finite"):
+        settings.validate()
 
 
 def test_configured_status_matches_the_summary_contract() -> None:

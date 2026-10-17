@@ -45,7 +45,7 @@ test that exercises it, or says that the evidence is only a schema or a comment.
 | Desktop Review Workbench | Implemented with limited coverage | `ui/main_window.py`, `ui/lifetime.py`, Qt CI jobs. Headless pytest skips the UI tests when PySide6 is absent. That skip is not a pass. |
 | SQLite lifecycle and migrations | Implemented and end-to-end tested | Alembic head `0019`. `database/engine.py` binds datetimes on the SQLite engine only. |
 | Package, CLI, and release smoke | Implemented and end-to-end tested | `pyproject.toml` scripts `drillintel` and `drillintel-ui`, `tools/release_smoke.py`, clean-install CI job |
-| Ollama probe, completion, and embedding | Implemented with limited coverage | `integrations/ai/ollama.py`, `tests/unit/test_ai_provider.py`. Not called by extraction, promotion, search, or citation. A live Ollama is opt-in via `DRILLINTEL_AI_LIVE=1` and is not a CI pass. |
+| Ollama probe, completion, and embedding | Implemented with limited coverage | `integrations/ai/ollama.py`, `tests/unit/test_ai_provider.py`. Success requires a finite vector per input and an exact model name. Not called by extraction, promotion, search, or citation. A live Ollama is opt-in via `DRILLINTEL_AI_LIVE=1` and is not a CI pass. |
 | OpenAI-compatible provider | Architecture or interface only | `AiSettings.provider` accepts the name. No adapter sends a request. |
 | Vector store and semantic ranking | Architecture or interface only | `UnavailableVectorStore` reports the gap. `[search]` vector keys are parsed and unused (`configs/development.toml`). |
 | Skills | Architecture or interface only | `database/models.py` `Skill` and `SkillVersion`. No service reads them. |
@@ -69,6 +69,10 @@ Exit criteria for this milestone:
 - Completion and embedding results are non-authoritative.
 - The engineering packages listed in ADR-51 do not import the adapter.
 - Alembic head remains `0019`.
+
+The blocked milestones below are specified further in
+[`PRODUCT_DECISIONS_REQUIRED.md`](PRODUCT_DECISIONS_REQUIRED.md). That file
+is the decision register. This file remains the capability inventory.
 
 ## Finite milestones after this one
 

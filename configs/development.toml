@@ -39,7 +39,7 @@ redact_keys = ["api_key", "token", "password", "secret", "authorization"]
 # the adapter.  openai-compatible is accepted and has no adapter, so that name sends no request.
 [ai]
 provider = "ollama"                 # ollama | openai-compatible | none
-endpoint = "http://127.0.0.1:11434"
+endpoint = "http://127.0.0.1:11434"  # origin only; a path, query, or userinfo is refused
 model = "qwen3:8b"
 temperature = 0.0
 max_context_tokens = 16384

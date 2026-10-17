@@ -2419,3 +2419,36 @@ read as a reachable model.
 **Consequences.** An operator can see whether a configured local model is
 listed. The engineering record is unchanged if Ollama is absent, unauthorized,
 or wrong.
+
+## ADR-52 — V8.12: embedding responses and endpoint origins
+
+**Status:** accepted (2026-10-17)
+
+ADR-51 accepted an embedding when the response contained numeric rows. That
+predicate treated `NaN` and infinity as numbers, accepted a missing `model`,
+and did not require one vector per input. Joining `/api/tags` onto a base
+that already had a path, query, or fragment could also request a different
+URL than the operator configured.
+
+*   **Embeddings.** A successful `embed` result has one finite vector per
+    input text, one shared dimension, and a `model` string equal to the
+    requested model. A missing model is a rejection, not an assumption.
+    `NaN`, infinities, booleans, overflow, a short or long vector list, and
+    inconsistent widths discard every vector. The failure reason does not
+    include the response body. `authoritative` stays false.
+*   **Endpoints.** An Ollama request uses an http(s) origin only. Userinfo,
+    whitespace, a path, a query, and a fragment are refused before any
+    socket is opened, and they are not copied into the status document.
+    The probe timeout remains capped at 5 seconds. A non-finite generation
+    timeout sends no completion or embedding request. Settings load rejects
+    a non-finite number in a numeric setting that already has a minimum or
+    a range.
+*   **Unchanged.** `provider = none` and `openai-compatible` still send no
+    request. `doctor` still does not probe. No vector is stored. No
+    engineering package imports the adapter. Alembic head stays `0019`.
+    The V8.8 adapter-warning count remains 154, not 166. CPython 3.14 on
+    Ubuntu 26.04 remains uncertified.
+
+**Consequences.** A malformed embedding cannot be reported as a successful
+vector. A configured URL cannot be rewritten into a different request by
+appending an API path.
