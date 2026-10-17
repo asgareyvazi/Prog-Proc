@@ -412,6 +412,23 @@ def test_a_fixture_error_and_a_strict_xpass_are_real_pytest_outcomes(tmp_path: P
     assert accounted == payload["collected"]
 
 
+def test_disagreement_lines_are_errors_not_only_notices() -> None:
+    from tools.pytest_totals import error_lines
+
+    text = "\n".join(
+        [
+            "collected: 2",
+            "shell_exit: 0",
+            "session_exit: 0",
+            "disagreement:",
+            "unexpected skip:",
+            "tests.engineering.test_extractor_limits::test_handles: /proc is where the open-file count lives",
+        ]
+    )
+    errors = error_lines(text)
+    assert any(line.startswith("tests.engineering") for line in errors)
+
+
 def test_a_real_shell_exit_is_not_replaced_when_the_session_disagrees(tmp_path: Path) -> None:
     suite = tmp_path / "test_real_exit.py"
     suite.write_text("def test_bad():\n    assert False\n", encoding="utf-8", newline="\n")

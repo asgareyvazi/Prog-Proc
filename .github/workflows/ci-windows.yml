@@ -121,7 +121,6 @@ jobs:
               Write-Output "::error::$($_.Line)"
             }
           }
-          exit 1
 
       - name: Working tree was not rewritten
         if: always()

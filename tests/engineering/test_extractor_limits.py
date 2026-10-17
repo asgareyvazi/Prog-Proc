@@ -18,6 +18,7 @@ samples - but it must say it sampled, and it must not under-report the page coun
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -156,18 +157,42 @@ def test_sheet_budget_is_reported_and_the_book_is_closed_once(tmp_path: Path) ->
     )
 
 
+def _open_handle_count() -> int | None:
+    """Open descriptors, via ``/proc`` or the Windows process handle count.
+
+    The measurement is the point of the test. A host with neither source skips
+    rather than pretending the count was stable.
+    """
+    proc_fds = Path("/proc/self/fd")
+    if proc_fds.is_dir():
+        return len(list(proc_fds.iterdir()))
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_count = kernel.GetProcessHandleCount
+    get_count.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    get_count.restype = wintypes.BOOL
+    count = wintypes.DWORD()
+    if not get_count(kernel.GetCurrentProcess(), ctypes.byref(count)):
+        return None
+    return int(count.value)
+
+
 def test_repeated_reads_do_not_leak_file_handles(tmp_path: Path) -> None:
     """Five extracts of the same workbook must not leave five open archives behind."""
-    proc_fds = Path("/proc/self/fd")
     workbook = tmp_path / "leak.xlsx"
     write_workbook(workbook, sheets=3, rows=25, columns=3)
     extract(workbook, excel_max_sheets=1)  # warm up: import + font caches
-    if not proc_fds.is_dir():  # pragma: no cover - non-Linux
+    before = _open_handle_count()
+    if before is None:  # pragma: no cover - neither /proc nor a Windows handle count
         pytest.skip("/proc is where the open-file count lives")
-    before = len(list(proc_fds.iterdir()))
     for _ in range(5):
         extract(workbook, excel_max_sheets=1)
-    after = len(list(proc_fds.iterdir()))
+    after = _open_handle_count()
+    assert after is not None
     assert after <= before + 2, f"file descriptors grew from {before} to {after}"
 
 

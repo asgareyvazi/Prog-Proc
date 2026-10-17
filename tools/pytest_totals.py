@@ -280,12 +280,29 @@ def notice_lines(text: str) -> list[str]:
     return lines
 
 
+def error_lines(text: str) -> list[str]:
+    """Disagreement lines. Notices are capped, so these must be separate."""
+    lines: list[str] = []
+    emitting = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("disagreement:"):
+            emitting = True
+        if emitting and stripped:
+            lines.append(stripped[:200])
+    return lines
+
+
 def _write_summary(summary_path: Path | None, text: str) -> None:
     text = safe_detail(text)
     print(text)
     if os.environ.get("GITHUB_ACTIONS") == "true":
         for line in notice_lines(text):
             print(f"::notice::{line}")
+        # Notice annotations are capped at 10 per step, so a disagreement that
+        # follows the totals is dropped. Errors have their own budget.
+        for line in error_lines(text):
+            print(f"::error::{line}")
     if summary_path is None:
         return
     summary_path.parent.mkdir(parents=True, exist_ok=True)
