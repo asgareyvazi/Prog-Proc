@@ -9,6 +9,8 @@ was found.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from drilling_intelligence.wells.repository import WellRepository
@@ -43,4 +45,17 @@ def test_find_well_is_deterministic_when_two_projects_share_a_name(repository, s
     session.commit()
 
     assert repository.find_well("A-3").id == older.id, "the first well carrying the name answers"
+    assert repository.find_well("A-3", project_id=second.id).id == newer.id
+
+
+def test_a_frozen_clock_still_returns_the_first_well(repository, session, monkeypatch) -> None:
+    frozen = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("drilling_intelligence.database.models._utcnow", lambda: frozen)
+    first = repository.get_or_create_project("Alpha")
+    second = repository.get_or_create_project("Beta")
+    older = repository.create_well("A-3", project_id=first.id)
+    newer = repository.create_well("A-3", project_id=second.id)
+    session.commit()
+    assert older.created_at < newer.created_at
+    assert repository.find_well("A-3").id == older.id
     assert repository.find_well("A-3", project_id=second.id).id == newer.id

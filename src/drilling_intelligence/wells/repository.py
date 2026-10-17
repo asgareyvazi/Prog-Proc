@@ -8,7 +8,7 @@ ties a folder on disk to the registry.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +32,40 @@ DEPTH_KEYS: frozenset[str] = frozenset({"top_depth", "bottom_depth"})
 
 
 log = get_logger("wells.repository")
+
+
+def _as_utc(moment: datetime) -> datetime:
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
+def _created_at_after(session: Session, model: type, name: str) -> datetime:
+    """A created-at that sorts after every row of this name already in the session.
+
+    Windows can return the same ``datetime.now`` for two calls inside one tick.
+    ``find_well`` orders by ``created_at`` then id, and a UUID tie-break is not
+    insertion order. One microsecond keeps "the first row answers" without a
+    schema change.
+    """
+    from ..database.models import _utcnow
+
+    moment = _utcnow()
+    column = model.created_at
+    latest = session.execute(
+        select(column).where(model.name == name).order_by(column.desc()).limit(1)
+    ).scalar_one_or_none()
+    for pending in session.new:
+        if (
+            isinstance(pending, model)
+            and getattr(pending, "name", None) == name
+            and getattr(pending, "created_at", None) is not None
+            and (latest is None or _as_utc(pending.created_at) > _as_utc(latest))
+        ):
+            latest = pending.created_at
+    if latest is not None and _as_utc(moment) <= _as_utc(latest):
+        return _as_utc(latest) + timedelta(microseconds=1)
+    return moment
 
 
 def _path_contains(root: Path, candidate: str) -> bool:
@@ -310,6 +344,7 @@ class WellRepository:
         well = Well(
             id=new_id("well"),
             name=name.strip(),
+            created_at=_created_at_after(self.session, Well, name.strip()),
             project_id=project_id,
             field_id=field_id,
             well_identifier=well_identifier,
