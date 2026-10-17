@@ -193,7 +193,12 @@ def test_repeated_reads_do_not_leak_file_handles(tmp_path: Path) -> None:
         extract(workbook, excel_max_sheets=1)
     after = _open_handle_count()
     assert after is not None
-    assert after <= before + 2, f"file descriptors grew from {before} to {after}"
+    # ``/proc/self/fd`` is a file-descriptor count, and two extra is the bound
+    # that has held on Linux. Windows ``GetProcessHandleCount`` counts every
+    # process handle. One observed 3.11 run grew by 3 with no per-extract leak.
+    # Five leftover archives would still fail that coarser counter.
+    allowance = 2 if os.name != "nt" else 4
+    assert after <= before + allowance, f"file descriptors grew from {before} to {after}"
 
 
 # --------------------------------------------------------------------------- formula pass
