@@ -51,6 +51,11 @@ extraction, promotion, search, or citation audit.
 
 ## Quick start
 
+Windows uses PowerShell, not the Bash block below. The install, smoke test,
+optional workbench, and the unexecuted workstation checklist are in
+[`docs/WINDOWS_TESTING.md`](docs/WINDOWS_TESTING.md). A green Linux job is
+not a Windows acceptance.
+
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m pytest                            # the editable install resolves the package; no PYTHONPATH needed

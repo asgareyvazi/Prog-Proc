@@ -14,8 +14,11 @@ Two rules drive this module:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import sys
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -56,6 +59,29 @@ def which(binary: str) -> str:
     return str(candidate) if candidate.exists() else ""
 
 
+def spawn_argv(
+    argv: Sequence[str],
+    *,
+    platform_name: str | None = None,
+    interpreter: str | None = None,
+) -> list[str]:
+    """Argv that ``CreateProcess`` or ``exec`` can start. Never a shell string.
+
+    A ``.py`` path is not a Win32 executable. On Windows it is run with the
+    current interpreter, so a script install and the MinerU test stand-in both
+    start. A ``.exe``, a POSIX binary, and a name already on ``PATH`` are left
+    unchanged. Spaces stay inside one element.
+    """
+    command = [str(part) for part in argv]
+    if not command:
+        return command
+    platform = platform_name if platform_name is not None else os.name
+    if platform == "nt" and Path(command[0]).suffix.lower() == ".py":
+        runtime = interpreter if interpreter is not None else sys.executable
+        return [runtime, *command]
+    return command
+
+
 def run_command(
     argv: list[str],
     *,
@@ -69,16 +95,16 @@ def run_command(
     Returns a dict (never raises on non-zero exit) so callers can decide whether a
     failure is fatal - which is what a *document converter* is allowed to be.
     """
-    import os
-
     started: list[float] = []
+    command = spawn_argv(argv)
     try:
         import time
 
         started = [time.perf_counter()]
         completed = subprocess.run(
-            argv,
+            command,
             capture_output=True,
+            shell=False,
             timeout=timeout,
             cwd=str(cwd) if cwd else None,
             env={**os.environ, **(env or {})},
@@ -87,7 +113,7 @@ def run_command(
         )
         duration = (time.perf_counter() - started[0]) * 1000 if started else 0.0
         return {
-            "argv": argv,
+            "argv": command,
             "returncode": completed.returncode,
             "stdout": completed.stdout.decode("utf-8", errors="replace"),
             "stderr": completed.stderr.decode("utf-8", errors="replace"),
@@ -96,7 +122,7 @@ def run_command(
         }
     except subprocess.TimeoutExpired as exc:
         return {
-            "argv": argv,
+            "argv": command,
             "returncode": -1,
             "stdout": (exc.stdout or b"").decode("utf-8", errors="replace") if exc.stdout else "",
             "stderr": f"timed out after {timeout}s",
@@ -105,7 +131,7 @@ def run_command(
         }
     except FileNotFoundError as exc:
         return {
-            "argv": argv,
+            "argv": command,
             "returncode": -1,
             "stdout": "",
             "stderr": f"executable not found: {exc}",
@@ -114,7 +140,7 @@ def run_command(
         }
     except Exception as exc:  # noqa: BLE001 - subprocess boundary
         return {
-            "argv": argv,
+            "argv": command,
             "returncode": -1,
             "stdout": "",
             "stderr": f"{type(exc).__name__}: {exc}",

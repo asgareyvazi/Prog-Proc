@@ -84,15 +84,31 @@ def build_dists(outdir: Path, sdist: bool) -> tuple[Path | None, Path | None]:
     return (wheels[-1] if wheels else None), (sdists[-1] if sdists else None)
 
 
+def _venv_program(root: Path, name: str) -> Path:
+    """The real installed program, including the Windows ``.exe`` suffix."""
+    import importlib.util
+
+    path = Path(__file__).resolve().with_name("venv_executables.py")
+    spec = importlib.util.spec_from_file_location("venv_executables", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("venv_executables.py is missing")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    found = module.venv_executable(root, name)
+    if not found.is_file():
+        raise SystemExit(f"virtualenv is missing {found}")
+    return found
+
+
 def fresh_venv(root: Path) -> Path:
     venv.create(root, with_pip=True, clear=True)
-    exe = "Scripts" if os.name == "nt" else "bin"
-    return root / exe
+    return root
 
 
-def install(bin_dir: Path, target: Path) -> None:
+def install(venv_root: Path, target: Path) -> None:
+    pip = _venv_program(venv_root, "pip")
     result = run(
-        [str(bin_dir / "pip"), "install", "--quiet", "--disable-pip-version-check", str(target)],
+        [str(pip), "install", "--quiet", "--disable-pip-version-check", str(target)],
         cwd=NEUTRAL_CWD,
     )
     if result.returncode != 0:
@@ -104,10 +120,10 @@ def install(bin_dir: Path, target: Path) -> None:
 def smoke(kind: str, artefact: Path, workdir: Path) -> None:
     """Install one artefact into a clean venv and exercise the installed product."""
     print(f"\n=== {kind}: {artefact.name} ===")
-    bin_dir = fresh_venv(workdir / "venv")
-    install(bin_dir, artefact)
-    python = bin_dir / "python"
-    cli = bin_dir / "drillintel"
+    venv_root = fresh_venv(workdir / "venv")
+    install(venv_root, artefact)
+    python = _venv_program(venv_root, "python")
+    cli = _venv_program(venv_root, "drillintel")
 
     # 1. import from site-packages, with the repository provably absent from sys.path
     probe = run(

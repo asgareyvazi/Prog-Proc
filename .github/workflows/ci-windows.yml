@@ -1,0 +1,223 @@
+name: CI Windows
+
+# Windows qualification. This does not replace the Ubuntu workflow, the
+# 15-attempt Qt stability gate, or a manual desktop acceptance. windows-2022
+# is pinned so windows-latest cannot move the image. See ADR-53.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: windows test (cp${{ matrix.python-version }})
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - name: Keep repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (editable, with the dev extra)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Ruff lint
+        shell: pwsh
+        run: python -m ruff check .
+
+      - name: Ruff format
+        shell: pwsh
+        run: python -m ruff format --check .
+
+      - name: Byte-compile source, tests, migrations and tools
+        shell: pwsh
+        run: python -m compileall -q src tests migrations tools
+
+      - name: Alembic has exactly one head
+        shell: pwsh
+        run: |
+          $raw = python -m alembic heads
+          $raw | Write-Output
+          $count = @($raw | Select-String -Pattern '\(head\)').Count
+          if ($count -ne 1) {
+            Write-Error "expected exactly one alembic head, found $count"
+            exit 1
+          }
+
+      - name: Test suite
+        shell: pwsh
+        run: python tools/ci_pytest.py -- --junitxml=pytest-junit.xml
+
+      - name: Count datetime adapter warnings
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path pytest-output.txt)) {
+            Write-Error "pytest-output.txt is missing"
+            exit 1
+          }
+          $adapter = @(Select-String -Path pytest-output.txt -Pattern "default datetime adapter" -SimpleMatch -Encoding utf8).Count
+          $summary = Select-String -Path pytest-output.txt -Pattern '[0-9]+ warnings? in ' -Encoding utf8 | Select-Object -Last 1
+          Write-Output "::notice::datetime-adapter-warnings: $adapter"
+          if ($summary) {
+            Write-Output "::notice::$($summary.Line)"
+          } else {
+            Write-Output "::notice::pytest warning summary line absent"
+          }
+          if ($adapter -ne 0) {
+            Write-Error "deprecated sqlite datetime adapter warning remains: $adapter"
+            exit 1
+          }
+
+      - name: Record test totals
+        if: always()
+        shell: pwsh
+        run: python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt
+
+      - name: Publish pytest results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-windows-cp${{ matrix.python-version }}
+          path: |
+            pytest-output.txt
+            pytest-junit.xml
+            pytest-totals.json
+            pytest-exit.txt
+          if-no-files-found: error
+
+      - name: Surface failures as annotations
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path pytest-output.txt) {
+            Select-String -Path pytest-output.txt -Pattern '^(FAILED|ERROR) ' | Select-Object -First 50 | ForEach-Object {
+              Write-Output "::error::$($_.Line)"
+            }
+          }
+          exit 1
+
+      - name: Working tree was not rewritten
+        if: always()
+        shell: pwsh
+        run: |
+          git diff --check
+          $dirty = git status --porcelain
+          if ($dirty) {
+            Write-Error "working tree changed during the job"
+            Write-Output $dirty
+            exit 1
+          }
+
+  release-smoke:
+    name: windows clean install smoke
+    runs-on: windows-2022
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - name: Keep repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install build tooling
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Build, clean-install and exercise the package
+        shell: pwsh
+        run: python tools/release_smoke.py
+
+  ui:
+    name: windows ui (offscreen Qt)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      QT_QPA_PLATFORM: offscreen
+      QT_OPENGL: software
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - name: Keep repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install (editable, with the ui extra)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,ui]"
+
+      - name: Probe the real Qt platform
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path qt-logs | Out-Null
+          python -c "import pathlib, platform; import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); text = ' '.join(['qt-platform', app.platformName(), 'python', platform.python_version(), 'pyside', PySide6.__version__, 'qt', qVersion()]); pathlib.Path('qt-logs/versions.txt').write_text(text + chr(10), encoding='utf-8'); print(text)"
+          if (-not (Test-Path qt-logs/versions.txt) -or (Get-Item qt-logs/versions.txt).Length -lt 1) {
+            Write-Error "Qt version probe wrote no versions.txt"
+            exit 1
+          }
+
+      - name: Offscreen UI tests
+        shell: pwsh
+        run: python tools/ci_pytest.py --output qt-logs/pytest-output.txt --exit-file qt-logs/pytest-exit.txt -- tests/ui --junitxml=qt-logs/pytest-junit.xml
+
+      - name: Record UI totals
+        if: always()
+        shell: pwsh
+        run: python tools/pytest_totals.py --stats pytest-totals.json --junit qt-logs/pytest-junit.xml --exit-file qt-logs/pytest-exit.txt
+
+      - name: Publish Windows UI logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qt-windows-ui-logs
+          path: |
+            qt-logs/
+            pytest-totals.json
+          if-no-files-found: error

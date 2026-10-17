@@ -15,6 +15,7 @@ Neither double stands in for our logic; both stand in for the other side of the 
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -34,9 +35,19 @@ SHA = "a" * 64
 
 
 def _fake_mineru(directory: Path, *, name: str, script: str) -> str:
-    """Write an executable stand-in for the ``mineru`` binary and return its path."""
+    """Write an executable stand-in for the ``mineru`` binary and return its path.
+
+    POSIX can execute a shebang file. Windows ``CreateProcess`` cannot, so the
+    stand-in is a ``.py`` file and ``run_command`` starts it with the current
+    interpreter. No shell is involved on either platform.
+    """
+    body = "#!/usr/bin/env python3\n" + script
+    if os.name == "nt":
+        path = directory / f"{name}.py"
+        path.write_text(body, encoding="utf-8")
+        return str(path)
     path = directory / name
-    path.write_text("#!/usr/bin/env python3\n" + script, encoding="utf-8")
+    path.write_text(body, encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     return str(path)
 

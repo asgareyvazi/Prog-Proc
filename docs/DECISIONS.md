@@ -2452,3 +2452,36 @@ URL than the operator configured.
 **Consequences.** A malformed embedding cannot be reported as a successful
 vector. A configured URL cannot be rewritten into a different request by
 appending an API path.
+
+## ADR-53 — V8.13: Windows launchers, and the Ubuntu Qt gate stays
+
+**Status:** accepted (2026-10-17)
+
+An engineer asked to run the installed CLI and the optional workbench on a
+Windows workstation. The Ubuntu workflow already pins `ubuntu-24.04` and
+keeps a separate Ubuntu 26.04 lane. `windows-latest` is a moving label, so
+it is not a qualification target.
+
+*   **Runner.** The Windows workflow uses `windows-2022`. It does not replace
+    the five Ubuntu jobs or the 15-attempt Linux Qt qualification.
+    `tools/qt_workbench.py` still invokes `xvfb-run`. The Windows UI job does
+    not call that script and does not claim the Linux stability gate ran.
+*   **Launchers.** A virtualenv program is `Scripts/<name>.exe` on Windows and
+    `bin/<name>` on POSIX. Release smoke passes that path as one argv element.
+    A path with spaces is not handed to a shell.
+*   **Scripts.** Windows cannot `CreateProcess` a shebang file. A configured
+    MinerU path that ends in `.py` is started with the current interpreter.
+    No `shell=True` is added.
+*   **UI import.** `fcntl` is not imported when the UI module loads. The
+    deadline notice still uses `O_NONBLOCK` on POSIX. On Windows the notice
+    is attempted on a daemon thread and waited on for at most 50 ms.
+*   **Skips.** A skip whose reason is `this platform does not support
+    symlinks` is expected and is not a pass. Any other non-UI skip still
+    fails the totals record. Headless Qt skips stay limited to the existing
+    `QtWidgets unavailable` reason.
+*   **Acceptance.** A green offscreen Windows job is not manual acceptance
+    of the owner's desktop. `docs/WINDOWS_TESTING.md` is the operator route.
+    `doctor` still does not probe a provider.
+
+**Consequences.** Windows CI can install the package and start the console
+scripts. The Linux stability evidence remains the Linux stability evidence.

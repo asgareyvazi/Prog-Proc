@@ -1,0 +1,9 @@
+# Keep source bytes LF so a Windows checkout does not fail format checks.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.whl binary
+*.gz binary
+*.zip binary
+*.db binary

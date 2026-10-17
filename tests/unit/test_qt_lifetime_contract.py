@@ -257,3 +257,55 @@ def test_zero_deadline_exits_4_without_waiting_out_the_parent() -> None:
     )
     assert completed.returncode == 4, completed.stderr
     assert time.monotonic() - started < 1.5
+
+
+def test_lifetime_does_not_import_fcntl_at_module_scope() -> None:
+    source = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            assert all(alias.name != "fcntl" for alias in node.names)
+        if isinstance(node, ast.ImportFrom):
+            assert node.module != "fcntl"
+
+
+def test_posix_deadline_stderr_is_nonblocking() -> None:
+    import os
+
+    from drilling_intelligence.ui.lifetime import _set_nonblocking
+
+    read_fd, write_fd = os.pipe()
+    try:
+        _set_nonblocking(write_fd)
+        if os.name != "nt":
+            import fcntl
+
+            flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
+            assert flags & os.O_NONBLOCK
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_windows_deadline_notice_does_not_wait_on_a_full_pipe(monkeypatch) -> None:
+    import os
+    import time
+
+    monkeypatch.setattr("drilling_intelligence.ui.lifetime.os.name", "nt")
+    from drilling_intelligence.ui.lifetime import _write_deadline_notice
+
+    read_fd, write_fd = os.pipe()
+    try:
+        os.set_blocking(write_fd, False)
+        try:
+            while True:
+                os.write(write_fd, b"x" * 4096)
+        except BlockingIOError:
+            pass
+        os.set_blocking(write_fd, True)
+        started = time.monotonic()
+        _write_deadline_notice(write_fd, b"notice\n")
+        assert time.monotonic() - started < 1.0
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)

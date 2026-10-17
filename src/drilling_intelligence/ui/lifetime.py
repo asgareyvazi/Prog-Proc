@@ -36,7 +36,6 @@ that quit without closing windows inside the quit sequence.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import sys
 import threading
@@ -182,15 +181,51 @@ def fail_closed_shutdown(result: ReleaseResult) -> None:
     os._exit(SHUTDOWN_INCOMPLETE_EXIT)
 
 
+def _set_nonblocking(fd: int) -> None:
+    """Put a POSIX descriptor into non-blocking mode.
+
+    ``fcntl`` is imported here, not at module scope. Windows has no ``fcntl``,
+    and a top-level import would stop ``drillintel-ui`` from loading even when
+    Qt itself is installed.
+    """
+    import fcntl
+
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+
+def _write_deadline_notice(fd: int, message: bytes) -> None:
+    """Write the deadline line without holding the process on a full pipe.
+
+    POSIX uses ``O_NONBLOCK``. Windows has no equivalent in the 3.11 floor, so
+    the write runs on a daemon thread and this function waits at most 50 ms.
+    A late write may be lost. That is a failed-shutdown diagnostic, not a
+    record.
+    """
+    if os.name == "nt":
+        done = threading.Event()
+
+        def _attempt() -> None:
+            try:
+                os.write(fd, message)
+            except (AttributeError, OSError, ValueError):
+                pass
+            finally:
+                done.set()
+
+        threading.Thread(target=_attempt, name="qt-deadline-notice", daemon=True).start()
+        done.wait(0.05)
+        return
+    _set_nonblocking(fd)
+    os.write(fd, message)
+
+
 def _terminal_exit() -> None:
     """Best-effort diagnostic, then exit 4. A blocked write must not delay it."""
     message = b"Qt shutdown incomplete; deadline elapsed before release finished\n"
     try:
-        fd = sys.stderr.fileno()
-        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-        os.write(fd, message)
-    except (AttributeError, OSError, ValueError):
+        _write_deadline_notice(sys.stderr.fileno(), message)
+    except (AttributeError, ImportError, OSError, ValueError):
         pass
     os._exit(SHUTDOWN_INCOMPLETE_EXIT)
 

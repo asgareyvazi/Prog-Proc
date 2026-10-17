@@ -13,6 +13,7 @@ instead of quietly becoming a command-injection hole.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -150,7 +151,7 @@ def test_run_command_passes_arguments_as_a_list_so_a_filename_cannot_become_shel
         "import json, sys\nprint(json.dumps(sys.argv[1:]))\n",
         encoding="utf-8",
     )
-    result = run_command(["python3", str(script), SHELL_NAME], timeout=30.0)
+    result = run_command([sys.executable, str(script), SHELL_NAME], timeout=30.0)
 
     assert result["returncode"] == 0, result["stderr"]
     import json
@@ -168,7 +169,7 @@ def test_run_command_reports_a_timeout_instead_of_hanging_or_guessing(tmp_path: 
 
     script = tmp_path / "hang.py"
     script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
-    result = run_command(["python3", str(script)], timeout=1.0)
+    result = run_command([sys.executable, str(script)], timeout=1.0)
 
     assert result["timeout"] is True
     assert result["returncode"] == -1
@@ -190,7 +191,7 @@ def test_run_command_propagates_only_the_environment_it_is_given(tmp_path: Path)
         encoding="utf-8",
     )
     result = run_command(
-        ["python3", str(script)], timeout=30.0, env={"MINERU_EXTRA": "passed-through"}
+        [sys.executable, str(script)], timeout=30.0, env={"MINERU_EXTRA": "passed-through"}
     )
 
     import json

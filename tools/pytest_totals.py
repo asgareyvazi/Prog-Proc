@@ -29,6 +29,7 @@ _XFAIL_TYPE = "pytest.xfail"
 _XPASS_MESSAGE = "xfail-marked test passes unexpectedly"
 _EXIT_LINE = re.compile(r"-?\d+")
 _HEADLESS_SKIP_REASON = "QtWidgets unavailable"
+_PLATFORM_SKIP_REASON = "this platform does not support symlinks"
 _KEYS = (
     "collected",
     "passed",
@@ -183,10 +184,17 @@ def disagreements(
 
 
 def skip_is_expected(classname: str, name: str, message: str) -> bool:
-    """Headless CI may skip UI tests only because Qt itself cannot load."""
+    """Headless CI may skip UI tests only because Qt itself cannot load.
+
+    A host that cannot create symlinks may skip the tests that say so. That
+    skip is not a pass, and a different reason is still unexpected.
+    """
+    text = message or ""
+    if _PLATFORM_SKIP_REASON in text:
+        return True
     identity = f"{classname} {name}"
     ui = "tests.ui." in classname or classname.startswith("tests.ui") or "tests/ui/" in identity
-    return ui and _HEADLESS_SKIP_REASON in (message or "")
+    return ui and _HEADLESS_SKIP_REASON in text
 
 
 def unexpected_skips(path: Path) -> list[str]:

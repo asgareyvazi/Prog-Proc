@@ -53,6 +53,7 @@ test that exercises it, or says that the evidence is only a schema or a comment.
 | Risk scoring, cost/AFE engine, plan-vs-actual dashboards | Deliberately excluded | `docs/DOMAIN.md`. Cost rows keep source currency. Comparison refuses unit conversion. |
 | Trajectory mathematics | Planned | ADR names a later `wellpathpy` wrapper. Survey stations are stored as reported. No interpolation in the directional-survey contract. |
 | CPython 3.14 on Ubuntu 26.04 | Unknown as a certified runtime | The Ubuntu 26.04 CI lane is CPython 3.11. No job has certified 3.14 on that image. |
+| Windows install and offscreen UI | Implemented with limited coverage | `tools/venv_executables.py`, `.github/workflows/ci-windows.yml` on `windows-2022`, `docs/WINDOWS_TESTING.md`. Exact-SHA results are in the V8.13 report. A green offscreen job is not manual desktop acceptance. |
 
 ## This milestone
 
