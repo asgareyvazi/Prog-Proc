@@ -38,15 +38,16 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
 | Domain CLI: `records`, `records rollup`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
 | Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented, read-only** — PySide6-Essentials is optional; it consumes `DomainReviewService`, supports current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model. A close refused by a running worker does not quit the process or destroy that window |
-| Skills, AI providers, and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
+| Ollama provider adapter: `drillintel ai status` probes `/api/tags`; completion and embedding calls return non-authoritative text or vectors | **implemented, not on the engineering path** — configuration is not availability; `doctor` does not probe; `openai-compatible` has no adapter; no extraction, promotion, search, or citation path calls it (`docs/DECISIONS.md` ADR-0005, ADR-51) |
+| Skills and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
 Nothing here needs a GPU, a model download, or a server. `mineru` (for scanned pages) is a real
 optional integration: install it separately and the router will use it, otherwise the built-in
-extractors carry on. The `[ai]` section is different in kind - it reserves the seam ADR-0005
-describes, but **no AI provider adapter exists in this build**, so nothing reads those settings and
-installing Ollama would change nothing. `drillintel doctor` says so on the `ai` line rather than
-implying a reachable model.
+extractors carry on. The Ollama adapter is also optional and local. `drillintel doctor` names the
+configured provider and does not contact it. `drillintel ai status` probes only when asked, and a
+successful probe does not write a record. Installing Ollama changes that probe; it does not change
+extraction, promotion, search, or citation audit.
 
 ## Quick start
 
@@ -367,7 +368,9 @@ version does. Nothing in the projection is ever written back to the domain table
   with no text layer reports that instead of guessing; a best score that is noise returns
   `OTHER`.
 - **Deterministic where it matters.** Engineering numbers come from rules and
-  calculations, not from a model. Any AI output is an input to validation, never a result.
+  calculations, not from a model. The Ollama adapter can return text or vectors.
+  No current path treats that output as a result, or as an input to extraction,
+  promotion, search, or citation audit.
 - **The database is the record, the index is disposable.** Nothing in the search index is
   authoritative, so it is rebuilt rather than migrated - and nothing mutable (a fact's
   lifecycle status, for instance) is baked into indexed text, because the sidecar is not

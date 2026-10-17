@@ -59,23 +59,16 @@ class LoggingSettings:
     )
 
 
-#: Whether an AI provider adapter actually exists in this build.
+#: Whether an AI provider adapter exists in this build.
 #:
-#: ``[ai]`` is real, validated configuration for the seam ADR-0005 reserves, and it is deliberately
-#: kept: the application is local-first and must stay fully usable with AI disabled, so the knobs
-#: are worth preserving for the phase that implements them.  But no provider adapter has been
-#: written - nothing in ``src/`` reads ``settings.ai``, there is no provider/embedding class, and
-#: the startup capability probe ``capability_probe`` describes (``/api/tags``, ``/v1/models``) is
-#: performed by no code.  So a diagnostic that prints ``provider = ollama`` as though a model were
-#: reachable is telling the operator something false about a build that cannot talk to Ollama.
-#:
-#: This flag is the one place that says so, so diagnostics can report it instead of guessing, and
-#: the phase that lands an adapter flips exactly one constant rather than hunting through callers.
-AI_PROVIDER_IMPLEMENTED: Final[bool] = False
+#: The Ollama adapter can probe and can request non-authoritative text or vectors.  ``doctor``
+#: does not probe, so a configured model is not reported as reachable.  ``openai-compatible``
+#: is still a name with no adapter.  Extraction, promotion, search and citation do not call it.
+AI_PROVIDER_IMPLEMENTED: Final[bool] = True
 
 #: Shown wherever the AI settings are summarised, so "configured" is never mistaken for "wired".
-AI_PROVIDER_NOT_WIRED_NOTE: Final[str] = (
-    "no provider adapter exists in this build; these settings are accepted but unused"
+AI_PROVIDER_STATUS_NOTE: Final[str] = (
+    "configuration is not availability; run `drillintel ai status` to probe"
 )
 
 
@@ -433,20 +426,7 @@ class Settings:
             "database": "explicit url"
             if self.database.url
             else f"sqlite in workspace ({self.database.sqlite_filename})",
-            "ai": {
-                "provider": self.ai.provider,
-                "endpoint": self.ai.endpoint,
-                "model": self.ai.model,
-                "embedding_model": self.ai.embedding_model,
-                "temperature": self.ai.temperature,
-                "timeout_seconds": self.ai.timeout_seconds,
-                "require_ai": self.ai.require_ai,
-                "api_key_source": ("env:" + self.ai.secrets.get("openai_api_key", "-"))
-                if self.ai.provider == "openai-compatible"
-                else "n/a",
-                "implemented": AI_PROVIDER_IMPLEMENTED,
-                "note": "" if AI_PROVIDER_IMPLEMENTED else AI_PROVIDER_NOT_WIRED_NOTE,
-            },
+            "ai": self._ai_summary(),
             "mineru": {
                 "mode": self.mineru.mode,
                 "binary": self.mineru.binary,
@@ -455,6 +435,29 @@ class Settings:
             "authority_hierarchy": list(self.authority.hierarchy),
             "overrides": list(self.applied_overrides),
             "unknown_keys": list(self.unknown_keys),
+        }
+
+    def _ai_summary(self) -> dict[str, Any]:
+        """Configured AI identity. This method does not open a socket."""
+        from ..integrations.ai.contract import configured_status
+
+        status = configured_status(self.ai)
+        return {
+            "provider": self.ai.provider,
+            "endpoint": status.identity.endpoint,
+            "model": self.ai.model,
+            "embedding_model": self.ai.embedding_model,
+            "temperature": self.ai.temperature,
+            "timeout_seconds": self.ai.timeout_seconds,
+            "require_ai": self.ai.require_ai,
+            "api_key_source": ("env:" + self.ai.secrets.get("openai_api_key", "-"))
+            if self.ai.provider == "openai-compatible"
+            else "n/a",
+            "implemented": AI_PROVIDER_IMPLEMENTED,
+            "available": False,
+            "availability": status.state.value,
+            "probed": False,
+            "note": status.reason or AI_PROVIDER_STATUS_NOTE,
         }
 
 

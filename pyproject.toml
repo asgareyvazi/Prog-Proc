@@ -48,8 +48,8 @@ dependencies = [
     "PyMuPDF>=1.24,<2.0",
     "openpyxl>=3.1,<4.0",
     "python-docx>=1.1,<2.0",
-    # Local AI transport (ADR-0005).  httpx is used by the provider adapters in
-    # drilling_intelligence.integrations; nothing here imports Ollama's client library.
+    # HTTP transport for the optional MinerU probe and the Ollama adapter (ADR-0005).
+    # Nothing here imports Ollama's or OpenAI's client library.
     "httpx>=0.27,<1.0",
 ]
 

@@ -369,40 +369,38 @@ def test_doctor_reports_the_new_tables_without_crying_wolf(ready) -> None:
     assert code == 1, (code, payload["findings"])
 
 
-def test_doctor_does_not_advertise_an_ai_provider_that_no_code_can_use(ready) -> None:
-    """`doctor` must not present a configured model as though the build could reach it.
+def test_doctor_does_not_treat_ai_configuration_as_availability(ready, monkeypatch) -> None:
+    """`doctor` reports the adapter and does not probe, so a configured model is not reachable.
 
-    `[ai]` is real, validated configuration for the seam ADR-0005 reserves, and it stays: the
-    product is local-first and has to work with AI disabled.  But no provider adapter exists - no
-    code in `src/` reads `settings.ai`, there is no provider or embedding class, and the startup
-    capability probe `capability_probe` describes is performed by nothing.  `doctor` nonetheless
-    printed `ai  ollama / model qwen3:8b, required=False` alongside `findings none`, which reads as
-    "a model is configured and reachable" and would send an operator looking for an AI path that was
-    never built.  Reporting the knobs is fine; reporting them as live is a false operational claim.
+    The Ollama adapter exists.  Reporting ``provider = ollama`` without a probe still reads as
+    "a model is up" unless the line says configuration is not availability.  This workspace's
+    doctor exits 1 for an unbuilt index and a real knowledge disagreement; the AI line must not
+    add a finding or open a socket.
     """
+
+    def forbid_client(*_args, **_kwargs):
+        raise AssertionError("doctor constructed an HTTP client")
+
+    monkeypatch.setattr("httpx.Client", forbid_client)
+    monkeypatch.setattr("httpx.request", forbid_client)
     code, out, _err = _capture(ready, "doctor")
     payload = json.loads(out)
     ai = payload["settings"]["ai"]
 
-    # The configuration is still reported - nothing was removed or hidden.
     assert ai["provider"] == "ollama" and ai["model"] == "qwen3:8b", ai
+    assert ai["implemented"] is True, ai
+    assert ai["available"] is False, ai
+    assert ai["probed"] is False, ai
+    assert ai["availability"] == "not_probed", ai
+    assert "not availability" in ai["note"], ai
 
-    # ...but the summary now says plainly whether an adapter exists, on both surfaces.
-    assert ai["implemented"] is False, ai
-    assert ai["note"], "an unwired seam has to explain itself, not just carry a boolean"
-
-    # The human surface is a separate one - `notes` carries only the lines that can affect the exit
-    # code - so the terminal line has to be checked where a person actually reads it.
-    # ``_text`` asserts exit 0, and this fixture's doctor legitimately exits 1 (the index was never
-    # built and two knowledge rows disagree), so the code-tolerant helper is the right one here.
     _code, text, _err = _capture_text(ready, "doctor")
     lines = [line for line in text.splitlines() if line.startswith("ai ")]
     assert lines, text
     assert "ollama" in lines[0] and "qwen3:8b" in lines[0], lines[0]
-    assert "no provider adapter exists" in lines[0], lines[0]
+    assert "not availability" in lines[0], lines[0]
+    assert "no provider adapter exists" not in lines[0]
 
-    # This is a truthful label, not a new failure: it must not manufacture a finding or change the
-    # exit code, and it must not depend on the workspace's own state.
     assert not [line for line in payload["findings"] if "provider" in line.lower()], payload
     assert code in (0, 1)
 

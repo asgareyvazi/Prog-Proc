@@ -938,17 +938,10 @@ def command_doctor(args: argparse.Namespace) -> int:
             f"  index    {workspace.index_database_path}",
             f"schema {migration.current or '(none)'} at head {migration.head or '(unknown)'} - {migration.mode if migration else 'not opened'}",
             f"config  {workspace.settings.summary()['source_path']}",
-            # The AI settings are real configuration but no provider adapter exists in this build,
-            # so the line says so.  Reporting ``provider = ollama`` on its own reads as "a model is
-            # configured and reachable", which is false: nothing in the product talks to Ollama.
-            # An operator who trusted it would go looking for an AI path that was never built.
+            # Configuration is not availability.  ``doctor`` does not probe.  The note says so,
+            # including when an adapter exists, so a configured model is not reported as reachable.
             f"ai      {summary['ai']['provider']} / model {summary['ai']['model'] or '(none)'}, "
-            f"required={summary['ai']['require_ai']}"
-            + (
-                ""
-                if summary["ai"].get("implemented")
-                else f" - {summary['ai'].get('note', 'not wired')}"
-            ),
+            f"required={summary['ai']['require_ai']} - {summary['ai'].get('note', 'not probed')}",
             f"registry {counts['documents']} document(s), {counts['versions']} version(s), {counts['extractions']} artefact(s)",
             f"search   {stats['documents']} document(s), {stats['chunks']} chunk(s), fts5={'yes' if stats['fts_available'] else 'no'}",
             f"types    {', '.join(f'{key}={value}' for key, value in sorted(counts['by_classification'].items())) or 'nothing registered yet'}",
@@ -959,6 +952,41 @@ def command_doctor(args: argparse.Namespace) -> int:
         lines.extend(f"  - {item}" for item in findings)
         _emit(payload, as_json=args.json, lines=lines)
         return 1 if findings else 0
+    finally:
+        workspace.close()
+
+
+def command_ai_status(args: argparse.Namespace) -> int:
+    """Probe the configured provider. ``drillintel ai status`` does not write a record.
+
+    ``provider = none`` and a disabled capability probe send no request. A successful
+    probe means the configured model is listed. It does not mean the model may write
+    an engineering record, a citation, or a promoted row.
+    """
+    workspace = _open_workspace(args)
+    try:
+        from ..integrations.ai.ollama import probe_provider
+
+        status = probe_provider(workspace.settings.ai)
+        payload = status.to_dict()
+        identity = status.identity
+        lines = [
+            f"ai {identity.provider} state {status.state.value}",
+            f"  endpoint {identity.endpoint or '(none)'}",
+            f"  model {identity.model or '(none)'} present={status.model_present}",
+            f"  available {status.available}",
+            f"  {status.reason}",
+            "  output is not an engineering record",
+        ]
+        _emit(payload, as_json=args.json, lines=lines)
+        if status.available:
+            return 0
+        if (
+            status.state.value in {"unconfigured", "not_probed"}
+            and not workspace.settings.ai.require_ai
+        ):
+            return 0
+        return 1
     finally:
         workspace.close()
 
@@ -3083,6 +3111,19 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
     )
     doctor.set_defaults(handler=command_doctor)
+
+    ai = sub.add_parser(
+        "ai",
+        help="probe the configured model provider; this does not write records",
+        parents=[common],
+    )
+    ai_sub = ai.add_subparsers(dest="action", required=True)
+    ai_status = ai_sub.add_parser(
+        "status",
+        help="probe availability; configuration alone is not success",
+        parents=[common],
+    )
+    ai_status.set_defaults(handler=command_ai_status)
 
     timeline = sub.add_parser(
         "timeline",

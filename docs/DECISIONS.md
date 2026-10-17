@@ -105,6 +105,14 @@ runs the deterministic path and asserts the AI-free result is usable. The cost i
 maintain small amounts of plumbing (timeouts, retries, embedding dimension checks) that a
 framework would own.
 
+**Implementation status (2026-10-17).** The 2026-09-29 paragraph describes that date and
+is not rewritten. ADR-51 is the later implementation. `LLMProvider` and `EmbeddingProvider`
+now exist. An Ollama adapter reads `settings.ai`. `drillintel ai status` performs the
+`/api/tags` probe when `capability_probe` is true. `VectorStore` exists as a protocol whose
+only object reports that no vector store is implemented. The default provider name is still
+`ollama`. That name is still not availability: `doctor` does not probe, and
+`openai-compatible` still sends no request.
+
 ## ADR-0006 — Document intelligence: thin, inspectable engines; MinerU optional
 
 **Status:** accepted (2026-09-05)
@@ -2377,3 +2385,37 @@ complete.
 **Consequences.** A green evidence check means the version sources agree and
 each attempt belongs to its node in order. It does not certify a platform
 that was not run.
+
+## ADR-51 — V8.11: an Ollama adapter that does not write records
+
+**Status:** accepted (2026-10-17)
+
+ADR-0005 reserved `LLMProvider`, `EmbeddingProvider`, and `VectorStore`, and it
+chose `httpx` against a local Ollama. Until this change the names were
+configuration only. A doctor line that printed `provider = ollama` could be
+read as a reachable model.
+
+*   **Probe.** `drillintel ai status` sends one `GET /api/tags` when the
+    provider is `ollama`, the endpoint is an http(s) URL without userinfo, and
+    `[ai].capability_probe` is true. Success means the configured model string
+    is listed exactly. A live server that does not list that model is
+    unsupported, not successful. `doctor` and `Settings.summary` do not open a
+    socket. `provider = none` and `openai-compatible` send no request; the
+    latter is unsupported because this build has no second adapter.
+*   **Calls.** `complete` posts non-streaming `/api/generate`. `embed` posts
+    `/api/embed`. Transport failures retry at most three times. HTTP errors,
+    including 401 and 403, are not retried. Redirects are not followed. Error
+    strings carry a state and a status, not the response body and not the
+    exception text. A URL with userinfo is refused and not echoed.
+*   **Boundary.** Every result has `authoritative: false`. Extraction,
+    knowledge, operations, reporting, retrieval, search, engineering,
+    intelligence, documents, review, and ingestion do not import the adapter.
+    No vector is stored. Alembic head stays `0019`. No new runtime dependency.
+*   **Not claimed.** A successful probe is not a model download, not retrieval,
+    and not proof that a future native Qt abort cannot occur. CPython 3.14 on
+    Ubuntu 26.04 remains uncertified. The V8.8 adapter-warning count remains
+    154, not 166.
+
+**Consequences.** An operator can see whether a configured local model is
+listed. The engineering record is unchanged if Ollama is absent, unauthorized,
+or wrong.
