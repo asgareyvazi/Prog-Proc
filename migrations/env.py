@@ -74,7 +74,9 @@ def _resolve_url() -> str:
 
 
 def _configure() -> None:
-    config.set_main_option("sqlalchemy.url", _resolve_url().replace("%", "%%"))
+    from drilling_intelligence.database.migrations import alembic_config_url
+
+    config.set_main_option("sqlalchemy.url", alembic_config_url(_resolve_url()))
 
 
 def run_migrations_offline() -> None:

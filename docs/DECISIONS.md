@@ -2479,6 +2479,10 @@ it is not a qualification target.
     symlinks` is expected and is not a pass. Any other non-UI skip still
     fails the totals record. Headless Qt skips stay limited to the existing
     `QtWidgets unavailable` reason.
+*   **SQLite URLs.** `str(engine.url)` percent-encodes a Windows drive colon.
+    That string is stored in Alembic's ConfigParser only after `%` is
+    doubled. The connected URL is unchanged. A relative POSIX path is
+    unchanged.
 *   **Acceptance.** A green offscreen Windows job is not manual acceptance
     of the owner's desktop. `docs/WINDOWS_TESTING.md` is the operator route.
     `doctor` still does not probe a provider.

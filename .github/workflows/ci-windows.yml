@@ -207,6 +207,16 @@ jobs:
         shell: pwsh
         run: python tools/ci_pytest.py --output qt-logs/pytest-output.txt --exit-file qt-logs/pytest-exit.txt -- tests/ui --junitxml=qt-logs/pytest-junit.xml
 
+      - name: Surface UI failures
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path qt-logs/pytest-output.txt) {
+            Select-String -Path qt-logs/pytest-output.txt -Pattern '^(FAILED|ERROR) ' | Select-Object -First 40 | ForEach-Object {
+              Write-Output "::error::$($_.Line)"
+            }
+          }
+
       - name: Record UI totals
         if: always()
         shell: pwsh

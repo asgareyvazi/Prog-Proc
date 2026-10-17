@@ -27,6 +27,18 @@ from .engine import install_sqlite_datetime_bind
 
 log = get_logger("database.migrations")
 
+
+def alembic_config_url(url: str) -> str:
+    """Escape ``%`` for Alembic's ConfigParser.
+
+    ``str(engine.url)`` percent-encodes a Windows drive colon as ``%3A``.
+    ConfigParser then raises ``invalid interpolation syntax`` and schema
+    bootstrap never starts. Doubling percent signs is the escape Alembic
+    documents. ``get_main_option`` returns the original URL.
+    """
+    return url.replace("%", "%%")
+
+
 ENV_MIGRATIONS_DIR = "DRILLINTEL_MIGRATIONS_DIR"
 
 #: The Alembic revision that ``Base.metadata`` currently equals.
@@ -164,7 +176,7 @@ def _run_upgrade(
 
     config = Config()
     config.set_main_option("script_location", str(directory))
-    config.set_main_option("sqlalchemy.url", str(engine.url))
+    config.set_main_option("sqlalchemy.url", alembic_config_url(str(engine.url)))
     config.attributes["engine"] = engine
     config.attributes["configure_logger"] = False
     before = current_revision(engine)
@@ -220,7 +232,7 @@ def _create_and_stamp(engine: Engine, reason: str, *, stamp_only: bool = False) 
     if directory is not None:
         config = Config()
         config.set_main_option("script_location", str(directory))
-        config.set_main_option("sqlalchemy.url", str(engine.url))
+        config.set_main_option("sqlalchemy.url", alembic_config_url(str(engine.url)))
         config.attributes["engine"] = engine
         config.attributes["configure_logger"] = False
         command.stamp(config, "head")
