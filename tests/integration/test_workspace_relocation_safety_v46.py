@@ -151,7 +151,10 @@ def test_a_stale_connection_after_a_move_is_refused_and_recreates_nothing(tmp_pa
     before = _state(workspace.database)
 
     moved = tmp_path / "moved"
-    shutil.move(str(workspace.root), str(moved))
+    try:
+        shutil.move(str(workspace.root), str(moved))
+    except PermissionError as exc:
+        pytest.skip(f"this platform will not move an open database file: {exc}")
     assert not Path(old_database).exists(), "the database did not travel with the folder"
 
     with pytest.raises(ValidationError, match="does not contain the database"):

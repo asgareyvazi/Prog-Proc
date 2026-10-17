@@ -21,6 +21,7 @@ would need it is a data migration with a written reason, not application code.
 from __future__ import annotations
 
 import inspect
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select, text
@@ -167,6 +168,28 @@ def test_correction_is_additive(session, trail) -> None:
     assert session.get(AuditEvent, wrong.id).detail["kind"] == "DDR", (
         "the original claim survives as written"
     )
+
+
+def test_a_frozen_clock_still_trails_newest_first(session, trail, monkeypatch) -> None:
+    frozen = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr("drilling_intelligence.database.audit.utc_now", lambda: frozen)
+    repository, document_id = trail
+    repository.audit(
+        action="document.classified",
+        subject_type="document",
+        subject_id=document_id,
+        detail={"kind": "DDR"},
+    )
+    session.flush()
+    repository.audit(
+        action="audit.corrected",
+        subject_type="document",
+        subject_id=document_id,
+        detail={"kind": "MUD_REPORT"},
+    )
+    session.flush()
+    actions = [event.action for event in repository.audit_trail("document", document_id, limit=10)]
+    assert actions[:2] == ["audit.corrected", "document.classified"]
 
 
 # --------------------------------------------------------------------------- the contract itself

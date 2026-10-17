@@ -29,6 +29,19 @@ def test_an_unescaped_windows_url_is_the_interpolation_error() -> None:
         parser.read_dict({"alembic": {"sqlalchemy.url": rendered}})
 
 
+def test_a_rendered_windows_url_is_the_drive_path() -> None:
+    from drilling_intelligence.database.engine import sqlite_file_path
+
+    rendered = str(
+        create_engine(
+            "sqlite:///C:/Users/runneradmin/AppData/Local/Temp/ws/drilling_intelligence.db"
+        ).url
+    )
+    assert sqlite_file_path(rendered) == (
+        "C:/Users/runneradmin/AppData/Local/Temp/ws/drilling_intelligence.db"
+    )
+
+
 def test_a_url_without_percent_is_unchanged() -> None:
     url = "sqlite:////opt/workspace/drilling_intelligence.db"
     assert alembic_config_url(url) == url

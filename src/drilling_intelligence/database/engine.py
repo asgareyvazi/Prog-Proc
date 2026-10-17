@@ -22,6 +22,22 @@ from ..config.settings import Settings
 log = logging.getLogger("drilling_intelligence.database.engine")
 
 
+def sqlite_file_path(url: str | URL) -> str:
+    """Filesystem path of a SQLite URL, with percent-encoding undone.
+
+    ``str(engine.url)`` encodes a Windows drive colon as ``%3A``. ``Path`` does
+    not decode that, so a containment check would not see the file that is
+    open. A non-file URL returns an empty string rather than a guess.
+    """
+    url_obj = url if isinstance(url, URL) else make_url(str(url))
+    if url_obj.get_backend_name() != "sqlite":
+        return ""
+    database = url_obj.database or ""
+    if not database or database == ":memory:":
+        return ""
+    return database
+
+
 def ensure_parent_dir(url: str | URL) -> Path | None:
     """SQLite needs its directory to exist; return it for the caller to create."""
     url_obj = url if isinstance(url, URL) else make_url(str(url))

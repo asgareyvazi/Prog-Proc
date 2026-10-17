@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 
 def _tree(relative: str) -> ast.AST:
     return ast.parse(Path(relative).read_text(encoding="utf-8"), filename=relative)
@@ -276,12 +278,15 @@ def test_posix_deadline_stderr_is_nonblocking() -> None:
 
     read_fd, write_fd = os.pipe()
     try:
-        _set_nonblocking(write_fd)
-        if os.name != "nt":
-            import fcntl
+        if os.name == "nt":
+            with pytest.raises(ModuleNotFoundError):
+                _set_nonblocking(write_fd)
+            return
+        import fcntl
 
-            flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
-            assert flags & os.O_NONBLOCK
+        _set_nonblocking(write_fd)
+        flags = fcntl.fcntl(write_fd, fcntl.F_GETFL)
+        assert flags & os.O_NONBLOCK
     finally:
         os.close(read_fd)
         os.close(write_fd)
@@ -289,23 +294,35 @@ def test_posix_deadline_stderr_is_nonblocking() -> None:
 
 def test_windows_deadline_notice_does_not_wait_on_a_full_pipe(monkeypatch) -> None:
     import os
+    import threading
     import time
 
     monkeypatch.setattr("drilling_intelligence.ui.lifetime.os.name", "nt")
     from drilling_intelligence.ui.lifetime import _write_deadline_notice
 
     read_fd, write_fd = os.pipe()
+    filler = threading.Thread(
+        target=lambda: _fill_until_blocked(write_fd),
+        name="pipe-fill",
+        daemon=True,
+    )
     try:
-        os.set_blocking(write_fd, False)
-        try:
-            while True:
-                os.write(write_fd, b"x" * 4096)
-        except BlockingIOError:
-            pass
-        os.set_blocking(write_fd, True)
+        filler.start()
+        time.sleep(0.2)
         started = time.monotonic()
         _write_deadline_notice(write_fd, b"notice\n")
         assert time.monotonic() - started < 1.0
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+def _fill_until_blocked(fd: int) -> None:
+    import os
+
+    chunk = b"x" * 4096
+    try:
+        while True:
+            os.write(fd, chunk)
+    except (BlockingIOError, OSError):
+        return

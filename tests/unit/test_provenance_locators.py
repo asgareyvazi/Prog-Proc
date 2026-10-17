@@ -88,7 +88,7 @@ def test_unreadable_source_is_reported_not_silently_ok(tmp_path) -> None:
 
 def test_hashes_and_identity(tmp_path) -> None:
     file = tmp_path / "a.txt"
-    file.write_text("12345\n", encoding="utf-8")
+    file.write_bytes(b"12345\n")
     assert sha256_file(file) == sha256_text("12345\n")
     assert is_sha256(sha256_file(file)) and not is_sha256("nope")
     assert identity_slug("North Cormorant  Well-A3!") == "north-cormorant-well-a3"

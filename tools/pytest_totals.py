@@ -10,7 +10,9 @@ publisher, and its integer is compared with the session exit. A green JSON/JUnit
 pair must not conceal it.
 
 An unexpected pass fails the record. A skip is expected only for a headless UI
-test whose reason says Qt could not load. Every other skip fails the record.
+test whose reason says Qt could not load, or for a named platform limit
+(symlinks, or moving a database file that is still open). Every other skip
+fails the record.
 """
 
 from __future__ import annotations
@@ -29,7 +31,10 @@ _XFAIL_TYPE = "pytest.xfail"
 _XPASS_MESSAGE = "xfail-marked test passes unexpectedly"
 _EXIT_LINE = re.compile(r"-?\d+")
 _HEADLESS_SKIP_REASON = "QtWidgets unavailable"
-_PLATFORM_SKIP_REASON = "this platform does not support symlinks"
+_PLATFORM_SKIP_REASONS = (
+    "this platform does not support symlinks",
+    "this platform will not move an open database file",
+)
 _KEYS = (
     "collected",
     "passed",
@@ -190,7 +195,7 @@ def skip_is_expected(classname: str, name: str, message: str) -> bool:
     skip is not a pass, and a different reason is still unexpected.
     """
     text = message or ""
-    if _PLATFORM_SKIP_REASON in text:
+    if any(reason in text for reason in _PLATFORM_SKIP_REASONS):
         return True
     identity = f"{classname} {name}"
     ui = "tests.ui." in classname or classname.startswith("tests.ui") or "tests/ui/" in identity

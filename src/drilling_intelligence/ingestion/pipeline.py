@@ -178,9 +178,11 @@ class IngestionPipeline:
         containment check is skipped rather than guessed.
         """
         url = str(getattr(self.database, "url", "") or "")
-        if not url.startswith("sqlite:///"):
+        if not url.startswith("sqlite"):
             return ""
-        return url[len("sqlite:///") :]
+        from ..database.engine import sqlite_file_path
+
+        return sqlite_file_path(url)
 
     def _assert_workspace_belongs_here(self, workspace_id: str) -> None:
         """An explicit workspace id must *be* this pipeline's workspace, not merely exist.

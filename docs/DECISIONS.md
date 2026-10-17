@@ -2481,8 +2481,13 @@ it is not a qualification target.
     `QtWidgets unavailable` reason.
 *   **SQLite URLs.** `str(engine.url)` percent-encodes a Windows drive colon.
     That string is stored in Alembic's ConfigParser only after `%` is
-    doubled. The connected URL is unchanged. A relative POSIX path is
-    unchanged.
+    doubled. A containment check uses the decoded database path, not the
+    encoded URL text. The connected URL is unchanged.
+*   **Open files.** Windows will not rename a database file that still has a
+    connection. A test that needs that move skips with `this platform will
+    not move an open database file`. That skip is expected and is not a pass.
+    Closing the workspace and then moving the folder remains the supported
+    move.
 *   **Acceptance.** A green offscreen Windows job is not manual acceptance
     of the owner's desktop. `docs/WINDOWS_TESTING.md` is the operator route.
     `doctor` still does not probe a provider.

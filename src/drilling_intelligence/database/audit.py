@@ -19,6 +19,7 @@ method to call, and the guards catch anyone who reaches for the session directly
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import event, select
@@ -68,6 +69,42 @@ def install_append_only_policy() -> bool:
     return True
 
 
+def _as_utc(moment: datetime) -> datetime:
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC)
+
+
+def _strictly_after_latest(session: Session, subject_type: str, subject_id: str) -> datetime:
+    """A clock timestamp that sorts after every event already recorded for this subject.
+
+    Windows can return the same ``datetime.now`` for two calls inside one tick.
+    Ordering the trail by ``at`` alone then makes a correction look older than
+    the claim it replaces. One microsecond is enough to keep newest-first
+    without changing the column or the stored text format. An explicit ``at``
+    is not adjusted.
+    """
+    moment = utc_now()
+    latest = session.execute(
+        select(AuditEvent.at)
+        .where(AuditEvent.subject_type == subject_type, AuditEvent.subject_id == subject_id)
+        .order_by(AuditEvent.at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    for pending in session.new:
+        if (
+            isinstance(pending, AuditEvent)
+            and pending.subject_type == subject_type
+            and pending.subject_id == subject_id
+            and pending.at is not None
+            and (latest is None or _as_utc(pending.at) > _as_utc(latest))
+        ):
+            latest = pending.at
+    if latest is not None and _as_utc(moment) <= _as_utc(latest):
+        return _as_utc(latest) + timedelta(microseconds=1)
+    return moment
+
+
 class AuditLog:
     """The audit trail as an append-only store.
 
@@ -92,7 +129,9 @@ class AuditLog:
         """Append one event.  ``detail`` must be JSON-serialisable and self-explanatory."""
         event_row = AuditEvent(
             id=new_id("aud"),
-            at=at or utc_now(),
+            at=at
+            if at is not None
+            else _strictly_after_latest(self.session, subject_type, subject_id),
             actor=actor,
             action=action,
             subject_type=subject_type,

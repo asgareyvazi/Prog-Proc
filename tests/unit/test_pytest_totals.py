@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -173,6 +172,16 @@ def test_unexpected_xpass_and_skip_fail_an_otherwise_green_record(tmp_path: Path
         "tests.integration.test_path_and_process_boundary",
         "test_symlinks_pointing_outside_the_scan_root_are_never_followed",
         "this platform does not support symlinks",
+    )
+    assert skip_is_expected(
+        "tests.integration.test_workspace_relocation_safety_v46",
+        "test_a_stale_connection_after_a_move_is_refused_and_recreates_nothing",
+        "this platform will not move an open database file: [WinError 32]",
+    )
+    assert not skip_is_expected(
+        "tests.integration.test_workspace_relocation_safety_v46",
+        "test_a_stale_connection_after_a_move_is_refused_and_recreates_nothing",
+        "permission denied",
     )
     assert not skip_is_expected(
         "tests.ui.test_workbench", "test_real", "skipped for another reason"
@@ -405,22 +414,37 @@ def test_a_fixture_error_and_a_strict_xpass_are_real_pytest_outcomes(tmp_path: P
 
 def test_a_real_shell_exit_is_not_replaced_when_the_session_disagrees(tmp_path: Path) -> None:
     suite = tmp_path / "test_real_exit.py"
-    suite.write_text("def test_bad():\n    assert False\n", encoding="utf-8")
+    suite.write_text("def test_bad():\n    assert False\n", encoding="utf-8", newline="\n")
     stats = tmp_path / "totals.json"
     junit = tmp_path / "junit.xml"
     exit_file = tmp_path / "pytest-exit.txt"
     summary = tmp_path / "summary.md"
+    runner = tmp_path / "record_exit.py"
+    runner.write_text(
+        "\n".join(
+            [
+                "import subprocess",
+                "import sys",
+                "from pathlib import Path",
+                "exe, suite, junit, exit_file = sys.argv[1:]",
+                "completed = subprocess.run(",
+                "    [exe, '-m', 'pytest', suite, '-p', 'tools.pytest_totals',",
+                "     '--noconftest', '-o', 'addopts=', '-q', '--tb=no', f'--junitxml={junit}'],",
+                "    check=False,",
+                ")",
+                "Path(exit_file).write_text(f'{completed.returncode}\\n', encoding='utf-8', newline='\\n')",
+                "raise SystemExit(completed.returncode)",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
     env = os.environ.copy()
     env["PYTEST_TOTALS_PATH"] = str(stats)
     env.pop("PYTEST_TOTALS_DISABLE", None)
-    command = (
-        f"{shlex.quote(sys.executable)} -m pytest {shlex.quote(str(suite))} "
-        "-p tools.pytest_totals --noconftest -o addopts= -q --tb=no "
-        f"--junitxml={shlex.quote(str(junit))}; "
-        f'status=$?; echo "$status" > {shlex.quote(str(exit_file))}; exit "$status"'
-    )
     completed = subprocess.run(
-        ["/bin/bash", "-c", command],
+        [sys.executable, str(runner), sys.executable, str(suite), str(junit), str(exit_file)],
         check=False,
         capture_output=True,
         text=True,
