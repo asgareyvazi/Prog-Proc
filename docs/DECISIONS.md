@@ -2526,7 +2526,14 @@ a code other than 4. The monitor now calls `TerminateProcess` with code 4
 before `os._exit`. It still does not call Qt, delete a widget, or
 `QThread.terminate` a worker. `os._exit(4)` remains the fallback and the
 POSIX path. A fault inside Qt that happens before the monitor runs is
-still a failure. No schema change. Alembic head stays `0019`.
+still a failure.
+
+On `69c4bd4` the same test failed again. The child exit was `3221225477`
+(`0xC0000005`, an access violation), not 4. `TerminateProcess` did not
+stop that fault. The coordinator was still calling `processEvents` while
+it was only waiting for a live worker. That can deliver the close the
+pass just refused. While a pass releases nothing because a worker is
+running, it no longer pumps. No schema change. Alembic head stays `0019`.
 
 **Consequences.** Exit 4 is still a failed shutdown. A green Windows UI job
 after this change is not proof that a native fault inside Qt cannot recur.

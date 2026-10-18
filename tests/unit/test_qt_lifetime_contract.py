@@ -69,6 +69,7 @@ def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     assert "QEventLoop()" not in coordinate
     assert "elapsed.start()" not in coordinate
     assert coordinate.count("_ShutdownDeadline(") == 1
+    assert "if result.released:" in coordinate
     assert "if not guard.disarm()" in coordinate
     assert "PRODUCTION_SHUTDOWN_WAIT_MS" not in coordinate
     teardown = lifetime.split("def fixture_teardown", 1)[1]

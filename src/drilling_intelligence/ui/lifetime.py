@@ -135,6 +135,7 @@ def release_top_level_widgets(
     from PySide6.QtWidgets import QApplication
 
     released = 0
+    deferred = False
     for widget in list(QApplication.topLevelWidgets()):
         if not shiboken6.isValid(widget):
             continue
@@ -144,6 +145,7 @@ def release_top_level_widgets(
         # still running still uses the 10s join inside closeEvent.
         running = getattr(widget, "owned_workers_running", None)
         if remaining_ms is not None and callable(running) and running():
+            deferred = True
             continue
         if remaining_ms is not None:
             _apply_join_budget(widget, remaining_ms)
@@ -156,8 +158,11 @@ def release_top_level_widgets(
             released += 1
     # A full-budget pump would restart the allowance already spent inside close().
     # Deletion is shiboken6.delete, so a short slice is enough to deliver
-    # bookkeeping. The coordinator applies the remaining budget again afterwards.
-    _pump(application, None if remaining_ms is None else wait_slice_ms(remaining_ms))
+    # bookkeeping. Do not pump while this pass only waited for a worker.
+    # processEvents can deliver the close that was just refused, and on Windows
+    # that path has access-violated instead of reaching exit 4.
+    if not (deferred and released == 0):
+        _pump(application, None if remaining_ms is None else wait_slice_ms(remaining_ms))
     refused: list[str] = []
     for widget in list(QApplication.topLevelWidgets()):
         if not shiboken6.isValid(widget):
@@ -364,7 +369,10 @@ def _coordinate(
         if pause <= 0:
             return _expired(code, result, on_expire)
         QThread.msleep(pause)
-        _pump(application, guard.remaining_ms())
+        # Same rule as the release pass: do not deliver events while the only
+        # reason the window is still valid is a live worker.
+        if result.released:
+            _pump(application, guard.remaining_ms())
 
 
 def _expired(
