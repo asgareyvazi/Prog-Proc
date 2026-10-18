@@ -183,6 +183,11 @@ def test_unexpected_xpass_and_skip_fail_an_otherwise_green_record(tmp_path: Path
         "test_a_stale_connection_after_a_move_is_refused_and_recreates_nothing",
         "permission denied",
     )
+    assert skip_is_expected(
+        "tests.engineering.test_extractor_limits",
+        "test_repeated_reads_do_not_leak_file_handles",
+        "Windows process handle count is not a file-descriptor leak measurement",
+    )
     assert not skip_is_expected(
         "tests.ui.test_workbench", "test_real", "skipped for another reason"
     )

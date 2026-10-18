@@ -106,7 +106,13 @@ Windows core CI skips one test whose reason is `this platform will not move
 an open database file`. Windows will not rename a SQLite file that still has
 a connection. That skip is not a pass. The supported move is to close the
 workspace, then move the folder, then open it at the new path. A separate
-test checks that a refused rename leaves the original file in place.
+test renames the open database file itself and checks that a refusal leaves
+the original file and does not create the destination.
+
+The workbook handle-count test also skips on Windows. The reason is
+`Windows process handle count is not a file-descriptor leak measurement`.
+Two runs grew by 3 and by 11, so that counter cannot prove the archive
+bound. The skip is not a pass. Linux still counts `/proc/self/fd`.
 
 ## Optional workbench
 

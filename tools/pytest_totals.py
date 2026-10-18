@@ -34,6 +34,7 @@ _HEADLESS_SKIP_REASON = "QtWidgets unavailable"
 _PLATFORM_SKIP_REASONS = (
     "this platform does not support symlinks",
     "this platform will not move an open database file",
+    "Windows process handle count is not a file-descriptor leak measurement",
 )
 _KEYS = (
     "collected",

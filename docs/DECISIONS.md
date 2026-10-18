@@ -2486,9 +2486,16 @@ it is not a qualification target.
 *   **Open files.** Windows will not rename a database file that still has a
     connection. A test that needs that move skips with `this platform will
     not move an open database file`. That skip is expected and is not a pass.
-    A separate test records the refusal: the original file remains, and no
-    second database appears at the destination. Closing the workspace and
-    then moving the folder remains the supported move.
+    A separate test renames the open database file itself. A refused rename
+    leaves the original file and does not create the destination.
+    ``shutil.move`` of the parent folder is not that test: it can copy before
+    it fails. Closing the workspace and then moving the folder remains the
+    supported move.
+*   **Handle count.** ``GetProcessHandleCount`` is not a file-descriptor
+    count. Two Windows 3.11 runs grew by 3 and by 11 during the same extract
+    loop, so the counter cannot prove that five archives were not left open.
+    That test skips on Windows with that reason. The skip is not a pass.
+    Linux still measures ``/proc/self/fd`` with an allowance of 2.
 *   **Owner pilot.** `tools/windows_pilot.ps1` runs the console checks in a
     disposable directory. It does not open a user-visible window and does not
     mark the manual checklist as run. Package installation and a provider
