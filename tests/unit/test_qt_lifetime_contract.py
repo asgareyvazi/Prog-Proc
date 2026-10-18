@@ -218,9 +218,12 @@ def test_windows_deadline_monitor_exits_without_notifying_libraries(monkeypatch)
     source = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
     assert "QThread.terminate(" not in source
     assert "TerminateProcess" in source
-    assert "shiboken6.delete" not in source.split("def _terminate_current_process", 1)[1].split(
-        "def _terminal_exit", 1
-    )[0]
+    assert (
+        "shiboken6.delete"
+        not in source.split("def _terminate_current_process", 1)[1].split("def _terminal_exit", 1)[
+            0
+        ]
+    )
 
 
 def test_a_late_disarm_cannot_suppress_the_terminal_exit() -> None:
