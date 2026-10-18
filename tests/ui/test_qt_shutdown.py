@@ -84,11 +84,12 @@ def _run(mode: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
 
 
 def _detail(completed: subprocess.CompletedProcess[str]) -> str:
-    return " | ".join(
+    body = " | ".join(
         line.strip()
         for line in f"{completed.stderr}\n{completed.stdout}".splitlines()
         if line.strip()
-    )[-500:]
+    )
+    return f"exit {completed.returncode} :: {body[-500:]}"
 
 
 def _assert_no_abort(completed: subprocess.CompletedProcess[str]) -> None:

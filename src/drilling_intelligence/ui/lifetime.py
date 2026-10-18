@@ -220,6 +220,24 @@ def _write_deadline_notice(fd: int, message: bytes) -> None:
     os.write(fd, message)
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _terminate_current_process(code: int) -> None:
+    """Stop this Windows process with ``code`` without notifying libraries.
+
+    ``os._exit`` calls ``ExitProcess``. The deadline monitor can reach that
+    call while the GUI thread is still inside Qt, and the process can fault
+    with a code other than 4. ``TerminateProcess`` does not notify libraries.
+    It does not call Qt, delete a widget, or ``QThread.terminate`` a worker.
+    """
+    import ctypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.TerminateProcess(kernel.GetCurrentProcess(), code)
+
+
 def _terminal_exit() -> None:
     """Best-effort diagnostic, then exit 4. A blocked write must not delay it."""
     message = b"Qt shutdown incomplete; deadline elapsed before release finished\n"
@@ -227,6 +245,11 @@ def _terminal_exit() -> None:
         _write_deadline_notice(sys.stderr.fileno(), message)
     except (AttributeError, ImportError, OSError, ValueError):
         pass
+    if _is_windows():
+        try:
+            _terminate_current_process(SHUTDOWN_INCOMPLETE_EXIT)
+        except (AttributeError, OSError, ValueError):
+            pass
     os._exit(SHUTDOWN_INCOMPLETE_EXIT)
 
 

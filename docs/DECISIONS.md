@@ -2506,3 +2506,27 @@ it is not a qualification target.
 
 **Consequences.** Windows CI can install the package and start the console
 scripts. The Linux stability evidence remains the Linux stability evidence.
+
+## ADR-54 — V8.14: the Windows deadline monitor does not use ExitProcess
+
+**Status:** accepted (2026-10-18)
+
+On `4029ece`, the Windows offscreen UI job failed
+`test_synthetic_deadline_is_supplementary_not_the_qthread_proof`. The child
+did not exit 4. `PYTHONFAULTHANDLER` printed a stack whose newest Python
+frame was `finish_qt_application`, during the 400 ms synthetic deadline.
+The log zip was not downloaded; the annotation is the evidence. The same
+test passed on `f42a5f4` and `b187678`. This is not a pass, and it is not
+hidden by a retry.
+
+`os._exit` on Windows calls `ExitProcess`, which notifies libraries. The
+deadline monitor can reach that call while the GUI thread is inside Qt,
+because `processEvents` releases the GIL. The process can then fault with
+a code other than 4. The monitor now calls `TerminateProcess` with code 4
+before `os._exit`. It still does not call Qt, delete a widget, or
+`QThread.terminate` a worker. `os._exit(4)` remains the fallback and the
+POSIX path. A fault inside Qt that happens before the monitor runs is
+still a failure. No schema change. Alembic head stays `0019`.
+
+**Consequences.** Exit 4 is still a failed shutdown. A green Windows UI job
+after this change is not proof that a native fault inside Qt cannot recur.

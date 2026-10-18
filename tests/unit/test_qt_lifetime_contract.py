@@ -198,6 +198,31 @@ def test_completion_is_accepted_only_strictly_before_the_deadline() -> None:
     assert after.disarm() is False
 
 
+def test_windows_deadline_monitor_exits_without_notifying_libraries(monkeypatch) -> None:
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
+    monkeypatch.setattr(lifetime, "_write_deadline_notice", lambda *_args: None)
+    monkeypatch.setattr(
+        lifetime,
+        "_terminate_current_process",
+        lambda code: calls.append(("terminate", code)),
+    )
+    monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append(("exit", code)))
+    lifetime._terminal_exit()
+    assert calls == [("terminate", 4), ("exit", 4)]
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: False)
+    lifetime._terminal_exit()
+    assert calls == [("terminate", 4), ("exit", 4), ("exit", 4)]
+    source = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
+    assert "QThread.terminate(" not in source
+    assert "TerminateProcess" in source
+    assert "shiboken6.delete" not in source.split("def _terminate_current_process", 1)[1].split(
+        "def _terminal_exit", 1
+    )[0]
+
+
 def test_a_late_disarm_cannot_suppress_the_terminal_exit() -> None:
     from drilling_intelligence.ui.lifetime import _ShutdownDeadline
 
