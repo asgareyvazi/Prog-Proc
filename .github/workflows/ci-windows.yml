@@ -162,6 +162,10 @@ jobs:
         shell: pwsh
         run: python tools/release_smoke.py
 
+      - name: Disposable owner pilot
+        shell: pwsh
+        run: .\tools\windows_pilot.ps1 -Python python -RepoRoot (Get-Location).Path
+
   ui:
     name: windows ui (offscreen Qt)
     runs-on: windows-2022

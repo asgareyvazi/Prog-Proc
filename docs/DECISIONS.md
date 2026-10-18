@@ -2486,8 +2486,13 @@ it is not a qualification target.
 *   **Open files.** Windows will not rename a database file that still has a
     connection. A test that needs that move skips with `this platform will
     not move an open database file`. That skip is expected and is not a pass.
-    Closing the workspace and then moving the folder remains the supported
-    move.
+    A separate test records the refusal: the original file remains, and no
+    second database appears at the destination. Closing the workspace and
+    then moving the folder remains the supported move.
+*   **Owner pilot.** `tools/windows_pilot.ps1` runs the console checks in a
+    disposable directory. It does not open a user-visible window and does not
+    mark the manual checklist as run. Package installation and a provider
+    probe are separate opt-in switches.
 *   **Acceptance.** A green offscreen Windows job is not manual acceptance
     of the owner's desktop. `docs/WINDOWS_TESTING.md` is the operator route.
     `doctor` still does not probe a provider.

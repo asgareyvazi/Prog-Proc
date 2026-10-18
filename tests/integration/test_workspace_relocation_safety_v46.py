@@ -164,6 +164,29 @@ def test_a_stale_connection_after_a_move_is_refused_and_recreates_nothing(tmp_pa
     assert _state(workspace.database) == before
 
 
+def test_a_refused_open_file_move_leaves_the_original_database(tmp_path) -> None:
+    """A platform that will not rename an open database must leave that file in place.
+
+    The stale-move test above cannot be staged when the operating system
+    refuses the rename. That refusal is not a pass of the move. It is a
+    different fact: the original file remains, and no second database appears
+    at the destination.
+    """
+    workspace = _workspace(tmp_path / "home")
+    old_database = Path(str(workspace.database_path))
+    assert old_database.is_file()
+    destination = tmp_path / "moved"
+    try:
+        shutil.move(str(workspace.root), str(destination))
+    except PermissionError:
+        assert old_database.is_file(), "a refused move removed the open database"
+        assert not (destination / ".drillintel").exists()
+        assert _state(workspace.database), "the live connection no longer answers"
+        return
+    shutil.move(str(destination), str(workspace.root))
+    assert old_database.is_file()
+
+
 def test_moving_the_folder_and_reopening_preserves_identity(tmp_path) -> None:
     """The supported move: carry the folder, open it at the new path, keep everything else."""
     workspace = _workspace(tmp_path / "home")

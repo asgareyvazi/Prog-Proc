@@ -2,9 +2,12 @@
 
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the
-`windows-2022` workflow in `.github/workflows/ci-windows.yml`. The exact
-Python versions and results of a run are in
-`docs/mission-reports/V8.13_FINAL_REPORT.md`. A green offscreen job is not
+`windows-2022` workflow in `.github/workflows/ci-windows.yml`. That image is
+not this workstation. The workflow runs CPython 3.11 and 3.14 for the core
+suite, and CPython 3.11 for clean-install smoke, the disposable pilot, and
+the offscreen UI job. Exact totals for a SHA are in
+`docs/mission-reports/V8.13_FINAL_REPORT.md` and
+`docs/mission-reports/V8.14_FINAL_REPORT.md`. A green offscreen job is not
 the same as opening the workbench on this machine.
 
 Commands below are PowerShell. Do not paste the Bash examples from the
@@ -74,6 +77,36 @@ drives the installed `drillintel.exe`:
 
 The script looks for `Scripts\python.exe`, `Scripts\pip.exe`, and
 `Scripts\drillintel.exe`. A missing suffix is a failure, not a guess.
+
+## Disposable pilot
+
+From the repository root, after the editable install above, this runs the
+console checks in a unique temp directory whose name contains a space. It
+does not install anything unless `-AllowInstall` is passed, and it does not
+contact Ollama unless `-AllowProviderProbe` is passed. It writes
+`pilot-summary.md` and `pilot-summary.json` in that directory. The manual
+checklist below stays unchecked.
+
+```powershell
+.\tools\windows_pilot.ps1 -Python .\.venv\Scripts\python.exe
+```
+
+Optional switches, each explicit: `-AllowInstall`, `-ReleaseSmoke`,
+`-FullPytest`, `-OffscreenUi`, `-AllowProviderProbe`. `-OffscreenUi` is still
+not a visible window. `-FullPytest` can be interrupted; an interrupted suite
+is not a pass.
+
+If a step fails, send the summary, the Windows edition, `python --version`,
+the failed command, `$LASTEXITCODE`, and the redacted error line. Do not
+paste document bodies, environment dumps, or connection strings.
+
+## Known automated skip
+
+Windows core CI skips one test whose reason is `this platform will not move
+an open database file`. Windows will not rename a SQLite file that still has
+a connection. That skip is not a pass. The supported move is to close the
+workspace, then move the folder, then open it at the new path. A separate
+test checks that a refused rename leaves the original file in place.
 
 ## Optional workbench
 
@@ -167,8 +200,10 @@ stored.
 ## Manual acceptance checklist
 
 Run this on the workstation you care about. Record the Windows edition,
-`python --version`, and `$LASTEXITCODE` for each failed step. Until those
-notes exist, this checklist is unexecuted.
+build if you have it, `python --version`, the repository SHA, and
+`$LASTEXITCODE` for each failed step. A skipped step is not a pass; write
+the skip reason. Until those notes exist, this checklist is unexecuted.
+The disposable pilot does not complete these boxes.
 
 - [ ] `python --version` is 3.11 or newer.
 - [ ] `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"` exits 0.
