@@ -49,6 +49,18 @@ from typing import Any
 # native abort. It is not a successful teardown.
 FIXTURE_INCOMPLETE_EXIT = 3
 SHUTDOWN_INCOMPLETE_EXIT = 4
+
+
+def is_fail_closed_shutdown_exit(code: int) -> bool:
+    """True only for the production fail-closed process code.
+
+    Windows ``STATUS_ACCESS_VIOLATION`` (``0xC0000005``) is not this code.
+    Python has reported that fault as ``3221225477`` and can also report the
+    signed 32-bit form ``-1073741819``. Neither is exit 4.
+    """
+    return type(code) is int and code == SHUTDOWN_INCOMPLETE_EXIT
+
+
 # Ceiling for a refused close after exec() has already returned. Distinct from
 # the 10s worker join inside MainWindow.closeEvent. The join is not restarted,
 # and this ceiling is not restarted, on each poll.
@@ -159,8 +171,9 @@ def release_top_level_widgets(
     # A full-budget pump would restart the allowance already spent inside close().
     # Deletion is shiboken6.delete, so a short slice is enough to deliver
     # bookkeeping. Do not pump while this pass only waited for a worker.
-    # processEvents can deliver the close that was just refused, and on Windows
-    # that path has access-violated instead of reaching exit 4.
+    # processEvents can deliver the close that was just refused. A Windows
+    # child access-violated inside this coordinator while that pump still ran.
+    # Skipping it is not proof the fault cannot recur.
     if not (deferred and released == 0):
         _pump(application, None if remaining_ms is None else wait_slice_ms(remaining_ms))
     refused: list[str] = []

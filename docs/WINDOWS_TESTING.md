@@ -114,6 +114,10 @@ The workbook handle-count test also skips on Windows. The reason is
 Two runs grew by 3 and by 11, so that counter cannot prove the archive
 bound. The skip is not a pass. Linux still counts `/proc/self/fd`.
 
+The offscreen UI job has also seen the synthetic-deadline child exit
+`3221225477` (`0xC0000005`) instead of 4. A later green UI job does not
+prove that access violation cannot recur. It is not a pass of that case.
+
 ## Optional workbench
 
 Install Qt only if you want the desktop window:

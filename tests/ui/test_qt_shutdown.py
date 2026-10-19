@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from drilling_intelligence.ui.lifetime import is_fail_closed_shutdown_exit
+
 pytestmark = pytest.mark.ui
 
 _CHILD = Path(__file__).with_name("qt_shutdown_child.py")
@@ -184,7 +186,7 @@ def test_production_deadline_exits_4_and_the_parent_bounds_the_wait() -> None:
     started = time.monotonic()
     completed = _run("deadline", timeout=8)
     elapsed = time.monotonic() - started
-    assert completed.returncode == 4, _detail(completed)
+    assert is_fail_closed_shutdown_exit(completed.returncode), _detail(completed)
     assert elapsed < 12, elapsed
     assert "Qt shutdown incomplete" in completed.stderr
     assert "FAIL deadline returned" not in completed.stderr + completed.stdout
@@ -198,7 +200,7 @@ def test_synthetic_deadline_is_supplementary_not_the_qthread_proof() -> None:
     started = time.monotonic()
     completed = _run("deadline-synthetic", timeout=8)
     elapsed = time.monotonic() - started
-    assert completed.returncode == 4, _detail(completed)
+    assert is_fail_closed_shutdown_exit(completed.returncode), _detail(completed)
     assert elapsed < 6, elapsed
     assert "SYNTHETIC_DEADLINE" in completed.stdout
     assert "Qt shutdown incomplete" in completed.stderr

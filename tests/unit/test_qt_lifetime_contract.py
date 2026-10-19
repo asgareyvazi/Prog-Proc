@@ -199,6 +199,20 @@ def test_completion_is_accepted_only_strictly_before_the_deadline() -> None:
     assert after.disarm() is False
 
 
+def test_windows_access_violation_is_not_fail_closed_exit_4() -> None:
+    from drilling_intelligence.ui.lifetime import is_fail_closed_shutdown_exit
+
+    assert is_fail_closed_shutdown_exit(4)
+    assert not is_fail_closed_shutdown_exit(0)
+    assert not is_fail_closed_shutdown_exit(1)
+    assert not is_fail_closed_shutdown_exit(134)
+    assert not is_fail_closed_shutdown_exit(True)  # type: ignore[arg-type]
+    assert not is_fail_closed_shutdown_exit(3221225477)
+    assert not is_fail_closed_shutdown_exit(-1073741819)
+    assert 3221225477 == 0xC0000005
+    assert (-1073741819) % (1 << 32) == 0xC0000005
+
+
 def test_windows_deadline_monitor_exits_without_notifying_libraries(monkeypatch) -> None:
     import drilling_intelligence.ui.lifetime as lifetime
 

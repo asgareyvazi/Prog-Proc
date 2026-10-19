@@ -2537,3 +2537,31 @@ running, it no longer pumps. No schema change. Alembic head stays `0019`.
 
 **Consequences.** Exit 4 is still a failed shutdown. A green Windows UI job
 after this change is not proof that a native fault inside Qt cannot recur.
+
+## ADR-55 — V8.15: the access violation stays an open fault
+
+**Status:** accepted (2026-10-18)
+
+V8.15 re-read the Windows UI job on `69c4bd4`. The child exit was
+`3221225477`, not 4. The newest Python frame was still
+`finish_qt_application`. C frames were not in the annotation, and the log
+zip was not downloaded. This host is Linux and did not execute the child.
+The cause is unproven. `TerminateProcess` did not prevent the fault.
+Stopping `processEvents` while a pass only waits for a worker removes one
+hazard. It is not a fix certificate.
+
+*   **No repeat loop in required CI.** The existing assertion already fails
+    on `0xC0000005`. Repeating that child 15 times in the required Windows
+    UI job would turn an unproven fault into an intermittent required
+    failure. That is noise, not a tighter proof. The job stays one
+    execution, with the raw return code.
+*   **Exit 4 is exact.** `is_fail_closed_shutdown_exit` accepts only the
+    integer 4. It does not accept the unsigned or signed access-violation
+    forms, and it does not accept a boolean.
+*   **Skips stay skips.** The open-file move and the Windows handle-count
+    measurement remain named expected skips. They are not passes.
+*   **No schema change.** Alembic head stays `0019`.
+
+**Consequences.** A green Windows UI job after this decision is still not
+proof the access violation cannot recur. The owner checklist stays
+unexecuted.
