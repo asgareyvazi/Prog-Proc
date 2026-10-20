@@ -644,6 +644,23 @@ happened.
 | shutdown stress | 96 s of wall clock — the same fifty attempts as the run that faulted — **every published attempt `exit=4`**, and **no failure annotation**: no native access violation |
 | the fault before the fix | the same step at `eab9323` published ten native-fault annotations |
 
+**The test jobs in detail** — the counts are the sessions' own totals, read
+from the annotations the jobs published:
+
+| Job | Collected | Passed | Skipped | Failed | Errors | xfail / xpass | Runtime |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Linux `test (cp3.11)` | 2269 | 2248 | 21 | 0 | 0 | 0 / 0 | 2657.669 s |
+| Linux `test (cp3.14)` | 2269 | 2248 | 21 | 0 | 0 | 0 / 0 | — |
+| Windows `test (cp3.11)` | 2269 | 2246 | **23** | 0 | 0 | 0 / 0 | 2675.893 s |
+| Windows `test (cp3.14)` | 2269 | 2246 | **23** | 0 | 0 | 0 / 0 | 2483.004 s |
+
+The two extra Windows skips are the two named platform limits — the
+open-database-file move and the process-handle count — and they are skips
+with honest reasons, not passes. The Linux coverage of the whole suite is
+`coverage-total: 79%`; the Qt layer's own coverage is `coverage-ui-total:
+47%`. Both dependency audits report **no known vulnerabilities**, and the
+`datetime-adapter-warnings` counter is `0` on every job.
+
 **The Linux workbench job in detail** (job `118608203295`):
 
 | Evidence | Value |
