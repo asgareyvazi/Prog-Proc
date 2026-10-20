@@ -33,11 +33,11 @@ jobs:
         shell: pwsh
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -45,7 +45,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints/development.txt -c constraints/build.txt -e ".[dev]"
 
       - name: Ruff lint
         shell: pwsh
@@ -54,6 +54,16 @@ jobs:
       - name: Ruff format
         shell: pwsh
         run: python -m ruff format --check .
+
+      # The pinned dependency set is audited against the advisory service.
+      # A known vulnerability fails the job. An advisory-service outage is a
+      # warning and a record, not a failure: a third-party outage is not a
+      # defect in this repository, and it is still recorded so that it cannot
+      # be mistaken for a clean audit.
+      - name: Audit the pinned dependencies
+        run: |
+          python -m pip install "pip-audit>=2.9,<3"
+          python tools/dependency_audit.py --output dependency-audit.json
 
       - name: Byte-compile source, tests, migrations and tools
         shell: pwsh
@@ -102,7 +112,7 @@ jobs:
 
       - name: Publish pytest results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pytest-windows-cp${{ matrix.python-version }}
           path: |
@@ -110,6 +120,7 @@ jobs:
             pytest-junit.xml
             pytest-totals.json
             pytest-exit.txt
+            dependency-audit.json
           if-no-files-found: error
 
       - name: Surface failures as annotations
@@ -146,9 +157,9 @@ jobs:
         shell: pwsh
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
 
@@ -156,7 +167,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints/development.txt -c constraints/build.txt -e ".[dev]"
 
       - name: Build, clean-install and exercise the package
         shell: pwsh
@@ -182,11 +193,11 @@ jobs:
         shell: pwsh
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
 
@@ -194,7 +205,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,ui]"
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
 
       - name: Probe the real Qt platform
         shell: pwsh
@@ -218,7 +229,7 @@ jobs:
       - name: Fail-closed shutdown stress
         shell: pwsh
         run: |
-          python tools/qt_shutdown_stress.py --attempts 10 --log-dir qt-logs/shutdown-stress
+          python tools/qt_shutdown_stress.py --attempts 25 --log-dir qt-logs/shutdown-stress
 
       - name: Surface UI failures
         if: always()
@@ -237,7 +248,7 @@ jobs:
 
       - name: Publish Windows UI logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qt-windows-ui-logs
           path: |

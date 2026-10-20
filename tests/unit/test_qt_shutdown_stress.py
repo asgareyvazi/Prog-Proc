@@ -56,6 +56,42 @@ def test_every_attempt_is_recorded_and_a_late_pass_does_not_erase_a_fault(
     assert "TERMINAL_ATTEMPT" in body
 
 
+def test_two_threads_reaching_the_terminal_decision_is_a_failure(tmp_path: Path) -> None:
+    """The race that produced the Windows access violation is observable."""
+
+    def runner(mode: str, timeout: float) -> tuple[int, str, float]:
+        return 4, "SHUTDOWN t=1.0 TERMINAL_ATTEMPT owner=monitor pid=1 tid=2\n", 0.5
+
+    failures, records = qt_shutdown_stress.stress(
+        ("deadline",),
+        attempts=1,
+        timeout=5.0,
+        log_dir=tmp_path,
+        runner=runner,
+    )
+    assert failures == 0
+    assert records[0]["reason"] == ""
+
+
+def test_a_child_with_two_terminal_owners_is_a_failure(tmp_path: Path) -> None:
+    def runner(mode: str, timeout: float) -> tuple[int, str, float]:
+        body = (
+            "SHUTDOWN t=0.9 TERMINAL_ATTEMPT owner=coordinator pid=1 tid=2\n"
+            "SHUTDOWN t=1.1 TERMINAL_ATTEMPT owner=monitor pid=1 tid=3\n"
+        )
+        return 4, body, 0.5
+
+    failures, records = qt_shutdown_stress.stress(
+        ("deadline",),
+        attempts=1,
+        timeout=5.0,
+        log_dir=tmp_path,
+        runner=runner,
+    )
+    assert failures == 1
+    assert "two threads" in records[0]["reason"]
+
+
 def test_a_timeout_is_a_failure_and_not_a_pass(tmp_path: Path) -> None:
     def runner(mode: str, timeout: float) -> tuple[int, str, float]:
         return -1, "child timed out after 30s\n", 30.0

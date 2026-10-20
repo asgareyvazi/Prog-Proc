@@ -94,6 +94,23 @@ def run_attempt(mode: str, *, timeout: float) -> tuple[int, str, float]:
     return completed.returncode, body, time.monotonic() - started
 
 
+def double_termination(markers: list[str]) -> bool:
+    """True when one child reached more than one terminal decision.
+
+    The shutdown transcript names the thread that reached the terminal
+    decision. Two different names in one transcript mean that two threads
+    tried to end the same process. On Windows that is the interleaving that
+    produced the access violation, and it is observable even in the runs
+    where the process still happened to exit 4.
+    """
+    owners = {
+        line.split("owner=", 1)[1].split(" ", 1)[0]
+        for line in markers
+        if "TERMINAL_ATTEMPT" in line and "owner=" in line
+    }
+    return len(owners) > 1
+
+
 def _terminal_markers(body: str) -> list[str]:
     """The shutdown transcript lines that identify who ended the process."""
     return [
@@ -119,7 +136,10 @@ def stress(
     for mode in modes:
         for ordinal in range(1, attempts + 1):
             code, body, duration = run(mode, timeout)
+            markers = _terminal_markers(body)
             reason = contract_failure(code)
+            if double_termination(markers) and not reason:
+                reason = "two threads reached the terminal decision in one process"
             if reason:
                 failures += 1
             name = f"{mode}-attempt-{ordinal:03d}.txt"
@@ -135,7 +155,7 @@ def stress(
                 "duration_s": round(duration, 3),
                 "reason": reason,
                 "log": name,
-                "markers": _terminal_markers(body),
+                "markers": markers,
             }
             records.append(record)
             print(

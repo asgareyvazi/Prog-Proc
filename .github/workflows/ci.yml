@@ -35,24 +35,35 @@ jobs:
       # database - a real guarantee against a report naming a commit that was never pushed - and a
       # shallow clone cannot answer it, so the test failed in CI while passing locally.  The fix
       # belongs here: the assertion is correct, the checkout was too thin to evaluate it.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install (editable, with the dev extra)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints/development.txt -c constraints/build.txt -e ".[dev]"
 
       - name: Ruff lint
         run: ruff check .
 
       - name: Ruff format
         run: ruff format --check .
+
+      # The pinned dependency set is audited against the advisory service.
+      # A known vulnerability fails the job. An advisory-service outage is a
+      # warning and a record, not a failure: a third-party outage is not a
+      # defect in this repository, and it is still recorded so that it cannot
+      # be mistaken for a clean audit.
+      - name: Audit the pinned dependencies
+        if: matrix.python-version == '3.11'
+        run: |
+          python -m pip install "pip-audit>=2.9,<3"
+          python tools/dependency_audit.py --output dependency-audit.json
 
       # migrations/ is compiled too: a migration script is production code and a syntax error in
       # one is a release defect, not a test-time surprise.
@@ -105,7 +116,7 @@ jobs:
 
       - name: Publish pytest results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pytest-cp${{ matrix.python-version }}
           path: |
@@ -113,6 +124,7 @@ jobs:
             pytest-junit.xml
             pytest-totals.json
             pytest-exit.txt
+            dependency-audit.json
           if-no-files-found: error
 
       # A red run has to say *what* failed without anyone having to open the raw log, so each
@@ -138,16 +150,16 @@ jobs:
     name: clean install smoke
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
 
       - name: Install build tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints/development.txt -c constraints/build.txt -e ".[dev]"
 
       # Builds the wheel and the sdist, installs each into a fresh virtualenv outside this
       # checkout, and drives the installed CLI: workspace creation, schema bootstrap with no
@@ -160,11 +172,11 @@ jobs:
     name: workbench (offscreen Qt)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
 
@@ -186,7 +198,7 @@ jobs:
       - name: Install (editable, with the ui extra)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,ui]"
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
 
       - name: Probe the real Qt platform
         env:
@@ -246,7 +258,7 @@ jobs:
       # waive a failed upload or a missing log directory.
       - name: Publish Qt attempt logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qt-workbench-logs
           path: qt-logs/
@@ -259,11 +271,11 @@ jobs:
     # until a runner executes it; this job is 3.11.
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.11"
 
@@ -282,7 +294,7 @@ jobs:
       - name: Install (editable, with the ui extra)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,ui]"
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
 
       - name: Probe the real Qt platform
         env:
@@ -340,7 +352,7 @@ jobs:
 
       - name: Publish Ubuntu 26.04 Qt evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qt-ubuntu-2604-logs
           path: qt-logs/

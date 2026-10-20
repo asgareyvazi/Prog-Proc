@@ -21,6 +21,17 @@ stops Python threads, can delay the monitor until that call returns. Widget dest
 ``shiboken6.delete``, not ``deleteLater``, so cleanup does not depend on a
 deferred-delete event. Worker completion is observed by ``QThread.wait``.
 
+Exactly one thread ends the process. The coordinator that polls the release
+budget and the deadline monitor that guarantees the ceiling can both observe
+the same expiry, and two threads ending the process at the same time is what
+produced the Windows access violation: one path ran ``ExitProcess`` - which
+notifies the loaded libraries, so the Python finalizer ran while the
+``QApplication`` and a live ``QThread`` still existed - while the other ran
+``TerminateProcess`` on a process that was already tearing down. The result
+was ``0xC0000005`` instead of the contracted exit 4. The terminal exit is
+therefore arbitrated: the first thread to claim it owns the process, and the
+other stands down instead of starting a second teardown.
+
 ``aboutToQuit`` is not a safe place to join a worker or delete a window. That
 signal runs inside the quit sequence, and a blocking join there can deadlock
 if the worker still needs events. Supported routes are the ones that return
@@ -92,6 +103,48 @@ def worker_join_limit_ms(configured_ms: int, remaining_ms: int) -> int:
 def wait_slice_ms(remaining_ms: int, *, slice_ms: int = _POLL_SLICE_MS) -> int:
     """A poll interval that cannot outlive the remaining budget."""
     return min(slice_ms, max(0, remaining_ms))
+
+
+class _TerminalExit:
+    """Exactly one thread may end the process.
+
+    The coordinator that polls the release budget and the deadline monitor
+    that guarantees the ceiling observe the same expiry from two different
+    threads. Only the first claimant owns the process; the second stands
+    down. Two concurrent terminations are what produced the Windows access
+    violation: the coordinator ran ``ExitProcess`` (which notifies the
+    libraries, so the Python finalizer ran while the ``QApplication`` and a
+    live ``QThread`` still existed) while the monitor ran
+    ``TerminateProcess`` on a process that was already tearing down. The
+    observed result was ``0xC0000005`` instead of the contracted exit 4.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._owner: str | None = None
+
+    def claim(self, owner: str) -> bool:
+        """Take ownership of the terminal exit. False when it is already owned."""
+        with self._lock:
+            if self._owner is not None:
+                return False
+            self._owner = owner
+            return True
+
+    def owner(self) -> str | None:
+        """The thread label that owns the terminal exit, if any."""
+        with self._lock:
+            return self._owner
+
+
+# One arbiter for the process. The invariant is about the process, not about
+# one shutdown: a second end of the process is a defect wherever it starts.
+_TERMINAL_EXIT = _TerminalExit()
+
+# How long a thread that lost the race waits for the owner to end the
+# process. The owner always ends it, so this is a backstop for a broken
+# owner, not a normal wait.
+_TERMINAL_STANDDOWN_TIMEOUT_S = 3.0
 
 
 @dataclass(frozen=True)
@@ -196,14 +249,26 @@ def fail_closed_shutdown(result: ReleaseResult) -> None:
     This is a failed shutdown, not a safe lifecycle. It runs only when the
     production deadline is spent and a widget is still valid. It does not
     delete that widget and it does not kill a worker by ``QThread.terminate``.
+
+    The thread that claims the terminal exit owns the process. A thread that
+    finds it already claimed stands down: it must not start a second
+    teardown, because two concurrent terminations fault the process on
+    Windows.
     """
+    if not _TERMINAL_EXIT.claim("coordinator"):
+        _diagnostic(
+            f"TERMINAL_STANDDOWN owner=coordinator pid={os.getpid()} "
+            f"tid={threading.get_ident()} held_by={_TERMINAL_EXIT.owner()}"
+        )
+        _stand_down_for_terminal_exit()
+        return
     names = ", ".join(result.refused) or "unknown"
     print(
         f"Qt shutdown incomplete; live windows remain ({names})",
         file=sys.stderr,
     )
     _diagnostic(f"TERMINAL_ATTEMPT owner=coordinator pid={os.getpid()} tid={threading.get_ident()}")
-    os._exit(SHUTDOWN_INCOMPLETE_EXIT)
+    _end_process(SHUTDOWN_INCOMPLETE_EXIT)
 
 
 def _set_nonblocking(fd: int) -> None:
@@ -267,31 +332,87 @@ def _diagnostic(message: str) -> None:
 def _terminate_current_process(code: int) -> None:
     """Stop this Windows process with ``code`` without notifying libraries.
 
-    ``os._exit`` calls ``ExitProcess``. The deadline monitor can reach that
-    call while the GUI thread is still inside Qt, and the process can fault
-    with a code other than 4. ``TerminateProcess`` does not notify libraries.
-    It does not call Qt, delete a widget, or ``QThread.terminate`` a worker.
+    ``os._exit`` calls ``ExitProcess``. ``ExitProcess`` notifies the loaded
+    libraries, so the Python finalizer runs while the ``QApplication`` and a
+    live ``QThread`` still exist, and destroying them there faulted the
+    process with ``0xC0000005`` instead of the contracted exit 4.
+    ``TerminateProcess`` does not notify libraries, so the interpreter never
+    finalizes and the Qt objects are simply abandoned. It does not call Qt,
+    delete a widget, or ``QThread.terminate`` a worker.
+
+    A refused call raises, and the caller falls back to ``os._exit``.
     """
     import ctypes
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.TerminateProcess(kernel.GetCurrentProcess(), code)
+    handle = kernel.GetCurrentProcess()
+    if not kernel.TerminateProcess(handle, code):
+        raise OSError(ctypes.get_last_error(), "TerminateProcess failed")
+
+
+def _end_process(code: int) -> None:
+    """End this process with ``code``. The caller owns the terminal exit.
+
+    The standard streams are flushed first because a forced end does not
+    flush them, and the test contract reads the child's markers. On Windows
+    the process is ended with ``TerminateProcess`` so the interpreter never
+    finalizes while Qt objects are still alive. The ``os._exit`` call is the
+    fallback for a platform or a refused call; on POSIX it is the only path.
+    """
+    _flush_standard_streams()
+    if _is_windows():
+        try:
+            _terminate_current_process(code)
+        except (AttributeError, OSError, ValueError):
+            pass
+    os._exit(code)
+
+
+def _flush_standard_streams() -> None:
+    """Flush the diagnostics. A lost shutdown line is not a record."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
+def _stand_down_for_terminal_exit() -> None:
+    """Wait for the thread that owns the terminal exit to end the process.
+
+    Returning into interpreter teardown while another thread is ending the
+    process is the failure this guards. The owner ends the process and does
+    not come back, so this thread is normally killed with it. The bounded
+    wait is a backstop for an owner that failed to end the process, and it
+    never returns: the backstop ends the process itself.
+    """
+    deadline = time.monotonic() + _TERMINAL_STANDDOWN_TIMEOUT_S
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
+    _diagnostic("TERMINAL_BACKSTOP owner=standdown")
+    _end_process(SHUTDOWN_INCOMPLETE_EXIT)
 
 
 def _terminal_exit() -> None:
-    """Best-effort diagnostic, then exit 4. A blocked write must not delay it."""
+    """Best-effort diagnostic, then exit 4. A blocked write must not delay it.
+
+    The monitor is the backstop for a coordinator that is stuck inside a
+    native call. It ends the process only when it owns the terminal exit.
+    """
+    if not _TERMINAL_EXIT.claim("monitor"):
+        _diagnostic(
+            f"TERMINAL_STANDDOWN owner=monitor pid={os.getpid()} "
+            f"tid={threading.get_ident()} held_by={_TERMINAL_EXIT.owner()}"
+        )
+        _stand_down_for_terminal_exit()
+        return
     message = b"Qt shutdown incomplete; deadline elapsed before release finished\n"
     try:
         _write_deadline_notice(sys.stderr.fileno(), message)
     except (AttributeError, ImportError, OSError, ValueError):
         pass
     _diagnostic(f"TERMINAL_ATTEMPT owner=monitor pid={os.getpid()} tid={threading.get_ident()}")
-    if _is_windows():
-        try:
-            _terminate_current_process(SHUTDOWN_INCOMPLETE_EXIT)
-        except (AttributeError, OSError, ValueError):
-            pass
-    os._exit(SHUTDOWN_INCOMPLETE_EXIT)
+    _end_process(SHUTDOWN_INCOMPLETE_EXIT)
 
 
 class _ShutdownDeadline:

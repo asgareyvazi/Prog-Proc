@@ -217,6 +217,9 @@ def test_windows_deadline_monitor_exits_without_notifying_libraries(monkeypatch)
     import drilling_intelligence.ui.lifetime as lifetime
 
     calls: list[tuple[str, int]] = []
+    # A fresh arbiter per call: the terminal exit is claimed once per process,
+    # and this test drives the two platform variants one after the other.
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_write_deadline_notice", lambda *_args: None)
     monkeypatch.setattr(
@@ -227,6 +230,7 @@ def test_windows_deadline_monitor_exits_without_notifying_libraries(monkeypatch)
     monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append(("exit", code)))
     lifetime._terminal_exit()
     assert calls == [("terminate", 4), ("exit", 4)]
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
     monkeypatch.setattr(lifetime, "_is_windows", lambda: False)
     lifetime._terminal_exit()
     assert calls == [("terminate", 4), ("exit", 4), ("exit", 4)]
@@ -239,6 +243,103 @@ def test_windows_deadline_monitor_exits_without_notifying_libraries(monkeypatch)
             0
         ]
     )
+
+
+def test_the_coordinator_also_ends_the_process_without_notifying_libraries(monkeypatch) -> None:
+    """``os._exit`` on Windows notifies the libraries; the contract forbids that.
+
+    ``ExitProcess`` runs the Python finalizer while the ``QApplication`` and
+    a live ``QThread`` still exist. Destroying them there faulted the process
+    with ``0xC0000005`` instead of the contracted exit 4.
+    """
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        lifetime,
+        "_terminate_current_process",
+        lambda code: calls.append(("terminate", code)),
+    )
+    monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append(("exit", code)))
+    lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
+    assert calls == [("terminate", 4), ("exit", 4)]
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: False)
+    lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
+    assert calls == [("terminate", 4), ("exit", 4), ("exit", 4)]
+    source = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
+    for name in ("def fail_closed_shutdown", "def _terminal_exit"):
+        body = source.split(name, 1)[1].split("\n\ndef ", 1)[0]
+        assert "os._exit" not in body, name
+        assert "_end_process(" in body, name
+
+
+def test_only_one_thread_may_end_the_process() -> None:
+    from drilling_intelligence.ui.lifetime import _TerminalExit
+
+    arbiter = _TerminalExit()
+    assert arbiter.claim("coordinator") is True
+    assert arbiter.claim("monitor") is False
+    assert arbiter.owner() == "coordinator"
+
+
+def test_a_thread_that_loses_the_terminal_race_stands_down(monkeypatch) -> None:
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
+    monkeypatch.setattr(lifetime, "_end_process", lambda code: calls.append(("end", code)))
+    monkeypatch.setattr(
+        lifetime,
+        "_stand_down_for_terminal_exit",
+        lambda: calls.append(("standdown", 0)),
+    )
+    assert lifetime._TERMINAL_EXIT.claim("monitor") is True
+    lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
+    assert calls == [("standdown", 0)]
+    lifetime._terminal_exit()
+    assert calls == [("standdown", 0), ("standdown", 0)]
+
+
+def test_the_coordinator_and_the_monitor_cannot_both_end_the_process(monkeypatch) -> None:
+    """The race that produced the Windows access violation.
+
+    The coordinator polls the release budget and the monitor guarantees the
+    ceiling. Both can observe the same expiry. Exactly one of them may end
+    the process.
+    """
+    import threading
+
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
+    monkeypatch.setattr(lifetime, "_write_deadline_notice", lambda *_args: None)
+    monkeypatch.setattr(lifetime, "_end_process", lambda code: calls.append(("end", code)))
+    monkeypatch.setattr(
+        lifetime,
+        "_stand_down_for_terminal_exit",
+        lambda: calls.append(("standdown", 0)),
+    )
+    barrier = threading.Barrier(2)
+
+    def coordinator() -> None:
+        barrier.wait()
+        lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
+
+    def monitor() -> None:
+        barrier.wait()
+        lifetime._terminal_exit()
+
+    threads = [threading.Thread(target=coordinator), threading.Thread(target=monitor)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert [call for call in calls if call[0] == "end"] == [("end", 4)]
+    assert len([call for call in calls if call[0] == "standdown"]) == 1
 
 
 def test_a_late_disarm_cannot_suppress_the_terminal_exit() -> None:
