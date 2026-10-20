@@ -17,6 +17,10 @@ pytest-totals.json.partial
 pytest-output.txt
 pytest-exit.txt
 dependency-audit.json
+coverage.xml
+coverage-ui.xml
+pytest-ui-output.txt
+pytest-ui-exit.txt
 .ruff_cache/
 .mypy_cache/
 .coverage

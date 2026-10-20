@@ -128,6 +128,34 @@ jobs:
         if: always()
         run: python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt
 
+      # The coverage baseline is a recorded number, not a gate.  It is published as a notice
+      # so it can be read from the run page and from the API without downloading the
+      # artifact, and the full per-module report goes to the step summary.
+      - name: Record the coverage baseline
+        if: always() && matrix.python-version == '3.11'
+        run: |
+          if [ ! -f .coverage ]; then
+            echo "::notice::coverage-total: not measured"
+            exit 0
+          fi
+          total=$(python -m coverage report --format=total)
+          echo "::notice::coverage-total: ${total}%"
+          {
+            echo "### Coverage baseline"
+            echo ""
+            echo "Line and branch coverage, CPython 3.11: ${total}%"
+            echo ""
+            python -m coverage report
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the coverage baseline
+        if: always() && matrix.python-version == '3.11'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-cp3.11
+          path: coverage.xml
+          if-no-files-found: warn
+
       - name: Publish pytest results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -139,7 +167,6 @@ jobs:
             pytest-totals.json
             pytest-exit.txt
             dependency-audit.json
-            coverage.xml
           if-no-files-found: error
 
       # A red run has to say *what* failed without anyone having to open the raw log, so each
@@ -236,6 +263,51 @@ jobs:
           PYTHONUNBUFFERED: "1"
           PYTHONFAULTHANDLER: "1"
         run: python tools/qt_workbench.py
+
+      # The coverage of the Qt layer, measured where Qt is real. The headless test job
+      # above measures everything else, because it is the job that does not install the
+      # optional extra. Two scoped numbers, neither of them a gate.
+      - name: Measure the coverage of the Qt layer
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -o pipefail
+          set +e
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            python -m pytest --cov --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui \
+            2>&1 | tee pytest-ui-output.txt
+          status=${PIPESTATUS[0]}
+          echo "$status" > pytest-ui-exit.txt
+          exit "$status"
+
+      - name: Record the Qt layer coverage
+        if: always()
+        run: |
+          if [ ! -f .coverage ]; then
+            echo "::notice::coverage-ui-total: not measured"
+            exit 0
+          fi
+          total=$(python -m coverage report --format=total)
+          echo "::notice::coverage-ui-total: ${total}%"
+          {
+            echo "### Coverage of the Qt layer"
+            echo ""
+            echo "Line and branch coverage of the UI tests, CPython 3.11: ${total}%"
+            echo ""
+            python -m coverage report
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the Qt layer coverage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-ui-cp3.11
+          path: coverage-ui.xml
+          if-no-files-found: warn
 
       # Qualification, not a silent rerun. Each iteration is independent. A
       # failed iteration fails the job even if a later one passes.
