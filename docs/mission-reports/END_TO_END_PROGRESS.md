@@ -134,11 +134,20 @@ the `deadline-synthetic` mode runs a plain `threading.Thread`. They fault
 at the same rate, so a live `QThread` is not the cause. What they share is
 the shutdown path.
 
-**What is missing.** The run that reproduced the fault did not publish the
-transcript of a faulted child, so the stage the child had reached when it
-faulted is not known. The stress harness now records the stage tokens and
-the shutdown transcript of every failed attempt and reports them at error
-level, so the next Windows run says where the fault happens.
+**What is missing, and what the next run showed.** The run that reproduced
+the fault did not publish the transcript of a faulted child. The next
+Windows run, at `35b0552`, failed in the UI suite itself and did carry the
+transcript — and it says something important: the child reached
+`SHUTDOWN_BEGIN` and faulted **before any terminal decision was recorded**
+(no `TERMINAL_ATTEMPT` line). The fault is therefore **not in the
+termination path**; it is on the GUI thread inside the coordinator's
+release loop, before the shutdown gives up.
+
+The failure message keeps the last 500 characters of the child output, and
+a `faulthandler` stack is printed innermost-frame-first, so the cut dropped
+the inner frames — the fault location. The UI test and the stress harness
+now put the innermost frames first, so the next Windows run names the file
+and the line.
 
 **The measurement is not a gate** (ADR-59). The known native fault is
 measured and published; it does not fail the required job, because a fault

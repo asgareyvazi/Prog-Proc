@@ -91,7 +91,17 @@ def _detail(completed: subprocess.CompletedProcess[str]) -> str:
         for line in f"{completed.stderr}\n{completed.stdout}".splitlines()
         if line.strip()
     )
-    return f"exit {completed.returncode} :: {body[-500:]}"
+    # A native fault prints its stack from the innermost frame outwards, and
+    # the innermost frame is the fault location. The tail of the output holds
+    # the outer frames, so the tail alone hides the place the process died.
+    # The innermost frames are put first so they survive the cut.
+    frames = [line for line in body.split(" | ") if line.strip().startswith("File ")]
+    tail = body[-500:]
+    if frames:
+        head = " | ".join(frames[:3])
+        if head not in tail:
+            return f"exit {completed.returncode} :: {head} || {tail}"
+    return f"exit {completed.returncode} :: {tail}"
 
 
 def _assert_no_abort(completed: subprocess.CompletedProcess[str]) -> None:

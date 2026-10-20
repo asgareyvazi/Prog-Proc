@@ -197,7 +197,9 @@ def fault_evidence(body: str) -> str:
     if terminal:
         parts.append("terminal=" + " | ".join(terminal[-2:]))
     if frames:
-        parts.append("frames=" + ">".join(frames[-3:]))
+        # The innermost frames come first in a faulthandler stack, and the
+        # innermost frame is the fault location.
+        parts.append("frames=" + ">".join(frames[:3]))
     if not parts:
         parts.append("stages=none")
     return "; ".join(parts)

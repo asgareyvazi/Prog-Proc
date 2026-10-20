@@ -218,6 +218,47 @@ with any exit code other than `4` and other than the known native fault
 still fails the step, and the UI suite's single deadline child is still
 required to exit `4`.
 
+### 4.7 The second reproduction, and what it rules out
+
+The next Windows run, at `35b05527159c524a7e160246ca0da978721ab462`,
+failed in the UI suite itself: 22 collected, 21 passed, **1 failed** —
+`test_synthetic_deadline_is_supplementary_not_the_qthread_proof`, exit
+`3221225477`. The failure carried the child's transcript, and the
+transcript is what matters here:
+
+| Evidence | Value |
+| --- | --- |
+| stages the child printed | `LOOP_STARTED`, `QUIT_REQUESTED`, `ABOUT_TO_QUIT_WINDOW_VALID`, `EXEC_RETURNED`, `SYNTHETIC_DEADLINE`, `SHUTDOWN_BEGIN` |
+| terminal markers | **none** — no `TERMINAL_ATTEMPT` line |
+| outermost frames | `lifetime.py:683 in application_shutdown` -> `qt_shutdown_child.py:737 in deadline_synthetic` -> `main:763` -> `<module>:767` |
+
+**What this rules out.** The child reached `SHUTDOWN_BEGIN` and then
+faulted **before any terminal decision was recorded**. Neither the
+coordinator nor the deadline monitor had claimed the terminal exit, so the
+process was not being torn down by either of them when it died. The fault
+is therefore **not in the termination path**: it is in the coordinator's
+release loop, on the GUI thread, before the shutdown gives up.
+
+That is a correction to the direction of the earlier reading. The double
+terminal end was a real defect and it is fixed, but the remaining fault
+happens earlier than the terminal decision, so it is a different thing.
+
+**What is still hidden.** The failure message keeps the last 500 characters
+of the child's output. A `faulthandler` stack is printed from the
+innermost frame outwards, so the cut kept the *outer* frames and dropped
+the inner ones — and the inner frame is the fault location. The UI test
+and the stress harness now put the innermost frames first, so the next
+Windows run names the file and the line that faulted.
+
+**What was not done.** No speculative change was made to the Qt teardown
+on the strength of a hypothesis. The shutdown path was changed in one
+place, and only because it is provably right on its own terms: after an
+accepted `TerminateProcess` the process is already marked for
+termination, so the `os._exit` that followed it — which is `ExitProcess`,
+which notifies the libraries and runs the interpreter finalizer — no
+longer runs. That change removes a hazard; it is not claimed to be the
+fix, and the measurement that would show it is the next one.
+
 No Linux run was ever presented as a Windows reproduction, and no green
 Windows UI job is presented as proof that the fault cannot recur.
 
@@ -462,13 +503,13 @@ mission reports were not edited.
 
 ## 14. Remaining work, in priority order
 
-1. **Find the stage at which the remaining native fault happens.** The fault
-   is reproduced at about 8% per attempt on the Windows runner, and the
-   double terminal end — a real defect, now fixed — is not its cause. The
-   stress harness now publishes the stage tokens and the shutdown transcript
-   of every faulted child, so the next Windows run says where the fault
-   happens. That is the evidence a fix needs; a fix without it would be a
-   guess at the shutdown path.
+1. **Find the line that faults.** The fault is reproduced on the Windows
+   runner, and the second reproduction places it on the GUI thread inside
+   the coordinator's release loop, *before* any terminal decision — so it
+   is not in the termination path, and the double terminal end was not its
+   cause. The innermost frames are now published with every failure, so
+   the next Windows run names the file and the line. A fix without that
+   line would be a guess at the Qt teardown, and a guess is not a fix.
 2. **Run the owner's manual Windows checklist** in `docs/WINDOWS_TESTING.md`
    on the workstation that matters, and record the notes. Until those notes
    exist, the checklist is unexecuted and this report stays PARTIAL.
