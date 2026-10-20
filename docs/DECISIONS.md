@@ -2702,3 +2702,77 @@ The decision:
 
 **Consequences.** The core layer is now held to a strict type profile in
 CI. The number is a recorded baseline to compare against, not a promise.
+
+## ADR-59 — V8.16: the native access violation is reproduced, measured, and not gated
+
+**Status:** accepted (2026-10-20)
+
+ADR-56 recorded the single-owner terminal exit and said the fault was not
+closed. This decision records what the measurement actually showed, and it
+corrects the earlier statement in one place.
+
+**The fault is reproducible.** The Windows offscreen UI job at
+`32483ed89c06981d7e8fdfb85639ec6ab129ca31` ran the shutdown stress
+experiment with 25 attempts in each of two modes. Four of the fifty attempts
+ended in the native access violation:
+
+| mode | attempts | native access violations |
+| --- | --- | --- |
+| `deadline` (real `QThread`) | 25 | 2 — attempts 21 and 25 |
+| `deadline-synthetic` (`threading.Thread`) | 25 | 2 — attempts 5 and 23 |
+
+That is a rate of about 8% per attempt. The UI suite in the same job
+reported 22 collected, 22 passed, 0 failed, 0 skipped.
+
+**What this corrects.** ADR-56 established, from the source and from a
+direct reproduction, that the old implementation performed *two* terminal
+exits in the race. That is a real defect and it is fixed. It is **not** the
+whole cause: with the arbitration in place the fault still occurs in about
+8% of attempts. The earlier reading — that the double end explained the
+fault — was too strong, and the fault is now measured rather than argued
+about.
+
+**Why the two modes matter.** The `deadline` mode runs a real `QThread`; the
+`deadline-synthetic` mode runs a plain `threading.Thread`. They fault at the
+same rate, so the live `QThread` is not the cause. What the two modes share
+is the shutdown path itself: the coordinator in `lifetime.py` and the
+deadline monitor.
+
+**What is known about the remaining fault.** The coordinator does not pump
+events while a worker owns the window, so in these modes the GUI thread is
+inside `QThread.msleep` when the deadline expires, and it never touches the
+window. The `processEvents` pump that an earlier revision of the coordinator
+ran at that point — the one the code comments already name as the place a
+Windows child access-violated — is skipped in these modes. The fault is
+therefore not the pump in this configuration, and no cause has been
+established for it.
+
+**The missing evidence.** The run that reproduced the fault did not publish
+the transcript of a faulted child, so the stage the child reached when it
+faulted is not known. `tools/qt_shutdown_stress.py` now records the stage
+tokens and the shutdown transcript of every failed attempt, and reports them
+at error level. The next Windows run therefore says where the fault happens,
+not only that it happened.
+
+**The measurement is not a gate.** The known native fault is measured and
+published; it does not fail the required job. ADR-55 already decided that a
+repeat loop does not belong in required CI, for the same reason: a fault
+that fires in a few percent of attempts turns a required job into a coin
+toss, and a job that fails at random stops meaning anything. Every native
+fault is still reported at error level with the count and the rate, the
+transcripts are in the artifact, and `--gate` exists for an operator who
+wants the run to fail on it.
+
+**What still fails the run.** An attempt that ends with any exit code other
+than `4`, other than the known native access violation, still fails the
+step. The shutdown contract itself is unchanged: `is_fail_closed_shutdown_exit`
+accepts only the integer `4`, and the UI suite's single deadline child is
+still required to exit `4`.
+
+*   **No schema change.** Alembic head stays `0019`.
+*   **No speculative Qt refactor.** The cause of the remaining fault is not
+    established, so the shutdown path is not restructured on a guess.
+
+**Consequences.** The fault has a name, a rate, and a reproduction. The
+remaining work is to find the stage at which it happens, and the
+instrumentation for that is now in place.

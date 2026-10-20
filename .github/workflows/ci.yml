@@ -332,7 +332,9 @@ jobs:
           QT_X11_NO_MITSHM: "1"
           PYTHONUNBUFFERED: "1"
           PYTHONFAULTHANDLER: "1"
-        run: python tools/qt_shutdown_stress.py --attempts 10 --log-dir qt-logs/shutdown-stress
+        # --gate: on Linux the native access violation cannot occur, so any failure
+        # here is a contract violation and must fail the job.
+        run: python tools/qt_shutdown_stress.py --attempts 10 --log-dir qt-logs/shutdown-stress --gate
 
       # Hash the logs that exist. A mismatch, a missing attempt, or an abort
       # signature inside a successful record fails the job. The checksum is not

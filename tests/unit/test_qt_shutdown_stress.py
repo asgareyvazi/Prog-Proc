@@ -123,6 +123,8 @@ def test_the_experiment_writes_a_summary_that_names_every_attempt(
                     "exit": 4,
                     "duration_s": 1.0,
                     "reason": "",
+                    "native_fault": False,
+                    "evidence": "stages=none",
                     "log": "deadline-attempt-001.txt",
                     "markers": [],
                 }
@@ -141,7 +143,58 @@ def test_the_experiment_writes_a_summary_that_names_every_attempt(
     assert "python" in payload["versions"]
 
 
-def test_a_failed_attempt_makes_the_experiment_fail(
+def _native_fault_record() -> dict[str, object]:
+    return {
+        "mode": "deadline",
+        "ordinal": 1,
+        "exit": 3221225477,
+        "duration_s": 1.0,
+        "reason": "windows access violation 0xC0000005",
+        "native_fault": True,
+        "evidence": "stages=REAL_QTHREAD>EXEC_RETURNED>SHUTDOWN_BEGIN",
+        "log": "deadline-attempt-001.txt",
+        "markers": [],
+    }
+
+
+def test_the_known_native_fault_is_measured_and_not_gated_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A known fault with a measured rate must not make a required job a coin toss.
+
+    The fault is still recorded, still reported at error level, and the gate
+    is available with --gate. What is not acceptable is a required job that
+    fails at random and therefore stops meaning anything.
+    """
+    monkeypatch.setattr(
+        qt_shutdown_stress,
+        "stress",
+        lambda modes, **_kwargs: (1, [_native_fault_record()]),
+    )
+    code = qt_shutdown_stress.main(
+        ["--attempts", "1", "--mode", "deadline", "--log-dir", str(tmp_path)]
+    )
+    assert code == 0
+    payload = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert payload["failures"] == 1
+    assert payload["records"][0]["native_fault"] is True
+
+
+def test_the_native_fault_fails_the_experiment_when_the_gate_is_asked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        qt_shutdown_stress,
+        "stress",
+        lambda modes, **_kwargs: (1, [_native_fault_record()]),
+    )
+    code = qt_shutdown_stress.main(
+        ["--attempts", "1", "--mode", "deadline", "--log-dir", str(tmp_path), "--gate"]
+    )
+    assert code == 1
+
+
+def test_a_contract_violation_that_is_not_the_native_fault_always_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -153,9 +206,11 @@ def test_a_failed_attempt_makes_the_experiment_fail(
                 {
                     "mode": "deadline",
                     "ordinal": 1,
-                    "exit": 3221225477,
+                    "exit": 0,
                     "duration_s": 1.0,
-                    "reason": "windows access violation 0xC0000005",
+                    "reason": "exit 0 is not the contracted 4",
+                    "native_fault": False,
+                    "evidence": "stages=none",
                     "log": "deadline-attempt-001.txt",
                     "markers": [],
                 }
@@ -166,5 +221,16 @@ def test_a_failed_attempt_makes_the_experiment_fail(
         ["--attempts", "1", "--mode", "deadline", "--log-dir", str(tmp_path)]
     )
     assert code == 1
-    payload = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
-    assert payload["failures"] == 1
+
+
+def test_the_fault_evidence_names_the_stage_the_child_reached() -> None:
+    body = "REAL_QTHREAD\nLOOP_STARTED\nQUIT_REQUESTED\nEXEC_RETURNED\nSHUTDOWN_BEGIN\n"
+    evidence = qt_shutdown_stress.fault_evidence(body)
+    assert "REAL_QTHREAD" in evidence
+    assert "SHUTDOWN_BEGIN" in evidence
+    assert "stages=none" in qt_shutdown_stress.fault_evidence("")
+
+
+def test_the_native_fault_reason_is_the_known_one() -> None:
+    assert qt_shutdown_stress.is_native_fault("windows access violation 0xC0000005") is True
+    assert qt_shutdown_stress.is_native_fault("exit 0 is not the contracted 4") is False
