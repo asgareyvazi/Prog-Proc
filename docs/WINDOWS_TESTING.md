@@ -45,13 +45,18 @@ From the repository root:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pip install -c constraints\development.txt -c constraints\build.txt -e ".[dev]"
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m ruff format --check .
+.\.venv\Scripts\python.exe -m mypy
 .\.venv\Scripts\python.exe -m compileall -q src tests migrations tools
 .\.venv\Scripts\python.exe -m alembic heads
 .\.venv\Scripts\python.exe -m pytest
 ```
+
+The constraints pin the versions the CI proves. Drop them for a plain
+install; keep them when you want the machine to match the recorded run.
+`python -m mypy` checks one package boundary, `drilling_intelligence.core`.
 
 `alembic heads` must show one line containing `(head)`, currently `0019`.
 UI tests skip when PySide6 is not installed. That skip is not a pass. The
@@ -65,6 +70,22 @@ $root = Join-Path $env:TEMP "drillintel venv"
 python -m venv $root
 & (Join-Path $root "Scripts\python.exe") -m pip install -e ".[dev]"
 ```
+
+## Shutdown stress on this workstation
+
+The Windows offscreen UI job runs the fail-closed shutdown child repeatedly
+and fails the job if any attempt ends with anything other than exit `4`.
+The same experiment runs here:
+
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+.\.venv\Scripts\python.exe tools\qt_shutdown_stress.py --attempts 25 --log-dir qt-logs\shutdown-stress
+```
+
+Every attempt must report exit `4`. An attempt that reports
+`3221225477` (`0xC0000005`) is a native access violation, and it is a
+failure of this workstation, not a flaky test. Record the number of
+attempts and every failure; do not re-run until one attempt passes.
 
 ## Release smoke
 
@@ -114,9 +135,14 @@ The workbook handle-count test also skips on Windows. The reason is
 Two runs grew by 3 and by 11, so that counter cannot prove the archive
 bound. The skip is not a pass. Linux still counts `/proc/self/fd`.
 
-The offscreen UI job has also seen the synthetic-deadline child exit
-`3221225477` (`0xC0000005`) instead of 4. A later green UI job does not
+The offscreen UI job has also seen the fail-closed shutdown child exit
+`3221225477` (`0xC0000005`) instead of 4. The cause is now stated: two
+threads could reach the same shutdown expiry and both tried to end the
+process, and the coordinator's `ExitProcess` ran the Python finalizer while
+the `QApplication` and a live `QThread` still existed. The shutdown now has
+one owner, and the loser stands down. A later green UI job still does not
 prove that access violation cannot recur. It is not a pass of that case.
+The shutdown stress step above is the measurement that would show it.
 
 ## Optional workbench
 
@@ -217,6 +243,7 @@ The disposable pilot does not complete these boxes.
 
 - [ ] `python --version` is 3.11 or newer.
 - [ ] `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"` exits 0.
+- [ ] `tools\qt_shutdown_stress.py --attempts 25` reports exit `4` for every attempt.
 - [ ] `drillintel.exe --help` and `--version` exit 0.
 - [ ] Workspace create and open on a temp path, including a path with a space.
 - [ ] Well create and well list show the well you created.

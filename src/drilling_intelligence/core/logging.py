@@ -152,15 +152,37 @@ class PlatformLogger(logging.LoggerAdapter[logging.Logger]):
             payload["duration_ms"] = round(duration_ms, 1)
         self.log(level, name, extra=payload, exc_info=exception)
 
+    def _event(
+        self,
+        name: str,
+        level: int,
+        fields: dict[str, object],
+        *,
+        exception: bool = False,
+    ) -> None:
+        """Emit one event from a field mapping.
+
+        The mapping arrives as a mapping, not as ``**fields``. A field named
+        ``duration_ms`` or ``exception`` is data in that case, so it cannot
+        collide with an argument or raise a duplicate-keyword error.
+        """
+        payload: dict[str, object] = {"event": name, **fields}
+        duration = payload.get("duration_ms")
+        if isinstance(duration, bool):
+            payload.pop("duration_ms", None)
+        elif isinstance(duration, int | float):
+            payload["duration_ms"] = round(float(duration), 1)
+        self.log(level, name, extra=payload, exc_info=exception)
+
     def warning_event(self, name: str, **fields: object) -> None:
-        self.event(name, logging.WARNING, **fields)
+        self._event(name, logging.WARNING, dict(fields))
 
     def error_event(self, name: str, **fields: object) -> None:
-        self.event(
+        self._event(
             name,
             logging.ERROR,
+            {k: v for k, v in fields.items() if k != "exc_info"},
             exception=bool(fields.get("exc_info")),
-            **{k: v for k, v in fields.items() if k != "exc_info"},
         )
 
     def process(self, msg: object, kwargs: dict[str, object]) -> tuple[object, dict[str, object]]:  # type: ignore[override]
@@ -198,7 +220,10 @@ class timed:
         self._started = time.perf_counter()
         return self
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        # Returning None means "do not suppress". The block never swallows
+        # an exception, so the contract is written down rather than implied
+        # by a returned False.
         self.duration_ms = (time.perf_counter() - self._started) * 1000.0
         if exc_type is None:
             log_event(self.logger, self.level, self.event, self.duration_ms, **self.fields)
@@ -211,7 +236,6 @@ class timed:
                 error=str(exc),
                 **self.fields,
             )
-        return False
 
 
 __all__ = ["REDACTED", "PlatformLogger", "configure_logging", "get_logger", "log_event", "timed"]

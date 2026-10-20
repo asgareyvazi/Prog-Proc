@@ -11,7 +11,7 @@ listed is not affected.
 | File | Set | Used by |
 | --- | --- | --- |
 | `runtime.txt` | the installed product: persistence, extraction, HTTP transport | `pip install -c constraints/runtime.txt .` |
-| `development.txt` | runtime plus the `dev` extra (pytest, ruff, build) | the Linux and Windows test jobs |
+| `development.txt` | runtime plus the `dev` extra (pytest, ruff, build, pytest-cov, mypy) | the Linux and Windows test jobs |
 | `ui.txt` | development plus the optional `ui` extra (PySide6-Essentials) | the offscreen Qt jobs |
 | `build.txt` | the build backend (setuptools, wheel) | the isolated build environment |
 
@@ -46,18 +46,24 @@ product never asked for.
 ## Updating a pin
 
 1. Change the version in `pyproject.toml` if the range moves.
-2. Regenerate the affected file:
+2. Regenerate the affected file with the tool that owns the format:
 
    ```bash
-   python -m venv /tmp/constraints && /tmp/constraints/bin/python -m pip install --upgrade pip
-   /tmp/constraints/bin/python -m pip install \
-     "SQLAlchemy>=2.0.30,<3.0" "alembic>=1.13,<2.0" "PyMuPDF>=1.24,<2.0" \
-     "openpyxl>=3.1,<4.0" "python-docx>=1.1,<2.0" "httpx>=0.27,<1.0"
-   /tmp/constraints/bin/python -m pip freeze --exclude-editable \
-     | grep -v -E "^(pip|setuptools|wheel)==" | sort
+   python tools/constraints.py --set runtime
+   python tools/constraints.py --set development
+   python tools/constraints.py --set ui
+   python tools/constraints.py --set build
    ```
 
-   Write that list to the file, keeping the header.
+   The tool resolves the set in a throw away virtual environment, writes the
+   file and prints every pin. It reads the requirements out of
+   `pyproject.toml`, so there is no second list to keep in step. A file that
+   was edited by hand fails the check:
+
+   ```bash
+   python tools/constraints.py --set runtime --check
+   ```
+
 3. Run `python tools/dependency_audit.py` against the new set.
 4. Push. The Linux and Windows workflows install with the new pins, so a pin
    that has no wheel for a supported runtime fails the run instead of failing

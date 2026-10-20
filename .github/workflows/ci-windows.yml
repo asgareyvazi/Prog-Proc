@@ -55,6 +55,13 @@ jobs:
         shell: pwsh
         run: python -m ruff format --check .
 
+      # The same core boundary is type-checked on Windows as on Linux, so a type error that
+      # only appears on one platform cannot hide behind the other one's green run.
+      - name: Type-check the core boundary
+        if: matrix.python-version == '3.11'
+        shell: pwsh
+        run: python -m mypy
+
       # The pinned dependency set is audited against the advisory service.
       # A known vulnerability fails the job. An advisory-service outage is a
       # warning and a record, not a failure: a third-party outage is not a

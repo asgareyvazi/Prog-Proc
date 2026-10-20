@@ -6,14 +6,15 @@
 # CI actually proves. They are constraints, not a lock: `pip install -c <file>`
 # applies them to the packages that are named, and nothing else.
 #
-# Regenerate: see constraints/README.md. Do not hand-edit a pin without
-# regenerating the file, and do not widen a pin without a CI run on the new
-# SHA.
+# Regenerate: `python tools/constraints.py --set build`. Do not hand-edit a
+# pin without regenerating the file, and do not widen a pin without a CI run on
+# the new SHA.
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
 # Generated on 2026-10-20.
 
+packaging==26.3
 setuptools==84.2.0
 wheel==0.48.0
 

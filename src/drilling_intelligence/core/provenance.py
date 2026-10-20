@@ -58,7 +58,8 @@ class SourceLocator:
             "unknown": UnknownLocator,
         }.get(str(kind), UnknownLocator)
         valid = {f for f in cls.__dataclass_fields__ if f != "kind"}  # type: ignore[attr-defined]
-        return cls(**{k: v for k, v in data.items() if k in valid})  # type: ignore[arg-type]
+        locator: SourceLocator = cls(**{k: v for k, v in data.items() if k in valid})
+        return locator
 
 
 @dataclass(frozen=True)
@@ -308,7 +309,7 @@ def _pdf_read(source: Path, locator: PdfLocator) -> str:
         blocks = page.get_text("blocks")
         if locator.block is not None and 0 <= locator.block < len(blocks):
             return str(blocks[locator.block][4])
-        return page.get_text()
+        return str(page.get_text())
 
 
 def _docx_read(source: Path, locator: DocxLocator) -> str:

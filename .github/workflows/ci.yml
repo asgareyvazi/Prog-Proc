@@ -29,6 +29,14 @@ jobs:
         # The floor and the target, per ADR-0002.  Code must not use anything newer than the
         # floor, and this matrix is how that is enforced rather than asserted.
         python-version: ["3.11", "3.14"]
+        include:
+          # The coverage baseline is measured once, on the floor runtime.  It is a recorded
+          # number, not a gate: no threshold is enforced, because no measured baseline existed
+          # to set one against.  See docs/mission-reports/END_TO_END_FINAL_REPORT.md.
+          - python-version: "3.11"
+            coverage-flags: "--cov --cov-report=term --cov-report=xml:coverage.xml"
+          - python-version: "3.14"
+            coverage-flags: ""
     steps:
       # Full history, not the default depth-1.  `test_report_integrity` asserts that every
       # full-length commit SHA cited in the certification reports actually exists in the object
@@ -53,6 +61,12 @@ jobs:
 
       - name: Ruff format
         run: ruff format --check .
+
+      # One package boundary is type-checked: drilling_intelligence.core.  The rules live in
+      # pyproject.toml under [tool.mypy]; the boundary is widened by a separate, dated change.
+      - name: Type-check the core boundary
+        if: matrix.python-version == '3.11'
+        run: python -m mypy
 
       # The pinned dependency set is audited against the advisory service.
       # A known vulnerability fails the job. An advisory-service outage is a
@@ -84,7 +98,7 @@ jobs:
         run: |
           set -o pipefail
           set +e
-          pytest --junitxml=pytest-junit.xml 2>&1 | tee pytest-output.txt
+          pytest ${{ matrix.coverage-flags }} --junitxml=pytest-junit.xml 2>&1 | tee pytest-output.txt
           status=${PIPESTATUS[0]}
           echo "$status" > pytest-exit.txt
           exit "$status"
@@ -125,6 +139,7 @@ jobs:
             pytest-totals.json
             pytest-exit.txt
             dependency-audit.json
+            coverage.xml
           if-no-files-found: error
 
       # A red run has to say *what* failed without anyone having to open the raw log, so each

@@ -19,7 +19,6 @@ Two rules the helper keeps that are easy to get wrong when each caller writes it
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
 from .enums import (
@@ -34,6 +33,7 @@ from .enums import (
     ProgramLifecycle,
     RecommendationLifecycle,
     RiskLifecycle,
+    StrEnumLike,
 )
 from .errors import ValidationError
 
@@ -56,7 +56,9 @@ class Lifecycle:
     """One state machine: a name for messages, the states, the allowed edges and the first state."""
 
     name: str
-    states: type[StrEnum]
+    #: The state enum. Every state enum in this package derives from
+    #: :class:`StrEnumLike`, which is what gives it the ``parse`` helper.
+    states: type[StrEnumLike]
     transitions: dict[Any, tuple[Any, ...]]
     initial: Any
 

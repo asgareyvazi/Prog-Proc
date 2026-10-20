@@ -423,7 +423,7 @@ class Quantity:
     def __truediv__(self, other: object) -> Quantity | float:
         if isinstance(other, Quantity):
             if convertible(self.dimension, other.dimension):
-                return self.base_value / other.base_value  # type: ignore[return-value]
+                return self.base_value / other.base_value
             raise DimensionMismatchError(
                 "Cannot divide incompatible dimensions",
                 left=self._unit.symbol,
@@ -490,7 +490,13 @@ class Quantity:
         value = payload.get("value")
         if value is None or unit == "":
             raise UnitError("Quantity dict needs 'value' and 'unit'", payload=payload)
-        return cls.of(float(value), str(unit))
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise UnitError("Quantity value must be a number", payload=payload)
+        try:
+            number = float(value)
+        except ValueError as exc:
+            raise UnitError("Quantity value must be a number", payload=payload) from exc
+        return cls.of(number, str(unit))
 
     def with_value(self, value: float) -> Quantity:
         return Quantity(value, self._unit)
