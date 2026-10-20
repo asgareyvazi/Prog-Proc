@@ -241,7 +241,11 @@ jobs:
       # error level with the stage the child reached, the count and the rate
       # are published as a notice, and the transcripts are in the artifact.
       # Any failure that is NOT the known native fault still fails this step.
+      # ``if: always()``: when the UI suite itself faults, this step is the
+      # only place left that can say where. A skipped measurement answers
+      # nothing, so the measurement runs even when the suite failed.
       - name: Fail-closed shutdown stress
+        if: always()
         shell: pwsh
         run: |
           python tools/qt_shutdown_stress.py --attempts 25 --log-dir qt-logs/shutdown-stress
