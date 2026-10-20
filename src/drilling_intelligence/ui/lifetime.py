@@ -334,44 +334,82 @@ def _diagnostic(message: str) -> None:
         pass
 
 
-def _terminate_current_process(code: int) -> None:
+def _terminate_current_process(code: int, *, attempts: int = 3) -> None:
     """Stop this Windows process with ``code`` without notifying libraries.
 
     ``os._exit`` calls ``ExitProcess``. ``ExitProcess`` notifies the loaded
     libraries, so the Python finalizer runs while the ``QApplication`` and a
     live ``QThread`` still exist, and destroying them there faulted the
-    process with ``0xC0000005`` instead of the contracted exit 4.
-    ``TerminateProcess`` does not notify libraries, so the interpreter never
-    finalizes and the Qt objects are simply abandoned. It does not call Qt,
-    delete a widget, or ``QThread.terminate`` a worker.
+    process with ``0xC0000005`` instead of the contracted exit 4. The
+    interpreter finalizer also runs a Python callback - the Qt event filter
+    - while the GUI thread is inside it, and that is where the fault was
+    observed. ``TerminateProcess`` does not notify libraries, so the
+    interpreter never finalizes and the Qt objects are simply abandoned. It
+    does not call Qt, delete a widget, or ``QThread.terminate`` a worker.
 
-    A refused call raises, and the caller falls back to ``os._exit``.
+    The handle and the arguments are typed explicitly. An untyped call
+    truncates the 64-bit handle to a 32-bit argument, and a refused call
+    then falls through to ``os._exit`` - which is the fault this path
+    exists to avoid. The call is repeated, because a refusal is not a
+    decision.
     """
     import ctypes
+    from ctypes import wintypes
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    handle = kernel.GetCurrentProcess()
-    if not kernel.TerminateProcess(handle, code):
-        raise OSError(ctypes.get_last_error(), "TerminateProcess failed")
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    kernel.TerminateProcess.restype = wintypes.BOOL
+    last_error = 0
+    for _ in range(max(1, attempts)):
+        handle = kernel.GetCurrentProcess()
+        if kernel.TerminateProcess(handle, code):
+            return
+        last_error = ctypes.get_last_error()
+    raise OSError(last_error, "TerminateProcess failed")
+
+
+_TERMINAL_REFUSED_WAIT_S = 30.0
+
+
+def _wait_for_refused_termination(code: int) -> None:
+    """Wait out a refused termination, then end the process the hard way.
+
+    The wait is bounded because the process has already failed to shut down
+    cleanly and something else has to end it. The watchdog that bounds the
+    parent's wait kills the child long before this expires, so this is the
+    path of a process nobody is waiting for any more.
+    """
+    deadline = time.monotonic() + _TERMINAL_REFUSED_WAIT_S
+    while time.monotonic() < deadline:
+        time.sleep(0.05)
+    os._exit(code)
 
 
 def _end_process(code: int) -> None:
     """End this process with ``code``. The caller owns the terminal exit.
 
     The standard streams are flushed first because a forced end does not
-    flush them, and the test contract reads the child's markers. On Windows
-    the process is ended with ``TerminateProcess`` so the interpreter never
-    finalizes while Qt objects are still alive. The ``os._exit`` call is the
-    fallback for a platform or a refused call; on POSIX it is the only path.
+    flush them, and the test contract reads the child's markers. On POSIX
+    the process is ended with ``os._exit``. On Windows it is ended with
+    ``TerminateProcess``, and the ``os._exit`` path is not reachable at all.
 
-    ``TerminateProcess`` on the current process returns before the process
-    has finished tearing down, so the ``os._exit`` that used to follow it
-    ran anyway. That ``os._exit`` is ``ExitProcess``, which *does* notify
-    the loaded libraries: the interpreter finalizer ran on the terminating
-    thread and destroyed the ``QApplication`` while the GUI thread was still
-    inside it. That is the access violation. After an accepted
-    ``TerminateProcess`` this function therefore waits for the termination
-    instead of falling through to ``os._exit``.
+    The reason is the access violation. ``TerminateProcess`` on the current
+    process returns before the process has finished tearing down, so the
+    ``os._exit`` that used to follow it ran anyway. That ``os._exit`` is
+    ``ExitProcess``, which *does* notify the loaded libraries: the
+    interpreter finalizer ran on the terminating thread and destroyed the
+    ``QApplication`` while the GUI thread was still inside it - inside the
+    Python event filter, which is a Python callback and therefore cannot
+    run while the interpreter is finalizing. The fault was reproduced with
+    the innermost frames of the faulting thread on the event filter and on
+    this function.
+
+    So the Windows branch ends the process without the finalizer, waits for
+    the termination to take effect, and returns. If the kernel refuses the
+    request the refusal is reported and the process is left to the watchdog
+    that bounds the parent's wait, because reaching the exit code through
+    the finalizer is the fault this function exists to prevent.
     """
     _flush_standard_streams()
     if _is_windows():
@@ -381,8 +419,18 @@ def _end_process(code: int) -> None:
             pass
         else:
             _wait_for_termination()
-            os._exit(code)
             return
+        # The kernel refused the request. The only other way to end the
+        # process is ``os._exit``, and on Windows that is ``ExitProcess``,
+        # which notifies the loaded libraries: the interpreter finalizer
+        # runs, the ``QApplication`` is destroyed while the GUI thread may
+        # still be inside a Python callback, and the process faults with
+        # ``0xC0000005``. A refused termination is a failed shutdown, and a
+        # failed shutdown is reported by the parent that bounded the wait.
+        # It is not worth a native fault to reach the exit code.
+        _diagnostic(f"TERMINAL_REFUSED code={code}")
+        _wait_for_refused_termination(code)
+        return
     os._exit(code)
 
 
@@ -392,8 +440,9 @@ def _wait_for_termination(timeout_s: float = _TERMINATION_WAIT_S) -> None:
     The wait is a backstop for a platform that accepted the termination
     request and did not act on it. The process is already marked for
     termination, so this thread is normally killed inside the wait and the
-    interpreter never finalizes. The wait never returns into the shutdown
-    path: the caller ends the process itself if the wait runs out.
+    interpreter never finalizes. The wait returns only if the kernel did not
+    act on the request; the caller then reports the refusal instead of
+    ending the process through the finalizer.
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:

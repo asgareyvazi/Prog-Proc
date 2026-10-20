@@ -169,21 +169,37 @@ _FRAME = re.compile(r'File "(?P<file>[^"]+\.py)", line (?P<line>\d+)')
 def fault_frames(body: str) -> list[str]:
     """The frames the faulting thread printed, when it printed any.
 
-    ``PYTHONFAULTHANDLER`` prints the stack of the thread that faulted. The
-    frames name a repository file and a line, never a document body, so they
-    can be published: they are the evidence that says which thread died and
-    where.
+    ``PYTHONFAULTHANDLER`` prints the stack of the thread that faulted
+    first, under the ``Current thread`` heading, and then the stack of every
+    other thread. Only the first section describes the fault: the other
+    sections show where the surviving threads were standing when the process
+    died, which is context and not cause. The frames name a repository file
+    and a line, never a document body, so they can be published: they are the
+    evidence that says which thread died and where.
     """
-    frames: list[str] = []
+    faulting: list[str] = []
+    every: list[str] = []
+    in_faulting = False
     for line in body.splitlines():
         stripped = line.strip()
+        if stripped.startswith("Current thread"):
+            in_faulting = True
+            faulting = []
+            continue
+        if stripped.startswith("Thread "):
+            in_faulting = False
+            continue
         if not stripped.startswith("File "):
             continue
         match = _FRAME.search(stripped)
         if match is None:
             continue
-        frames.append(f"{match.group('file')}:{match.group('line')}")
-    return frames
+        name = match.group("file").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        frame = f"{name}:{match.group('line')}"
+        every.append(frame)
+        if in_faulting:
+            faulting.append(frame)
+    return faulting or every
 
 
 def fault_evidence(body: str) -> str:

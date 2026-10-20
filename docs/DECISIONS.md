@@ -2776,3 +2776,84 @@ still required to exit `4`.
 **Consequences.** The fault has a name, a rate, and a reproduction. The
 remaining work is to find the stage at which it happens, and the
 instrumentation for that is now in place.
+
+## ADR-60 — V8.16: the faulting thread is inside a Python callback while the interpreter finalizes
+
+**Status:** accepted (2026-10-20); the fix is implemented, its verification is pending a Windows run
+
+ADR-59 published the reproduction of the native access violation and withdrew
+the earlier claim that the cause was known. This decision records the first
+evidence that says *where* the fault happens, and the change that follows
+from it.
+
+**The evidence.** The Windows offscreen UI job at
+`eab9323324a1aade38ea547febe3ffe079dd187a` published the innermost frames of
+the faulting thread for every faulted attempt of the stress experiment. The
+frames are:
+
+| role | innermost frames (innermost first) |
+| --- | --- |
+| the thread that ends the process | `lifetime.py:625` → `lifetime.py:386` → `lifetime.py:447` |
+| the thread that stands down | `lifetime.py:423` → `lifetime.py:439` → `lifetime.py:508` |
+
+Read against the source at that commit:
+
+*   `lifetime.py:625` is `event.type() == QEvent.Type.Quit` inside
+    `_AcceptQuit.eventFilter` — a **Python callback invoked from C++**.
+*   `lifetime.py:386` is `os._exit(code)` in `_end_process`.
+*   `lifetime.py:447` is the `_end_process(...)` call in the monitor's
+    `_terminal`.
+*   `lifetime.py:423` is `time.sleep(0.02)` in
+    `_stand_down_for_terminal_exit`; `439` is that call; `508` is
+    `self._terminal()` in `enforce`.
+
+**What the frames say.** The faulting thread is the GUI thread, and it is
+inside a Python callback that Qt invoked from C++. A Python callback cannot
+run safely while the interpreter is finalizing. The only way the interpreter
+finalizes is `os._exit` — on Windows `os._exit` is `ExitProcess`, which
+*notifies the loaded libraries*, so the finalizer runs on the terminating
+thread, destroys the `QApplication`, and the GUI thread is left standing
+inside a callback that belongs to the object being destroyed.
+
+That is a mechanism that explains every observation: the fault is rare
+(about 8% of attempts) because it needs the finalizer to reach the Qt
+objects while the GUI thread is inside the callback; it happens in both
+stress modes because both end the process the same way; it happens in the
+UI suite too (the `35b0552` failure had stages up to `SHUTDOWN_BEGIN` and no
+terminal attempt at all, so the process was already finalizing); and it is
+not a live `QThread` problem.
+
+**What changed.** ADR-54 and `35b0552` already removed the `os._exit` that
+followed an *accepted* `TerminateProcess`. The frames show the fault on a
+path that still reached `os._exit`, so the whole `os._exit` path is now
+closed on Windows:
+
+*   `_end_process` on Windows ends the process with `TerminateProcess` and
+    returns. It never calls `os._exit`. The POSIX path is unchanged.
+*   The `TerminateProcess` call is typed explicitly
+    (`HANDLE`/`UINT`/`BOOL`). An untyped call passes the 64-bit handle as a
+    32-bit argument, and a refusal then falls through to the very
+    `os._exit` this path exists to avoid. A refusal is now retried and then
+    raised, not swallowed.
+*   A refused termination is reported (`TERMINAL_REFUSED`) and the process
+    waits; the watchdog that bounds the parent's wait ends it. Reaching the
+    exit code through the finalizer is the fault, and a failed shutdown
+    that the parent reports is worth more than a native fault.
+
+**What is verified, and what is not.** The change is verified by the source
+contract (the Windows branch of `_end_process` cannot reach `os._exit`, and
+the contract test says so structurally), by the unit tests, and by the local
+suite. It is **not** yet verified on Windows: the rate of the native fault
+after this change is only known when a Windows run at the new commit has
+published its stress summary. Until that run is green, the root cause is
+*strongly indicated by the innermost frames*, not established.
+
+**Consequences.**
+
+*   The exit-4 contract is unchanged: `is_fail_closed_shutdown_exit` accepts
+    only the integer `4`.
+*   A refused termination now fails loudly (a reported refusal and a
+    watchdog kill) instead of faulting.
+*   The shutdown path is not restructured beyond this: no speculative Qt
+    refactor, no change to the coordinator, no change to the deadline
+    monitor.

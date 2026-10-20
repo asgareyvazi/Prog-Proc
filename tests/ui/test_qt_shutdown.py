@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -85,6 +86,43 @@ def _run(mode: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
     return completed
 
 
+_FRAME = re.compile(r'File "(?P<file>[^"]+\.py)", line (?P<line>\d+)')
+
+
+def _faulting_frames(body: str) -> list[str]:
+    """The frames of the thread that faulted, if the handler printed any.
+
+    ``PYTHONFAULTHANDLER`` prints the faulting thread first, under the
+    ``Current thread`` heading, and then every other thread. The other
+    sections show where the surviving threads stood when the process died:
+    that is context, not cause, so they are not published as the fault
+    location.
+    """
+    faulting: list[str] = []
+    every: list[str] = []
+    in_faulting = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Current thread"):
+            in_faulting = True
+            faulting = []
+            continue
+        if stripped.startswith("Thread "):
+            in_faulting = False
+            continue
+        if not stripped.startswith("File "):
+            continue
+        match = _FRAME.search(stripped)
+        if match is None:
+            continue
+        name = match.group("file").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        frame = f"{name}:{match.group('line')}"
+        every.append(frame)
+        if in_faulting:
+            faulting.append(frame)
+    return faulting or every
+
+
 def _detail(completed: subprocess.CompletedProcess[str]) -> str:
     body = " | ".join(
         line.strip()
@@ -94,8 +132,9 @@ def _detail(completed: subprocess.CompletedProcess[str]) -> str:
     # A native fault prints its stack from the innermost frame outwards, and
     # the innermost frame is the fault location. The tail of the output holds
     # the outer frames, so the tail alone hides the place the process died.
-    # The innermost frames are put first so they survive the cut.
-    frames = [line for line in body.split(" | ") if line.strip().startswith("File ")]
+    # The innermost frames of the faulting thread are put first so they
+    # survive the cut.
+    frames = _faulting_frames(body)
     tail = body[-500:]
     if frames:
         head = " | ".join(frames[:3])

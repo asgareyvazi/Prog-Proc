@@ -234,3 +234,27 @@ def test_the_fault_evidence_names_the_stage_the_child_reached() -> None:
 def test_the_native_fault_reason_is_the_known_one() -> None:
     assert qt_shutdown_stress.is_native_fault("windows access violation 0xC0000005") is True
     assert qt_shutdown_stress.is_native_fault("exit 0 is not the contracted 4") is False
+
+
+def test_the_fault_frames_are_the_frames_of_the_faulting_thread() -> None:
+    """The published frames must describe the thread that faulted.
+
+    ``PYTHONFAULTHANDLER`` prints the faulting thread first and then every
+    other thread. The other sections show where the surviving threads stood
+    when the process died: context, not cause.
+    """
+    body = (
+        "Windows fatal exception: access violation\n"
+        "Current thread 0x00007ffd (most recent call first):\n"
+        '  File "C:\\repo\\src\\drilling_intelligence\\ui\\lifetime.py", line 625 in eventFilter\n'
+        "Thread 0x00001111 (most recent call first):\n"
+        '  File "C:\\repo\\src\\drilling_intelligence\\ui\\lifetime.py", line 386 in _end_process\n'
+        '  File "C:\\repo\\src\\drilling_intelligence\\ui\\lifetime.py", line 447 in _terminal\n'
+    )
+    assert qt_shutdown_stress.fault_frames(body) == ["lifetime.py:625"]
+
+
+def test_the_fault_frames_fall_back_to_every_frame_without_a_heading() -> None:
+    """A truncated report still names the frames it has."""
+    body = '  File "/repo/src/drilling_intelligence/ui/lifetime.py", line 386 in _end_process\n'
+    assert qt_shutdown_stress.fault_frames(body) == ["lifetime.py:386"]

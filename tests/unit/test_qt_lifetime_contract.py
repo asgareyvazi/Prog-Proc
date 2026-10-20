@@ -227,13 +227,16 @@ def test_windows_deadline_monitor_exits_without_notifying_libraries(monkeypatch)
         "_terminate_current_process",
         lambda code: calls.append(("terminate", code)),
     )
+    monkeypatch.setattr(
+        lifetime, "_wait_for_termination", lambda *a, **k: calls.append(("wait", 4))
+    )
     monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append(("exit", code)))
     lifetime._terminal_exit()
-    assert calls == [("terminate", 4), ("exit", 4)]
+    assert calls == [("terminate", 4), ("wait", 4)]
     monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
     monkeypatch.setattr(lifetime, "_is_windows", lambda: False)
     lifetime._terminal_exit()
-    assert calls == [("terminate", 4), ("exit", 4), ("exit", 4)]
+    assert calls == [("terminate", 4), ("wait", 4), ("exit", 4)]
     source = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
     assert "QThread.terminate(" not in source
     assert "TerminateProcess" in source
@@ -262,13 +265,16 @@ def test_the_coordinator_also_ends_the_process_without_notifying_libraries(monke
         "_terminate_current_process",
         lambda code: calls.append(("terminate", code)),
     )
+    monkeypatch.setattr(
+        lifetime, "_wait_for_termination", lambda *a, **k: calls.append(("wait", 4))
+    )
     monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append(("exit", code)))
     lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
-    assert calls == [("terminate", 4), ("exit", 4)]
+    assert calls == [("terminate", 4), ("wait", 4)]
     monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
     monkeypatch.setattr(lifetime, "_is_windows", lambda: False)
     lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
-    assert calls == [("terminate", 4), ("exit", 4), ("exit", 4)]
+    assert calls == [("terminate", 4), ("wait", 4), ("exit", 4)]
     source = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
     for name in ("def fail_closed_shutdown", "def _terminal_exit"):
         body = source.split(name, 1)[1].split("\n\ndef ", 1)[0]
@@ -507,6 +513,7 @@ def _record_end_calls(monkeypatch: pytest.MonkeyPatch, *, terminate_raises: bool
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
     monkeypatch.setattr(lifetime, "_terminate_current_process", _terminate)
     monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_TERMINAL_REFUSED_WAIT_S", 0.0)
     monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append("exit"))
     lifetime._end_process(4)
     return calls
@@ -523,14 +530,63 @@ def test_an_accepted_terminate_process_does_not_run_the_finalizer(
     it, and that is the access violation. The order below is the contract.
     """
     calls = _record_end_calls(monkeypatch, terminate_raises=False)
-    assert calls == ["flush", "terminate", "wait", "exit"]
+    assert calls == ["flush", "terminate", "wait"]
     assert calls.index("wait") > calls.index("terminate")
+    assert "exit" not in calls
 
 
-def test_a_refused_terminate_process_falls_back_to_the_exit(
+def test_a_refused_terminate_process_does_not_run_the_finalizer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A refused native call is a failure of the platform, and it is not hidden."""
+    """A refused native call is a failure of the platform, and it is not hidden.
+
+    The refusal is reported, and the process is not ended through
+    ``os._exit``: on Windows that is ``ExitProcess``, which notifies the
+    libraries and runs the interpreter finalizer while the ``QApplication``
+    is still alive. The refused path waits, and the parent's watchdog ends
+    the process.
+    """
     calls = _record_end_calls(monkeypatch, terminate_raises=True)
     assert calls == ["flush", "terminate", "exit"]
     assert "wait" not in calls
+
+
+def test_the_windows_branch_of_end_process_never_calls_os_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Windows branch must not reach ``os._exit`` at all.
+
+    ``os._exit`` is ``ExitProcess`` on Windows. It notifies the loaded
+    libraries, the interpreter finalizer runs on the terminating thread,
+    and the ``QApplication`` is destroyed while the GUI thread may be
+    inside a Python callback - the access violation. The contract is
+    therefore structural: the source of the Windows branch must not
+    contain the call.
+    """
+    tree = ast.parse(Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_end_process"
+    )
+    branches = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.If) and "_is_windows" in ast.unparse(node.test)
+    ]
+    assert branches, "the Windows branch must be explicit"
+    for branch in branches:
+        for call in ast.walk(branch):
+            assert not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "_exit"
+            ), "os._exit must not be reachable on Windows"
+    exits = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_exit"
+    ]
+    assert len(exits) == 1, "the POSIX path is the only direct exit"
