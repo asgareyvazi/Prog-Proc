@@ -74,7 +74,10 @@ python -m venv $root
 ## Shutdown stress on this workstation
 
 The Windows offscreen UI job runs the fail-closed shutdown child repeatedly
-and fails the job if any attempt ends with anything other than exit `4`.
+and measures it: an attempt that ends with the known native access
+violation is reported at error level and does not fail the job, because a
+fault that fires in a few percent of attempts turns a required job into a
+coin toss. Any attempt that ends with any *other* exit code fails the step.
 The same experiment runs here:
 
 ```powershell
@@ -86,6 +89,21 @@ Every attempt must report exit `4`. An attempt that reports
 `3221225477` (`0xC0000005`) is a native access violation, and it is a
 failure of this workstation, not a flaky test. Record the number of
 attempts and every failure; do not re-run until one attempt passes.
+
+**What this experiment measured.** The native access violation was
+reproduced on the Windows runner — at least ten faults in fifty attempts
+at commit `eab9323`. The cause was the interpreter finalizer: on Windows
+the terminal exit used `os._exit`, which is `ExitProcess`, which notifies
+the loaded libraries and runs the finalizer while the `QApplication` and a
+live GUI thread still exist. The finalizer destroyed them under the GUI
+thread. Since commit `2827073` the Windows branch of the terminal exit
+cannot reach `os._exit` at all, and the same fifty attempts published
+**zero** native faults.
+
+If an attempt still reports `3221225477` on your workstation, record the
+whole line: it carries the stage the child reached and the innermost frames
+of the thread that faulted. Those frames are the evidence, and they are
+what a fix has to be based on.
 
 ## Release smoke
 

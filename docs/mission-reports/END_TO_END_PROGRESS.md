@@ -129,6 +129,10 @@ fixed. It is **not the whole cause**. With the arbitration in place the
 fault still occurs at about 8%, so the earlier reading — that the double end
 *was* the cause — is withdrawn. The remaining cause is not established.
 
+> **Closed later.** Sections 2.5 and 2.6 below locate the remaining fault
+> and close it: the interpreter finalizer, reached through the `os._exit`
+> line of `_end_process` on Windows.
+
 **What the two modes tell us.** The `deadline` mode runs a real `QThread`;
 the `deadline-synthetic` mode runs a plain `threading.Thread`. They fault
 at the same rate, so a live `QThread` is not the cause. What they share is
@@ -157,6 +161,86 @@ exit code other than `4` and other than the known native fault still fails
 the step, and the UI suite's single deadline child is still required to
 exit `4`.
 
+### 2.5 The third reproduction — the faulting thread's frames
+
+The Windows offscreen UI job at `eab9323` (run `39414923372`, job
+`118601549130`) passed the UI suite — 22 collected, 22 passed, 0 failed —
+and published the fault with the innermost frames of the faulting thread:
+
+| mode | attempts | native access violations | rate |
+| --- | --- | --- | --- |
+| `deadline` (real `QThread`) | 25 | **at least 9** — ordinals 1, 2, 3, 4, 8, 10, 12, 16, 19 | ≥36% |
+| `deadline-synthetic` (`threading.Thread`) | 25 | **at least 1** — ordinal 10 | ≥4% |
+| **total** | **50** | **at least 10** | **≥20%** |
+
+The counts are lower bounds: GitHub keeps ten annotations of one level per
+step, so the published notices cover only the first ten attempts and the
+published errors only the first ten faults.
+
+The rate went up against the 8% at `32483ed`, and that is the measurement
+doing its job: the change in between removed the `os._exit` that followed
+an *accepted* `TerminateProcess`, and the faults that remain are on the
+path where that native call was **refused**.
+
+The frames, read against the source at `eab9323`:
+
+| role | frames, innermost first | what they are |
+| --- | --- | --- |
+| the owner of the terminal exit | `lifetime.py:625` -> `lifetime.py:386` -> `lifetime.py:447` | `event.type() == QEvent.Type.Quit` in `_AcceptQuit.eventFilter`; `os._exit(code)` in `_end_process`; the `_end_process(...)` call in the monitor's `_terminal` |
+| the thread that stands down | `lifetime.py:423` -> `lifetime.py:439` -> `lifetime.py:508` | `time.sleep(0.02)` in `_stand_down_for_terminal_exit`; that call; `self._terminal()` in `enforce` |
+
+The first row cannot be a call chain — a Qt event filter is not called from
+`os._exit` — so it is two threads: the GUI thread inside a **Python
+callback invoked from C++**, and the monitor thread on the `os._exit` line of
+`_end_process`. The second row is a chain, and it is the monitor thread
+asleep in the stand-down.
+
+`os._exit` on Windows is `ExitProcess`; `ExitProcess` notifies the loaded
+libraries, so the interpreter finalizer runs on the terminating thread
+while the `QApplication` and a live GUI thread still exist, and it destroys
+them there. A Python callback cannot run while the interpreter is
+finalizing. That mechanism explains the rarity of the fault, the fact that
+both stress modes fault, the `35b0552` failure that faulted **before** any
+terminal decision, and the fact that a thread that is only standing down can
+fault too.
+
+**The harness was mixing threads.** `faulthandler` prints every thread;
+the harness took the first three `File ` lines of the whole report, so the
+surviving threads' stacks were published next to the faulting thread's.
+The harness and the UI test now publish the `Current thread` section only.
+
+### 2.6 The fix, and what it does not claim
+
+`2827073` closes the `os._exit` path on Windows entirely:
+
+*   `_terminate_current_process` types the native call explicitly
+    (`HANDLE` / `UINT` / `BOOL`), retries a refusal, and raises instead of
+    letting the caller fall through to `os._exit`.
+*   `_end_process` on Windows ends the process with `TerminateProcess`,
+    waits for the termination, and returns. The `os._exit` line is
+    unreachable there; the POSIX path is unchanged.
+*   A refused termination is reported (`TERMINAL_REFUSED`) and the process
+    waits for the parent's watchdog, because a failed shutdown the parent
+    reports is worth more than a native fault.
+
+The rule is enforced structurally: a unit test parses `_end_process` and
+asserts that no `os._exit` call is reachable inside the `if _is_windows()`
+branch, and that the function has exactly one direct exit.
+
+**The measurement after the fix.** The Windows offscreen UI job at
+`2827073` (run `39416773889`, job `118608029122`) published the UI suite
+green (22 collected, 22 passed, 0 failed, exit 0) and **no native-fault
+annotation at all**, where the previous run published ten. The stress step
+ran for 96 s, the same as the run that faulted, so the same fifty attempts
+ran. **Zero native access violations in fifty attempts**, against at least
+ten in fifty before.
+
+**What is now established.** The root cause is the interpreter finalizer
+running on the terminating thread while another thread was inside Python
+code, reached through the `os._exit` line of `_end_process` on Windows. The
+fix is verified on the Windows runner. It is not proven for the owner's
+workstation: the manual checklist is still **NOT RUN**.
+
 ---
 
 ## 3. Commits on this branch
@@ -167,7 +251,12 @@ exit `4`.
 | `1ec8a1ba219521abbfef9f73e3ee6177f053cd19` | V8.16: end the Qt shutdown exactly once, and pin the dependency set |
 | `91e51a49bc334c81f059b60bdc479bb3f0e00756` | V8.16: type-check the core boundary, measure coverage, pin the actions |
 | `32483ed89c06981d7e8fdfb85639ec6ab129ca31` | V8.16: publish the coverage baseline where it can be read |
-| (this commit) | V8.16: measure the native fault, publish the stage a faulted child reached |
+| `656df49` | V8.16: measure the native fault, publish the stage a faulted child reached |
+| `35b0552` | V8.16: no interpreter finalizer on the Windows terminal path |
+| `60b5e0e` | V8.16: publish the innermost faulthandler frames, and record where the fault is **not** |
+| `eab9323324a1aade38ea547febe3ffe079dd187a` | V8.16: run the stress measurement even when the UI suite fails |
+| `282707395553b0212684293dd787ddb6644e9aec` | V8.16: close the `os._exit` path on Windows, publish the faulting thread's frames |
+| (this commit) | V8.16: the final report with the exact-SHA runs |
 
 Each was pushed to `origin/arena/5957b76d-prog-proc` and verified with
 `git ls-remote`. No commit was amended, no history was rewritten.
@@ -205,8 +294,10 @@ Each was pushed to `origin/arena/5957b76d-prog-proc` and verified with
 | `tools/release_smoke.py` | PASSED — wheel and sdist, 49 tables, schema stamped from package metadata |
 | `tools/dependency_audit.py` | `clean` — no known vulnerability in the pinned runtime and UI sets |
 | `tests/unit/` | all passed |
-| `tests/ui/` (offscreen, local stub libraries) | 22 passed |
+| full local suite | **2269 collected, 2248 passed, 21 skipped, 0 failed, 0 errors, 0 xfailed, 0 xpassed, exit 0**, runtime 1378.368 s |
+| `tests/ui/` (offscreen, local stub libraries) | 22 passed — 14 in `test_qt_shutdown.py`, 8 in the other Qt nodes |
 | shutdown stress, post-fix | 12/12 attempts exit `4`, 0 failures, owners `{coordinator: 10, monitor: 2}` |
+| shutdown stress, after the `os._exit` closure | 10/10 attempts exit `4`, 0 failures, **0 native faults** (`native_fault_rate=0.0%`) |
 | `tools/constraints.py --set <name>` | regenerates each constraint file; `--check` fails on a hand edit |
 
 ### One flake, recorded honestly
@@ -226,9 +317,12 @@ package mirror.
 
 ## 6. What is still open
 
-* The Windows native access violation **is reproduced**, at about 8% per
-  attempt. The double terminal end is fixed, but the remaining cause is not
-  established, and the shutdown path was not restructured on a guess.
+* The Windows native access violation **was reproduced** — at least ten
+  faults in fifty attempts at `eab9323` — and the cause is **established
+  and fixed**: the `os._exit`/finalizer path on Windows, closed at
+  `2827073`. The Windows run at that commit published **zero** native faults
+  in the same fifty attempts. What is still open is the owner's manual
+  checklist on the workstation that matters, which is not this runner.
 * The owner's manual Windows checklist is **NOT RUN**.
 * Six product decisions remain open in `docs/PRODUCT_DECISIONS_REQUIRED.md`.
   No capability was added for any of them.

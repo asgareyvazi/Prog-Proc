@@ -2779,7 +2779,7 @@ instrumentation for that is now in place.
 
 ## ADR-60 — V8.16: the faulting thread is inside a Python callback while the interpreter finalizes
 
-**Status:** accepted (2026-10-20); the fix is implemented, its verification is pending a Windows run
+**Status:** accepted (2026-10-20); the fix is implemented and verified on the Windows runner
 
 ADR-59 published the reproduction of the native access violation and withdrew
 the earlier claim that the cause was known. This decision records the first
@@ -2843,10 +2843,26 @@ closed on Windows:
 **What is verified, and what is not.** The change is verified by the source
 contract (the Windows branch of `_end_process` cannot reach `os._exit`, and
 the contract test says so structurally), by the unit tests, and by the local
-suite. It is **not** yet verified on Windows: the rate of the native fault
-after this change is only known when a Windows run at the new commit has
-published its stress summary. Until that run is green, the root cause is
-*strongly indicated by the innermost frames*, not established.
+suite.
+
+**The Windows runner confirms it.** The offscreen UI job at
+`282707395553b0212684293dd787ddb6644e9aec` (run `39416773889`, job
+`118608029122`) published the UI suite green (22 collected, 22 passed, 0
+failed, 0 skipped, exit 0) and the stress step published **no native-fault
+annotation at all**, where the previous run at `eab9323` published ten. The
+stress step ran for 96 seconds, the same as the run that faulted, so the
+same fifty attempts ran: **zero native access violations in fifty
+attempts**, against at least ten in fifty before.
+
+The summary notice was truncated — GitHub keeps ten annotations of one level
+per step, and the summary was the eleventh notice — so the count in the
+evidence is the absence of failure annotations, not the summary line. The
+summary JSON is in the artifact.
+
+The root cause is therefore **established**: the interpreter finalizer,
+reached through the `os._exit` line of `_end_process` on Windows. What
+remains unproven is the owner's workstation, and that is what the manual
+checklist is for.
 
 **Consequences.**
 
