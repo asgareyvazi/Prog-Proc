@@ -210,6 +210,16 @@ jobs:
         shell: pwsh
         run: python tools/ci_pytest.py --output qt-logs/pytest-output.txt --exit-file qt-logs/pytest-exit.txt -- tests/ui --junitxml=qt-logs/pytest-junit.xml
 
+      # The fail-closed shutdown is the one path that has faulted natively on
+      # Windows. This experiment repeats it and reports every attempt: a later
+      # attempt that honours the contract does not erase an earlier native
+      # fault, and any attempt that ends with something other than exit 4 fails
+      # this step. It is not a retry of the UI suite.
+      - name: Fail-closed shutdown stress
+        shell: pwsh
+        run: |
+          python tools/qt_shutdown_stress.py --attempts 10 --log-dir qt-logs/shutdown-stress
+
       - name: Surface UI failures
         if: always()
         shell: pwsh

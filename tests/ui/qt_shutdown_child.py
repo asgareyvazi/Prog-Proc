@@ -440,6 +440,7 @@ def production_deadline() -> int:
     code = _exec(app, probe)
     del held
     print("EXEC_RETURNED", flush=True)
+    print("SHUTDOWN_BEGIN", flush=True)
     application_shutdown(app, code, deadline_ms=400)
     print("FAIL deadline returned", file=sys.stderr)
     return 1
@@ -732,6 +733,7 @@ def deadline_synthetic() -> int:
     del held
     print("EXEC_RETURNED", flush=True)
     print("SYNTHETIC_DEADLINE", flush=True)
+    print("SHUTDOWN_BEGIN", flush=True)
     application_shutdown(app, code, deadline_ms=400)
     print("FAIL deadline returned", file=sys.stderr)
     return 1

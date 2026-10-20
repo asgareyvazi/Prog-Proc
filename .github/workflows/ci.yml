@@ -222,6 +222,19 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: python tools/qt_stability.py --repeats 15
 
+      # The fail-closed shutdown is the one path that has faulted natively on
+      # Windows. The same experiment runs here so the two platforms are
+      # compared on the same contract, and every attempt is reported.
+      - name: Fail-closed shutdown stress
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
+        run: python tools/qt_shutdown_stress.py --attempts 10 --log-dir qt-logs/shutdown-stress
+
       # Hash the logs that exist. A mismatch, a missing attempt, or an abort
       # signature inside a successful record fails the job. The checksum is not
       # an entry in the manifest it covers.

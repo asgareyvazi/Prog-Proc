@@ -44,6 +44,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+# One monotonic origin for the shutdown transcript. Every diagnostic line is
+# stamped against it, so two threads that both reach a terminal decision can
+# be ordered by the order they were written, not by the order they were
+# discovered in a log.
+_PROCESS_START = time.monotonic()
+
 # Harness-only failure. The fixture uses it after a bounded wait still finds a
 # live widget, so Py_Finalize does not turn that failure into the historical
 # native abort. It is not a successful teardown.
@@ -196,6 +202,7 @@ def fail_closed_shutdown(result: ReleaseResult) -> None:
         f"Qt shutdown incomplete; live windows remain ({names})",
         file=sys.stderr,
     )
+    _diagnostic(f"TERMINAL_ATTEMPT owner=coordinator pid={os.getpid()} tid={threading.get_ident()}")
     os._exit(SHUTDOWN_INCOMPLETE_EXIT)
 
 
@@ -242,6 +249,21 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
+def _diagnostic(message: str) -> None:
+    """One shutdown transcript line that must survive the process exit.
+
+    The line is written to stderr and flushed. A shutdown diagnostic that is
+    still sitting in a buffer when the process is ended is not a record. The
+    stamp is monotonic and relative to the import of this module, so the
+    transcript of a child process can be read as a timeline.
+    """
+    try:
+        sys.stderr.write(f"SHUTDOWN t={time.monotonic() - _PROCESS_START:.3f} {message}\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
 def _terminate_current_process(code: int) -> None:
     """Stop this Windows process with ``code`` without notifying libraries.
 
@@ -263,6 +285,7 @@ def _terminal_exit() -> None:
         _write_deadline_notice(sys.stderr.fileno(), message)
     except (AttributeError, ImportError, OSError, ValueError):
         pass
+    _diagnostic(f"TERMINAL_ATTEMPT owner=monitor pid={os.getpid()} tid={threading.get_ident()}")
     if _is_windows():
         try:
             _terminate_current_process(SHUTDOWN_INCOMPLETE_EXIT)
