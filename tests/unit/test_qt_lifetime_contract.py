@@ -490,3 +490,47 @@ def _fill_until_blocked(fd: int) -> None:
             os.write(fd, chunk)
     except (BlockingIOError, OSError):
         return
+
+
+def _record_end_calls(monkeypatch: pytest.MonkeyPatch, *, terminate_raises: bool) -> list[str]:
+    """Run the end-of-process path with the native calls recorded."""
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls: list[str] = []
+
+    def _terminate(code: int) -> None:
+        calls.append("terminate")
+        if terminate_raises:
+            raise OSError(6, "TerminateProcess failed")
+
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
+    monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
+    monkeypatch.setattr(lifetime, "_terminate_current_process", _terminate)
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append("exit"))
+    lifetime._end_process(4)
+    return calls
+
+
+def test_an_accepted_terminate_process_does_not_run_the_finalizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``os._exit`` is ``ExitProcess`` on Windows, and it notifies the libraries.
+
+    After an accepted ``TerminateProcess`` the process is already marked for
+    termination, so the interpreter finalizer must not be asked to run: it
+    would destroy the ``QApplication`` while the GUI thread is still inside
+    it, and that is the access violation. The order below is the contract.
+    """
+    calls = _record_end_calls(monkeypatch, terminate_raises=False)
+    assert calls == ["flush", "terminate", "wait", "exit"]
+    assert calls.index("wait") > calls.index("terminate")
+
+
+def test_a_refused_terminate_process_falls_back_to_the_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused native call is a failure of the platform, and it is not hidden."""
+    calls = _record_end_calls(monkeypatch, terminate_raises=True)
+    assert calls == ["flush", "terminate", "exit"]
+    assert "wait" not in calls

@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -161,15 +162,42 @@ def progress_markers(body: str) -> list[str]:
     return found
 
 
+#: A faulthandler frame: the file it names and the line it stopped on.
+_FRAME = re.compile(r'File "(?P<file>[^"]+\.py)", line (?P<line>\d+)')
+
+
+def fault_frames(body: str) -> list[str]:
+    """The frames the faulting thread printed, when it printed any.
+
+    ``PYTHONFAULTHANDLER`` prints the stack of the thread that faulted. The
+    frames name a repository file and a line, never a document body, so they
+    can be published: they are the evidence that says which thread died and
+    where.
+    """
+    frames: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("File "):
+            continue
+        match = _FRAME.search(stripped)
+        if match is None:
+            continue
+        frames.append(f"{match.group('file')}:{match.group('line')}")
+    return frames
+
+
 def fault_evidence(body: str) -> str:
     """A one-line description of where a faulted child got to."""
     progress = progress_markers(body)
     terminal = _terminal_markers(body)
+    frames = fault_frames(body)
     parts: list[str] = []
     if progress:
         parts.append("stages=" + ">".join(progress))
     if terminal:
         parts.append("terminal=" + " | ".join(terminal[-2:]))
+    if frames:
+        parts.append("frames=" + ">".join(frames[-3:]))
     if not parts:
         parts.append("stages=none")
     return "; ".join(parts)

@@ -146,6 +146,11 @@ _TERMINAL_EXIT = _TerminalExit()
 # owner, not a normal wait.
 _TERMINAL_STANDDOWN_TIMEOUT_S = 3.0
 
+# How long a thread waits for a termination request the platform accepted.
+# The process is already marked for termination, so this thread is normally
+# killed inside the wait. The wait is a backstop, not a normal wait.
+_TERMINATION_WAIT_S = 2.0
+
 
 @dataclass(frozen=True)
 class ReleaseResult:
@@ -358,6 +363,15 @@ def _end_process(code: int) -> None:
     the process is ended with ``TerminateProcess`` so the interpreter never
     finalizes while Qt objects are still alive. The ``os._exit`` call is the
     fallback for a platform or a refused call; on POSIX it is the only path.
+
+    ``TerminateProcess`` on the current process returns before the process
+    has finished tearing down, so the ``os._exit`` that used to follow it
+    ran anyway. That ``os._exit`` is ``ExitProcess``, which *does* notify
+    the loaded libraries: the interpreter finalizer ran on the terminating
+    thread and destroyed the ``QApplication`` while the GUI thread was still
+    inside it. That is the access violation. After an accepted
+    ``TerminateProcess`` this function therefore waits for the termination
+    instead of falling through to ``os._exit``.
     """
     _flush_standard_streams()
     if _is_windows():
@@ -365,7 +379,25 @@ def _end_process(code: int) -> None:
             _terminate_current_process(code)
         except (AttributeError, OSError, ValueError):
             pass
+        else:
+            _wait_for_termination()
+            os._exit(code)
+            return
     os._exit(code)
+
+
+def _wait_for_termination(timeout_s: float = _TERMINATION_WAIT_S) -> None:
+    """Wait for a process that has been told to terminate.
+
+    The wait is a backstop for a platform that accepted the termination
+    request and did not act on it. The process is already marked for
+    termination, so this thread is normally killed inside the wait and the
+    interpreter never finalizes. The wait never returns into the shutdown
+    path: the caller ends the process itself if the wait runs out.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
 
 
 def _flush_standard_streams() -> None:
