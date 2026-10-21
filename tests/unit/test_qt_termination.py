@@ -212,7 +212,7 @@ def test_the_kernel_adapter_retries_a_refusal_and_keeps_the_error_code(
             calls.append("terminate")
             return 0
 
-    adapter = lifetime._KernelTermination(attempts=3, kernel_factory=lambda: _FakeKernel())
+    adapter = lifetime._KernelTermination(attempts=3, kernel_factory=_FakeKernel)
     monkeypatch.setattr(lifetime, "_last_error", lambda: 5)
 
     outcome = adapter.terminate(4)
@@ -245,7 +245,7 @@ def test_the_kernel_adapter_uses_a_second_handle_when_the_first_is_refused(
             calls.append(f"terminate:{handle}")
             return 1 if handle == 99 else 0
 
-    adapter = lifetime._KernelTermination(attempts=2, kernel_factory=lambda: _FakeKernel())
+    adapter = lifetime._KernelTermination(attempts=2, kernel_factory=_FakeKernel)
     # 87 is ERROR_INVALID_PARAMETER. A refusal that is not
     # ERROR_ACCESS_DENIED is retried with a second handle; the access
     # denied case means the process is already dying.

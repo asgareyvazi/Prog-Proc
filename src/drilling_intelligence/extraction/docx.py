@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..__init__ import EXTRACTION_ENGINE_VERSION
+from .. import EXTRACTION_ENGINE_VERSION
 from ..core.errors import ExtractionError
 from .interfaces import DocumentComplexity, ExtractionContext, ProvenanceBuilder
 from .normalized import (

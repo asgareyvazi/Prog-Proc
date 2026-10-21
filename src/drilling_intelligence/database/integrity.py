@@ -21,14 +21,15 @@ system of record moves to PostgreSQL.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, TypeVar, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import Table, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from ..core.errors import DrillingIntelligenceError
 from ..core.ids import new_id
+from .base import Base
 from .models import (
     BestPractice,
     BhaComponent,
@@ -598,6 +599,34 @@ def check_extraction_cache(session: Session) -> list[IntegrityProblem]:
 
 
 # --------------------------------------------------------------------------- operations
+#: The model classes the checks iterate over.  A check reads the identity of a row
+#: and the name of its table, and it reads them from a list of model classes, so
+#: the type of the class has to carry both.
+_ModelT = TypeVar("_ModelT", bound=Base)
+
+
+class _SourceVersionedModel(Protocol):
+    """The columns the source-versioned checks read.
+
+    Every source-versioned model carries these columns, and the checks read
+    them by name.  The protocol states that contract in the type system
+    instead of leaving it to a comment: a model that loses a column the
+    checks read is a type error here, not a finding at runtime.
+    """
+
+    __tablename__: str
+    __table__: Table
+    id: InstrumentedAttribute[str]
+    identity_key: InstrumentedAttribute[str | None]
+    well_id: InstrumentedAttribute[str | None]
+    document_version_id: InstrumentedAttribute[str | None]
+    is_current: InstrumentedAttribute[bool]
+
+
+#: The source-versioned model classes, bound to the columns the checks read.
+_SourceModelT = TypeVar("_SourceModelT", bound=_SourceVersionedModel)
+
+
 #: Which link columns point from one well's record to another record that must belong to the same well.
 #:
 #: A derived foreign key is the schema's promise that the row exists; it says nothing about whether the two
@@ -605,7 +634,7 @@ def check_extraction_cache(session: Session) -> list[IntegrityProblem]:
 #: B-11 satisfies every constraint in the database and produces a number that is simply wrong - and it is
 #: the kind of wrong that a promoter writing rows from a spreadsheet with a mistyped well column will produce
 #: first, which is why the pair is checked here rather than trusted.
-_SAME_WELL_LINKS: tuple[tuple[type, str, type], ...] = (
+_SAME_WELL_LINKS: tuple[tuple[type[Base], str, type[Base]], ...] = (
     (NptRecord, "event_id", WellEvent),
     (NptRecord, "report_id", DdrReport),
     (WellOperation, "report_id", DdrReport),
@@ -623,7 +652,7 @@ _SAME_WELL_LINKS: tuple[tuple[type, str, type], ...] = (
 )
 
 #: Section-scoped rows: the section must be a section *of the well the row is filed under*.
-_SECTION_OWNERS: tuple[type, ...] = (
+_SECTION_OWNERS: tuple[type[Base], ...] = (
     WellOperation,
     WellEvent,
     NptRecord,
@@ -640,7 +669,7 @@ _SECTION_OWNERS: tuple[type, ...] = (
 )
 
 #: The tables whose revisions form a chain, and whether "current" is a column they carry.
-_REVISION_CHAINS: tuple[tuple[type, bool], ...] = (
+_REVISION_CHAINS: tuple[tuple[type[Base], bool], ...] = (
     (ProcedureRecord, True),
     (DrillingProgram, True),
     (LessonLearned, True),
@@ -649,7 +678,7 @@ _REVISION_CHAINS: tuple[tuple[type, bool], ...] = (
 )
 
 #: Rows a document could have produced, and so rows that must be able to show the document.
-_PROMOTED_MODELS: tuple[type, ...] = (
+_PROMOTED_MODELS: tuple[type[Base], ...] = (
     # A section read out of a document is held to the same promise as any other derived row: it can
     # show the source that says the hole section exists.  A section a person entered stays MANUAL and
     # is not asked for evidence, which is exactly the distinction the origin column was added for.
@@ -908,7 +937,7 @@ def check_cross_well_links(session: Session) -> list[IntegrityProblem]:
                         {"section_id": section_id},
                     )
                 )
-            elif getattr(row, "well_id", None) and str(row.well_id) != owner:
+            elif getattr(row, "well_id", None) and str(getattr(row, "well_id", "")) != owner:
                 problems.append(
                     IntegrityProblem(
                         model.__tablename__,
@@ -922,7 +951,7 @@ def check_cross_well_links(session: Session) -> list[IntegrityProblem]:
         if "document_id" not in columns or "document_version_id" not in columns:
             continue
         for row in session.execute(select(model).order_by(model.id)).scalars():
-            version_id = str(row.document_version_id or "")
+            version_id = str(getattr(row, "document_version_id", None) or "")
             if not version_id:
                 continue
             version = session.get(DocumentVersion, version_id)
@@ -935,14 +964,16 @@ def check_cross_well_links(session: Session) -> list[IntegrityProblem]:
                         {"document_version_id": version_id},
                     )
                 )
-            elif row.document_id and str(version.document_id) != str(row.document_id):
+            elif getattr(row, "document_id", None) and str(version.document_id) != str(
+                getattr(row, "document_id", "")
+            ):
                 problems.append(
                     IntegrityProblem(
                         model.__tablename__,
                         row.id,
                         "names a document that is not its version's document",
                         {
-                            "document_id": str(row.document_id),
+                            "document_id": str(getattr(row, "document_id", "")),
                             "version_document_id": str(version.document_id),
                         },
                     )
@@ -965,9 +996,12 @@ def check_promoted_evidence(session: Session) -> list[IntegrityProblem]:
         columns = {column.name for column in model.__table__.columns}
         if "origin" not in columns or "provenance" not in columns:
             continue
-        statement = select(model).where(model.origin == KnowledgeOrigin.DERIVED.value)
+        # The guard above proved the column exists; the cast only tells the
+        # checker what the guard already established.
+        origin = cast("InstrumentedAttribute[str]", getattr(model, "origin", None))
+        statement = select(model).where(origin == KnowledgeOrigin.DERIVED.value)
         for row in session.execute(statement.order_by(model.id)).scalars():
-            evidence = list(row.provenance or [])
+            evidence = list(getattr(row, "provenance", None) or [])
             if not evidence:
                 problems.append(
                     IntegrityProblem(
@@ -1113,11 +1147,20 @@ def check_calculation_dependencies(session: Session) -> list[IntegrityProblem]:
 #: parent it was promoted with, or that a single source version must not leave two rows claiming to be
 #: the current assembly of one well.  Those are the failure modes a re-promotion can produce, so they
 #: are checked here rather than trusted.
-_SOURCE_VERSIONED_DOMAINS: tuple[tuple[type, type | None, str], ...] = (
-    (MudReport, MudMeasurement, "mud_report_id"),
-    (BhaReport, BhaComponent, "bha_report_id"),
-    (SurveyRun, SurveyStation, "survey_run_id"),
-    (BitRecord, None, ""),
+# The four parents are the source-versioned models, and the protocol states
+# the columns the check reads.  The cast is at the boundary: the models are
+# checked against the protocol by the type checker, and the tuple is built
+# from classes that satisfy it.
+_SOURCE_VERSIONED_DOMAINS: tuple[
+    tuple[type[_SourceVersionedModel], type[Base] | None, str], ...
+] = cast(
+    "tuple[tuple[type[_SourceVersionedModel], type[Base] | None, str], ...]",
+    (
+        (MudReport, MudMeasurement, "mud_report_id"),
+        (BhaReport, BhaComponent, "bha_report_id"),
+        (SurveyRun, SurveyStation, "survey_run_id"),
+        (BitRecord, None, ""),
+    ),
 )
 
 
@@ -1170,7 +1213,7 @@ def check_domain_identities(session: Session) -> list[IntegrityProblem]:
             # history is thousands of assemblies, and a check that costs a query per assembly costs
             # more than the promotion it is auditing - which is how a doctor command ends up never
             # being run.
-            owned_by_parent = dict(
+            owned_by_parent: dict[str, int] = dict(
                 session.execute(
                     select(
                         getattr(child_model, foreign_key),
@@ -1179,13 +1222,13 @@ def check_domain_identities(session: Session) -> list[IntegrityProblem]:
                 ).all()
             )
             for row in session.execute(select(parent_model).order_by(parent_model.id)).scalars():
-                owned = int(owned_by_parent.get(row.id, 0))
+                owned = int(owned_by_parent.get(str(row.id), 0))
                 claimed = int(getattr(row, count_column))
                 if owned != claimed:
                     problems.append(
                         IntegrityProblem(
                             table,
-                            row.id,
+                            str(row.id),
                             f"claims {claimed} children and owns {owned}",
                             {count_column: claimed, "owned": owned},
                         )

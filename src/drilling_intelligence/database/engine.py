@@ -8,10 +8,11 @@ module may assume SQLite beyond the pragma block, which is guarded.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol, cast
 from weakref import WeakSet
 
 from sqlalchemy import create_engine, event, make_url, text
@@ -62,15 +63,35 @@ def adapt_sqlite_value(value: object) -> object:
     return value
 
 
+class _SequenceFactory(Protocol):
+    """A sequence class that can be rebuilt from an iterable.
+
+    The adapter keeps the kind of sequence it was given - a tuple stays a
+    tuple - because the DBAPI is handed the result.
+    """
+
+    def __call__(self, values: Iterable[object], /) -> Sequence[object]: ...
+
+
+def _rebuild_sequence(original: Sequence[object], values: Iterable[object]) -> Sequence[object]:
+    """The same kind of sequence, holding the adapted values."""
+    factory = cast("_SequenceFactory", type(original))
+    return factory(values)
+
+
 def adapt_sqlite_parameters(parameters: object, *, executemany: bool) -> object:
     if executemany and isinstance(parameters, Sequence) and not isinstance(parameters, str | bytes):
-        return type(parameters)(
-            adapt_sqlite_parameters(item, executemany=False) for item in parameters
+        return _rebuild_sequence(
+            parameters,
+            [adapt_sqlite_parameters(item, executemany=False) for item in parameters],
         )
     if isinstance(parameters, Mapping):
         return {key: adapt_sqlite_value(value) for key, value in parameters.items()}
     if isinstance(parameters, Sequence) and not isinstance(parameters, str | bytes):
-        return type(parameters)(adapt_sqlite_value(item) for item in parameters)
+        return _rebuild_sequence(
+            parameters,
+            [adapt_sqlite_value(item) for item in parameters],
+        )
     return adapt_sqlite_value(parameters)
 
 
@@ -135,7 +156,7 @@ def build_engine(settings: Settings, url: str | None = None, *, echo: bool | Non
             "check_same_thread": False,
             "timeout": max(1.0, settings.database.sqlite_busy_timeout_ms / 1000.0),
         }
-    engine = create_engine(target, **kwargs)  # type: ignore[arg-type]
+    engine = create_engine(target, **kwargs)
 
     if url_obj.get_backend_name() == "sqlite":
         busy_timeout = int(settings.database.sqlite_busy_timeout_ms)

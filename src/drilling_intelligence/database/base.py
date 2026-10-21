@@ -10,7 +10,7 @@ separate sidecar database precisely so the system of record stays portable.
 from __future__ import annotations
 
 from sqlalchemy import MetaData
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, InstrumentedAttribute
 
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -23,3 +23,13 @@ NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+    # The schema layout every check reads, stated once.  These are plain
+    # annotations and not ``Mapped[...]``: the declarative scanner ignores
+    # them, so no model inherits a column from them and the mapping of the
+    # schema is exactly what it was before.  Every model in ``models.py``
+    # names its table and carries an ``id``, and the integrity checks read
+    # both from a list of model classes, so the type of the class has to
+    # carry them too.
+    __tablename__: str
+    id: InstrumentedAttribute[str]

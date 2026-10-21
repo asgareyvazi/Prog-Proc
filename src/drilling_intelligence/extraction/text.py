@@ -11,10 +11,16 @@ from __future__ import annotations
 import csv
 import io
 import re
+from pathlib import Path
 
-from ..__init__ import EXTRACTION_ENGINE_VERSION
+from .. import EXTRACTION_ENGINE_VERSION
 from ..core.errors import ExtractionError
-from .interfaces import DocumentComplexity, ExtractionContext, ProvenanceBuilder
+from .interfaces import (
+    DocumentComplexity,
+    ExtractionContext,
+    ProvenanceBuilder,
+    int_option,
+)
 from .normalized import (
     ExtractionMetadata,
     NormalizedDocument,
@@ -66,7 +72,7 @@ class TextExtractor:
     def extract(
         self, context: ExtractionContext, provenance: ProvenanceBuilder
     ) -> NormalizedDocument:
-        max_bytes = int(context.option("text_max_bytes", 8 * 1024 * 1024) or 8 * 1024 * 1024)
+        max_bytes = int_option(context, "text_max_bytes", 8 * 1024 * 1024)
         try:
             text, truncated = _read_text_full(context.path, max_bytes)
         except Exception as exc:
@@ -208,7 +214,7 @@ class TextExtractor:
         except csv.Error:
             pass
         reader = csv.reader(io.StringIO(text), delimiter=delimiter)
-        rows = [list(row) for row in reader]
+        rows: list[list[str | None]] = [[*row] for row in reader]
         rows = [row for row in rows if any((cell or "").strip() for cell in row)]
         if not rows:
             document.diagnostics.append("delimited file contained no data rows")
@@ -224,7 +230,7 @@ class TextExtractor:
                 provenance=provenance.text(
                     line_start=1,
                     line_end=len(rows),
-                    excerpt="\n".join("\t".join(r) for r in rows[:8])[:2000],
+                    excerpt="\n".join("\t".join(cell or "" for cell in r) for r in rows[:8])[:2000],
                 ),
                 extra={"delimiter": delimiter},
             )
@@ -250,17 +256,13 @@ def _block_heading(raw: str) -> tuple[int, str, str] | None:
     return None
 
 
-def _read_text(path: object, limit: int) -> str:
-    from pathlib import Path
-
+def _read_text(path: str | Path, limit: int) -> str:
     with Path(path).open("rb") as handle:
         payload = handle.read(limit)
     return _decode(payload)
 
 
-def _read_text_full(path: object, limit: int) -> tuple[str, bool]:
-    from pathlib import Path
-
+def _read_text_full(path: str | Path, limit: int) -> tuple[str, bool]:
     with Path(path).open("rb") as handle:
         payload = handle.read(limit + 1)
     truncated = len(payload) > limit

@@ -62,9 +62,10 @@ jobs:
       - name: Ruff format
         run: ruff format --check .
 
-      # One package boundary is type-checked: drilling_intelligence.core.  The rules live in
-      # pyproject.toml under [tool.mypy]; the boundary is widened by a separate, dated change.
-      - name: Type-check the core boundary
+      # The checked boundaries are drilling_intelligence.core, .database and
+      # .extraction.  The rules live in pyproject.toml under [tool.mypy]; the
+      # boundary is widened by a separate, dated change.
+      - name: Type-check the checked boundaries
         if: matrix.python-version == '3.11'
         run: python -m mypy
 

@@ -49,7 +49,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..__init__ import EXTRACTION_ENGINE_VERSION
+from .. import EXTRACTION_ENGINE_VERSION
 from ..core.enums import DataQuality
 from ..core.errors import ExtractionError, UnknownUnitError
 from ..core.results import DataField
@@ -476,9 +476,11 @@ class ExcelExtractor:
                     hidden_column=get_column_letter(cell.column) in hidden_columns,
                 )
                 comment = getattr(cell, "comment", None)
-                if comment is not None and getattr(comment, "text", ""):
-                    record.comment = clean_text(str(comment.text))[:2000]
-                    report.comments += 1
+                if comment is not None:
+                    comment_text = getattr(comment, "text", None)
+                    if comment_text:
+                        record.comment = clean_text(str(comment_text))[:2000]
+                        report.comments += 1
                 if formula_sheet is not None:
                     try:
                         fcell = formula_sheet.cell(row=cell.row, column=cell.column)
@@ -532,24 +534,22 @@ class ExcelExtractor:
                 continue
             grid: list[list[str | None]] = []
             for row in block_rows:
-                grid.append(
-                    [
-                        by_row[row].get(col).value_text if by_row[row].get(col) else None
-                        for col in columns
-                    ]
-                )
+                cells = [by_row[row].get(col) for col in columns]
+                grid.append([cell.value_text if cell is not None else None for cell in cells])
             first_row, last_row = block_rows[0], block_rows[-1]
             first_col, last_col = columns[0], columns[-1]
             range_ref = f"{_letter(first_col)}{first_row}:{_letter(last_col)}{last_row}"
-            header = [str(c or "") for c in grid[0]] if grid else []
+            header: list[str | None] = (
+                [str(c or "") if c is not None else None for c in grid[0]] if grid else []
+            )
             if header:
-                joined = "|".join(header)
+                joined = "|".join(cell or "" for cell in header)
                 if joined in header_texts:
                     # Repeated header inside one region: recorded, not duplicated as data.
                     tables.append(
                         Table(
                             table_id=f"{report.name}-block{block_index + 1}",
-                            rows=[header],
+                            rows=[list(header)],
                             caption=f"{report.name}: repeated header block",
                             sheet=report.name,
                             page=page,
@@ -558,7 +558,7 @@ class ExcelExtractor:
                             provenance=provenance.excel(
                                 sheet=report.name,
                                 range_=range_ref,
-                                excerpt=" | ".join(header)[:1500],
+                                excerpt=" | ".join(cell or "" for cell in header)[:1500],
                             ),
                             extra={"repeated_header": True},
                         )

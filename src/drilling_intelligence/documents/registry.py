@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..__init__ import CLASSIFIER_VERSION, EXTRACTION_ENGINE_VERSION
+from .. import CLASSIFIER_VERSION, EXTRACTION_ENGINE_VERSION
 from ..classification.rules import DeterministicClassifier
 from ..core.enums import DataQuality, DocumentClassification, FileChangeKind, ProcessingStatus
 from ..core.errors import DrillingIntelligenceError, ExtractionError, ValidationError

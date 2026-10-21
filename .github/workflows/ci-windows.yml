@@ -55,9 +55,9 @@ jobs:
         shell: pwsh
         run: python -m ruff format --check .
 
-      # The same core boundary is type-checked on Windows as on Linux, so a type error that
+      # The same boundaries are type-checked on Windows as on Linux, so a type error that
       # only appears on one platform cannot hide behind the other one's green run.
-      - name: Type-check the core boundary
+      - name: Type-check the checked boundaries
         if: matrix.python-version == '3.11'
         shell: pwsh
         run: python -m mypy

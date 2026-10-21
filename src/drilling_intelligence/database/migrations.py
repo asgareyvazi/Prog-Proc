@@ -15,6 +15,13 @@ migrated one.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Alembic is imported inside the functions that need it, so the package
+    # stays import-light. The type of the configuration is still known.
+    from alembic.config import Config
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -99,7 +106,7 @@ class MigrationStatus:
         }
 
 
-def _bare_config(directory: Path) -> object:
+def _bare_config(directory: Path) -> Config:
     from alembic.config import Config
 
     config = Config()
