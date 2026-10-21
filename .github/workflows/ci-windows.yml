@@ -233,14 +233,25 @@ jobs:
       # attempt that honours the contract does not erase an earlier native
       # fault. It is not a retry of the UI suite.
       #
-      # The known native access violation is MEASURED here, not gated. It is
-      # an open defect with a measured rate (see docs/mission-reports/
-      # END_TO_END_FINAL_REPORT.md), and gating a required job on a fault
-      # that fires in a few percent of attempts would make the job a coin
-      # toss and the run meaningless. Every native fault is still reported at
-      # error level with the stage the child reached, the count and the rate
-      # are published as a notice, and the transcripts are in the artifact.
-      # Any failure that is NOT the known native fault still fails this step.
+      # The native access violation is GATED here. It used to be measured
+      # and not gated, because it was an open defect with a measured rate
+      # (see docs/mission-reports/END_TO_END_FINAL_REPORT.md) and a fault
+      # that fires in a few percent of attempts turns a required job into a
+      # coin toss. That reason is gone: the mechanism was removed. On
+      # Windows the process is no longer ended through ``ExitProcess``,
+      # which handed every loaded DLL a ``DLL_PROCESS_DETACH`` notification
+      # while another thread was still inside a Python callback; it is ended
+      # through ``TerminateProcess``, which notifies no library. A
+      # recurrence is therefore a regression of a closed defect, and a
+      # regression must fail the required job instead of being published as
+      # a measurement nobody acts on.
+      #
+      # Every attempt is still reported: the stage it reached, the raw exit
+      # code in decimal and in hexadecimal, the frames of the thread that
+      # faulted, the terminal decision owners and the counts, in
+      # ``qt-logs/shutdown-stress/summary.json`` and in the attempt logs.
+      # The artifact is uploaded whether this step passes or fails.
+      #
       # ``if: always()``: when the UI suite itself faults, this step is the
       # only place left that can say where. A skipped measurement answers
       # nothing, so the measurement runs even when the suite failed.
@@ -248,7 +259,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          python tools/qt_shutdown_stress.py --attempts 25 --log-dir qt-logs/shutdown-stress
+          python tools/qt_shutdown_stress.py --attempts 25 --log-dir qt-logs/shutdown-stress --gate
 
       - name: Surface UI failures
         if: always()

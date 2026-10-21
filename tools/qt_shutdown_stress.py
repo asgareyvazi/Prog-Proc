@@ -14,6 +14,18 @@ reported as such. A negative code is a signal on POSIX.
 The child is the same process the UI test suite starts. It is started in its
 own interpreter so that a native abort is visible as a process exit code
 instead of taking the test runner with it.
+
+The record is the evidence, so it is complete. Every attempt carries the
+mode, the ordinal, the raw exit code in decimal and in hexadecimal, the
+duration, the stage markers, the frames of the thread that faulted, the
+terminal decision owners, the failure reason, the runtime versions and the
+path of its own log. The summary carries exact counts, so "no failures" is
+a number that can be checked instead of an absence of annotations: a run
+that produced no annotation is not a run that produced no fault.
+
+The published transcript is redacted through the project's own safe-detail
+boundary, and the frames are kept in their own field because the redaction
+removes the stack lines of a traceback.
 """
 
 from __future__ import annotations
@@ -27,8 +39,10 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
+from drilling_intelligence.core.redact import safe_detail
 from drilling_intelligence.ui.lifetime import (
     SHUTDOWN_INCOMPLETE_EXIT,
     is_fail_closed_shutdown_exit,
@@ -58,6 +72,65 @@ PROGRESS_MARKERS = (
 )
 
 
+@dataclass(frozen=True)
+class Attempt:
+    """One child process and everything that is known about it.
+
+    ``exit_code`` is ``None`` when the child did not finish: the parent
+    stopped it. A timeout is not a signal and not an exit code, so it gets
+    its own field instead of borrowing one of them.
+    """
+
+    exit_code: int | None
+    body: str
+    duration_s: float
+    timeout_s: float = 0.0
+
+    @property
+    def timed_out(self) -> bool:
+        return self.exit_code is None
+
+    @property
+    def exit_hex(self) -> str:
+        """The exit code in hexadecimal, the way a fault is reported."""
+        if self.exit_code is None:
+            return ""
+        code = self.exit_code
+        if code < 0:
+            return f"-0x{(-code) & 0xFFFFFFFF:08X}"
+        return f"0x{code & 0xFFFFFFFF:08X}"
+
+
+@dataclass
+class Counts:
+    """The exact numbers the summary reports.
+
+    These are counted from the records, never estimated. The four outcome
+    buckets are exhaustive and disjoint, so they add up to the number of
+    attempts. The last two are observations that can hold for an attempt
+    that ended correctly, and they are counted on top.
+    """
+
+    attempts: int = 0
+    contracted_exit: int = 0
+    native_access_violations: int = 0
+    other_incorrect_exits: int = 0
+    timeouts: int = 0
+    double_terminal_ownership: int = 0
+    incomplete_transcripts: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "attempts": self.attempts,
+            "contracted_exit": self.contracted_exit,
+            "native_access_violations": self.native_access_violations,
+            "other_incorrect_exits": self.other_incorrect_exits,
+            "timeouts": self.timeouts,
+            "double_terminal_ownership": self.double_terminal_ownership,
+            "incomplete_transcripts": self.incomplete_transcripts,
+        }
+
+
 def contract_failure(code: int) -> str:
     """Why an exit code is not the contracted fail-closed exit.
 
@@ -71,6 +144,17 @@ def contract_failure(code: int) -> str:
     if code < 0:
         return f"killed by signal {-code}"
     return f"exit {code} is not the contracted {SHUTDOWN_INCOMPLETE_EXIT}"
+
+
+def attempt_failure(attempt: Attempt) -> str:
+    """Why an attempt did not honour the contract.
+
+    A timeout is its own category: the child was still running when the
+    parent stopped it, which is neither a signal nor an exit code.
+    """
+    if attempt.exit_code is None:
+        return f"child timed out after {attempt.timeout_s:g}s"
+    return contract_failure(attempt.exit_code)
 
 
 def runtime_versions() -> dict[str, str]:
@@ -91,8 +175,8 @@ def runtime_versions() -> dict[str, str]:
     return versions
 
 
-def run_attempt(mode: str, *, timeout: float) -> tuple[int, str, float]:
-    """Run one child. Returns the exit code, the combined output, and the duration."""
+def run_attempt(mode: str, *, timeout: float) -> Attempt:
+    """Run one child. Returns what is known about the child afterwards."""
     env = os.environ.copy()
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
     env["PYTHONUNBUFFERED"] = "1"
@@ -108,9 +192,19 @@ def run_attempt(mode: str, *, timeout: float) -> tuple[int, str, float]:
         )
     except subprocess.TimeoutExpired as exc:
         body = f"{exc.stdout or ''}\n{exc.stderr or ''}"
-        return -1, f"child timed out after {timeout}s\n{body}", time.monotonic() - started
+        return Attempt(
+            exit_code=None,
+            body=f"child timed out after {timeout}s\n{body}",
+            duration_s=time.monotonic() - started,
+            timeout_s=timeout,
+        )
     body = completed.stdout + completed.stderr
-    return completed.returncode, body, time.monotonic() - started
+    return Attempt(
+        exit_code=completed.returncode,
+        body=body,
+        duration_s=time.monotonic() - started,
+        timeout_s=timeout,
+    )
 
 
 def double_termination(markers: list[str]) -> bool:
@@ -122,12 +216,19 @@ def double_termination(markers: list[str]) -> bool:
     produced the access violation, and it is observable even in the runs
     where the process still happened to exit 4.
     """
-    owners = {
-        line.split("owner=", 1)[1].split(" ", 1)[0]
-        for line in markers
-        if "TERMINAL_ATTEMPT" in line and "owner=" in line
-    }
-    return len(owners) > 1
+    return len(terminal_owners(markers)) > 1
+
+
+def terminal_owners(markers: list[str]) -> list[str]:
+    """The threads that reached a terminal decision, in order of appearance."""
+    owners: list[str] = []
+    for line in markers:
+        if "TERMINAL_ATTEMPT" not in line or "owner=" not in line:
+            continue
+        owner = line.split("owner=", 1)[1].split(" ", 1)[0]
+        if owner and owner not in owners:
+            owners.append(owner)
+    return owners
 
 
 def _terminal_markers(body: str) -> list[str]:
@@ -162,6 +263,18 @@ def progress_markers(body: str) -> list[str]:
     return found
 
 
+def transcript_complete(body: str) -> bool:
+    """True when the transcript shows the child reached its shutdown.
+
+    An incomplete transcript is not a pass: it means the evidence for that
+    attempt is missing, and a missing transcript is counted, not ignored.
+    """
+    stages = progress_markers(body)
+    if "SHUTDOWN_BEGIN" not in stages:
+        return False
+    return bool(_terminal_markers(body))
+
+
 #: A faulthandler frame: the file it names and the line it stopped on.
 _FRAME = re.compile(r'File "(?P<file>[^"]+\.py)", line (?P<line>\d+)')
 
@@ -174,8 +287,8 @@ def fault_frames(body: str) -> list[str]:
     other thread. Only the first section describes the fault: the other
     sections show where the surviving threads were standing when the process
     died, which is context and not cause. The frames name a repository file
-    and a line, never a document body, so they can be published: they are the
-    evidence that says which thread died and where.
+    and a line, never a document body, so they can be published: they are
+    the evidence that says which thread died and where.
     """
     faulting: list[str] = []
     every: list[str] = []
@@ -221,56 +334,100 @@ def fault_evidence(body: str) -> str:
     return "; ".join(parts)
 
 
+def _log_header(attempt: Attempt, record: dict[str, object], versions: dict[str, str]) -> str:
+    """The self-describing header of an attempt log."""
+    return (
+        f"mode={record['mode']} ordinal={record['ordinal']} "
+        f"exit={record['exit']} exit_hex={record['exit_hex']} "
+        f"duration_s={record['duration_s']} timed_out={record['timed_out']} "
+        f"transcript_complete={record['transcript_complete']} "
+        f"reason={record['reason'] or '-'}\n"
+        f"stages={'>'.join(record['stages']) or '-'}\n"
+        f"terminal_owners={'+'.join(record['terminal_owners']) or '-'}\n"
+        f"frames={'>'.join(record['frames']) or '-'}\n"
+        f"versions={json.dumps(versions, sort_keys=True)}\n"
+        f"--- redacted transcript ---\n"
+    )
+
+
 def stress(
     modes: tuple[str, ...],
     *,
     attempts: int,
     timeout: float,
     log_dir: Path,
-    runner: Callable[[str, float], tuple[int, str, float]] | None = None,
+    runner: Callable[[str, float], Attempt] | None = None,
 ) -> tuple[int, list[dict[str, object]]]:
     """Run every attempt and report every one. The first failure is not a retry."""
     log_dir.mkdir(parents=True, exist_ok=True)
     run = runner or (lambda mode, limit: run_attempt(mode, timeout=limit))
+    versions = runtime_versions()
     records: list[dict[str, object]] = []
     failures = 0
     for mode in modes:
         for ordinal in range(1, attempts + 1):
-            code, body, duration = run(mode, timeout)
+            attempt = run(mode, timeout)
+            body = attempt.body
             markers = _terminal_markers(body)
-            reason = contract_failure(code)
+            reason = attempt_failure(attempt)
             if double_termination(markers) and not reason:
                 reason = "two threads reached the terminal decision in one process"
             if reason:
                 failures += 1
             name = f"{mode}-attempt-{ordinal:03d}.txt"
-            (log_dir / name).write_text(
-                f"mode={mode} ordinal={ordinal} exit={code} "
-                f"duration_s={duration:.3f} reason={reason or '-'}\n{body}",
-                encoding="utf-8",
-            )
             record: dict[str, object] = {
                 "mode": mode,
                 "ordinal": ordinal,
-                "exit": code,
-                "duration_s": round(duration, 3),
+                "exit": attempt.exit_code,
+                "exit_hex": attempt.exit_hex,
+                "duration_s": round(attempt.duration_s, 3),
                 "reason": reason,
                 "native_fault": is_native_fault(reason),
+                "timed_out": attempt.timed_out,
+                "transcript_complete": transcript_complete(body),
+                "stages": progress_markers(body),
+                "frames": fault_frames(body),
+                "terminal_owners": terminal_owners(markers),
                 "evidence": fault_evidence(body),
                 "log": name,
                 "markers": markers,
             }
+            (log_dir / name).write_text(
+                _log_header(attempt, record, versions) + safe_detail(body),
+                encoding="utf-8",
+            )
             records.append(record)
             print(
                 f"::notice::shutdown-stress mode={mode} ordinal={ordinal} "
-                f"exit={code} reason={reason or '-'}",
+                f"exit={attempt.exit_code} exit_hex={attempt.exit_hex or '-'} "
+                f"reason={reason or '-'}",
             )
             print(
-                f"mode={mode} ordinal={ordinal} exit={code} "
-                f"duration_s={duration:.3f} reason={reason or '-'}",
+                f"mode={mode} ordinal={ordinal} exit={attempt.exit_code} "
+                f"exit_hex={attempt.exit_hex or '-'} "
+                f"duration_s={attempt.duration_s:.3f} reason={reason or '-'}",
                 flush=True,
             )
     return failures, records
+
+
+def count_outcomes(records: list[dict[str, object]]) -> Counts:
+    """Count the outcomes of every record. The buckets add up to the attempts."""
+    counts = Counts(attempts=len(records))
+    for record in records:
+        if bool(record.get("timed_out")):
+            counts.timeouts += 1
+        elif bool(record.get("native_fault")):
+            counts.native_access_violations += 1
+        elif not str(record.get("reason") or ""):
+            counts.contracted_exit += 1
+        else:
+            counts.other_incorrect_exits += 1
+        if len(record.get("terminal_owners") or []) > 1:
+            counts.double_terminal_ownership += 1
+        if not bool(record.get("transcript_complete")):
+            counts.incomplete_transcripts += 1
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -308,12 +465,14 @@ def main(argv: list[str] | None = None) -> int:
         log_dir=args.log_dir,
     )
     total = len(records)
+    counts = count_outcomes(records)
     summary = {
         "attempts": total,
         "modes": list(modes),
         "per_mode_attempts": args.attempts,
         "failures": failures,
         "contracted_exit": SHUTDOWN_INCOMPLETE_EXIT,
+        "counts": counts.as_dict(),
         "versions": runtime_versions(),
         "records": records,
     }
@@ -322,16 +481,12 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    faults = 0
-    violations = 0
+    faults = counts.native_access_violations
+    violations = counts.other_incorrect_exits
     for record in records:
         reason = str(record["reason"])
         if not reason:
             continue
-        if record.get("native_fault"):
-            faults += 1
-        else:
-            violations += 1
         print(
             f"::error::shutdown-stress {record['mode']} #{record['ordinal']}: {reason}; "
             f"{record['evidence']}"
@@ -340,20 +495,36 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"::notice::shutdown-stress-summary: attempts={total} failures={failures} "
         f"native_faults={faults} other_failures={violations} "
+        f"timeouts={counts.timeouts} "
+        f"double_terminal_ownership={counts.double_terminal_ownership} "
+        f"incomplete_transcripts={counts.incomplete_transcripts} "
         f"native_fault_rate={rate:.1f}%",
     )
     print(
         f"shutdown stress: attempts={total} failures={failures} "
         f"native_faults={faults} other_failures={violations} "
+        f"timeouts={counts.timeouts} "
+        f"double_terminal_ownership={counts.double_terminal_ownership} "
+        f"incomplete_transcripts={counts.incomplete_transcripts} "
         f"native_fault_rate={rate:.1f}% contracted_exit={SHUTDOWN_INCOMPLETE_EXIT}",
         flush=True,
     )
-    if violations:
+    print(
+        f"stress diagnostic outcome: {counts.contracted_exit}/{total} attempts ended "
+        f"with the contracted exit {SHUTDOWN_INCOMPLETE_EXIT}, "
+        f"{faults} native access violations, {violations} other incorrect exits, "
+        f"{counts.timeouts} timeouts, "
+        f"{counts.double_terminal_ownership} double terminal ownership, "
+        f"{counts.incomplete_transcripts} incomplete transcripts"
+    )
+    if violations or counts.timeouts:
         print(
-            f"shutdown stress FAILED: {violations} of {total} attempts broke the exit "
-            f"{SHUTDOWN_INCOMPLETE_EXIT} contract in a way that is not the known native fault",
+            f"shutdown stress FAILED: {violations + counts.timeouts} of {total} attempts "
+            f"broke the exit {SHUTDOWN_INCOMPLETE_EXIT} contract in a way that is not "
+            f"the known native fault",
             file=sys.stderr,
         )
+        print("stress step conclusion: FAILED")
         return 1
     if faults:
         print(
@@ -363,10 +534,11 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         if args.gate:
+            print("stress step conclusion: FAILED (the gate was asked for)")
             return 1
-        print("shutdown stress PASSED (native faults measured, not gated)")
+        print("stress step conclusion: PASSED (measurement only, not gated)")
         return 0
-    print("shutdown stress PASSED")
+    print("stress step conclusion: PASSED")
     return 0
 
 
