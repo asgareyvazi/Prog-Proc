@@ -1,0 +1,686 @@
+command 
+  prog drillintel
+  description Drilling Intelligence - document registry, search and diagnostics (local-first).
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --version dest=version type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  version
+  prog drillintel version
+  description -
+  handler command_version
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  workspace
+  prog drillintel workspace
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  workspace create
+  prog drillintel workspace create
+  description -
+  handler command_workspace_create
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (path) dest=path type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --name dest=name type=- nargs=None default='' required=False choices=- action=_StoreAction
+    arg --corpus-dir dest=corpus_dir type=- nargs=None default=None required=False choices=- action=_AppendAction
+command  wells
+  prog drillintel wells
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  wells create
+  prog drillintel wells create
+  description -
+  handler command_wells
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --name dest=name type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default='' required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default='' required=False choices=- action=_StoreAction
+    arg --identifier dest=identifier type=- nargs=None default='' required=False choices=- action=_StoreAction
+    arg --status dest=status type=- nargs=None default='' required=False choices=ABANDONED|CLOSED|COMPLETED|DRILLING|HISTORICAL|PLANNED|PRE_SPUD|SUSPENDED action=_StoreAction
+command  wells list
+  prog drillintel wells list
+  description -
+  handler command_wells
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --project dest=project type=- nargs=None default='' required=False choices=- action=_StoreAction
+    arg --status dest=status type=- nargs=None default='' required=False choices=- action=_StoreAction
+command  ingest
+  prog drillintel ingest
+  description -
+  handler command_ingest
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (root) dest=root type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=0 required=False choices=- action=_StoreAction
+    arg --force dest=force type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --full dest=full type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --promote dest=promote type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  search
+  prog drillintel search
+  description -
+  handler command_search
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (query) dest=query type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --type dest=type type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --revision dest=revision type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=20 required=False choices=- action=_StoreAction
+    arg --include-superseded dest=include_superseded type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --verify dest=verify type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --rebuild dest=rebuild type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  evidence
+  prog drillintel evidence
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  evidence query
+  prog drillintel evidence query
+  description -
+  handler command_evidence
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --topic dest=topic type=- nargs=None default=None required=True choices=- action=_AppendAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --source dest=source type=- nargs=None default=None required=False choices=document|knowledge|structured action=_AppendAction
+    arg --lifecycle dest=lifecycle type=- nargs=None default='current' required=False choices=current|history action=_StoreAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=0 required=False choices=- action=_StoreAction
+    arg --expect dest=expect type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --verify dest=verify type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  index
+  prog drillintel index
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  index status
+  prog drillintel index status
+  description -
+  handler command_index
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  index rebuild
+  prog drillintel index rebuild
+  description -
+  handler command_index
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  index prune
+  prog drillintel index prune
+  description -
+  handler command_index
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  knowledge
+  prog drillintel knowledge
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  knowledge status
+  prog drillintel knowledge status
+  description -
+  handler command_knowledge
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  knowledge rebuild
+  prog drillintel knowledge rebuild
+  description -
+  handler command_knowledge
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --dry-run dest=dry_run type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  knowledge conflicts
+  prog drillintel knowledge conflicts
+  description -
+  handler command_knowledge
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --status dest=status type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=50 required=False choices=- action=_StoreAction
+command  knowledge facts
+  prog drillintel knowledge facts
+  description -
+  handler command_knowledge
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --entity dest=entity type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --document dest=document_id type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --predicate dest=predicate type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=50 required=False choices=- action=_StoreAction
+    arg --include-superseded dest=include_superseded type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  knowledge resolve
+  prog drillintel knowledge resolve
+  description -
+  handler command_knowledge
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (conflict_id) dest=conflict_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --choose dest=choose type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --note dest=note type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --by dest=by type=- nargs=None default=None required=False choices=- action=_StoreAction
+command  doctor
+  prog drillintel doctor
+  description -
+  handler command_doctor
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  ai
+  prog drillintel ai
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  ai status
+  prog drillintel ai status
+  description -
+  handler command_ai_status
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  timeline
+  prog drillintel timeline
+  description -
+  handler command_timeline
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --kind dest=kind type=- nargs=None default=None required=False choices=- action=_AppendAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --include-undated dest=include_undated type=- nargs=0 default=None required=False choices=- action=_StoreConstAction
+    arg --dated-only dest=include_undated type=- nargs=0 default=None required=False choices=- action=_StoreConstAction
+    arg --limit dest=limit type=int nargs=None default=0 required=False choices=- action=_StoreAction
+command  records
+  prog drillintel records
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  records list
+  prog drillintel records list
+  description -
+  handler command_records
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --table dest=table type=- nargs=None default='npt' required=False choices=bha|bit|event|mud|npt|operation|problem|report|survey action=_StoreAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --status dest=status type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --category dest=category type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --cause dest=cause type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=50 required=False choices=- action=_StoreAction
+    arg --include-history dest=include_history type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  records summary
+  prog drillintel records summary
+  description -
+  handler command_records
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --table dest=table type=- nargs=None default='npt' required=False choices=bha|bit|event|mud|npt|operation|problem|report|survey action=_StoreAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+command  records review
+  prog drillintel records review
+  description -
+  handler command_records
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --lifecycle dest=lifecycle type=- nargs=None default='current' required=False choices=current|history action=_StoreAction
+    arg --verify-citations dest=verify_citations type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --limit dest=limit type=int nargs=None default=0 required=False choices=- action=_StoreAction
+command  records promote
+  prog drillintel records promote
+  description -
+  handler command_records
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --status dest=status type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --category dest=category type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --cause dest=cause type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=50 required=False choices=- action=_StoreAction
+    arg --document dest=document type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --version dest=version type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --include-unsupported dest=include_unsupported type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  records impact
+  prog drillintel records impact
+  description -
+  handler command_records
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg (subject) dest=subject type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --current-only dest=current_only type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  records rollup
+  prog drillintel records rollup
+  description -
+  handler command_records
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --supersedes dest=supersedes type=- nargs=None default='' required=False choices=- action=_StoreAction
+    arg --by dest=by type=- nargs=None default='cli' required=False choices=- action=_StoreAction
+command  records plan-actual
+  prog drillintel records plan-actual
+  description -
+  handler command_records
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --program dest=program type=- nargs=None default='' required=False choices=- action=_StoreAction
+    arg --section dest=section type=- nargs=None default='' required=False choices=- action=_StoreAction
+    arg --metric dest=metric type=- nargs=None default='' required=False choices=- action=_StoreAction
+command  fields
+  prog drillintel fields
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  fields list
+  prog drillintel fields list
+  description -
+  handler command_fields
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  fields summary
+  prog drillintel fields summary
+  description -
+  handler command_fields
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+command  fields offsets
+  prog drillintel fields offsets
+  description -
+  handler command_fields
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --everywhere dest=everywhere type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --limit dest=limit type=int nargs=None default=10 required=False choices=- action=_StoreAction
+command  fields decision
+  prog drillintel fields decision
+  description -
+  handler command_fields
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --detail dest=detail type=int nargs=None default=1 required=False choices=- action=_StoreAction
+    arg --evidence-limit dest=evidence_limit type=int nargs=None default=10 required=False choices=- action=_StoreAction
+command  fields compare
+  prog drillintel fields compare
+  description -
+  handler command_fields
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=[] required=False choices=- action=_AppendAction
+    arg --anchor dest=anchor type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --offsets dest=offsets type=- nargs=None default=[] required=False choices=- action=_AppendAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --detail dest=detail type=int nargs=None default=1 required=False choices=- action=_StoreAction
+    arg --evidence-limit dest=evidence_limit type=int nargs=None default=10 required=False choices=- action=_StoreAction
+    arg --offset-limit dest=offset_limit type=int nargs=None default=10 required=False choices=- action=_StoreAction
+command  fields report
+  prog drillintel fields report
+  description -
+  handler command_fields
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=[] required=False choices=- action=_AppendAction
+    arg --anchor dest=anchor type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --offsets dest=offsets type=- nargs=None default=[] required=False choices=- action=_AppendAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --detail dest=detail type=int nargs=None default=1 required=False choices=- action=_StoreAction
+    arg --evidence-limit dest=evidence_limit type=int nargs=None default=10 required=False choices=- action=_StoreAction
+    arg --offset-limit dest=offset_limit type=int nargs=None default=10 required=False choices=- action=_StoreAction
+    arg --output dest=output type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --verify-citations dest=verify_citations type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  analyze
+  prog drillintel analyze
+  description -
+  handler command_analyze
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --question dest=question type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --list-questions dest=list_questions type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --well dest=well type=- nargs=None default=[] required=False choices=- action=_AppendAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --anchor dest=anchor type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --offsets dest=offsets type=- nargs=None default=[] required=False choices=- action=_AppendAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --detail dest=detail type=int nargs=None default=1 required=False choices=- action=_StoreAction
+    arg --evidence-limit dest=evidence_limit type=int nargs=None default=10 required=False choices=- action=_StoreAction
+    arg --offset-limit dest=offset_limit type=int nargs=None default=10 required=False choices=- action=_StoreAction
+command  patterns
+  prog drillintel patterns
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  patterns find
+  prog drillintel patterns find
+  description -
+  handler command_patterns
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --min-occurrences dest=min_occurrences type=int nargs=None default=2 required=False choices=- action=_StoreAction
+    arg --min-wells dest=min_wells type=int nargs=None default=2 required=False choices=- action=_StoreAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=50 required=False choices=- action=_StoreAction
+command  patterns snapshot
+  prog drillintel patterns snapshot
+  description -
+  handler command_patterns
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --min-occurrences dest=min_occurrences type=int nargs=None default=2 required=False choices=- action=_StoreAction
+    arg --min-wells dest=min_wells type=int nargs=None default=2 required=False choices=- action=_StoreAction
+    arg --since dest=since type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --until dest=until type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=50 required=False choices=- action=_StoreAction
+    arg --by dest=by type=- nargs=None default=None required=False choices=- action=_StoreAction
+command  patterns list
+  prog drillintel patterns list
+  description -
+  handler command_patterns
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --status dest=status type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --stale-only dest=stale_only type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --limit dest=limit type=int nargs=None default=50 required=False choices=- action=_StoreAction
+command  patterns stale
+  prog drillintel patterns stale
+  description -
+  handler command_patterns
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (pattern) dest=pattern type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  patterns mark-stale
+  prog drillintel patterns mark-stale
+  description -
+  handler command_patterns
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (pattern) dest=pattern type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  patterns confirm
+  prog drillintel patterns confirm
+  description -
+  handler command_patterns
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (pattern) dest=pattern type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --status dest=status type=- nargs=None default='CONFIRMED' required=False choices=- action=_StoreAction
+    arg --by dest=by type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --reason dest=reason type=- nargs=None default=None required=False choices=- action=_StoreAction
+command  patterns recommend
+  prog drillintel patterns recommend
+  description -
+  handler command_patterns
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (pattern) dest=pattern type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --statement dest=statement type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --reason dest=reason type=- nargs=None default=None required=False choices=- action=_StoreAction
+command  lessons
+  prog drillintel lessons
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  lessons list
+  prog drillintel lessons list
+  description -
+  handler command_lessons
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --status dest=status type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=50 required=False choices=- action=_StoreAction
+    arg --include-superseded dest=include_superseded type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --approved-only dest=approved_only type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --unapproved dest=unapproved type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --search dest=search type=- nargs=None default=None required=False choices=- action=_StoreAction
+command  lessons practices
+  prog drillintel lessons practices
+  description -
+  handler command_lessons
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --well dest=well type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --status dest=status type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --limit dest=limit type=int nargs=None default=50 required=False choices=- action=_StoreAction
+    arg --include-superseded dest=include_superseded type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  lessons counts
+  prog drillintel lessons counts
+  description -
+  handler command_lessons
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --field dest=field type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --project dest=project type=- nargs=None default=None required=False choices=- action=_StoreAction
+command  lessons show
+  prog drillintel lessons show
+  description -
+  handler command_lessons
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (lesson) dest=lesson type=- nargs=None default=None required=True choices=- action=_StoreAction
