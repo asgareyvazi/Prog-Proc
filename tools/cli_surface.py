@@ -64,17 +64,10 @@ def _argument_lines(parser: argparse.ArgumentParser, path: str) -> list[str]:
             continue
         flags = ",".join(action.option_strings) or f"({action.dest})"
         lines.append(
-            "    arg {flags} dest={dest} type={type} nargs={nargs} default={default} "
-            "required={required} choices={choices} action={action}".format(
-                flags=flags,
-                dest=action.dest,
-                type=_type_name(action),
-                nargs=action.nargs,
-                default=_format_default(action),
-                required=bool(action.required),
-                choices=_choices(action),
-                action=action.__class__.__name__,
-            )
+            f"    arg {flags} dest={action.dest} type={_type_name(action)} "
+            f"nargs={action.nargs} default={_format_default(action)} "
+            f"required={bool(action.required)} choices={_choices(action)} "
+            f"action={action.__class__.__name__}"
         )
     return lines
 
