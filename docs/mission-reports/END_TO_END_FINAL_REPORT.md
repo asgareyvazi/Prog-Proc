@@ -40,6 +40,14 @@ narrow and stated:
    `docs/PRODUCT_DECISIONS_REQUIRED.md`. They are the owner's, and no
    capability was invented for any of them.
 
+> **Correction (V8.17, `docs/PRODUCT_DECISIONS_REQUIRED.md`).** The count is
+> **five** open decisions, not six. The register holds five decisions - the
+> five milestones `PRODUCT_CAPABILITY.md` schedules after this one (M2 to
+> M6) - and, separately, a list of capabilities that stay excluded. The
+> excluded list is a boundary, not a decision, and counting it as one is
+> where the sixth came from. Nothing else in this report changes: the
+> decisions are the owner's, and no capability was invented for any of them.
+
 The critical defect is **closed**. The Windows native access violation was
 reproduced (at least ten faults in fifty shutdown attempts at `eab9323`),
 its cause was established — the interpreter finalizer running on the

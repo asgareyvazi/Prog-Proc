@@ -349,6 +349,14 @@ package mirror.
 * The owner's manual Windows checklist is **NOT RUN**.
 * Six product decisions remain open in `docs/PRODUCT_DECISIONS_REQUIRED.md`.
   No capability was added for any of them.
+
+> **Correction (V8.17, `docs/PRODUCT_DECISIONS_REQUIRED.md`).** The count is
+> **five** open decisions, not six. The register holds five decisions - the
+> five milestones `PRODUCT_CAPABILITY.md` schedules after this one (M2 to
+> M6) - and, separately, a list of capabilities that stay excluded. The
+> excluded list is a boundary, not a decision, and counting it as one is
+> where the sixth came from. Nothing else in this report changes: the
+> decisions are the owner's, and no capability was invented for any of them.
 * The type-checking boundary covers `drilling_intelligence.core` only. The
   remaining packages are not checked.
 * The Windows artifact bytes (job logs, JUnit, Qt evidence archive) could
