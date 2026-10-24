@@ -65,7 +65,7 @@ class DocxExtractor:
             )
             if tables:
                 complexity.reasons.append(f"{tables} table(s)")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - a broken document is reported, not fatal
             complexity.reasons.append(f"probe failed: {type(exc).__name__}: {exc}")
         return complexity
 
@@ -256,7 +256,7 @@ def _table_caption(document: Any, table_index: int) -> str:
             text = (paragraph.text or "").strip()
             if re.match(rf"(?i)^(table|tab\.?)\s*{table_index + 1}\b", text):
                 return text[:160]
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - a table whose text cannot be read has no caption
         return ""
     return f"Table {table_index + 1}"
 
@@ -266,7 +266,7 @@ def _has_tracked_changes(document: Any, qn: Any) -> bool:
         for tag in ("w:ins", "w:del"):
             if document.element.body.findall(f".//{qn(tag)}"):
                 return True
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - a table whose cells cannot be read is not a table
         return False
     return False
 
@@ -276,7 +276,7 @@ def _docx_version() -> str:
         import docx
 
         return str(getattr(docx, "__version__", "?"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - the parser version is a diagnostic, not a result
         return "?"
 
 

@@ -65,7 +65,7 @@ class TextExtractor:
                 complexity.reasons.append(f"delimited data ({len(lines)} lines)")
             if any(_MD_HEADING.match(line) for line in lines[:2000]):
                 complexity.reasons.append("markdown headings present")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - an unreadable file is reported as a failed extraction
             complexity.reasons.append(f"probe failed: {type(exc).__name__}: {exc}")
         return complexity
 

@@ -819,7 +819,7 @@ def _openpyxl_version() -> str:
         import openpyxl
 
         return str(getattr(openpyxl, "__version__", "?"))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - the parser version is a diagnostic, not a result
         return "?"
 
 

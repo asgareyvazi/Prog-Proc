@@ -27,9 +27,14 @@ REDACTED = "***REDACTED***"
 _DEFAULT_SENSITIVE_KEYS = ("api_key", "token", "password", "secret", "authorization", "cookie")
 
 # A bearer/token-looking string anywhere in a message is masked as well.
+#
+# A pattern that captures a *prefix* keeps that prefix and replaces the rest
+# ("Bearer " stays, the token goes).  A pattern that would capture the secret
+# itself has no capture group at all: the whole match is replaced, because a
+# replacement that re-emits the match has redacted nothing.
 _TOKEN_PATTERNS = (
     re.compile(r"(?i)\b(authorization\s*[:=]\s*)\S+"),
-    re.compile(r"(?i)\b(sk-[A-Za-z0-9_\-]{8,})\b"),
+    re.compile(r"(?i)\bsk-[A-Za-z0-9_\-]{8,}\b"),
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{8,}"),
 )
 
@@ -38,12 +43,7 @@ _RESERVED = set(vars(logging.LogRecord("", 0, "", 0, "", (), None)))
 
 def _mask(value: Any, sensitive: tuple[str, ...]) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(k): (
-                REDACTED if any(s in str(k).lower() for s in sensitive) else _mask(v, sensitive)
-            )
-            for k, v in value.items()
-        }
+        return {str(k): _mask_field(k, v, sensitive) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_mask(v, sensitive) for v in value]
     if isinstance(value, str):
@@ -52,6 +52,19 @@ def _mask(value: Any, sensitive: tuple[str, ...]) -> Any:
             text = pattern.sub(lambda m: (m.group(1) if m.groups() else "") + REDACTED, text)
         return text
     return value
+
+
+def _mask_field(key: Any, value: Any, sensitive: tuple[str, ...]) -> Any:
+    """Mask one field, by its *name* first and by its shape second.
+
+    The name is what identifies a secret: a field called ``api_key`` holds a
+    secret whatever it looks like, and masking only the values that happen to
+    match a token pattern would write a plain ``api_key="hunter2"`` to the log
+    in the clear.
+    """
+    if any(marker in str(key).lower() for marker in sensitive):
+        return REDACTED
+    return _mask(value, sensitive)
 
 
 class _JsonFormatter(logging.Formatter):
@@ -72,7 +85,7 @@ class _JsonFormatter(logging.Formatter):
         for key, value in record.__dict__.items():
             if key in _RESERVED or key.startswith("_"):
                 continue
-            payload[key] = _mask(value, self.sensitive)
+            payload[key] = _mask_field(key, value, self.sensitive)
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -88,7 +101,7 @@ class _TextFormatter(logging.Formatter):
         }
         if extras:
             rendered = " ".join(
-                f"{k}={_mask(v, self.sensitive)}" for k, v in sorted(extras.items())
+                f"{k}={_mask_field(k, v, self.sensitive)}" for k, v in sorted(extras.items())
             )
             base = f"{base} | {rendered}"
         return base

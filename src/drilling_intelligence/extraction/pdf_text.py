@@ -291,7 +291,7 @@ class PdfTextExtractor:
             page = doc[page_number]
             try:
                 finder = page.find_tables()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - table detection is best-effort; the failure is a diagnostic
                 document.diagnostics.append(
                     f"table detection failed on page {page_number + 1}: {type(exc).__name__}"
                 )
@@ -302,7 +302,7 @@ class PdfTextExtractor:
                         [None if cell is None else str(cell).strip() for cell in row]
                         for row in table.extract()
                     ]
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - table extraction is best-effort; the failure is a diagnostic
                     document.diagnostics.append(
                         f"table extraction failed (page {page_number + 1}, table {table_number}): {exc}"
                     )
@@ -410,7 +410,7 @@ def _table_caption(document: NormalizedDocument, page: int, table_number: int) -
 def _pdf_metadata(doc: Any) -> dict[str, str]:
     try:
         meta = dict(doc.metadata or {})
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - a document with unreadable metadata has no metadata
         return {}
     return {str(k): str(v) for k, v in meta.items() if v not in (None, "")}
 

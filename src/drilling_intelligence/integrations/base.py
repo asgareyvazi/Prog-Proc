@@ -205,7 +205,7 @@ def http_json(
     if "json" in content_type:
         try:
             payload = response.json()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - a response that is not JSON has no payload
             payload = None
     return {
         "ok": response.is_success,
