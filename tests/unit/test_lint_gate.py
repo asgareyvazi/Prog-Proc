@@ -11,18 +11,17 @@ on it - but in CI, where the dev extra is installed, it always runs.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _ruff(*arguments: str) -> subprocess.CompletedProcess[str]:
-    ruff = shutil.which("ruff")
-    assert ruff is not None, "ruff is not installed"
+    """Run ruff the way the CI does: through the interpreter that has it."""
     return subprocess.run(
-        [ruff, *arguments],
+        [sys.executable, "-m", "ruff", *arguments],
         cwd=ROOT,
         capture_output=True,
         text=True,

@@ -20,9 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SNAPSHOT = ROOT / "tests" / "snapshots" / "cli_surface.txt"
 
-_SPEC = importlib.util.spec_from_file_location(
-    "cli_surface", ROOT / "tools" / "cli_surface.py"
-)
+_SPEC = importlib.util.spec_from_file_location("cli_surface", ROOT / "tools" / "cli_surface.py")
 assert _SPEC is not None and _SPEC.loader is not None
 cli_surface = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(cli_surface)
