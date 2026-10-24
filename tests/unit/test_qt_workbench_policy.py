@@ -180,3 +180,44 @@ def test_the_normal_runner_still_retries_only_a_qualifying_abort():
 def test_collected_node_parser_ignores_the_summary_line():
     text = "tests/ui/test_workbench.py::test_alpha\n\n2 tests collected in 0.01s\n"
     assert qt_workbench.parse_collected_nodes(text) == ["tests/ui/test_workbench.py::test_alpha"]
+
+
+def _workbench_test_source() -> str:
+    path = Path(__file__).resolve().parents[2] / "tests" / "ui" / "test_workbench.py"
+    return path.read_text(encoding="utf-8")
+
+
+def test_the_workbench_tests_release_their_windows_and_not_only_close_them():
+    """A closed window is not a destroyed window.
+
+    The ``qt_app`` fixture is session-scoped, so a window that a test only
+    closes stays alive until the end of the session - long after the
+    per-test workspace it reads has been deleted.  The native abort that
+    follows used to surface in a full ``tests/ui`` run, far away from the
+    test that caused it.  The tests must use the production release path.
+    """
+    source = _workbench_test_source()
+
+    assert "window.close()" not in source, (
+        "a workbench test closes its window instead of releasing it; "
+        "use release_top_level_widgets(qt_app)"
+    )
+    assert source.count("release_top_level_widgets(qt_app)") == 6
+    assert "release_top_level_widgets" in source
+
+
+def test_the_session_fixture_releases_and_then_asserts_that_nothing_survived():
+    source = _workbench_test_source()
+
+    assert '@pytest.fixture(scope="session")' in source
+    assert "fixture_teardown(application)" in source
+    assert "top-level widgets survived the fixture teardown" in source
+
+
+def test_the_release_path_used_by_the_tests_is_the_production_path():
+    """The test must not grow a private teardown of its own."""
+    from drilling_intelligence.ui import lifetime
+
+    assert callable(lifetime.release_top_level_widgets)
+    source = _workbench_test_source()
+    assert "from drilling_intelligence.ui.lifetime import release_top_level_widgets" in source

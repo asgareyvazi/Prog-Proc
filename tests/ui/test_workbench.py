@@ -43,6 +43,19 @@ def qt_app():
     from drilling_intelligence.ui.lifetime import fixture_teardown
 
     fixture_teardown(application)
+    # A closed window is not a destroyed window.  The fixture releases the
+    # top-level widgets, and this says so: a widget that is still alive
+    # after the teardown is a defect that would otherwise surface later as
+    # a native abort in an unrelated test, with nothing to point at it.
+    import shiboken6
+    from PySide6.QtWidgets import QApplication as _Application
+
+    alive = [
+        widget
+        for widget in _Application.topLevelWidgets()
+        if shiboken6.isValid(widget) and widget is not application
+    ]
+    assert not alive, f"top-level widgets survived the fixture teardown: {alive}"
 
 
 def test_default_package_is_import_light() -> None:
@@ -114,7 +127,14 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
         assert "Citation audit completed" in window.evidence_summary.text()
         assert window.audit_model.rowCount() == len(verified.citation_audit["checks"])
     finally:
-        window.close()
+        # Release, do not only close.  The application fixture is
+        # session-scoped, so a window that is only closed stays alive until
+        # the end of the session - and the workspace this window reads is
+        # torn down before that.  The release path is the one the
+        # application uses, so the test and the product share it.
+        from drilling_intelligence.ui.lifetime import release_top_level_widgets
+
+        release_top_level_widgets(qt_app)
         qt_app.processEvents()
 
     assert before == _database_fingerprint(workspace)
@@ -185,7 +205,14 @@ def test_presentation_filter_conflict_detail_and_explicit_error_states(qt_app) -
             assert category.title() in window.status_label.text()
             assert f"{category} problem" in window.banner.text()
     finally:
-        window.close()
+        # Release, do not only close.  The application fixture is
+        # session-scoped, so a window that is only closed stays alive until
+        # the end of the session - and the workspace this window reads is
+        # torn down before that.  The release path is the one the
+        # application uses, so the test and the product share it.
+        from drilling_intelligence.ui.lifetime import release_top_level_widgets
+
+        release_top_level_widgets(qt_app)
         qt_app.processEvents()
 
 
@@ -256,7 +283,14 @@ def test_decision_tab_renders_the_service_pack_without_touching_the_database(
             "worker and direct read must be the same pack - same state, same identity"
         )
     finally:
-        window.close()
+        # Release, do not only close.  The application fixture is
+        # session-scoped, so a window that is only closed stays alive until
+        # the end of the session - and the workspace this window reads is
+        # torn down before that.  The release path is the one the
+        # application uses, so the test and the product share it.
+        from drilling_intelligence.ui.lifetime import release_top_level_widgets
+
+        release_top_level_widgets(qt_app)
         qt_app.processEvents()
         controller.close()
 
@@ -326,7 +360,14 @@ def test_comparison_tab_renders_the_matrix_without_touching_the_database(qt_app,
             "worker and direct read must be the same pack - same state, same identity"
         )
     finally:
-        window.close()
+        # Release, do not only close.  The application fixture is
+        # session-scoped, so a window that is only closed stays alive until
+        # the end of the session - and the workspace this window reads is
+        # torn down before that.  The release path is the one the
+        # application uses, so the test and the product share it.
+        from drilling_intelligence.ui.lifetime import release_top_level_widgets
+
+        release_top_level_widgets(qt_app)
         qt_app.processEvents()
         controller.close()
 
@@ -391,7 +432,14 @@ def test_report_export_uses_the_canonical_renderer_and_the_chart_does_not_query(
         assert received[0]["mode"] == "single_well"
         assert received[0]["schema"] == "engineering-report/1"
     finally:
-        window.close()
+        # Release, do not only close.  The application fixture is
+        # session-scoped, so a window that is only closed stays alive until
+        # the end of the session - and the workspace this window reads is
+        # torn down before that.  The release path is the one the
+        # application uses, so the test and the product share it.
+        from drilling_intelligence.ui.lifetime import release_top_level_widgets
+
+        release_top_level_widgets(qt_app)
         qt_app.processEvents()
         controller.close()
     assert before == _database_fingerprint(workspace)
@@ -463,7 +511,14 @@ def test_report_audit_does_not_recompose_and_a_late_result_cannot_replace_a_newe
         assert "report-second" in window.report_header.text()
         assert "not requested" in window.report_lineage.text()
     finally:
-        window.close()
+        # Release, do not only close.  The application fixture is
+        # session-scoped, so a window that is only closed stays alive until
+        # the end of the session - and the workspace this window reads is
+        # torn down before that.  The release path is the one the
+        # application uses, so the test and the product share it.
+        from drilling_intelligence.ui.lifetime import release_top_level_widgets
+
+        release_top_level_widgets(qt_app)
         qt_app.processEvents()
         controller.close()
     assert before == _database_fingerprint(workspace)
