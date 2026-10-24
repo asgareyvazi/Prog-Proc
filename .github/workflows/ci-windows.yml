@@ -37,7 +37,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -69,8 +69,15 @@ jobs:
       # be mistaken for a clean audit.
       - name: Audit the pinned dependencies
         run: |
-          python -m pip install "pip-audit>=2.9,<3"
-          python tools/dependency_audit.py --output dependency-audit.json
+          # The auditor is pinned (constraints/audit.txt) and installed into an
+          # environment of its own: a floating range would let the tool change
+          # between two runs of the same commit, and installing it into the
+          # product's environment could move a version the product is tested
+          # with.  The audit itself reads the pins, not the environment.
+          python -m venv .audit-venv
+          .audit-venv\Scripts\python.exe -m pip install --upgrade pip
+          .audit-venv\Scripts\python.exe -m pip install -c constraints/audit.txt pip-audit
+          python tools/dependency_audit.py --output dependency-audit.json --python .audit-venv\Scripts\python.exe
 
       - name: Byte-compile source, tests, migrations and tools
         shell: pwsh
@@ -166,7 +173,7 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -204,7 +211,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 

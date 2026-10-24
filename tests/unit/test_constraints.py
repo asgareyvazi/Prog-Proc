@@ -137,3 +137,122 @@ def test_requirements_are_resolved_from_the_metadata() -> None:
     assert any(item.startswith("pytest") for item in development)
     assert not any(item.startswith("PySide6") for item in development)
     assert any(item.startswith("PySide6") for item in ui)
+
+
+# --------------------------------------------------------------------------- the shipped files
+
+
+def _pins(name: str) -> list[str]:
+    """The pinned lines of one constraint file, without the comments."""
+    text = (CONSTRAINTS_DIR / f"{name}.txt").read_text(encoding="utf-8")
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def _date_in(name: str) -> str:
+    text = (CONSTRAINTS_DIR / f"{name}.txt").read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.startswith("# Generated on "):
+            return line.removeprefix("# Generated on ").removesuffix(".")
+    raise AssertionError(f"constraints/{name}.txt has no generation stamp")
+
+
+def test_every_pin_is_an_exact_version() -> None:
+    """A range is a floating pin, and a floating pin is not a pin."""
+    for name in SETS:
+        for line in _pins(name):
+            assert "==" in line, f"{name}: {line}"
+            version = line.split("==", 1)[1]
+            assert version and not any(mark in version for mark in "<>!~*, "), f"{name}: {line}"
+
+
+def test_no_pin_carries_an_environment_marker() -> None:
+    """A marker makes a pin mean different things on two platforms.
+
+    The files are read on Linux and on Windows, so a pin that only applies to
+    one interpreter or one platform would be read as a pin on the other.
+    """
+    for name in SETS:
+        for line in _pins(name):
+            assert ";" not in line, f"{name}: {line}"
+            assert "--hash" not in line, f"{name}: {line}"
+            assert not line.startswith("-"), f"{name}: {line}"
+
+
+def test_no_set_pins_the_same_package_twice() -> None:
+    for name in SETS:
+        names = [line.split("==", 1)[0].lower().replace("_", "-") for line in _pins(name)]
+        assert len(names) == len(set(names)), name
+
+
+def test_the_file_on_disk_is_what_the_tool_renders() -> None:
+    """Drift check: the file is the tool's output, not a hand-edited list."""
+    from tools.constraints import render
+
+    for name in SETS:
+        path = CONSTRAINTS_DIR / f"{name}.txt"
+        expected = render(name, _pins(name), generated=_date_in(name))
+        assert path.read_text(encoding="utf-8") == expected, name
+
+
+def test_the_runtime_set_pins_the_transitive_dependencies_too() -> None:
+    """A constraint file that names only the direct requirements floats the rest."""
+    from importlib.metadata import PackageNotFoundError, requires
+
+    from tools.constraints import _direct_requirements
+
+    pinned = {line.split("==", 1)[0].lower().replace("_", "-") for line in _pins("runtime")}
+    direct = _direct_requirements(())
+    for requirement in direct:
+        name = requirement.split(";")[0].strip()
+        for specifier in name.split(","):
+            package = specifier.strip().split(">")[0].split("<")[0].split("=")[0].strip()
+            if not package:
+                continue
+            assert package.lower().replace("_", "-") in pinned, package
+            try:
+                declared = requires(package) or []
+            except PackageNotFoundError:  # pragma: no cover - the extra is not installed
+                continue
+            for entry in declared:
+                if ";" in entry:  # a marker means it does not apply everywhere
+                    continue
+                transitive = entry.split(";")[0].strip().split(">")[0].split("<")[0]
+                transitive = transitive.split("=")[0].strip()
+                if not transitive:
+                    continue
+                assert transitive.lower().replace("_", "-") in pinned, transitive
+
+
+def test_the_ui_set_contains_every_runtime_pin() -> None:
+    """The UI set is the runtime set plus the optional desktop runtime."""
+    runtime = {line.split("==", 1)[0].lower().replace("_", "-") for line in _pins("runtime")}
+    ui = {line.split("==", 1)[0].lower().replace("_", "-") for line in _pins("ui")}
+    assert runtime <= ui, sorted(runtime - ui)
+
+
+def test_the_product_sets_do_not_pin_the_build_backend_or_the_auditor() -> None:
+    """The backend and the auditor are tools, not dependencies of the product."""
+    for name in ("runtime", "development", "ui"):
+        text = (CONSTRAINTS_DIR / f"{name}.txt").read_text(encoding="utf-8")
+        for tool in ("setuptools", "wheel", "pip_audit", "pip-audit"):
+            assert f"\n{tool}==" not in text, f"{name}: {tool}"
+
+
+def test_the_audit_set_pins_the_auditor_to_one_exact_version() -> None:
+    pins = _pins("audit")
+    auditor = [line for line in pins if line.lower().startswith("pip_audit==")]
+    assert len(auditor) == 1, pins
+    assert auditor[0].split("==", 1)[1]
+
+
+def test_the_auditor_is_installed_from_its_pins_and_not_as_a_range() -> None:
+    """A floating auditor would make two audits of one commit incomparable."""
+    for name in ("ci.yml", "ci-windows.yml"):
+        text = (Path(".github/workflows") / name).read_text(encoding="utf-8")
+        assert "pip-audit>=2.9,<3" not in text, name
+        assert "-c constraints/audit.txt pip-audit" in text, name
+        assert ".audit-venv" in text, name

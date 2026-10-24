@@ -12,10 +12,10 @@
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
-# Generated on 2026-10-20.
+# Generated on 2026-10-24.
 
 packaging==26.3
-setuptools==84.2.0
+setuptools==84.2.1
 wheel==0.48.0
 
 # The build backend is resolved in an isolated environment by pip.

@@ -1,0 +1,48 @@
+# Audit tool pins
+#
+# Pinned resolution of the dependency set this repository builds and tests
+# against. The package metadata in pyproject.toml keeps version ranges so an
+# operator can install a newer patch release; these files pin the versions the
+# CI actually proves. They are constraints, not a lock: `pip install -c <file>`
+# applies them to the packages that are named, and nothing else.
+#
+# Regenerate: `python tools/constraints.py --set audit`. Do not hand-edit a
+# pin without regenerating the file, and do not widen a pin without a CI run on
+# the new SHA.
+#
+# Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
+#
+# Generated on 2026-10-24.
+
+boolean.py==5.0
+CacheControl==0.14.4
+certifi==2026.10.23
+charset-normalizer==3.5.2
+cyclonedx-python-lib==11.12.0
+defusedxml==0.7.1
+filelock==4.2.4
+idna==3.20
+license-expression==30.4.4
+markdown-it-py==4.2.0
+mdurl==0.1.2
+msgpack==1.2.3
+packageurl-python==0.17.6
+packaging==26.3
+pip-requirements-parser==32.0.1
+pip_api==0.0.35
+pip_audit==2.10.1
+platformdirs==4.13.5
+py-serializable==2.1.0
+Pygments==2.21.0
+pyparsing==3.3.3
+requests==2.34.2
+rich==15.0.0
+sortedcontainers==2.4.0
+tomli==2.5.0
+tomli_w==1.2.0
+typing_extensions==4.16.0
+urllib3==2.8.0
+
+# The audit tool is installed in an environment of its own, so that the
+# versions the product is tested with are the versions the product ships
+# with.  These pins are what make two audits of the same commit comparable.

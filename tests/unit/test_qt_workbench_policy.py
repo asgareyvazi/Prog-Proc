@@ -6,13 +6,31 @@ import importlib.util
 import re
 from pathlib import Path
 
-#: The v7 release of each GitHub Action this repository uses, verified against
-#: the upstream tag on 2026-10-20. The workflows pin the commit SHA; the
-#: comment beside each pin names the tag the SHA was taken from.
-ACTION_PINS_V7 = {
-    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
-    "actions/upload-artifact": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+#: The release of each GitHub Action this repository uses, verified against the
+#: upstream repository on 2026-10-24 by reading the tag list of the action's own
+#: repository: each pin below is the commit the named upstream tag points at.
+#: The workflows pin the commit SHA; the comment beside each pin names the tag.
+#: The moving ``v7`` tag is recorded too, because a tag that moves is the reason
+#: a pin exists.
+ACTION_PINS = {
+    "actions/checkout": {
+        "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "tag": "v7.0.1",
+        "moving_tag": "v7",
+        "moving_tag_sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    },
+    "actions/setup-python": {
+        "sha": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
+        "tag": "v7.1.0",
+        "moving_tag": "v7",
+        "moving_tag_sha": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
+    },
+    "actions/upload-artifact": {
+        "sha": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+        "tag": "v7.0.2",
+        "moving_tag": "v7",
+        "moving_tag_sha": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+    },
 }
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -124,8 +142,8 @@ def test_required_jobs_stay_on_ubuntu_24_04_and_actions_v7() -> None:
     assert "qt-ubuntu-2604-logs" in workflow
     assert "tools/qt_evidence.py" in workflow
     assert "continue-on-error" not in workflow
-    for action, sha in ACTION_PINS_V7.items():
-        assert f"{action}@{sha}" in workflow, action
+    for action, pin in ACTION_PINS.items():
+        assert f"{action}@{pin['sha']}" in workflow, action
 
 
 def test_every_action_in_every_workflow_is_pinned_to_a_commit_sha() -> None:
@@ -145,7 +163,7 @@ def test_every_action_in_every_workflow_is_pinned_to_a_commit_sha() -> None:
             action, _, pin = reference.partition("@")
             assert action.startswith("actions/"), reference
             assert re.fullmatch(r"[0-9a-f]{40}", pin), reference
-            assert pin in ACTION_PINS_V7.values(), reference
+            assert pin in {entry["sha"] for entry in ACTION_PINS.values()}, reference
 
 
 def test_stability_does_not_consult_the_retry_policy():

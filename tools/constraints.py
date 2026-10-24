@@ -41,11 +41,19 @@ SETS: dict[str, tuple[str, ...]] = {
     "development": ("dev",),
     "ui": ("dev", "ui"),
     "build": (),
+    "audit": (),
 }
 
 #: The build backend is resolved in an isolated environment by pip.  It is
 #: pinned separately because the product never imports it.
 BUILD_PACKAGES = ("setuptools", "wheel")
+
+#: The audit tool is not a dependency of the product either: it is the thing
+#: that checks the pins.  It is pinned in its own file so that an audit is
+#: reproducible - a floating range would let the auditor change between two
+#: runs of the same commit - and so that installing it cannot move a version
+#: in the environment the product is tested in.
+AUDIT_PACKAGES = ("pip-audit",)
 
 #: ``pip`` is the installer, not a dependency of the product.  The project
 #: itself is installed as an editable, so it never appears in a constraint
@@ -104,6 +112,7 @@ def render(set_name: str, packages: list[str], generated: str | None = None) -> 
         "development": "Development dependency set (runtime + the dev extra)",
         "ui": "UI dependency set (development + the optional ui extra)",
         "build": "Build backend pins",
+        "audit": "Audit tool pins",
     }[set_name]
     stamp = generated or date.today().isoformat()
     body = "\n".join(packages)
@@ -113,6 +122,12 @@ def render(set_name: str, packages: list[str], generated: str | None = None) -> 
         text += (
             "\n# The build backend is resolved in an isolated environment by pip.\n"
             "# These two pins make that environment reproducible as well.\n"
+        )
+    if set_name == "audit":
+        text += (
+            "\n# The audit tool is installed in an environment of its own, so that the\n"
+            "# versions the product is tested with are the versions the product ships\n"
+            "# with.  These pins are what make two audits of the same commit comparable.\n"
         )
     return text
 
@@ -145,6 +160,8 @@ def resolve(set_name: str, python: str | None = None) -> list[str]:
         )
         if set_name == "build":
             requirements = list(BUILD_PACKAGES)
+        elif set_name == "audit":
+            requirements = list(AUDIT_PACKAGES)
         else:
             requirements = _direct_requirements(SETS[set_name])
         # The build backend is upgraded on purpose: a fresh virtual environment
@@ -167,6 +184,11 @@ def resolve(set_name: str, python: str | None = None) -> list[str]:
     if set_name == "build":
         keep = ("pip", "drilling-intelligence")
         return package_lines(frozen, exclude=keep)
+    if set_name == "audit":
+        # The auditor is installed into an environment of its own, so the
+        # installer, the build backend and the project itself are not pins of
+        # the auditor.
+        return package_lines(frozen)
     return package_lines(frozen)
 
 
