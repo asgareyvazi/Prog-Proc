@@ -100,6 +100,14 @@ thread. Since commit `2827073` the Windows branch of the terminal exit
 cannot reach `os._exit` at all, and the same fifty attempts published
 **zero** native faults.
 
+> **Correction (V8.17, ADR-61).** "The Python finalizer" names a
+> mechanism that does not exist. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken
+> teardown while the GUI thread is inside a Python callback; it does
+> **not** run Python interpreter finalization. The access violation is
+> real and is not withdrawn — only the label is corrected.
+
 If an attempt still reports `3221225477` on your workstation, record the
 whole line: it carries the stage the child reached and the innermost frames
 of the thread that faulted. Those frames are the evidence, and they are
@@ -161,6 +169,14 @@ the `QApplication` and a live `QThread` still existed. The shutdown now has
 one owner, and the loser stands down. A later green UI job still does not
 prove that access violation cannot recur. It is not a pass of that case.
 The shutdown stress step above is the measurement that would show it.
+
+> **Correction (V8.17, ADR-61).** "The Python finalizer" names a
+> mechanism that does not exist. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken
+> teardown while the GUI thread is inside a Python callback; it does
+> **not** run Python interpreter finalization. The access violation is
+> real and is not withdrawn — only the label is corrected.
 
 ## Optional workbench
 

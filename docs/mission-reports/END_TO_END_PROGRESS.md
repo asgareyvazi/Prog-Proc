@@ -12,6 +12,13 @@ conclusion. The final report is
 [`END_TO_END_FINAL_REPORT.md`](END_TO_END_FINAL_REPORT.md). The historical
 reports in this directory are not edited; this mission adds dated follow-ups.
 
+> **V8.17 correction (additive).** The mechanism named below as "the
+> interpreter finalizer" is corrected by ADR-61: on Windows `os._exit`
+> is the CRT `_exit` → `ExitProcess`, which notifies the loaded DLLs and
+> runs the native Qt/PySide6/shiboken teardown; it does **not** run
+> Python interpreter finalization. Every observation, measurement and
+> fix recorded here stands.
+
 **Verdict rules used throughout.** `DONE` only if every part of the scope is
 complete, pushed, the exact-final-SHA CI is green on Linux and Windows, and
 no critical defect remains in the claimed scope. `PARTIAL` if the Windows
@@ -83,6 +90,14 @@ the Python finalizer runs while the `QApplication` and a live `QThread` still
 exist. The monitor used `TerminateProcess`, which does not notify the
 libraries. The monitor's Windows path waits up to 50 ms for the deadline
 notice, and that wait is the window in which the two overlapped.
+
+> **Correction (V8.17, ADR-61).** "The Python finalizer" names a
+> mechanism that does not exist. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken
+> teardown while the GUI thread is inside a Python callback; it does
+> **not** run Python interpreter finalization. The access violation is
+> real and is not withdrawn — only the label is corrected.
 
 **Proof that the double end is reachable, not a theory.** The implementation
 at `317c553` was loaded directly and the coordinator and the monitor were
@@ -240,6 +255,14 @@ running on the terminating thread while another thread was inside Python
 code, reached through the `os._exit` line of `_end_process` on Windows. The
 fix is verified on the Windows runner. It is not proven for the owner's
 workstation: the manual checklist is still **NOT RUN**.
+
+> **Correction (V8.17, ADR-61).** "The Python finalizer" names a
+> mechanism that does not exist. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken
+> teardown while the GUI thread is inside a Python callback; it does
+> **not** run Python interpreter finalization. The access violation is
+> real and is not withdrawn — only the label is corrected.
 
 ---
 

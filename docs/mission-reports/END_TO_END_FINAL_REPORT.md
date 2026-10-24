@@ -18,6 +18,13 @@ exact-SHA Linux and Windows runs are linked. The runs for the code SHA named
 above are in the table in section 12. This file is not edited again to insert
 a later observation.
 
+> **V8.17 correction (additive).** The mechanism named below as "the
+> interpreter finalizer" is corrected by ADR-61: on Windows `os._exit`
+> is the CRT `_exit` → `ExitProcess`, which notifies the loaded DLLs and
+> runs the native Qt/PySide6/shiboken teardown; it does **not** run
+> Python interpreter finalization. Every observation, measurement and
+> fix recorded here stands.
+
 ---
 
 ## 1. Verdict
@@ -41,6 +48,14 @@ through the `os._exit` line of `_end_process` on Windows — and the fix is
 verified on the Windows runner: at `2827073` the same fifty attempts
 published **zero** native faults. The double terminal end was a second,
 separate defect, reproduced from the source and fixed.
+
+> **Correction (V8.17, ADR-61).** "The Python finalizer" names a
+> mechanism that does not exist. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken
+> teardown while the GUI thread is inside a Python callback; it does
+> **not** run Python interpreter finalization. The access violation is
+> real and is not withdrawn — only the label is corrected.
 
 Everything else in the scope is complete and pushed: the supply chain is
 pinned and audited, one package boundary is type-checked in CI, coverage is
@@ -415,6 +430,14 @@ artifact, which this environment cannot download.
 *   The root cause is now **established**: the interpreter finalizer running
    on the terminating thread while another thread was inside Python code,
    reached through the `os._exit` line of `_end_process` on Windows.
+
+> **Correction (V8.17, ADR-61).** "The Python finalizer" names a
+> mechanism that does not exist. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken
+> teardown while the GUI thread is inside a Python callback; it does
+> **not** run Python interpreter finalization. The access violation is
+> real and is not withdrawn — only the label is corrected.
 *   The fix is **verified on the Windows runner**: 0 native faults in 50
    attempts, against at least 10 in 50 before.
 *   It is **not** proven for every configuration. Fifty attempts on one
@@ -432,6 +455,14 @@ artifact, which this environment cannot download.
 | promotion boundary | ingestion to domain rows is idempotent and self-reporting; a document is never promoted twice | sound | unchanged |
 | search | BM25 over a disposable SQLite sidecar that is rebuilt, never migrated; candidates are re-read from the authoritative database | sound | unchanged |
 | migrations | 19 revisions, exactly one head, `0019`; a migration script is compiled in CI and a fresh workspace stamps from package metadata | sound | unchanged |
+> **Correction (V8.17, ADR-61).** "The Python finalizer" names a
+> mechanism that does not exist. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken
+> teardown while the GUI thread is inside a Python callback; it does
+> **not** run Python interpreter finalization. The access violation is
+> real and is not withdrawn — only the label is corrected.
+
 | domain coverage matrix | re-counted against the source: 26 enum members, 26 contracts, 13 `END_TO_END_CERTIFIED`, 8 `KNOWLEDGE_SUPPORTED`, 5 `EXTRACT_ONLY`, 11 distinct handlers, 21 taxonomy signatures (BOOK, INVOICE, LWD_MWD, OTHER and WIRELINE have none) | **accurate as written** | unchanged |
 | broad exception handling | 86 `except Exception` sites in `src/`, all at documented adapter or parser boundaries | low | inspected; none was added or removed |
 | oversized functions | `review/service.py::_build` (742 lines), `cli/app.py::build_parser` (729), `cli/app.py::command_records` (498) | medium | **recorded, not refactored** — a refactor of that size before a measured baseline is the risk this mission was told to avoid |

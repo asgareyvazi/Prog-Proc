@@ -2570,6 +2570,14 @@ unexecuted.
 
 **Status:** accepted (2026-10-20)
 
+> **Correction (V8.17, ADR-61).** The phrase "the Python finalizer" in this
+> entry names a mechanism that does not exist. `os._exit` on Windows is the
+> CRT `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken teardown —
+> it does **not** run Python interpreter finalization. The double terminal
+> end described here is a real defect and is fixed; the crash it was
+> associated with is real and is not withdrawn. See ADR-61.
+
 ADR-54 moved the Windows deadline monitor from `os._exit` to
 `TerminateProcess`, because `os._exit` is `ExitProcess` on Windows and
 `ExitProcess` notifies the loaded libraries, so the Python finalizer runs
@@ -2781,6 +2789,14 @@ instrumentation for that is now in place.
 
 **Status:** accepted (2026-10-20); the fix is implemented and verified on the Windows runner
 
+> **Correction (V8.17, ADR-61).** The title says "the interpreter
+> finalizes"; that is the wrong mechanism. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs and runs the
+> native Qt/PySide6/shiboken teardown while the GUI thread is inside a
+> Python callback — and it does **not** run Python interpreter
+> finalization. The frames, the faulting thread, the access violation and
+> the measurements all stand; only the label is corrected.
+
 ADR-59 published the reproduction of the native access violation and withdrew
 the earlier claim that the cause was known. This decision records the first
 evidence that says *where* the fault happens, and the change that follows
@@ -2873,3 +2889,134 @@ checklist is for.
 *   The shutdown path is not restructured beyond this: no speculative Qt
     refactor, no change to the coordinator, no change to the deadline
     monitor.
+
+## ADR-61 — V8.17: `os._exit` on Windows is a DLL detach, not a Python finalization
+
+**Status:** accepted (2026-10-24); this corrects the *name of the mechanism* in
+ADR-56 and ADR-60, and it withdraws nothing that was observed
+
+ADR-56 and ADR-60 named the mechanism of the Windows native access violation
+as "the interpreter finalizer". That name is wrong, and the error matters,
+because a wrong mechanism sends the next engineer to the wrong layer.
+
+**What the two decisions said.** ADR-56: "`os._exit` is `ExitProcess` on
+Windows and `ExitProcess` notifies the loaded libraries, so the Python
+finalizer runs while the `QApplication` and a live `QThread` still exist."
+ADR-60: "A Python callback cannot run safely while the interpreter is
+finalizing. The only way the interpreter finalizes is `os._exit`."
+
+**What is actually true.** Three different things were merged into one, and
+only the third is real:
+
+| candidate mechanism | what it is | does `os._exit` do it? |
+| --- | --- | --- |
+| Python interpreter finalization | `Py_FinalizeEx`: `atexit` handlers, module `__del__`, type cleanup | **no** |
+| CRT `_exit` / `_Exit` | the C runtime's immediate exit; skips `atexit` handlers and does not flush the streams | **yes** |
+| Win32 `ExitProcess` | the Win32 process-termination entry point; notifies every loaded DLL and kills the other threads | **yes** (the CRT `_exit` reaches it) |
+| DLL `DLL_PROCESS_DETACH` | each DLL's `DllMain(DLL_PROCESS_DETACH)` runs on the terminating thread | **yes** |
+| native C++ static destruction | `__cxa_atexit`/static destructors in those DLLs, which is where Qt, PySide6 and shiboken tear down | **yes** |
+| Qt / PySide6 / shiboken teardown | the Qt object tree and the shiboken bindings released by the above | **yes** |
+| a fault on a thread already inside a Python callback | the observed shape: the GUI thread was inside `_AcceptQuit.eventFilter`, a Python callback invoked from C++ | **yes** — this is what the frames show |
+| a stack dump that merely shows another thread | a thread that appears in a faulthandler dump but was not the faulting one | **no** — it is not evidence of anything |
+
+**The evidence for the correction.**
+
+*   CPython `Modules/posixmodule.c` (tag `v3.11.9`): `os._exit` is
+    `_exit(status)`. There is no Windows branch in it and no call into
+    `Py_FinalizeEx`. On Windows the C runtime's `_exit` terminates the
+    process through `ExitProcess`.
+*   Microsoft, *ExitProcess*: the function "terminates all threads within
+    the calling process" and notifies every loaded DLL with
+    `DLL_PROCESS_DETACH`; the documentation explicitly warns that a DLL
+    whose detach handler waits on a thread that is being killed can
+    deadlock, and recommends `TerminateProcess` for a forced end.
+*   Microsoft, *TerminateProcess*: "This function does not notify DLLs"; and
+    "if the target process is the calling process, the function does not
+    return".
+*   Microsoft, CRT `exit`/`_exit`/`_Exit`: `_exit` and `_Exit` "do not invoke
+    `atexit` handlers" and do not flush the streams.
+*   A public instance of the same mechanism: Electron issue #53091 records
+    a real `EXCEPTION_ACCESS_VIOLATION_READ` inside a DLL detach handler
+    during CRT `exit()` teardown.
+
+**What is not withdrawn.** The crash was real: a native
+`0xC0000005` access violation, observed in the Windows offscreen job, on a
+thread that was inside a Python callback invoked from C++
+(`lifetime.py:625` → `lifetime.py:386` → `lifetime.py:447`). The
+measurements (at least ten faults in fifty attempts at `eab9323`; zero in
+fifty at `2827073`) stand. What is corrected is the label: the teardown
+that faulted was the **native** teardown — `ExitProcess` → `DLL_PROCESS_DETACH`
+→ Qt/PySide6/shiboken static destruction — and not Python interpreter
+finalization.
+
+**What is not claimed either.** No specific DLL is named as the faulting
+one; a stack dump that shows other threads is not evidence about them; and
+nothing here is a cross-platform guarantee. The POSIX path (`os._exit`
+after `flush`) is a different mechanism with a different contract and is
+unchanged.
+
+**What the code does now.** The Windows terminal path never reaches any of
+the above. It goes through the injectable `_KernelTermination` adapter
+(`TerminateProcess`), which does not notify DLLs; a refusal is reported
+(`TERMINAL_REFUSED`) with its error code and is never converted into a
+success; `fixture_teardown` uses the same `_end_process` boundary. There is
+no `os._exit` fallback on Windows, and there is no `ExitProcess` fallback
+anywhere in the package.
+
+**Consequences.**
+
+*   The exit-4 contract is unchanged: `is_fail_closed_shutdown_exit` accepts
+    only the integer `4`.
+*   The wording in ADR-56, ADR-60, `docs/WINDOWS_TESTING.md` and the
+    end-to-end reports carries an additive correction pointing here; the
+    original sentences are left in place, because the report history is
+    evidence and erasing it would hide what was believed and when.
+
+## ADR-62 — V8.17: the flaky workbench test was a window that outlived its workspace
+
+**Status:** accepted (2026-10-24); the fix is implemented, tested and pushed
+
+**The symptom.** The `tests/ui` suite aborted at the *end* of a full run —
+after the last test had reported — with `QObject: shared QObject was
+deleted directly` and `malloc_consolidate(): unaligned fastbin chunk
+detected`, exit code 134. The same file passed when it ran alone, and the
+abortion never appeared in an isolated run. The failure therefore belonged
+to the *suite*, not to the test that happened to be running.
+
+**The cause.** The `qt_app` fixture in `tests/ui/test_workbench.py` is
+declared `@pytest.fixture(scope="session")`, so one `QApplication` serves
+every test in the file. Each test built its own `MainWindow`, and each
+`finally:` block only called `window.close()`. A closed `MainWindow` is not
+a destroyed one: it keeps its `ReviewController`, its open SQLite session
+and its Qt children alive, because nothing releases the top-level widget.
+Six tests did that, so six windows — each with a controller and a database
+session — outlived the per-test `workspace` fixture, which deletes the
+workspace directory. At the end of the session the application was torn
+down and the surviving windows were destroyed against a workspace that no
+longer existed: the shared `QObject` was deleted directly, and the
+allocator found an inconsistent heap. That is why the fault appeared only
+in a full `tests/ui` run and never in isolation, and why it pointed at the
+last test instead of at the six that caused it.
+
+**The fix.** The tests now use the product's own release path,
+`release_top_level_widgets(qt_app)` (`src/drilling_intelligence/ui/lifetime.py`),
+in every `finally:` block — six call sites — and the session fixture
+asserts that no top-level widget survived its teardown. The assertion is
+what turns this class of defect into an immediate, local failure instead of
+a distant native abort.
+
+**What was not done.** No sleep was added, no retry was added, no
+assertion was weakened, and nothing was skipped or xfailed. The
+`window.close()` call is gone from the file, and a policy test
+(`tests/unit/test_qt_workbench_policy.py`) asserts that it stays gone, that
+the six releases stay, that the fixture stays session-scoped, and that the
+teardown assertion stays.
+
+**The evidence.** The suite passes; the fresh-process repetition (25
+consecutive runs of the whole `tests/ui` directory, each in a new process,
+each recorded) is in the V8.17 mission report, and the Windows offscreen
+job runs the same suite.
+
+**Consequences.** The product's release path is now exercised by the tests
+that use it, and the fixture fails loudly instead of leaving a native abort
+for a later run to explain.
