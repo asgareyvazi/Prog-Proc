@@ -496,6 +496,7 @@ class _KernelTermination:
             if opened:
                 error = self._terminate_with(kernel, opened, code)
                 if error is None:
+                    kernel.CloseHandle(opened)
                     return _TerminationOutcome(
                         accepted=True,
                         already_terminating=False,
@@ -504,6 +505,7 @@ class _KernelTermination:
                     )
                 last_error = error
                 if error == _WINERROR_ACCESS_DENIED:
+                    kernel.CloseHandle(opened)
                     return _TerminationOutcome(
                         accepted=False,
                         already_terminating=True,
