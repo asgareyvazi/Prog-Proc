@@ -74,16 +74,22 @@ python -m venv $root
 ## Shutdown stress on this workstation
 
 The Windows offscreen UI job runs the fail-closed shutdown child repeatedly
-and measures it: an attempt that ends with the known native access
-violation is reported at error level and does not fail the job, because a
-fault that fires in a few percent of attempts turns a required job into a
-coin toss. Any attempt that ends with any *other* exit code fails the step.
-The same experiment runs here:
+and measures it. The same experiment runs here:
 
 ```powershell
 $env:QT_QPA_PLATFORM = "offscreen"
-.\.venv\Scripts\python.exe tools\qt_shutdown_stress.py --attempts 25 --log-dir qt-logs\shutdown-stress
+.\.venv\Scripts\python.exe tools\qt_shutdown_stress.py --attempts 25 --log-dir qt-logs\shutdown-stress --gate
 ```
+
+> **Correction (V8.17).** This section used to say that a native access
+> violation was reported at error level and did **not** fail the job,
+> because a fault that fires in a few percent of attempts turns a required
+> job into a coin toss. That was the policy of an open defect. The defect
+> is closed by construction - the Windows termination path can no longer
+> reach `ExitProcess` - so a recurrence is a regression, and the step is
+> gated: the CI runs the same command with `--gate` and a single fault
+> fails the job. Every attempt is still reported, and the artifact is
+> uploaded whether the step passes or fails.
 
 Every attempt must report exit `4`. An attempt that reports
 `3221225477` (`0xC0000005`) is a native access violation, and it is a
@@ -269,23 +275,183 @@ stored.
 
 ## Manual acceptance checklist
 
-Run this on the workstation you care about. Record the Windows edition,
-build if you have it, `python --version`, the repository SHA, and
-`$LASTEXITCODE` for each failed step. A skipped step is not a pass; write
-the skip reason. Until those notes exist, this checklist is unexecuted.
-The disposable pilot does not complete these boxes.
+**Status: NOT RUN.** This list has never been executed on the owner's
+workstation. Nothing on this page completes a box, and no automated run -
+including the green `windows-2022` jobs - completes one either. A box is
+ticked by the person who ran that step on the workstation, in the record
+below, and by nobody else.
 
-- [ ] `python --version` is 3.11 or newer.
-- [ ] `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"` exits 0.
-- [ ] `tools\qt_shutdown_stress.py --attempts 25` reports exit `4` for every attempt.
-- [ ] `drillintel.exe --help` and `--version` exit 0.
-- [ ] Workspace create and open on a temp path, including a path with a space.
-- [ ] Well create and well list show the well you created.
-- [ ] `doctor` exits without opening a network connection.
-- [ ] A synthetic text file ingests and extraction does not require MinerU.
-- [ ] Search and `index rebuild` run on that workspace.
-- [ ] `fields report` writes HTML you can open.
-- [ ] `drillintel-ui.exe` opens and closes repeatedly on that workspace.
-- [ ] Review controls do not write a new engineering record.
-- [ ] Console text with a non-ASCII character is readable (`PYTHONUTF8=1`).
-- [ ] Logs were captured without document bodies or credentials.
+### Before the first step: the acceptance record
+
+Write these down before running anything. Without them, a result cannot be
+compared with any other run, and a failure cannot be reproduced.
+
+| What to record | How |
+| --- | --- |
+| Windows edition and build | `Get-ComputerInfo` \| Select-Object WindowsProductName, OsBuildNumber, OsVersion |
+| Architecture and RAM | `$env:PROCESSOR_ARCHITECTURE`; `(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory` |
+| CPython | `.\.venv\Scripts\python.exe -VV` |
+| Repository SHA | `git rev-parse HEAD` **and** `git status --porcelain=v2 --branch` |
+| Branch and cleanliness | the two lines above must agree that the tree is clean |
+| Installed Pin set used | `git rev-parse HEAD:constraints/development.txt` |
+| Qt and PySide6 | `.\.venv\Scripts\python.exe -c "import PySide6; from PySide6.QtCore import qVersion; print(PySide6.__version__, qVersion())"` |
+| Qt platform | `.\.venv\Scripts\python.exe -c "from PySide6.QtWidgets import QApplication; print(QApplication([]).platformName())"` |
+| The disposable workspace path | a new folder under `$env:TEMP` whose name you can delete |
+| Date and who ran it | the person, not the machine |
+
+Everything below runs against a **disposable** workspace. Do not run it
+against an operational record: several steps write to the workspace, and
+the point of the exercise is to be able to delete it afterwards.
+
+```powershell
+$sha  = git rev-parse HEAD
+$ws   = Join-Path $env:TEMP ("drillintel-acceptance-" + $sha.Substring(0,7))
+$log  = Join-Path $env:TEMP ("drillintel-acceptance-" + $sha.Substring(0,7) + ".log")
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+"edition/build:" | Out-File $log
+Get-ComputerInfo | Select-Object WindowsProductName, OsBuildNumber, OsVersion | Out-File $log -Append
+"sha: $sha" | Out-File $log -Append
+git status --porcelain=v2 --branch | Out-File $log -Append
+```
+
+### The steps
+
+Each step says what to run, what a pass looks like, and what to write in
+the record if it fails. `$LASTEXITCODE` is the exit code of the last
+native program; check it after every command, because PowerShell will
+happily print an error and carry on.
+
+1. **The interpreter is the documented one.**
+   `.\.venv\Scripts\python.exe -VV` reports CPython 3.11 or newer,
+   and 3.14 is preferred when wheels exist for it. Record the version.
+   A Microsoft Store alias that answers `python` is not this step.
+
+2. **The install is the pinned one and exits 0.**
+   `.\.venv\Scripts\python.exe -m pip install -c constraints\development.txt -c constraints\build.txt -e ".[dev]"`,
+   then `.\.venv\Scripts\python.exe -m pip check`.
+   Pass: both exit 0 and `pip check` says no broken requirements.
+
+3. **The tree is the committed one and is still clean.**
+   `git status --porcelain=v2 --branch` prints the branch line and the
+   SHA and nothing else. Pass: no `1 `, `2 ` or `? ` lines.
+
+4. **The static gates are green on this machine.**
+   `-m ruff check .`, `-m ruff format --check .`, `-m mypy`,
+   `-m compileall -q src tests migrations tools`, `-m alembic heads`.
+   Pass: the first four exit 0, and `alembic heads` prints exactly one
+   line containing `(head)`, currently `0019`.
+
+5. **The suite runs, and the skips are named.**
+   `.\.venv\Scripts\python.exe -m pytest`.
+   Pass: exit 0, and the summary line is copied into the record *including*
+   the skip count. Two Windows skips are expected and must be named, not
+   counted as passes: the open-database-file move, and the workbook
+   handle-count test. A skip that is not one of those two gets its reason
+   written down.
+
+6. **The shutdown experiment preserves every attempt.**
+   `$env:QT_QPA_PLATFORM = "offscreen"` then
+   `.\.venv\Scripts\python.exe tools\qt_shutdown_stress.py --attempts 25 --log-dir qt-logs\shutdown-stress --gate`.
+   Pass: 25 attempts, every one exit `4`, and
+   `qt-logs\shutdown-stress\summary.json` reports 25 attempts and 0
+   failures. Copy the whole `qt-logs\shutdown-stress` folder into the
+   record - every attempt log, not only the failures. Do not re-run until
+   one attempt passes: an attempt that reports `3221225477`
+   (`0xC0000005`) is a failure of this workstation, and the frames it
+   prints are the evidence a fix has to be built on.
+
+7. **The console commands answer.**
+   `.\.venv\Scripts\drillintel.exe --help` and
+   `.\.venv\Scripts\drillintel.exe --version`. Pass: exit 0 for
+   both, and the version line names the interpreter.
+
+8. **A workspace and a well can be created on a path with a space.**
+   The path in `$ws` above has no space by accident - the acceptance path
+   also runs with one:
+   `$ws2 = Join-Path $env:TEMP "drillintel acceptance space"`,
+   `drillintel.exe workspace create $ws2 --name Acceptance`,
+   `drillintel.exe wells create --name "SAMPLE-1" --workspace $ws2`,
+   `drillintel.exe wells list --workspace $ws2`.
+   Pass: the well is listed. Record the exact paths used.
+
+9. **`doctor` stays offline.**
+   `drillintel.exe doctor --workspace $ws2` and
+   `drillintel.exe --json doctor --workspace $ws2`.
+   Pass: it exits 0 or 1, and the JSON parses. Watch the machine's network
+   indicator, or run it with the adapter disabled: nothing here may open a
+   connection. A provider finding is configuration, not availability.
+
+10. **A synthetic document ingests and extracts without MinerU.**
+    Create `sample.txt` as shown in "A small synthetic ingest" above, then
+    `drillintel.exe ingest $docs --well "SAMPLE-1" --workspace $ws2`.
+    Pass: the summary names the file as ingested, and no step fails because
+    MinerU is absent. A scanned page demanding OCR is expected to be
+    reported as needing MinerU, not to crash.
+
+11. **The index rebuilds and the search returns something.**
+    `drillintel.exe index rebuild --workspace $ws2` and
+    `drillintel.exe search mud --well "SAMPLE-1" --workspace $ws2`.
+    Pass: the rebuild exits 0 and the search finds the synthetic line.
+
+12. **The HTML report opens in a browser.**
+    `drillintel.exe fields report --workspace $ws2 --well "SAMPLE-1" --output (Join-Path $env:TEMP "sample-report.html")`.
+    Pass: `$LASTEXITCODE` is 0, the file opens, the identity shown in the
+    page matches the JSON identity, and the page needs no network: no
+    script tag, no `https://` reference.
+
+13. **The workbench opens and closes, repeatedly.**
+    `$env:QT_QPA_PLATFORM` **unset** for a real window; then
+    `.\.venv\Scripts\drillintel-ui.exe --workspace $ws2 --well "SAMPLE-1"`.
+    Close it from its own close control, and repeat five times.
+    Pass: every launch opens a window, every close ends the process with
+    exit 0, and no `0xC0000005` appears in the console or in the Windows
+    application event log. Record the number of launches and the exit code
+    of each one.
+
+14. **The review controls are read-only.**
+    In the workbench, open the review surface and use its controls. Then
+    `drillintel.exe records list --workspace $ws2 --well "SAMPLE-1"` and
+    compare with the same command before the window was opened.
+    Pass: the rows are identical. A review control that writes a new
+    engineering record is a failure, not a feature.
+
+15. **Non-ASCII text survives the console.**
+    `.\.venv\Scripts\drillintel.exe wells create --name "Ø-test" --workspace $ws2`
+    then `wells list`. Pass: the name reads back exactly, with no `?` and no
+    `UnicodeEncodeError`. `$env:PYTHONUTF8` must be `1` for this; record
+    whether it was set.
+
+16. **The logs carry no document body and no credential.**
+    Open `$ws2\.drillintel\logs\`. Pass: no file contains the text of
+    `sample.txt`, no API key, no connection string. If one does, that is a
+    security defect: stop, keep the file, and report it without pasting the
+    secret.
+
+### The record
+
+Fill this in as you go; leave a box unticked until the step has run **on
+this workstation**. "Skipped" is a result, and it is written down with its
+reason - it is never a tick.
+
+| # | step | result | evidence |
+| --- | --- | --- | --- |
+| 1 | interpreter version | NOT RUN | |
+| 2 | pinned install and `pip check` | NOT RUN | |
+| 3 | tree clean at the recorded SHA | NOT RUN | |
+| 4 | ruff, format, mypy, compileall, alembic head | NOT RUN | |
+| 5 | suite, with named skips | NOT RUN | |
+| 6 | shutdown stress, 25 attempts, every log | NOT RUN | |
+| 7 | `--help` and `--version` | NOT RUN | |
+| 8 | workspace and well on a path with a space | NOT RUN | |
+| 9 | `doctor` offline | NOT RUN | |
+| 10 | synthetic ingest and extraction | NOT RUN | |
+| 11 | index rebuild and search | NOT RUN | |
+| 12 | HTML report in a browser | NOT RUN | |
+| 13 | workbench open and close, five times | NOT RUN | |
+| 14 | review controls write nothing | NOT RUN | |
+| 15 | non-ASCII console round trip | NOT RUN | |
+| 16 | logs sanitized | NOT RUN | |
+
+Until every row says otherwise, the desktop acceptance state of this
+project is **NOT RUN**, and the reports say so.
