@@ -98,11 +98,7 @@ def test_the_inventory_is_the_same_document_on_every_platform() -> None:
     machine that produced it and breaks the comparison on the other one."""
     assert INVENTORY.exists(), "the exception inventory has not been generated"
     text = INVENTORY.read_text(encoding="utf-8")
-    offenders = [
-        line
-        for line in text.splitlines()
-        if line.startswith("| `") and "\\" in line
-    ]
+    offenders = [line for line in text.splitlines() if line.startswith("| `") and "\\" in line]
     assert not offenders, offenders
     for handler in _handlers():
         assert "\\" not in handler.path, handler.path
