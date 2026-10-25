@@ -257,7 +257,7 @@ def test_windows_deadline_monitor_ends_the_process_through_the_kernel(monkeypatc
         _ScriptedTermination(lifetime._TerminationOutcome(True, False, None, 1)),
     )
     monkeypatch.setattr(
-        lifetime, "_wait_for_termination", lambda *a, **k: calls.append(("wait", 4))
+        lifetime, "_wait_for_termination", lambda *a, **k: calls.append(("wait", 4)) or 0
     )
     monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append(("exit", code)))
     lifetime._terminal_exit()
@@ -296,7 +296,7 @@ def test_the_coordinator_also_ends_the_process_through_the_kernel(monkeypatch) -
         _ScriptedTermination(lifetime._TerminationOutcome(True, False, None, 1)),
     )
     monkeypatch.setattr(
-        lifetime, "_wait_for_termination", lambda *a, **k: calls.append(("wait", 4))
+        lifetime, "_wait_for_termination", lambda *a, **k: calls.append(("wait", 4)) or 0
     )
     monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append(("exit", code)))
     lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
@@ -536,7 +536,7 @@ def _record_end_calls(monkeypatch: pytest.MonkeyPatch, *, outcome: object) -> li
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
     monkeypatch.setattr(lifetime, "_TERMINATION", _ScriptedTermination(outcome))
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )

@@ -310,3 +310,61 @@ jobs:
             qt-logs/
             pytest-totals.json
           if-no-files-found: error
+
+  stability:
+    name: windows stability (repeated workbench)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      QT_QPA_PLATFORM: offscreen
+      QT_OPENGL: software
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - name: Keep repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Install (editable, with the ui extra)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
+
+      - name: Probe the real Qt platform
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path qt-logs | Out-Null
+          python -c "import pathlib, platform; import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); text = ' '.join(['qt-platform', app.platformName(), 'python', platform.python_version(), 'pyside', PySide6.__version__, 'qt', qVersion()]); pathlib.Path('qt-logs/versions.txt').write_text(text + chr(10), encoding='utf-8'); print(text)"
+          if (-not (Test-Path qt-logs/versions.txt) -or (Get-Item qt-logs/versions.txt).Length -lt 1) {
+            Write-Error "Qt version probe wrote no versions.txt"
+            exit 1
+          }
+
+      - name: Windows repeated workbench qualification
+        shell: pwsh
+        run: python tools/qt_stability.py --repeats 15
+
+      - name: Verify Qt evidence archive
+        if: always()
+        shell: pwsh
+        run: python tools/qt_evidence.py qt-logs/stability --write --repeats 15
+
+      - name: Publish Windows stability logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qt-windows-stability-logs
+          path: qt-logs/stability/
+          if-no-files-found: error
+

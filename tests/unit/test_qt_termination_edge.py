@@ -63,7 +63,7 @@ def test_1_termination_succeeds_immediately(monkeypatch: pytest.MonkeyPatch) -> 
     calls: list[str] = []
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )
@@ -116,7 +116,7 @@ def test_4_all_retries_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )
@@ -134,7 +134,7 @@ def test_5_native_call_raises_error(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )
@@ -269,7 +269,7 @@ def test_9_already_terminating_distinguished_from_live_refusal(
     calls: list[str] = []
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )
@@ -348,7 +348,7 @@ def test_12_termination_adapter_contradicts_native_behavior(
     calls: list[str] = []
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )
@@ -377,7 +377,7 @@ def test_refusal_never_reported_as_success(monkeypatch: pytest.MonkeyPatch) -> N
     calls: list[str] = []
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )
@@ -414,7 +414,7 @@ def test_shutdown_child_exposes_unexpected_exit_code(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
     # _wait_for_termination is defensive; it should not hide a wrong exit
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )

@@ -74,7 +74,7 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait"))
+    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )

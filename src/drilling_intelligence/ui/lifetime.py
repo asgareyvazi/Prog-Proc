@@ -166,6 +166,16 @@ _TERMINAL_STANDDOWN_TIMEOUT_S = 3.0
 # killed inside the wait. The wait is a backstop, not a normal wait.
 _TERMINATION_WAIT_S = 2.0
 
+# Win32 WaitForSingleObject results. WAIT_OBJECT_0 (0) means the process
+# handle is signaled — the process is terminating. WAIT_TIMEOUT (258) means
+# the wait expired while the process is still alive. WAIT_FAILED
+# (0xFFFFFFFF) means the wait itself failed; GetLastError carries the
+# reason. Any other value is unexpected and must not be treated as success.
+_WAIT_OBJECT_0 = 0
+_WAIT_ABANDONED = 0x80
+_WAIT_TIMEOUT = 258
+_WAIT_FAILED = 0xFFFFFFFF
+
 
 @dataclass(frozen=True)
 class ReleaseResult:
@@ -472,12 +482,17 @@ class _KernelTermination:
         process_terminate = 0x0001  # PROCESS_TERMINATE
 
         last_error: int | None = None
+        last_detail: str = ""
         attempts = 0
         for _ in range(self._attempts):
             attempts += 1
             handle = kernel.GetCurrentProcess()
             error = self._terminate_with(kernel, handle, code)
             if error is None:
+                # In a real Windows process TerminateProcess on the current
+                # process does not return — the calling thread is stopped.
+                # A fake adapter that returns success is test-only; in
+                # production this return is unreachable.
                 return _TerminationOutcome(
                     accepted=True, already_terminating=False, error=None, attempts=attempts
                 )
@@ -495,8 +510,29 @@ class _KernelTermination:
             opened = kernel.OpenProcess(process_terminate, False, kernel.GetCurrentProcessId())
             if opened:
                 error = self._terminate_with(kernel, opened, code)
+                # Close the opened handle on every path that owns it.
+                # A successful TerminateProcess on the current process does
+                # not return in production, so the close after success is
+                # reachable only through a fake adapter; it is still closed
+                # to keep the fake leak-free. A failure to close must not
+                # turn a refused termination into success, and the original
+                # termination error is preserved.
+                close_error: int | None = None
+                close_detail: str = ""
+                try:
+                    close_ok = kernel.CloseHandle(opened)
+                    if close_ok is False or close_ok == 0:
+                        close_error = _last_error() or 1
+                        close_detail = f"CloseHandle returned {close_ok!r}"
+                except (AttributeError, OSError, TypeError, ValueError) as exc:
+                    close_error = getattr(exc, "winerror", None) or _last_error() or 1
+                    close_detail = f"{type(exc).__name__}: {exc}"
+                if close_error is not None:
+                    _diagnostic(
+                        f"TERMINAL_CLOSE_FAILED handle={opened} error={close_error} detail={close_detail or '-'}"
+                    )
                 if error is None:
-                    kernel.CloseHandle(opened)
+                    # Success via opened handle — see non-return note above.
                     return _TerminationOutcome(
                         accepted=True,
                         already_terminating=False,
@@ -504,17 +540,25 @@ class _KernelTermination:
                         attempts=attempts,
                     )
                 last_error = error
+                # Preserve close failure as secondary diagnostic, not as primary error.
+                if close_error is not None:
+                    last_detail = last_detail if last_detail else f"close_failed={close_error}:{close_detail}"
                 if error == _WINERROR_ACCESS_DENIED:
-                    kernel.CloseHandle(opened)
                     return _TerminationOutcome(
                         accepted=False,
                         already_terminating=True,
                         error=error,
                         attempts=attempts,
                     )
-                kernel.CloseHandle(opened)
+                # Fall through to next attempt or final refusal; handle already closed.
+            else:
+                # OpenProcess failed — GetLastError carries reason, but we keep
+                # the original TerminateProcess error as the primary refusal.
+                open_err = _last_error()
+                if open_err:
+                    _diagnostic(f"TERMINAL_OPEN_FAILED error={open_err}")
         return _TerminationOutcome(
-            accepted=False, already_terminating=False, error=last_error, attempts=attempts
+            accepted=False, already_terminating=False, error=last_error, attempts=attempts, detail=last_detail
         )
 
     @staticmethod
@@ -539,7 +583,7 @@ class _KernelTermination:
 _TERMINATION: _TerminationAdapter = _KernelTermination()
 
 
-def _wait_for_termination(timeout_s: float = _TERMINATION_WAIT_S) -> None:
+def _wait_for_termination(timeout_s: float = _TERMINATION_WAIT_S) -> int:
     """Wait for a process that has been told to terminate.
 
     The wait is the defensive branch for a platform that accepted the
@@ -548,26 +592,52 @@ def _wait_for_termination(timeout_s: float = _TERMINATION_WAIT_S) -> None:
     process may already be tearing down, and running Python code in a
     process that is being killed is exactly the race this module exists
     to avoid.
+
+    Returns the Win32 wait status (WAIT_OBJECT_0 etc.) on Windows, or
+    WAIT_OBJECT_0 on POSIX after the sleep. The caller must inspect the
+    result; WAIT_TIMEOUT, WAIT_FAILED, or an unexpected value must not
+    be treated as success.
     """
     if _is_windows():
-        _kernel_wait_for_termination(timeout_s)
-        return
+        return _kernel_wait_for_termination(timeout_s)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         time.sleep(0.02)
+    return _WAIT_OBJECT_0
 
 
-def _kernel_wait_for_termination(timeout_s: float) -> None:
-    """Block in the kernel until this process is gone, or the wait runs out."""
+def _kernel_wait_for_termination(timeout_s: float) -> int:
+    """Block in the kernel until this process is gone, or the wait runs out.
+
+    Returns the Win32 wait status. WAIT_FAILED is returned with GetLastError
+    available for diagnostics. An exception from the native layer is caught
+    and mapped to WAIT_FAILED.
+    """
     import ctypes
     from ctypes import wintypes
 
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
-    kernel.WaitForSingleObject.restype = wintypes.DWORD
-    milliseconds = max(0, int(timeout_s * 1000))
-    kernel.WaitForSingleObject(kernel.GetCurrentProcess(), milliseconds)
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        milliseconds = max(0, int(timeout_s * 1000))
+        result = kernel.WaitForSingleObject(kernel.GetCurrentProcess(), milliseconds)
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        _diagnostic(f"TERMINAL_WAIT_FAILED exception={type(exc).__name__}: {exc}")
+        return _WAIT_FAILED
+    # Normalize: the kernel returns a DWORD; map Python types to int.
+    try:
+        status = int(result)
+    except (TypeError, ValueError):
+        _diagnostic(f"TERMINAL_WAIT_MALFORMED result={result!r}")
+        return _WAIT_FAILED
+    if status == _WAIT_FAILED:
+        err = _last_error()
+        _diagnostic(f"TERMINAL_WAIT_FAILED status=WAIT_FAILED error={err}")
+    elif status not in (_WAIT_OBJECT_0, _WAIT_ABANDONED, _WAIT_TIMEOUT, _WAIT_FAILED):
+        _diagnostic(f"TERMINAL_WAIT_UNEXPECTED status={status}")
+    return status
 
 
 def _hold_for_external_termination(code: int, *, max_wait_s: float | None = None) -> None:
@@ -595,11 +665,20 @@ def _hold_for_external_termination(code: int, *, max_wait_s: float | None = None
         time.sleep(_TERMINAL_HOLD_INTERVAL_S)
         outcome = _TERMINATION.terminate(code)
         if outcome.accepted:
-            return
+            status = _wait_for_termination()
+            if status == _WAIT_OBJECT_0:
+                _diagnostic("TERMINAL_HOLDING accepted and wait signaled")
+                return
+            _diagnostic(f"TERMINAL_HOLDING wait status={status} after accepted")
+            # Wait did not signal — keep holding and retrying.
+            continue
         if outcome.already_terminating:
             _diagnostic("TERMINAL_ALREADY_TERMINATING")
-            _wait_for_termination()
-            return
+            status = _wait_for_termination()
+            if status == _WAIT_OBJECT_0:
+                return
+            _diagnostic(f"TERMINAL_HOLDING wait status={status} after already_terminating")
+            continue
         _diagnostic(f"TERMINAL_HOLDING still waiting error={outcome.error}")
 
 
@@ -655,13 +734,36 @@ def _end_windows_process(code: int) -> None:
         # ``TerminateProcess`` on the current process stops the calling
         # thread and does not return. The wait is the defensive branch
         # for a platform that returns anyway, and it is a kernel wait.
-        _wait_for_termination()
+        # Inspect the wait result: only WAIT_OBJECT_0 means the process
+        # handle is signaled. WAIT_TIMEOUT, WAIT_FAILED, or any
+        # unexpected status must not be treated as success — the process
+        # is still alive after claiming a terminal exit, so hold instead
+        # of returning to Python/Qt teardown.
+        status = _wait_for_termination()
+        if status == _WAIT_OBJECT_0:
+            return
+        if status == _WAIT_TIMEOUT:
+            _diagnostic(f"TERMINAL_WAIT_TIMEOUT code={code} after accepted")
+        elif status == _WAIT_FAILED:
+            _diagnostic(f"TERMINAL_WAIT_FAILED code={code} after accepted")
+        else:
+            _diagnostic(f"TERMINAL_WAIT_UNEXPECTED code={code} status={status} after accepted")
+        _hold_for_external_termination(code)
         return
     if outcome.already_terminating:
         # The process is already being torn down. Its exit code is the
         # one the first terminator chose.
         _diagnostic(f"TERMINAL_ALREADY_TERMINATING code={code}")
-        _wait_for_termination()
+        status = _wait_for_termination()
+        if status == _WAIT_OBJECT_0:
+            return
+        if status == _WAIT_TIMEOUT:
+            _diagnostic(f"TERMINAL_WAIT_TIMEOUT code={code} after already_terminating")
+        elif status == _WAIT_FAILED:
+            _diagnostic(f"TERMINAL_WAIT_FAILED code={code} after already_terminating")
+        else:
+            _diagnostic(f"TERMINAL_WAIT_UNEXPECTED code={code} status={status} after already_terminating")
+        _hold_for_external_termination(code)
         return
     _diagnostic(
         f"TERMINAL_REFUSED code={code} error={outcome.error} "
