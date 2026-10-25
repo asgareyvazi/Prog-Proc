@@ -164,20 +164,37 @@ def _safe(node: str) -> str:
 
 
 def _run_node(node: str, log_path: Path) -> tuple[int, str]:
-    command = [
-        "xvfb-run",
-        "-a",
-        "-s",
-        "-screen 0 1280x1024x24",
-        sys.executable,
-        "-X",
-        "faulthandler",
-        "-m",
-        "pytest",
-        "-q",
-        node,
-        "--tb=line",
-    ]
+    import platform
+    import shutil
+
+    # On Windows xvfb-run does not exist; run directly. On Linux, prefer xvfb-run if available.
+    use_xvfb = shutil.which("xvfb-run") is not None and platform.system() != "Windows"
+    if use_xvfb:
+        command = [
+            "xvfb-run",
+            "-a",
+            "-s",
+            "-screen 0 1280x1024x24",
+            sys.executable,
+            "-X",
+            "faulthandler",
+            "-m",
+            "pytest",
+            "-q",
+            node,
+            "--tb=line",
+        ]
+    else:
+        command = [
+            sys.executable,
+            "-X",
+            "faulthandler",
+            "-m",
+            "pytest",
+            "-q",
+            node,
+            "--tb=line",
+        ]
     completed = subprocess.run(command, capture_output=True, text=True, check=False)
     output = (completed.stdout or "") + (completed.stderr or "")
     log_path.write_text(output, encoding="utf-8")
