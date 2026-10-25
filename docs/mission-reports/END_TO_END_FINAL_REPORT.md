@@ -1,3 +1,10 @@
+> **V8.18 current-state banner — additive, 2026-10-26 (preserves report below)**
+>
+> **What is current:** V8.17 closure is **DONE** for engineering (16 phases, CI green on exact SHA `5f78228` — Linux `40173372656`, Windows `40173372622`); end-to-end product is **PARTIAL** (owner checklist **NOT RUN**, five decisions open, product capabilities narrow by design).
+> **What this page’s header corrects:** the 2026-10-20 header “Windows native access violation was not reproduced” is superseded — the violation was reproduced, root-caused (ADR-61: CRT `_exit`→`ExitProcess`→`DLL_PROCESS_DETACH` while GUI thread in Qt callback) and fixed via `TerminateProcess` with a 50-attempt gated stress (0 faults). The first paragraph’s “no percentage” disclaimer still holds; the later “six decisions” is corrected to **five** beside it. Historical text is kept, not rewritten.
+> **Coverage clarification:** the `14.39%` that appears in the body’s UI-completeness row is the historical headless `qt/ui` baseline (`5964f36`), not the current Qt-enabled measurement — see `V8.18_COVERAGE_REPORT.md`.
+
+---
 # PROG-PROC end-to-end mission — final report
 
 **Status:** PARTIAL — the Windows native access violation was not reproduced, and the owner's manual Windows checklist is NOT RUN.

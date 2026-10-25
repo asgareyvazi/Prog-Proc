@@ -1,3 +1,10 @@
+> **V8.18 current-state roll-up — additive, 2026-10-26 (preserves ledger below)**
+>
+> **What is current:** V8.17 closure is **DONE** for engineering (see `V8.17_FINAL_REPORT.md` banner); end-to-end product is **PARTIAL** (owner checklist **NOT RUN**, five decisions open). The header `Status: active` is historical — the 2026-10-25 exact-SHA CI is no longer pending: Linux `40173372656` (5 jobs) and Windows `40173372622` (4 jobs) are `success` on `5f78228`; current head `3146ecb` extends that state.
+> **What was corrected since this ledger’s early pages:** the first page’s “six open decisions” is **five** (M2–M6; `Still excluded` is not a decision, `WINDOWS_TESTING.md` is not a decision); “type-checking limited to `core`” is now 36 files (`core`+`database`+`extraction`+`documents`); “oversized functions not yet refactored” — the three were split and proved identical (14 663-line battery, 686-line surface). The 2026-10-20 “access violation was not reproduced” is superseded by ADR-61/62 with a gated 50-attempt stress (Windows).
+> **What remains open:** manual Windows acceptance (16 rows, `NOT RUN`); five owner decisions; artifact bytes not downloadable here (API evidence only).
+
+---
 # PROG-PROC end-to-end mission — progress ledger
 
 **Status:** active
