@@ -83,7 +83,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/search/service.py` | 615 | `Exception` | reported | a malformed record is reported, not fatal |
 | `src/drilling_intelligence/search/service.py` | 699 | `Exception` | reported | an unwritable data directory must not stop the app |
 | `src/drilling_intelligence/ui/controller.py` | 102 | `Exception` | re-raised |  |
-| `src/drilling_intelligence/ui/lifetime.py` | 952 | `Exception` | reported | any release failure must still exit 4 |
+| `src/drilling_intelligence/ui/lifetime.py` | 954 | `Exception` | reported | any release failure must still exit 4 |
 | `src/drilling_intelligence/ui/main_window.py` | 805 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
 | `src/drilling_intelligence/ui/main_window.py` | 1390 | `Exception` | reported | export must not crash the window |
 | `src/drilling_intelligence/ui/main_window.py` | 1737 | `Exception` | reported | keep selection/read rendering usable |
