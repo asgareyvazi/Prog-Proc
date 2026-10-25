@@ -92,6 +92,23 @@ def test_the_inventory_on_disk_matches_the_tree() -> None:
     assert INVENTORY.read_text(encoding="utf-8") == expected
 
 
+def test_the_inventory_is_the_same_document_on_every_platform() -> None:
+    """The inventory is committed, so it has to be written the same way on
+    Windows and on Linux.  A path separator difference is invisible on the
+    machine that produced it and breaks the comparison on the other one."""
+    assert INVENTORY.exists(), "the exception inventory has not been generated"
+    text = INVENTORY.read_text(encoding="utf-8")
+    offenders = [
+        line
+        for line in text.splitlines()
+        if line.startswith("| `") and "\\" in line
+    ]
+    assert not offenders, offenders
+    for handler in _handlers():
+        assert "\\" not in handler.path, handler.path
+        assert handler.path.startswith(("src/", "tools/")), handler.path
+
+
 def test_every_type_ignore_names_the_error_it_silences() -> None:
     """A blanket ``# type: ignore`` silences every future error as well."""
     offenders: list[str] = []

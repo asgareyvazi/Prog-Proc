@@ -178,7 +178,7 @@ def scan(root: Path) -> list[Handler]:
             if not caught:
                 handlers.append(
                     Handler(
-                        path=str(path.relative_to(REPO_ROOT)),
+                        path=path.relative_to(REPO_ROOT).as_posix(),
                         line=node.lineno,
                         caught="(bare except)",
                         kind=FORBIDDEN,
@@ -192,7 +192,7 @@ def scan(root: Path) -> list[Handler]:
             kind, _ = _handler_kind(node.body, node.name)
             handlers.append(
                 Handler(
-                    path=str(path.relative_to(REPO_ROOT)),
+                    path=path.relative_to(REPO_ROOT).as_posix(),
                     line=node.lineno,
                     caught=caught,
                     kind=kind,
