@@ -203,10 +203,33 @@ jobs:
           print("### Coverage by group, as one line per group")
           print()
           for name, group in sorted(view["groups"].items()):
-              print(f"- `{name}`: {group['line_percent']}% lines, {group['branch_percent']}% branches")
+              line = group["line_percent"]
+              branch = group["branch_percent"]
+              stmts = group["statements"]
+              br = group["branches"]
+              # Qualify empty groups explicitly rather than printing 100% of nothing
+              line_str = f"{line}% (not measured)" if stmts == 0 else f"{line}%"
+              branch_str = f"{branch}% (not measured)" if br == 0 else f"{branch}%"
+              print(f"- `{name}`: {line_str} lines, {branch_str} branches ({group['files']} files, {stmts} stmts)")
           absent = [fact["name"] for fact in view["optional_dependencies"] if not fact["present"]]
           print()
           print(f"optional dependencies absent from this environment: {', '.join(absent) or 'none'}")
+          print()
+          ui = view["groups"].get("qt/ui", {})
+          print(f"full-suite line/branch: {view['overall']['line_percent']}% / {view['overall']['branch_percent']}%")
+          print(f"qt/ui package (headless, so not measured): {ui.get('line_percent', 0)}% lines, {ui.get('branch_percent', 0)}% branches")
+          PY
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          view = json.loads(Path("coverage-view.json").read_text(encoding="utf-8"))
+          ui = view["groups"].get("qt/ui", {})
+          overall = view["overall"]
+          print(f"::notice::coverage-full-suite: {overall['line_percent']}% lines, {overall['branch_percent']}% branches (full suite)")
+          if ui.get("statements", 0) == 0:
+              print(f"::notice::coverage-ui-package: not measured (0 statements, Qt not installed in headless job)")
+          else:
+              print(f"::notice::coverage-ui-package: {ui.get('line_percent', 0)}% lines, {ui.get('branch_percent', 0)}% branches (qt/ui package, headless)")
           PY
 
       - name: Publish the coverage baseline
@@ -354,6 +377,7 @@ jobs:
         run: |
           if [ ! -f .coverage ]; then
             echo "::notice::coverage-ui-total: not measured"
+            echo "::notice::coverage-ui-package: not measured (qt/ui package, UI run)"
             exit 0
           fi
           total=$(python -m coverage report --format=total)
@@ -362,16 +386,52 @@ jobs:
             echo "### Coverage of the Qt layer"
             echo ""
             echo "Line and branch coverage of the UI tests, CPython 3.11: ${total}%"
+            echo "This number is the whole-source coverage *during* the UI run, not the UI package alone."
             echo ""
             python -m coverage report
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f coverage-ui.xml ]; then
+            python tools/coverage_report.py --xml coverage-ui.xml \
+              --output coverage-ui-report.md --json coverage-ui-view.json \
+              --label "CI ui (cp3.11), ${{ github.sha }}" | tee coverage-ui-report.txt
+            {
+              echo ""
+              sed -n '/^## By package group/,$p' coverage-ui-report.md
+            } >> "$GITHUB_STEP_SUMMARY"
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          view = json.loads(Path("coverage-ui-view.json").read_text(encoding="utf-8"))
+          ui = view["groups"].get("qt/ui", {})
+          overall = view["overall"]
+          print()
+          print("### UI package vs whole-source during the UI run")
+          print()
+          print(f"- whole-source during UI run: {overall['line_percent']}% lines, {overall['branch_percent']}% branches")
+          print(f"- `qt/ui` package alone: {ui.get('line_percent', 0)}% lines, {ui.get('branch_percent', 0)}% branches ({ui.get('files', 0)} files)")
+          print(f"- `qt/ui` statements: {ui.get('covered_statements', 0)}/{ui.get('statements', 0)}")
+          PY
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          view = json.loads(Path("coverage-ui-view.json").read_text(encoding="utf-8"))
+          ui = view["groups"].get("qt/ui", {})
+          print(f"::notice::coverage-ui-package: {ui.get('line_percent', 0)}% lines, {ui.get('branch_percent', 0)}% branches (qt/ui package, UI run)")
+          print(f"::notice::coverage-ui-package-statements: {ui.get('covered_statements', 0)}/{ui.get('statements', 0)} (qt/ui)")
+          PY
+          fi
 
       - name: Publish the Qt layer coverage
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-ui-cp3.11
-          path: coverage-ui.xml
+          path: |
+            coverage-ui.xml
+            coverage-ui-report.md
+            coverage-ui-view.json
+            coverage-ui-report.txt
           if-no-files-found: warn
 
       # Qualification, not a silent rerun. Each iteration is independent. A

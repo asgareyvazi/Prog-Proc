@@ -167,6 +167,7 @@ files = [
     "src/drilling_intelligence/core",
     "src/drilling_intelligence/database",
     "src/drilling_intelligence/extraction",
+    "src/drilling_intelligence/documents",
 ]
 ignore_missing_imports = true
 warn_unused_ignores = true

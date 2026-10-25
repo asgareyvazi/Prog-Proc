@@ -152,14 +152,19 @@ def _dedupe_mappings(entries: Iterable[Mapping[str, Any]]) -> tuple[Mapping[str,
 
 
 def _dedupe_rows(rows: Iterable[Any]) -> list[Any]:
-    """Merge overlapping inherited scopes by the authoritative table and primary key."""
+    """Merge overlapping inherited scopes by the authoritative table and primary key.
+
+    The result is sorted by ``(table, id)`` so that an iteration over an
+    unordered collection (a set or a database result without a stable sort)
+    does not become a payload order.
+    """
     found: dict[tuple[str, str], Any] = {}
     for row in rows:
         table = str(getattr(type(row), "__tablename__", type(row).__name__))
         row_id = str(getattr(row, "id", ""))
         if row_id:
             found.setdefault((table, row_id), row)
-    return list(found.values())
+    return [found[key] for key in sorted(found)]
 
 
 def _fetch_limit(request: DomainReviewRequest) -> int:
@@ -928,6 +933,24 @@ class DomainReviewService:
             domain.programs,
             well_id=str(well.id),
             lifecycle=request.lifecycle,
+        )
+        # Deterministic ordering for externally visible lists. A set iteration
+        # or an unordered database result must not become a payload order.
+        plan_actual = sorted(
+            plan_actual,
+            key=lambda row: (
+                str(row.get("section_id") or ""),
+                str(row.get("metric") or ""),
+                str(row.get("program_id") or ""),
+                str(row.get("target_id") or ""),
+                json.dumps(row, sort_keys=True, default=str),
+            ),
+        )
+        domain.relations = tuple(
+            sorted(
+                domain.relations,
+                key=lambda rel: json.dumps(dict(rel), sort_keys=True, default=str),  # type: ignore[arg-type]
+            )
         )
         truncated = domain.sections_truncated or any(
             size >= bound for size, bound in domain.bounded_sizes

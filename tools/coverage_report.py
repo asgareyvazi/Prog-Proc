@@ -398,6 +398,14 @@ def read_baseline(path: Path) -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
+def _format_percent(value: float, total: int) -> str:
+    """Format a percentage with qualification when it is 100% of nothing."""
+    if total == 0:
+        # 100% of 0 statements is not coverage – it is “not measured”.
+        return "— (not measured)"
+    return f"{value}%"
+
+
 def render_markdown(view: dict[str, object], baseline: dict[str, object] | None) -> str:
     """The report as a markdown document."""
     overall = view["overall"]
@@ -410,6 +418,16 @@ def render_markdown(view: dict[str, object], baseline: dict[str, object] | None)
         "package that is thin and a package that was not measured at all.  This",
         "document is therefore a per-group view, with the optional dependencies",
         "that decide what each group could have measured.",
+        "",
+        "> **Terminology (V8.18 correction).** The CI notices use distinct labels:",
+        "> `coverage-total` is the whole-source coverage of the full test suite;",
+        "> `coverage-ui-total` is the whole-source coverage *during* the UI-test run",
+        "> (also a whole-source number, not the UI package alone);",
+        "> `drilling_intelligence.ui` package coverage is the line/branch coverage",
+        "> of the `ui` package alone, calculated from the UI-enabled XML.",
+        "> A package that had **zero measured statements** is shown as “not measured”",
+        "> rather than “100%”, so that a headless run without the optional Qt",
+        "> runtime is not misread as a well-covered UI layer.",
         "",
         f"- measurement: `{view['source']}`",
         f"- commit: `{view['commit']}`",
@@ -432,11 +450,13 @@ def render_markdown(view: dict[str, object], baseline: dict[str, object] | None)
     groups = view["groups"]
     for name in sorted(groups):
         group = groups[name]
+        line_cell = _format_percent(float(group["line_percent"]), int(group["statements"]))
+        branch_cell = _format_percent(float(group["branch_percent"]), int(group["branches"]))
         lines.append(
             f"| {name} | {group['files']} | {group['statements']} "
-            f"| {group['covered_statements']} | {group['line_percent']}% "
+            f"| {group['covered_statements']} | {line_cell} "
             f"| {group['branches']} | {group['covered_branches']} "
-            f"| {group['branch_percent']}% |"
+            f"| {branch_cell} |"
         )
     lines.extend(
         [
@@ -506,9 +526,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     for name in sorted(view["groups"]):
         group = view["groups"][name]
+        line_str = _format_percent(float(group["line_percent"]), int(group["statements"]))
+        branch_str = _format_percent(float(group["branch_percent"]), int(group["branches"]))
         print(
-            f"  {name}: {group['line_percent']}% lines, {group['branch_percent']}% branches "
-            f"({group['files']} files)"
+            f"  {name}: {line_str} lines, {branch_str} branches "
+            f"({group['files']} files, {group['statements']} statements)"
         )
     for line in compare(view, baseline):
         print(f"baseline: {line}")
