@@ -207,6 +207,17 @@ def safe_detail(text: str) -> str:
 
 
 def visible_diagnostic(exc: BaseException) -> str:
-    """The operator-facing form of an exception. No traceback and no host path."""
-    text = " ".join(safe_detail(str(exc) or "").split())
+    """The operator-facing form of an exception. No traceback and no host path.
+
+    A diagnostic that raises is worse than a diagnostic that says less: this
+    runs inside error handling, where the caller has no second chance.  An
+    exception whose ``__str__`` itself fails - a third-party type, a broken
+    ``__repr__``, an object holding a closed stream - reports its type name
+    instead.
+    """
+    try:
+        detail = str(exc) or ""
+    except Exception:  # noqa: BLE001 - a diagnostic may not raise, by definition
+        detail = ""
+    text = " ".join(safe_detail(detail).split())
     return text or type(exc).__name__

@@ -116,11 +116,57 @@ def test_a_windows_path_is_the_same_file_as_a_posix_path() -> None:
     assert coverage_report.group_of(windows) == coverage_report.group_of(posix) == "review"
 
 
+def test_the_package_relative_form_names_the_same_file() -> None:
+    """``pytest --cov`` writes the path it measured; a package-rooted report
+    writes ``review/service.py`` and names the root once, in ``<sources>``.
+    Reading the second shape as "no product files" produced 100% of nothing,
+    which is exactly the number this tool exists to prevent."""
+    assert coverage_report.package_of("review/service.py") == "review"
+    assert coverage_report.group_of("core/units.py") == "core"
+    assert coverage_report.group_of("operations/promote.py") == ("document/knowledge/promotion")
+    assert coverage_report.group_of("__init__.py") == "other packages"
+    # A file that is not ours is still refused in both shapes.
+    assert coverage_report.relative_to_package("/usr/lib/python3/other.py") is None
+    assert coverage_report.relative_to_package("../outside/mod.py") is None
+
+
+def test_the_real_report_shape_is_read_from_a_package_rooted_file(tmp_path: Path) -> None:
+    xml = tmp_path / "coverage.xml"
+    xml.write_text(
+        """<?xml version="1.0" ?>
+<coverage version="7.17.0">
+  <sources><source>/repo/src/drilling_intelligence</source></sources>
+  <packages>
+    <package name="." line-rate="0" branch-rate="1">
+      <classes>
+        <class name="main_window.py" filename="ui/main_window.py">
+          <lines><line number="1" hits="0"/><line number="2" hits="0"/></lines>
+        </class>
+        <class name="units.py" filename="core/units.py">
+          <lines><line number="1" hits="1"/><line number="2" hits="1"/></lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>
+""",
+        encoding="utf-8",
+    )
+    coverage = coverage_report.read_cobertura(xml)
+    assert len(coverage.files) == 2
+    assert coverage.groups["qt/ui"].line_percent == 0.0
+    assert coverage.groups["core"].line_percent == 100.0
+    assert coverage.overall.covered_statements == 2
+
+
 def test_a_package_outside_the_product_is_not_counted_in_the_product(tmp_path: Path) -> None:
     coverage = _coverage(tmp_path)
     measured = {item.path for item in coverage.files}
-    assert not any(path.endswith("other_package/other.py") for path in measured)
-    assert all("drilling_intelligence" in path for path in measured)
+    assert "other.py" not in measured
+    assert all(not path.startswith("other_package/") for path in measured)
+    # What is measured is named relative to the package, which is the same in
+    # both report shapes.
+    assert "core/units.py" in measured
 
 
 def test_the_groups_add_up_and_nothing_is_silently_averaged(tmp_path: Path) -> None:

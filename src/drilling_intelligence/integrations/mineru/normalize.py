@@ -738,12 +738,21 @@ def load_mineru_outputs(directory: Path, stem: str) -> MinerURawOutput:
 
 
 def _read_json(path: Path) -> Any:
+    raw = path.read_text(encoding="utf-8", errors="replace")
     try:
-        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        return json.loads(raw)
     except json.JSONDecodeError:
-        parsed = parse_json_loose(path.read_text(encoding="utf-8", errors="replace"))
+        parsed = parse_json_loose(raw)
         if parsed is None:
             raise ExtractionError(f"MinerU output is not valid JSON: {path}") from None
+        # The loose parser salvages JSON out of noise.  What it must not do is
+        # change the shape of the payload: a content list that becomes an
+        # object is a document that lost most of its text without an error.
+        if raw.lstrip().startswith("[") and not isinstance(parsed, list):
+            raise ExtractionError(
+                f"MinerU output is not a valid JSON array and cannot be salvaged "
+                f"without losing items: {path}"
+            ) from None
         return parsed
 
 

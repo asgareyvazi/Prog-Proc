@@ -184,13 +184,41 @@ class Coverage:
         return group
 
 
+PACKAGE_MARKER = "drilling_intelligence/"
+
+
+def relative_to_package(path: str) -> str | None:
+    """The path of a measured file inside the product package.
+
+    Cobertura is written in two shapes depending on how the report was asked
+    for.  ``pytest --cov`` writes the full path it measured, so a file arrives
+    as ``src/drilling_intelligence/core/units.py``.  A report rooted at the
+    package writes ``core/units.py`` and names the root once, in
+    ``<sources><source>``.  Both are the same measurement of the same file, and
+    a reader of this report must not get 100% of nothing because the shape
+    changed.
+    """
+    normalised = path.replace("\\", "/")
+    index = normalised.rfind(PACKAGE_MARKER)
+    if index >= 0:
+        return normalised[index + len(PACKAGE_MARKER) :]
+    if normalised.startswith(("src/", "tests/", "tools/", "/")) or ".." in normalised:
+        return None
+    if normalised.startswith(SOURCE_PREFIX):
+        return normalised[len(SOURCE_PREFIX) :]
+    return normalised
+
+
 def package_of(path: str) -> str:
     """``src/drilling_intelligence/core/units.py`` -> ``core``."""
-    normalised = path.replace("\\", "/")
-    if normalised.startswith(SOURCE_PREFIX):
-        normalised = normalised[len(SOURCE_PREFIX) :]
-    parts = normalised.split("/")
+    relative = relative_to_package(path)
+    if relative is None:
+        return OTHER_GROUP
+    parts = relative.split("/")
     if len(parts) < 2:
+        # A module at the root of the package (``__init__.py``) belongs to the
+        # package itself, and is reported with the packages that are not in a
+        # named group rather than being dropped.
         return OTHER_GROUP
     return parts[0]
 
@@ -223,16 +251,21 @@ def read_cobertura(path: Path) -> Coverage:
     tree = ElementTree.parse(path)  # noqa: S314 - the file is written by our own coverage run
     root = tree.getroot()
     files: list[FileCoverage] = []
+    sources = [(element.text or "").strip() for element in root.iter("source") if element.text]
+    rooted_in_package = any("drilling_intelligence" in source for source in sources)
     for element in root.iter("class"):
         filename = element.get("filename") or ""
         if not filename:
             continue
-        normalised = filename.replace("\\", "/")
-        if "/drilling_intelligence/" not in normalised:
-            # Only the product package is measured; a dependency that was
-            # measured by accident is not part of the product's view.
+        relative = relative_to_package(filename)
+        if relative is None:
             continue
-        item = FileCoverage(path=normalised)
+        if PACKAGE_MARKER not in filename.replace("\\", "/") and not rooted_in_package:
+            # The report is not rooted at the product package and the file is
+            # not inside it: a dependency that was measured by accident is not
+            # part of the product's view.
+            continue
+        item = FileCoverage(path=relative)
         statements: set[int] = set()
         covered: set[int] = set()
         for line in element.iter("line"):

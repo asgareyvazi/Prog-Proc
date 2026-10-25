@@ -12,6 +12,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/cli/app.py` | 3717 | `Exception` | reported |  |
 | `src/drilling_intelligence/core/provenance.py` | 397 | `Exception` | reported | pragma: no cover; defensive, third-party readers |
 | `src/drilling_intelligence/core/provenance.py` | 429 | `Exception` | suppressed | tolerate legacy/corrupt rows rather than fail a whole listing |
+| `src/drilling_intelligence/core/redact.py` | 220 | `Exception` | reported | a diagnostic may not raise, by definition |
 | `src/drilling_intelligence/core/results.py` | 50 | `Exception` | suppressed | a non-numeric field simply has no quantity |
 | `src/drilling_intelligence/database/migrations.py` | 133 | `Exception` | suppressed | alembic_version may not exist yet |
 | `src/drilling_intelligence/database/session.py` | 85 | `Exception` | re-raised |  |
@@ -61,7 +62,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/ingestion/pipeline.py` | 562 | `Exception` | reported | the run record is best-effort |
 | `src/drilling_intelligence/ingestion/pipeline.py` | 504 | `Exception` | reported | indexing must never fail ingestion |
 | `src/drilling_intelligence/integrations/base.py` | 141 | `Exception` | reported | subprocess boundary |
-| `src/drilling_intelligence/integrations/base.py` | 208 | `Exception` | reported | a response that is not JSON has no payload |
+| `src/drilling_intelligence/integrations/base.py` | 221 | `Exception` | reported | a response that is not JSON has no payload |
 | `src/drilling_intelligence/integrations/mineru/adapter.py` | 84 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/knowledge/conflicts.py` | 151 | `Exception` | suppressed | an unresolvable unit makes this not a quantity |
 | `src/drilling_intelligence/knowledge/conflicts.py` | 290 | `Exception` | suppressed | a candidate with unreadable provenance is still a candidate |
@@ -100,5 +101,5 @@ to be found by somebody else.
 | kind | count |
 | --- | --- |
 | re-raised | 12 |
-| reported | 53 |
+| reported | 54 |
 | suppressed | 21 |

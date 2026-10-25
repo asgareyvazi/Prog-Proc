@@ -19,6 +19,10 @@ pytest-exit.txt
 dependency-audit.json
 coverage.xml
 coverage-ui.xml
+coverage-view.json
+coverage-report.md
+coverage-report.txt
+docs/coverage_report.md.tmp
 pytest-ui-output.txt
 pytest-ui-exit.txt
 .ruff_cache/

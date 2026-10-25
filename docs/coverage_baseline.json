@@ -1,0 +1,122 @@
+{
+  "commit": "5964f36a0c15d345cd65d6752bb896f5a6cf6e6f",
+  "groups": {
+    "cli": {
+      "branch_percent": 83.42,
+      "branches": 392,
+      "covered_branches": 327,
+      "covered_statements": 1207,
+      "files": 2,
+      "line_percent": 93.78,
+      "statements": 1287
+    },
+    "core": {
+      "branch_percent": 70.38,
+      "branches": 422,
+      "covered_branches": 297,
+      "covered_statements": 1487,
+      "files": 13,
+      "line_percent": 86.96,
+      "statements": 1710
+    },
+    "database": {
+      "branch_percent": 85.27,
+      "branches": 292,
+      "covered_branches": 249,
+      "covered_statements": 1907,
+      "files": 9,
+      "line_percent": 97.2,
+      "statements": 1962
+    },
+    "document/knowledge/promotion": {
+      "branch_percent": 74.21,
+      "branches": 1974,
+      "covered_branches": 1465,
+      "covered_statements": 4780,
+      "files": 28,
+      "line_percent": 86.8,
+      "statements": 5507
+    },
+    "extraction": {
+      "branch_percent": 70.67,
+      "branches": 600,
+      "covered_branches": 424,
+      "covered_statements": 1482,
+      "files": 10,
+      "line_percent": 83.49,
+      "statements": 1775
+    },
+    "other packages": {
+      "branch_percent": 76.87,
+      "branches": 3814,
+      "covered_branches": 2932,
+      "covered_statements": 9334,
+      "files": 63,
+      "line_percent": 88.9,
+      "statements": 10499
+    },
+    "qt/ui": {
+      "branch_percent": 10.33,
+      "branches": 484,
+      "covered_branches": 50,
+      "covered_statements": 343,
+      "files": 8,
+      "line_percent": 14.39,
+      "statements": 2384
+    },
+    "review": {
+      "branch_percent": 64.56,
+      "branches": 570,
+      "covered_branches": 368,
+      "covered_statements": 1104,
+      "files": 4,
+      "line_percent": 82.63,
+      "statements": 1336
+    }
+  },
+  "label": "V8.17 local full suite: CPython 3.11.2, Linux, headless (no ui extra)",
+  "optional_dependencies": [
+    {
+      "groups": [
+        "qt/ui"
+      ],
+      "kind": "pip extra",
+      "name": "ui",
+      "note": "The desktop runtime is optional; the headless installation never imports Qt.  The Qt layer is measured by the workbench job.",
+      "present": false,
+      "probe": "import PySide6"
+    },
+    {
+      "groups": [
+        "extraction",
+        "other packages"
+      ],
+      "kind": "external runtime",
+      "name": "mineru",
+      "note": "MinerU is an optional external command.  Without it the router records that OCR is needed instead of extracting text.",
+      "present": false,
+      "probe": "mineru on PATH"
+    },
+    {
+      "groups": [
+        "other packages"
+      ],
+      "kind": "local service",
+      "name": "ollama",
+      "note": "The network-marked tests skip unless a local Ollama instance answers; the adapters are still exercised through their fakes.",
+      "present": false,
+      "probe": "ollama on PATH"
+    }
+  ],
+  "overall": {
+    "branch_percent": 71.5,
+    "branches": 8548,
+    "covered_branches": 6112,
+    "covered_statements": 21644,
+    "files": 137,
+    "line_percent": 81.8,
+    "statements": 26460
+  },
+  "runtime": "CPython 3.11.2 on Linux 6.1.158+",
+  "source": "coverage.xml"
+}

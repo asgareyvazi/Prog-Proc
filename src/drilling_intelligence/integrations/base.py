@@ -158,13 +158,26 @@ def parse_json_loose(text: str) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
+    # A tool that logs around its JSON is the case this exists for, but the
+    # *shape* of the payload must not change: searching for the first "{" in a
+    # truncated array returns the first object and silently drops the rest, and
+    # for a content list that means a document whose remaining items vanished
+    # without an error.  The delimiter the text actually starts with is tried
+    # first, and the other one only if that finds nothing.
+    # The delimiter that appears first is the one the payload opened with.
+    bracket = text.find("[")
+    brace = text.find("{")
+    array_first = bracket != -1 and (brace == -1 or bracket < brace)
+    order = (("[", "]"), ("{", "}")) if array_first else (("{", "}"), ("[", "]"))
+    for opener, closer in order:
+        start = text.find(opener)
+        end = text.rfind(closer)
+        if start == -1 or end <= start:
+            continue
         try:
             return json.loads(text[start : end + 1])
         except json.JSONDecodeError:
-            return None
+            continue
     return None
 
 
