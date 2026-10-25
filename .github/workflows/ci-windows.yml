@@ -74,10 +74,28 @@ jobs:
           # between two runs of the same commit, and installing it into the
           # product's environment could move a version the product is tested
           # with.  The audit itself reads the pins, not the environment.
-          python -m venv .audit-venv
-          .audit-venv\Scripts\python.exe -m pip install --upgrade pip
-          .audit-venv\Scripts\python.exe -m pip install -c constraints/audit.txt pip-audit
-          python tools/dependency_audit.py --output dependency-audit.json --python .audit-venv\Scripts\python.exe
+          # The environment lives outside the checkout: this job ends with a
+          # "working tree was not rewritten" check, and an untracked directory
+          # the job itself created would fail it.
+          # Each native call is checked.  pwsh does not stop on a non-zero exit
+          # code from a native program, so without these checks a failed install
+          # would be followed by a successful one and the step would go green.
+          function Assert-Ok([string] $what) {
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "$what failed with exit $LASTEXITCODE"
+              exit $LASTEXITCODE
+            }
+          }
+          $auditVenv = Join-Path $env:RUNNER_TEMP 'audit-venv'
+          python -m venv $auditVenv
+          Assert-Ok 'creating the audit environment'
+          $auditPython = Join-Path $auditVenv 'Scripts\python.exe'
+          & $auditPython -m pip install --upgrade pip
+          Assert-Ok 'upgrading pip in the audit environment'
+          & $auditPython -m pip install -c constraints/audit.txt pip-audit
+          Assert-Ok 'installing the pinned auditor'
+          python tools/dependency_audit.py --output dependency-audit.json --python $auditPython
+          Assert-Ok 'the dependency audit'
 
       - name: Byte-compile source, tests, migrations and tools
         shell: pwsh

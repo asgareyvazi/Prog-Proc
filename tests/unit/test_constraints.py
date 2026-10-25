@@ -255,4 +255,36 @@ def test_the_auditor_is_installed_from_its_pins_and_not_as_a_range() -> None:
         text = (Path(".github/workflows") / name).read_text(encoding="utf-8")
         assert "pip-audit>=2.9,<3" not in text, name
         assert "-c constraints/audit.txt pip-audit" in text, name
-        assert ".audit-venv" in text, name
+        assert "audit-venv" in text, name
+
+
+def test_the_auditor_is_built_outside_the_checkout() -> None:
+    """The auditor's environment is not part of the product, and the Windows
+    job ends by asserting the working tree was not rewritten - a directory the
+    job itself created inside the tree failed that check on 2026-10-24."""
+    linux = (Path(".github/workflows") / "ci.yml").read_text(encoding="utf-8")
+    windows = (Path(".github/workflows") / "ci-windows.yml").read_text(encoding="utf-8")
+    assert "$RUNNER_TEMP/audit-venv" in linux
+    assert "$env:RUNNER_TEMP" in windows
+    for name, text in (("ci.yml", linux), ("ci-windows.yml", windows)):
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("python -m venv"):
+                assert (
+                    "RUNNER_TEMP" in stripped
+                    or "$audit_venv" in stripped
+                    or "$auditVenv" in stripped
+                ), f"{name}: {stripped}"
+        assert "python -m venv .audit-venv" not in text, name
+        assert "venv .audit-venv" not in text, name
+
+
+def test_the_windows_audit_step_checks_every_native_exit_code() -> None:
+    """PowerShell does not stop on a native program's non-zero exit code, so a
+    failed pip install followed by a successful command used to go green."""
+    windows = (Path(".github/workflows") / "ci-windows.yml").read_text(encoding="utf-8")
+    start = windows.index("- name: Audit the pinned dependencies")
+    end = windows.index("- name: Byte-compile", start)
+    step = windows[start:end]
+    assert "Assert-Ok" in step
+    assert step.count("Assert-Ok '") >= 4, step.count("Assert-Ok '")

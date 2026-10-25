@@ -82,10 +82,17 @@ jobs:
           # between two runs of the same commit, and installing it into the
           # product's environment could move a version the product is tested
           # with.  The audit itself reads the pins, not the environment.
-          python -m venv .audit-venv
-          .audit-venv/bin/python -m pip install --upgrade pip
-          .audit-venv/bin/python -m pip install -c constraints/audit.txt pip-audit
-          python tools/dependency_audit.py --output dependency-audit.json --python .audit-venv/bin/python
+          #
+          # The environment lives outside the checkout.  It was built inside it
+          # at first, and the Windows job's "working tree was not rewritten"
+          # check then failed - the job had created an untracked directory in
+          # the tree it was inspecting.  Build the tool where it belongs: in the
+          # runner's temporary directory.
+          audit_venv="$RUNNER_TEMP/audit-venv"
+          python -m venv "$audit_venv"
+          "$audit_venv/bin/python" -m pip install --upgrade pip
+          "$audit_venv/bin/python" -m pip install -c constraints/audit.txt pip-audit
+          python tools/dependency_audit.py --output dependency-audit.json --python "$audit_venv/bin/python"
 
       # migrations/ is compiled too: a migration script is production code and a syntax error in
       # one is a release defect, not a test-time surprise.
