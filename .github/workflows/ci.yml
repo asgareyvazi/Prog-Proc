@@ -189,10 +189,10 @@ jobs:
             --label "CI test (cp3.11), ${{ github.sha }}" | tee coverage-report.txt
           {
             echo ""
-            sed -n '/^## By package group/,/^## The optional/p' coverage-report.md
-            echo ""
-            sed -n '/^## The optional dependencies/,/^## The comparison/p' coverage-report.md
-            sed -n '/^## The comparison/,$p' coverage-report.md
+            # Everything after the overall table: the groups, the optional
+            # dependencies of this measurement, and the comparison.  One range,
+            # so the section headings are not repeated.
+            sed -n '/^## By package group/,$p' coverage-report.md
           } >> "$GITHUB_STEP_SUMMARY"
           python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
