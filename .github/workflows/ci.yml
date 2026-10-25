@@ -69,6 +69,21 @@ jobs:
         if: matrix.python-version == '3.11'
         run: python -m mypy
 
+      # The pin files are checked against the metadata, not trusted.  The check
+      # re-resolves each set in a throwaway virtual environment, so it costs about
+      # a minute and it needs the index.  A new upstream patch release therefore
+      # turns this step red **by design**: the pins are a decision to be renewed,
+      # not a value that follows the index.  The remedy is one command per set
+      # (`python tools/constraints.py --set <name>`) and a CI run on the new SHA.
+      # The comparison ignores the generation date the file carries, so a step
+      # that ran on a later day than the regeneration does not fail for that.
+      - name: The pins still resolve to what the files say
+        if: matrix.python-version == '3.11'
+        run: |
+          for set_name in runtime development ui build audit; do
+            python tools/constraints.py --set "${set_name}" --check
+          done
+
       # The pinned dependency set is audited against the advisory service.
       # A known vulnerability fails the job. An advisory-service outage is a
       # warning and a record, not a failure: a third-party outage is not a

@@ -14,6 +14,7 @@ listed is not affected.
 | `development.txt` | runtime plus the `dev` extra (pytest, ruff, build, pytest-cov, mypy) | the Linux and Windows test jobs |
 | `ui.txt` | development plus the optional `ui` extra (PySide6-Essentials) | the offscreen Qt jobs |
 | `build.txt` | the build backend (setuptools, wheel) | the isolated build environment |
+| `audit.txt` | the auditor and its dependencies (pip-audit) | the isolated `.audit-venv` of the audit step |
 
 ## Why constraints and not a lock file
 
@@ -43,6 +44,13 @@ backend in its own isolated environment.
 product, and pinning it would make the CI depend on a pip release that the
 product never asked for.
 
+The auditor is pinned in a file of its own, and it is not in the runtime,
+development or UI sets. It is a tool that checks the pins, not something the
+product ships with; installing it into the product's environment could move a
+version the product is tested with, and a floating range would let the auditor
+change between two audits of the same commit. The audit step builds it an
+environment of its own, outside the checkout.
+
 ## Updating a pin
 
 1. Change the version in `pyproject.toml` if the range moves.
@@ -53,6 +61,7 @@ product never asked for.
    python tools/constraints.py --set development
    python tools/constraints.py --set ui
    python tools/constraints.py --set build
+   python tools/constraints.py --set audit
    ```
 
    The tool resolves the set in a throw away virtual environment, writes the
@@ -63,6 +72,14 @@ product never asked for.
    ```bash
    python tools/constraints.py --set runtime --check
    ```
+
+   The CI runs that check for all five sets on every push, in the `cp3.11`
+   lane, and a failure there is a failure of the run. A new upstream patch
+   release therefore turns the step red **by design**: the pins are a decision
+   that has to be renewed, and the remedy is the command above and a CI run on
+   the new SHA. The comparison ignores the generation date the file carries, so
+   a check that runs on a later day than the regeneration is still a comparison
+   of the pins.
 
 3. Run `python tools/dependency_audit.py` against the new set.
 4. Push. The Linux and Windows workflows install with the new pins, so a pin

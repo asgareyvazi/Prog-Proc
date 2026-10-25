@@ -198,6 +198,30 @@ def test_the_file_on_disk_is_what_the_tool_renders() -> None:
         assert path.read_text(encoding="utf-8") == expected, name
 
 
+def test_the_drift_check_does_not_depend_on_the_date_it_runs() -> None:
+    """A check that fails because the clock moved is a check nobody reads.
+
+    ``--check`` used to render the file with *today's* date and compare, so
+    every set failed the day after it was regenerated - on 2026-10-25 all five
+    did.  The comparison now feeds back the date the file already carries: the
+    pins are compared, the stamp is not.
+    """
+    from tools.constraints import check, render, stamp_of
+
+    packages = ["alpha==1.0", "beta==2.0"]
+    written = render("runtime", packages, generated="2020-01-01")
+    assert stamp_of(written) == "2020-01-01"
+    matches, expected = check("runtime", packages, written)
+    assert matches, expected
+    # ... and a real drift is still reported, with the file's own date.
+    matches, expected = check("runtime", ["alpha==1.1", "beta==2.0"], written)
+    assert not matches
+    assert "alpha==1.1" in expected
+    assert stamp_of(expected) == "2020-01-01"
+    # ... and a file with no stamp at all is not a crash.
+    assert stamp_of("# nothing here\nalpha==1.0\n") is None
+
+
 def test_the_runtime_set_pins_the_transitive_dependencies_too() -> None:
     """A constraint file that names only the direct requirements floats the rest."""
     from importlib.metadata import PackageNotFoundError, requires

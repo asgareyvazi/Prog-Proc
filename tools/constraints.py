@@ -132,6 +132,29 @@ def render(set_name: str, packages: list[str], generated: str | None = None) -> 
     return text
 
 
+_STAMP = re.compile(r"^# Generated on (\d{4}-\d{2}-\d{2})\.$", re.MULTILINE)
+
+
+def stamp_of(text: str) -> str | None:
+    """The date a constraint file records, if it records one."""
+    match = _STAMP.search(text)
+    return match.group(1) if match else None
+
+
+def check(set_name: str, packages: list[str], current: str) -> tuple[bool, str]:
+    """Compare a resolution with a file, ignoring the file's own date.
+
+    The date in the header records when the file was regenerated.  It is not a
+    property of the resolution, so it must not be compared: a check that fails
+    because the clock moved one day fails every day after the file was written,
+    which teaches everybody to ignore it.  The *pins* are what a drift check
+    compares, so the date the file already carries is fed back into the
+    rendering.
+    """
+    expected = render(set_name, packages, generated=stamp_of(current))
+    return current == expected, expected
+
+
 def requirement_for(package: str) -> str:
     """Return the requirement string for one pinned package."""
     return package.split("==", 1)[0]
@@ -221,17 +244,30 @@ def main(argv: list[str] | None = None) -> int:
     if not packages:
         print(f"resolution for {args.set_name} is empty", file=sys.stderr)
         return 1
-    text = render(args.set_name, packages)
     path = CONSTRAINTS_DIR / f"{args.set_name}.txt"
 
     if args.check:
         current = path.read_text(encoding="utf-8") if path.exists() else ""
-        if current != text:
+        matches, text = check(args.set_name, packages, current)
+        if not matches:
             print(f"{path} is not what the metadata resolves to", file=sys.stderr)
+            for expected_line, actual_line in zip(
+                text.splitlines(), current.splitlines(), strict=False
+            ):
+                if expected_line != actual_line:
+                    print(f"  metadata: {expected_line}", file=sys.stderr)
+                    print(f"  file:     {actual_line}", file=sys.stderr)
+            if len(text.splitlines()) != len(current.splitlines()):
+                print(
+                    f"  {len(text.splitlines())} pins expected, "
+                    f"{len(current.splitlines())} in the file",
+                    file=sys.stderr,
+                )
             return 1
         print(f"{path} is up to date")
         return 0
 
+    text = render(args.set_name, packages)
     path.write_text(text, encoding="utf-8")
     print(f"wrote {path} ({len(packages)} pins)")
     for line in packages:
