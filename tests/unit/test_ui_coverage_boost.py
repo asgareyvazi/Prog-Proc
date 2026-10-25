@@ -7,7 +7,6 @@ Tests are deterministic, do not require a display, and mock Qt where needed.
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import MagicMock, patch
 
 
@@ -15,8 +14,8 @@ def test_app_build_parser():
     from drilling_intelligence.ui.app import build_parser
 
     p = build_parser()
-    args = p.parse_args(["--workspace", "/tmp/ws", "--well", "W-1", "--config", "c.toml"])
-    assert args.workspace == "/tmp/ws"
+    args = p.parse_args(["--workspace", "/tmp/ws", "--well", "W-1", "--config", "c.toml"])  # noqa: S108
+    assert args.workspace == "/tmp/ws"  # noqa: S108
     assert args.well == "W-1"
     assert args.config == "c.toml"
     # empty
@@ -41,14 +40,19 @@ def test_app_main_qt_import_failure(monkeypatch):
 
 
 def test_app_main_success_with_mocked_qt(monkeypatch):
+    from unittest.mock import patch
+
     from drilling_intelligence.ui import app as mod
-    from unittest.mock import MagicMock, patch
 
     mock_app = MagicMock()
     mock_app.exec.return_value = 0
     mock_window = MagicMock()
     # Patch at the module level where main imports
-    with patch.object(mod, "create_application", return_value=mock_app, create=True), patch.object(mod, "MainWindow", return_value=mock_window, create=True), patch.object(mod, "application_shutdown", return_value=5, create=True):
+    with (
+        patch.object(mod, "create_application", return_value=mock_app, create=True),
+        patch.object(mod, "MainWindow", return_value=mock_window, create=True),
+        patch.object(mod, "application_shutdown", return_value=5, create=True),
+    ):
         # Need to ensure the try block succeeds: mock the imports inside main
         # Instead directly test that build_parser works and main handles mocked Qt via patching the import
         # Simplify: just check that main can be called with mocked dependencies
@@ -70,8 +74,9 @@ def test_chart_exhibit_logic():
     assert isinstance(layout2, dict)
     try:
         from drilling_intelligence.ui.chart import ExhibitChart
+
         assert hasattr(ExhibitChart, "set_exhibit")
-    except Exception:
+    except Exception:  # noqa: BLE001  # noqa: BLE001
         pass
 
 
@@ -79,7 +84,9 @@ def test_worker_error_redaction():
     from drilling_intelligence.ui.worker import WorkerError
 
     # safe_detail should redact? Check that message is stripped and normalized
-    e = WorkerError(category="unexpected", message="  hello   world  ", hint="  hint   with   spaces  ")
+    e = WorkerError(
+        category="unexpected", message="  hello   world  ", hint="  hint   with   spaces  "
+    )
     assert e.message == "hello world"
     assert e.hint == "hint with spaces"
     # With secret-like content, safe_detail should mask? At least it goes through safe_detail
@@ -90,25 +97,31 @@ def test_worker_error_redaction():
 
 
 def test_review_worker_cancellation():
-    from drilling_intelligence.ui.worker import WorkerError, ReviewWorker
+    from drilling_intelligence.ui.worker import WorkerError
+
     # Just test WorkerError categorization without needing QThread
     err = WorkerError(category="cancelled", message="cancelled", hint="")
     assert err.category == "cancelled"
 
+
 def test_review_worker_success():
     from drilling_intelligence.ui.worker import WorkerError
+
     err = WorkerError(category="input", message="bad", hint="fix")
     assert err.category == "input"
 
+
 def test_review_worker_validation_error():
     from drilling_intelligence.ui.worker import WorkerError
+
     err = WorkerError(category="input", message="bad", hint="fix it")
     assert "bad" in err.message
 
+
 def test_decision_worker_and_others():
     from drilling_intelligence.ui.worker import WorkerError
-    assert WorkerError(category="internal", message="x", hint="").category == "internal"
 
+    assert WorkerError(category="internal", message="x", hint="").category == "internal"
 
 
 def test_models_basic():
@@ -118,12 +131,13 @@ def test_models_basic():
 
         # It likely needs Qt, but we can at least import
         assert ReviewTableModel is not None
-    except Exception:
+    except Exception:  # noqa: BLE001
         # If Qt not available, skip
         pass
 
 
 def test_controller_basic():
     from drilling_intelligence.ui.controller import ReviewController
+
     ctrl = ReviewController()
     assert ctrl is not None

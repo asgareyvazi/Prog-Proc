@@ -359,9 +359,17 @@ def _infer_scope(xml_path: str) -> str:
         return "full-suite"
     return "unknown"
 
+
 SCHEMA_VERSION = 2
 
-def build_view(coverage: Coverage, *, scope: str | None = None, test_selection: str | None = None, xml_path: str | None = None) -> dict[str, object]:
+
+def build_view(
+    coverage: Coverage,
+    *,
+    scope: str | None = None,
+    test_selection: str | None = None,
+    xml_path: str | None = None,
+) -> dict[str, object]:
     """The whole measurement as a plain dictionary."""
     groups = {name: group.as_dict() for name, group in sorted(coverage.groups.items())}
     overall = coverage.overall.as_dict()
@@ -390,8 +398,9 @@ def build_view(coverage: Coverage, *, scope: str | None = None, test_selection: 
     return view
 
 
-
-def _baseline_comparable(view: dict[str, object], baseline: dict[str, object] | None) -> tuple[bool, str]:
+def _baseline_comparable(
+    view: dict[str, object], baseline: dict[str, object] | None
+) -> tuple[bool, str]:
     if not baseline:
         return False, "no baseline"
     view_scope = str(view.get("measurement_scope") or "")
@@ -401,17 +410,24 @@ def _baseline_comparable(view: dict[str, object], baseline: dict[str, object] | 
         base_scope = "full-suite"
     if view_scope != base_scope:
         return False, f"baseline scope '{base_scope}' != measurement scope '{view_scope}'"
-    view_deps = {str(d.get("name")): bool(d.get("present")) for d in view.get("optional_dependencies", [])}  # type: ignore[arg-type]
-    base_deps = {str(d.get("name")): bool(d.get("present")) for d in baseline.get("optional_dependencies", [])}  # type: ignore[arg-type]
+    view_deps = {
+        str(d.get("name")): bool(d.get("present")) for d in view.get("optional_dependencies", [])
+    }  # type: ignore[arg-type]
+    base_deps = {
+        str(d.get("name")): bool(d.get("present"))
+        for d in baseline.get("optional_dependencies", [])
+    }  # type: ignore[arg-type]
     # Only ui-test-selection cares about Qt presence difference
-    if view_scope == "ui-test-selection" and view_deps.get("ui") != base_deps.get("ui"):
-        # If baseline has no ui info (old), don't treat as mismatch
-        if "ui" in base_deps or "ui" in view_deps:
-            # If baseline explicitly headless (present=False) and view Qt-enabled (present=True), not comparable
-            # But old baseline with no deps is considered comparable for full-suite, not for ui
-            if base_deps.get("ui") is False and view_deps.get("ui") is True:
-                return False, "Qt/UI optional dependency presence differs (headless vs Qt-enabled)"
+    if (
+        view_scope == "ui-test-selection"
+        and view_deps.get("ui") != base_deps.get("ui")
+        and ("ui" in base_deps or "ui" in view_deps)
+        and base_deps.get("ui") is False
+        and view_deps.get("ui") is True
+    ):
+        return False, "Qt/UI optional dependency presence differs (headless vs Qt-enabled)"
     return True, ""
+
 
 def compare(view: dict[str, object], baseline: dict[str, object] | None) -> list[str]:
     """The difference between this measurement and the recorded baseline."""
@@ -419,7 +435,11 @@ def compare(view: dict[str, object], baseline: dict[str, object] | None) -> list
         return ["no baseline is recorded; this measurement is the first one"]
     comparable, reason = _baseline_comparable(view, baseline)
     if not comparable:
-        lines = [f"baseline not comparable: {reason}", "no delta is reported; scopes or optional dependencies differ", "the comparison is a record; no threshold is enforced and no file is excluded"]
+        lines = [
+            f"baseline not comparable: {reason}",
+            "no delta is reported; scopes or optional dependencies differ",
+            "the comparison is a record; no threshold is enforced and no file is excluded",
+        ]
         base_scope = str(baseline.get("measurement_scope") or baseline.get("label") or "unknown")
         view_scope = str(view.get("measurement_scope") or "unknown")
         lines.insert(0, f"baseline scope: {base_scope}; measurement scope: {view_scope}")
@@ -442,7 +462,6 @@ def compare(view: dict[str, object], baseline: dict[str, object] | None) -> list
     )
     lines.append("the comparison is a record; no threshold is enforced and no file is excluded")
     return lines
-
 
 
 def read_baseline(path: Path) -> dict[str, object] | None:
@@ -473,7 +492,11 @@ def render_markdown(view: dict[str, object], baseline: dict[str, object] | None)
     comparable, comp_reason = _baseline_comparable(view, baseline)
     baseline_label = "none"
     if baseline:
-        baseline_label = str(baseline.get("measurement_scope") or baseline.get("label") or baseline.get("commit", "unknown"))
+        baseline_label = str(
+            baseline.get("measurement_scope")
+            or baseline.get("label")
+            or baseline.get("commit", "unknown")
+        )
     lines: list[str] = [
         "# The coverage of the product, by package group",
         "",
@@ -488,7 +511,7 @@ def render_markdown(view: dict[str, object], baseline: dict[str, object] | None)
         "> **Terminology (V8.19).** `coverage-full-suite` is the whole-source coverage of the full test suite (coverage.xml);",
         "> `coverage-ui-total` is the whole-source coverage *during* the UI-test selection (coverage-ui.xml);",
         "> `qt/ui` package coverage is the package-specific line/branch coverage of the ui package alone.",
-        "> A group with zero measured statements is shown as \"\u2014 (not measured)\" not \"100%\".",
+        '> A group with zero measured statements is shown as "\u2014 (not measured)" not "100%".',
         "> Deltas are only shown when measurement scope, test selection, and optional-dependency presence match the baseline.",
         "",
         f"- measurement: `{view['source']}`",
@@ -506,7 +529,6 @@ def render_markdown(view: dict[str, object], baseline: dict[str, object] | None)
         f"| {overall['line_percent']}% |",
         f"| branches | {overall['covered_branches']} | {overall['branches']} "
         f"| {overall['branch_percent']}% |",
-
         "",
         "## By package group",
         "",
@@ -574,8 +596,12 @@ def main(argv: list[str] | None = None) -> int:
         help="record this measurement as the baseline (a deliberate act)",
     )
     parser.add_argument("--label", default="", help="what this measurement is")
-    parser.add_argument("--scope", default=None, help="measurement scope: full-suite or ui-test-selection")
-    parser.add_argument("--test-selection", default=None, help="pytest selector that produced the XML")
+    parser.add_argument(
+        "--scope", default=None, help="measurement scope: full-suite or ui-test-selection"
+    )
+    parser.add_argument(
+        "--test-selection", default=None, help="pytest selector that produced the XML"
+    )
     args = parser.parse_args(argv)
 
     if not args.xml.exists():
@@ -583,7 +609,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     coverage = read_cobertura(args.xml)
-    view = build_view(coverage, scope=args.scope, test_selection=args.test_selection, xml_path=str(args.xml))
+    view = build_view(
+        coverage, scope=args.scope, test_selection=args.test_selection, xml_path=str(args.xml)
+    )
     if args.label:
         view["label"] = args.label
     baseline = read_baseline(args.baseline)

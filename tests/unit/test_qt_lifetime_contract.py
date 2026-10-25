@@ -536,7 +536,9 @@ def _record_end_calls(monkeypatch: pytest.MonkeyPatch, *, outcome: object) -> li
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
     monkeypatch.setattr(lifetime, "_TERMINATION", _ScriptedTermination(outcome))
-    monkeypatch.setattr(lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0)
+    monkeypatch.setattr(
+        lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0
+    )
     monkeypatch.setattr(
         lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
     )

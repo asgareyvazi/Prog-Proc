@@ -542,7 +542,9 @@ class _KernelTermination:
                 last_error = error
                 # Preserve close failure as secondary diagnostic, not as primary error.
                 if close_error is not None:
-                    last_detail = last_detail if last_detail else f"close_failed={close_error}:{close_detail}"
+                    last_detail = (
+                        last_detail if last_detail else f"close_failed={close_error}:{close_detail}"
+                    )
                 if error == _WINERROR_ACCESS_DENIED:
                     return _TerminationOutcome(
                         accepted=False,
@@ -558,7 +560,11 @@ class _KernelTermination:
                 if open_err:
                     _diagnostic(f"TERMINAL_OPEN_FAILED error={open_err}")
         return _TerminationOutcome(
-            accepted=False, already_terminating=False, error=last_error, attempts=attempts, detail=last_detail
+            accepted=False,
+            already_terminating=False,
+            error=last_error,
+            attempts=attempts,
+            detail=last_detail,
         )
 
     @staticmethod
@@ -762,7 +768,9 @@ def _end_windows_process(code: int) -> None:
         elif status == _WAIT_FAILED:
             _diagnostic(f"TERMINAL_WAIT_FAILED code={code} after already_terminating")
         else:
-            _diagnostic(f"TERMINAL_WAIT_UNEXPECTED code={code} status={status} after already_terminating")
+            _diagnostic(
+                f"TERMINAL_WAIT_UNEXPECTED code={code} status={status} after already_terminating"
+            )
         _hold_for_external_termination(code)
         return
     _diagnostic(

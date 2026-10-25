@@ -1,3 +1,5 @@
+> **V8.19 note (2026-10-26):** This file is a historical headless baseline. See `docs/mission-reports/V8.19_COVERAGE_REPORT.md` for the scope-correct (full-suite vs ui-test-selection) reports with schema v2.
+
 > **V8.18 note — additive, 2026-10-26:** This file is the **historical baseline** (`5964f36`, headless, Qt absent — `qt/ui` 14.39% is *not* the current Qt-enabled measurement). The current interpretation and the UI-package number are in `docs/mission-reports/V8.18_COVERAGE_REPORT.md`. CI now emits three distinct notices: `coverage-total` (full-suite, 80% whole-source), `coverage-ui-total` (whole-source during UI run, 47%), and `coverage-ui-package` (`qt/ui` package alone). This baseline is preserved, not overwritten.
 
 ---

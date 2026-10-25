@@ -111,7 +111,11 @@ def test_no_misleading_delta_when_scopes_differ(tmp_path: Path) -> None:
     # full-suite baseline vs ui measurement -> not comparable
     lines = cr.compare(view_ui, view_full)
     assert any("not comparable" in line for line in lines)
-    assert not any("->" in line and "points" in line and "core:" in line for line in lines if "not comparable" not in line)
+    assert not any(
+        "->" in line and "points" in line and "core:" in line
+        for line in lines
+        if "not comparable" not in line
+    )
 
 
 def test_comparable_same_scope_produces_delta(tmp_path: Path) -> None:
@@ -131,14 +135,10 @@ def test_comparable_same_scope_produces_delta(tmp_path: Path) -> None:
 
 def test_optional_ui_dependency_absent_handling(tmp_path: Path) -> None:
     # When ui not present, qt/ui group should be not measured, not 0% misread
-    from unittest.mock import patch
 
     xml = _write_xml(tmp_path, COBERTURA_FULL, "coverage.xml")
     cov = cr.read_cobertura(xml)
-    # cov has no ui files, so qt/ui statements ==0
     view = cr.build_view(cov, scope="full-suite", xml_path=str(xml))
-    qt = view["groups"].get("qt/ui", {})  # type: ignore[assignment]
-    # In this minimal xml, qt group may be absent or empty
     md = cr.render_markdown(view, None)
     # Should contain "not measured" for empty groups
     assert "not measured" in md
@@ -169,7 +169,11 @@ def test_zero_statements_and_branches(tmp_path: Path) -> None:
 
 def test_branch_totals_and_percent(tmp_path: Path) -> None:
     gc = cr.GroupCoverage(name="x")
-    gc.files = [cr.FileCoverage(path="a", statements=10, covered_statements=5, branches=4, covered_branches=2)]
+    gc.files = [
+        cr.FileCoverage(
+            path="a", statements=10, covered_statements=5, branches=4, covered_branches=2
+        )
+    ]
     assert gc.statements == 10
     assert gc.covered_statements == 5
     assert gc.branches == 4
@@ -230,7 +234,20 @@ def test_integration_small_xml_fixture(tmp_path: Path) -> None:
     md = tmp_path / "report.md"
     js = tmp_path / "report.json"
     baseline = tmp_path / "baseline.json"
-    rc = cr.main(["--xml", str(xml), "--output", str(md), "--json", str(js), "--baseline", str(baseline), "--scope", "full-suite"])
+    rc = cr.main(
+        [
+            "--xml",
+            str(xml),
+            "--output",
+            str(md),
+            "--json",
+            str(js),
+            "--baseline",
+            str(baseline),
+            "--scope",
+            "full-suite",
+        ]
+    )
     assert rc == 0
     assert md.exists()
     assert js.exists()
