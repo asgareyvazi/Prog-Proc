@@ -46,7 +46,16 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 #: Run the installed CLI from here.  It must not be the repository, or a stray ``src/`` on
 #: ``sys.path`` would let the checkout answer for the installed package.
-NEUTRAL_CWD = Path(tempfile.gettempdir())
+#:
+#: The name carries a space and a non-ASCII character on purpose.  A release is
+#: Windows-first, and a path like this is where Windows breaks first: the quoting
+#: of the console script, the code page of the console, the short-name form of
+#: the directory.  The smoke test uses such a path on every platform, so that a
+#: Linux run cannot pass while a Windows run fails.
+NEUTRAL_CWD = Path(tempfile.gettempdir()) / "drill intel neutral"
+
+#: The same, for the working tree of the smoke test itself.
+HOSTILE_DIR_NAME = "drill intel smoke \u2713"
 
 _failures: list[str] = []
 
@@ -59,10 +68,14 @@ def check(label: str, condition: bool, detail: str = "") -> bool:
 
 
 def run(
-    argv: list[str], *, cwd: Path, env: dict[str, str] | None = None
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    timeout: int = 600,
 ) -> subprocess.CompletedProcess:
     return subprocess.run(
-        argv, cwd=str(cwd), env=env, capture_output=True, text=True, timeout=600, check=False
+        argv, cwd=str(cwd), env=env, capture_output=True, text=True, timeout=timeout, check=False
     )
 
 
@@ -84,8 +97,7 @@ def build_dists(outdir: Path, sdist: bool) -> tuple[Path | None, Path | None]:
     return (wheels[-1] if wheels else None), (sdists[-1] if sdists else None)
 
 
-def _venv_program(root: Path, name: str) -> Path:
-    """The real installed program, including the Windows ``.exe`` suffix."""
+def _venv_module():
     import importlib.util
 
     path = Path(__file__).resolve().with_name("venv_executables.py")
@@ -94,10 +106,71 @@ def _venv_program(root: Path, name: str) -> Path:
         raise SystemExit("venv_executables.py is missing")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def _venv_program(root: Path, name: str) -> Path:
+    """The real installed program, including the Windows ``.exe`` suffix."""
+    module = _venv_module()
     found = module.venv_executable(root, name)
     if not found.is_file():
         raise SystemExit(f"virtualenv is missing {found}")
     return found
+
+
+def inspect_artifact(kind: str, artefact: Path) -> None:
+    """Read the artefact before installing it.
+
+    What the wheel *carries* is part of the release contract, and it is easier
+    to see here than after an install has unpacked it.  Three things are
+    checked: both console scripts are declared, the type marker is shipped,
+    and no migration script is shipped - the package bootstraps its schema from
+    metadata, and shipping half a migration history would be worse than
+    shipping none.
+    """
+    print(f"\n=== {kind} contents: {artefact.name} ===")
+    if artefact.suffix == ".whl":
+        import zipfile
+
+        with zipfile.ZipFile(artefact) as archive:
+            names = archive.namelist()
+            entry_points = [name for name in names if name.endswith("entry_points.txt")]
+            declared = ""
+            if entry_points:
+                declared = archive.read(entry_points[0]).decode("utf-8", "replace")
+            shipped = [name for name in names if name.startswith("drilling_intelligence/")]
+        check(f"{kind}: wheel declares drillintel", "drillintel = " in declared, declared[:60])
+        check(f"{kind}: wheel declares drillintel-ui", "drillintel-ui = " in declared)
+        check(
+            f"{kind}: wheel ships the type marker",
+            "drilling_intelligence/py.typed" in names,
+        )
+        check(
+            f"{kind}: wheel ships no migration script",
+            not any("/migrations/" in name or name.startswith("migrations/") for name in names),
+        )
+        check(
+            f"{kind}: wheel ships the UI package lazily (no Qt import at install)",
+            "drilling_intelligence/ui/app.py" in shipped,
+        )
+        check(
+            f"{kind}: wheel ships no database or workspace",
+            not any(name.endswith((".db", ".db-wal", ".db-shm")) for name in names),
+        )
+    else:
+        import tarfile
+
+        with tarfile.open(artefact) as archive:
+            names = archive.getnames()
+        check(
+            f"{kind}: sdist ships no database",
+            not any(name.endswith(".db") for name in names),
+        )
+        check(
+            f"{kind}: sdist ships the source of the CLI and the UI launcher",
+            any(name.endswith("src/drilling_intelligence/cli/app.py") for name in names)
+            or any(name.endswith("drilling_intelligence/cli/app.py") for name in names),
+        )
 
 
 def fresh_venv(root: Path) -> Path:
@@ -120,10 +193,29 @@ def install(venv_root: Path, target: Path) -> None:
 def smoke(kind: str, artefact: Path, workdir: Path) -> None:
     """Install one artefact into a clean venv and exercise the installed product."""
     print(f"\n=== {kind}: {artefact.name} ===")
+    inspect_artifact(kind, artefact)
+    NEUTRAL_CWD.mkdir(parents=True, exist_ok=True)
     venv_root = fresh_venv(workdir / "venv")
     install(venv_root, artefact)
     python = _venv_program(venv_root, "python")
     cli = _venv_program(venv_root, "drillintel")
+    ui_cli = _venv_program(venv_root, "drillintel-ui")
+
+    # 0. the virtualenv's own layout, both ways round.
+    #    ``Scripts`` is where Windows puts the console scripts and ``bin`` is where
+    #    POSIX puts them; the smoke test asks the helper module rather than
+    #    repeating the rule, and checks that the *other* platform's answer is
+    #    different, so a wrong branch cannot pass on the platform that has it.
+    executables = _venv_module()
+    here = executables.venv_bindir(venv_root)
+    other = executables.venv_bindir(venv_root, platform_name="nt" if os.name != "nt" else "posix")
+    check(f"{kind}: the virtualenv layout is discovered, not assumed", here.is_dir(), str(here))
+    check(f"{kind}: the other platform's layout is different", other != here, str(other))
+    check(
+        f"{kind}: the console scripts carry the platform's suffix",
+        cli.name == ("drillintel.exe" if os.name == "nt" else "drillintel"),
+        cli.name,
+    )
 
     # 1. import from site-packages, with the repository provably absent from sys.path
     probe = run(
@@ -153,6 +245,42 @@ def smoke(kind: str, artefact: Path, workdir: Path) -> None:
             f"{kind}: drillintel {flag}",
             result.returncode == 0,
             result.stdout.strip().splitlines()[0][:80] if result.stdout else result.stderr[:80],
+        )
+
+    # 2b. the optional desktop entry point exists and fails closed without Qt.
+    #     The smoke test installs the wheel's runtime dependencies only, so Qt is
+    #     absent here - which is exactly the state that has to be handled: a
+    #     sentence a person can act on, exit code 2, and no traceback from the
+    #     dynamic linker.  When Qt *is* present the launcher would open a window
+    #     and block, so this check only runs in the Qt-absent state and says so.
+    ui_help = run([str(ui_cli), "--help"], cwd=NEUTRAL_CWD)
+    check(
+        f"{kind}: drillintel-ui --help",
+        ui_help.returncode == 0 and "drillintel-ui" in (ui_help.stdout + ui_help.stderr),
+        (ui_help.stdout + ui_help.stderr).strip().splitlines()[0][:80] if ui_help.stdout else "",
+    )
+    qt_probe = run(
+        [str(python), "-c", "import PySide6; print(PySide6.__version__)"], cwd=NEUTRAL_CWD
+    )
+    qt_present = qt_probe.returncode == 0
+    if qt_present:
+        print(f"  SKIP  {kind}: optional Qt is installed here; the absent-Qt path is not run")
+    else:
+        ui_absent = run([str(ui_cli)], cwd=NEUTRAL_CWD, timeout=60)
+        message = ui_absent.stdout + ui_absent.stderr
+        check(
+            f"{kind}: drillintel-ui without Qt exits 2",
+            ui_absent.returncode == 2,
+            f"exit={ui_absent.returncode}",
+        )
+        check(
+            f"{kind}: drillintel-ui without Qt explains what to install",
+            "drillintel-ui could not load Qt" in message and "drilling-intelligence[ui]" in message,
+            message.strip().splitlines()[0][:80] if message.strip() else "",
+        )
+        check(
+            f"{kind}: drillintel-ui without Qt prints no traceback",
+            "Traceback (most recent call last)" not in message,
         )
 
     # 3. a real workspace, bootstrapped with no migrations/ directory anywhere near it
@@ -194,6 +322,57 @@ def smoke(kind: str, artefact: Path, workdir: Path) -> None:
             f"{len(tables)} tables",
         )
         check(f"{kind}: alembic_version stamped", bool(stamped), str(stamped))
+
+    # 4b. the package does not carry a migration history.
+    #     The installed product bootstraps from metadata; asking the installed
+    #     package where its migrations are must answer "nowhere", and that answer
+    #     is what makes the bootstrap path the one that runs.  If a wheel ever
+    #     starts shipping migrations, this check notices before the schema path
+    #     silently changes.
+    migrations = run(
+        [
+            str(python),
+            "-c",
+            "from drilling_intelligence.database.migrations import find_migrations_dir;"
+            "print(find_migrations_dir())",
+        ],
+        cwd=NEUTRAL_CWD,
+    )
+    check(
+        f"{kind}: the installed package ships no migration history",
+        migrations.returncode == 0 and migrations.stdout.strip() == "None",
+        migrations.stdout.strip()[:80] or migrations.stderr.strip()[:80],
+    )
+
+    # 4c. a workspace under a path with a space and a non-ASCII character.
+    #     Windows is where this breaks: the console script's quoting, the code
+    #     page, the short-name form of the directory.  The path is used on every
+    #     platform so that a Linux run cannot pass while a Windows run fails.
+    hostile = workdir / "well site \u2713 with space"
+    created_hostile = run(
+        [str(cli), "workspace", "create", str(hostile), "--name", "Hostile"], cwd=NEUTRAL_CWD
+    )
+    check(
+        f"{kind}: workspace create under a path with a space and a non-ASCII character",
+        created_hostile.returncode == 0,
+        created_hostile.stderr.strip()[:120] or str(hostile)[-40:],
+    )
+    listed_hostile = run([str(cli), "wells", "list", "--workspace", str(hostile)], cwd=NEUTRAL_CWD)
+    check(
+        f"{kind}: that workspace opens and bootstraps",
+        listed_hostile.returncode == 0,
+        listed_hostile.stderr.strip()[:120] or "ok",
+    )
+    non_ascii = run(
+        [str(cli), "wells", "create", "--name", "SMOKE-\u00d8-1", "--workspace", str(hostile)],
+        cwd=NEUTRAL_CWD,
+    )
+    read_back = run([str(cli), "wells", "list", "--workspace", str(hostile)], cwd=NEUTRAL_CWD)
+    check(
+        f"{kind}: a non-ASCII well name round-trips through the console",
+        non_ascii.returncode == 0 and "SMOKE-\u00d8-1" in read_back.stdout,
+        (read_back.stdout or read_back.stderr).strip()[:120],
+    )
 
     # 5. write and read a well, so the schema is usable and not merely present
     made = run(
@@ -493,7 +672,13 @@ def main() -> int:
     want_sdist = args.sdist or not args.wheel
     want_wheel = args.wheel or not args.sdist
 
-    workdir = Path(tempfile.mkdtemp(prefix="drillintel-smoke-"))
+    # The whole smoke test runs under a directory whose name carries a space and
+    # a non-ASCII character.  Everything below - the virtualenv, the wheel, the
+    # workspace - therefore lives at such a path, which is the release question
+    # on Windows and is not exercised by a plain /tmp path on Linux.
+    workdir = Path(tempfile.mkdtemp(prefix="drillintel-smoke-")) / HOSTILE_DIR_NAME
+    workdir.mkdir(parents=True)
+    NEUTRAL_CWD.mkdir(parents=True, exist_ok=True)
     dist = workdir / "dist"
     dist.mkdir()
     try:
