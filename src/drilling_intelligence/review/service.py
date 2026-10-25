@@ -645,13 +645,17 @@ def _calculation_contract(
     if not isinstance(metric, Mapping):
         issues.append("missing_npt_output")
     else:
-        try:
-            output_value = float(metric.get("value"))
-        except (TypeError, ValueError, OverflowError):
+        raw_output_value: Any = metric.get("value")
+        if raw_output_value is None:
             issues.append("malformed_npt_output")
         else:
-            if not math.isfinite(output_value) or output_value < 0.0:
-                issues.append("invalid_npt_output")
+            try:
+                output_value = float(raw_output_value)
+            except (TypeError, ValueError, OverflowError):
+                issues.append("malformed_npt_output")
+            else:
+                if not math.isfinite(output_value) or output_value < 0.0:
+                    issues.append("invalid_npt_output")
         if str(metric.get("unit") or "") != NPT_ROLLUP_UNIT:
             issues.append("wrong_output_unit")
         if str(metric.get("dimension") or "") != "TIME":
@@ -660,21 +664,33 @@ def _calculation_contract(
     if not isinstance(validation, Mapping):
         issues.append("missing_validation")
     else:
-        try:
-            considered = int(validation.get("records_considered"))
-            summed = int(validation.get("records_summed"))
-            without_duration = int(validation.get("records_without_duration"))
-            without_evidence = int(validation.get("records_without_evidence", 0))
-        except (TypeError, ValueError):
+        raw_considered: Any = validation.get("records_considered")
+        raw_summed: Any = validation.get("records_summed")
+        raw_without_duration: Any = validation.get("records_without_duration")
+        raw_without_evidence: Any = validation.get("records_without_evidence", 0)
+        if (
+            raw_considered is None
+            or raw_summed is None
+            or raw_without_duration is None
+            or raw_without_evidence is None
+        ):
             issues.append("malformed_validation")
         else:
-            if (
-                min(considered, summed, without_duration, without_evidence) < 0
-                or considered != summed + without_duration
-                or summed != len(indexed_inputs)
-                or without_evidence != 0
-            ):
-                issues.append("inconsistent_validation")
+            try:
+                considered = int(raw_considered)
+                summed = int(raw_summed)
+                without_duration = int(raw_without_duration)
+                without_evidence = int(raw_without_evidence)
+            except (TypeError, ValueError):
+                issues.append("malformed_validation")
+            else:
+                if (
+                    min(considered, summed, without_duration, without_evidence) < 0
+                    or considered != summed + without_duration
+                    or summed != len(indexed_inputs)
+                    or without_evidence != 0
+                ):
+                    issues.append("inconsistent_validation")
         if isinstance(output, Mapping) and output.get("records") != validation.get(
             "records_summed"
         ):
@@ -690,15 +706,18 @@ def _calculation_contract(
         else ""
     )
     for item in indexed_inputs:
-        value = item.get("value")
+        value: Any = item.get("value")
         numeric_value: float | None = None
-        try:
-            numeric_value = float(value)
-        except (TypeError, ValueError, OverflowError):
+        if value is None:
             issues.append("malformed_input_value")
         else:
-            if not math.isfinite(numeric_value) or numeric_value < 0.0:
-                issues.append("invalid_input_value")
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError, OverflowError):
+                issues.append("malformed_input_value")
+            else:
+                if not math.isfinite(numeric_value) or numeric_value < 0.0:
+                    issues.append("invalid_input_value")
         if str(item.get("unit") or "") != NPT_ROLLUP_UNIT:
             issues.append("wrong_input_unit")
         if str(item.get("dimension") or "") != "TIME":
@@ -728,17 +747,21 @@ def _calculation_contract(
             source_status = str(source.status or "").upper()
             if source_status in {"REJECTED", "SUPERSEDED", "RETIRED"}:
                 issues.append("rejected_source_row")
-            try:
-                source_value = float(source.duration_hours)
-            except (TypeError, ValueError, OverflowError):
+            raw_source_value: Any = source.duration_hours
+            if raw_source_value is None:
                 issues.append("malformed_source_duration")
             else:
-                if not math.isfinite(source_value) or source_value < 0.0:
-                    issues.append("invalid_source_duration")
-                elif numeric_value is not None and not math.isclose(
-                    source_value, numeric_value, rel_tol=0.0, abs_tol=1e-9
-                ):
-                    issues.append("source_input_value_mismatch")
+                try:
+                    source_value = float(raw_source_value)
+                except (TypeError, ValueError, OverflowError):
+                    issues.append("malformed_source_duration")
+                else:
+                    if not math.isfinite(source_value) or source_value < 0.0:
+                        issues.append("invalid_source_duration")
+                    elif numeric_value is not None and not math.isclose(
+                        source_value, numeric_value, rel_tol=0.0, abs_tol=1e-9
+                    ):
+                        issues.append("source_input_value_mismatch")
         cited = versions.get(version_id)
         if cited is None:
             unresolved = True
@@ -949,7 +972,7 @@ class DomainReviewService:
         domain.relations = tuple(
             sorted(
                 domain.relations,
-                key=lambda rel: json.dumps(dict(rel), sort_keys=True, default=str),  # type: ignore[arg-type]
+                key=lambda rel: json.dumps(dict(rel), sort_keys=True, default=str),
             )
         )
         truncated = domain.sections_truncated or any(
@@ -1387,7 +1410,7 @@ class DomainReviewService:
         calculation_ids = sorted({str(row.id) for row in calculations})
         calculation_inputs: dict[str, list[dict[str, Any]]] = defaultdict(list)
         if calculation_ids:
-            input_rows = session.execute(
+            input_rows_scalars = session.execute(
                 select(CalculationInput)
                 .where(CalculationInput.calculation_id.in_(calculation_ids))
                 .order_by(
@@ -1395,7 +1418,7 @@ class DomainReviewService:
                 )
                 .limit(limit)
             ).scalars()
-            input_rows = list(input_rows)
+            input_rows = list(input_rows_scalars)
             note_bounded(len(input_rows))
             for input_row in input_rows:
                 calculation_inputs[str(input_row.calculation_id)].append(

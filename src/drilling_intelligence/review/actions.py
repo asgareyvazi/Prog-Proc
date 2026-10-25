@@ -813,15 +813,15 @@ class ReviewActionService:
                 repository.set_program_status(str(row.id), target, by=req.actor, reason=explanation)
             return
         if record_type == "lesson_learned":
-            repository = LessonRepository(session)
+            lesson_repo = LessonRepository(session)
             if req.action == "approve":
-                repository.approve(str(row.id), by=req.actor, note=explanation)
+                lesson_repo.approve(str(row.id), by=req.actor, note=explanation)
             elif req.action == "reject":
-                repository.reject(str(row.id), by=req.actor, reason=explanation)
+                lesson_repo.reject(str(row.id), by=req.actor, reason=explanation)
             elif req.action == "submit_for_review":
-                repository.submit_for_review(str(row.id), by=req.actor)
+                lesson_repo.submit_for_review(str(row.id), by=req.actor)
             elif req.action == "reopen":
-                repository.reopen(str(row.id), by=req.actor, reason=explanation)
+                lesson_repo.reopen(str(row.id), by=req.actor, reason=explanation)
             else:
                 raise ReviewActionError(f"unsupported lesson action {req.action!r}")
             return

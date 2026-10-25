@@ -184,7 +184,7 @@ jobs:
             echo ""
             python -m coverage report
           } >> "$GITHUB_STEP_SUMMARY"
-          python tools/coverage_report.py --xml coverage.xml \
+          python tools/coverage_report.py --xml coverage.xml --scope full-suite --test-selection "pytest (full suite)" \
             --output coverage-report.md --json coverage-view.json \
             --label "CI test (cp3.11), ${{ github.sha }}" | tee coverage-report.txt
           {
@@ -366,7 +366,7 @@ jobs:
           set -o pipefail
           set +e
           xvfb-run -a -s "-screen 0 1280x1024x24" \
-            python -m pytest --cov --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui \
+            python -m pytest --cov --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py \
             2>&1 | tee pytest-ui-output.txt
           status=${PIPESTATUS[0]}
           echo "$status" > pytest-ui-exit.txt
@@ -391,7 +391,7 @@ jobs:
             python -m coverage report
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -f coverage-ui.xml ]; then
-            python tools/coverage_report.py --xml coverage-ui.xml \
+            python tools/coverage_report.py --xml coverage-ui.xml --scope ui-test-selection --test-selection "tests/ui + tests/unit/test_qt_* (Qt offscreen)" \
               --output coverage-ui-report.md --json coverage-ui-view.json \
               --label "CI ui (cp3.11), ${{ github.sha }}" | tee coverage-ui-report.txt
             {

@@ -143,31 +143,36 @@ ignore = [
 "tests/**" = ["B011", "S101"]
 
 # --------------------------------------------------------------------------------------
-# Type checking - phase one: one package boundary.
+# Type checking - strict boundary (V8.19).
 #
-# The boundary is `drilling_intelligence.core`: units, lifecycles, enums, vocabulary,
-# provenance, errors and the structured logger. It is the layer every other package
-# depends on, and it is small enough to hold a strict profile without a suppression
-# budget. The remaining packages are not checked yet; widening the boundary is a
-# separate, dated step (see docs/DECISIONS.md).
+# The boundary now covers five packages: core, database, extraction, documents,
+# and review. Each was widened by a separate, dated step (see docs/DECISIONS.md
+# and ADR-61/62). The remaining packages (cli, ui, knowledge, etc.) are not
+# checked yet; widening the boundary is a separate, dated step.
 #
-# The rules are strict on purpose: a missing annotation in the core layer is a defect
-# in the layer that decides what a number means.
+# The boundary includes the review aggregation (deterministic JSON, bounded
+# reads, NPT rollup validation) — 5 files, 0 errors under the flags below.
+# The rules are strict on purpose: a missing annotation in the checked
+# layer is a defect in the layer that decides what a number means.
+#
+# ignore_missing_imports = true is kept because the strict boundary imports
+# third-party libraries without typed stubs (PySide6, sqlalchemy stubs, etc.).
+# Project-internal imports are still checked: every package in `files` is
+# followed normally, so a typo in a local import is an error, not a silent
+# ignore. Third-party missing imports are the only ones suppressed.
 # --------------------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
-# The type-check boundary.  It covers the pure core, the database boundary
-# (schema layout, sessions, transactions, rows, ORM types and the exception
-# contracts around them) and the extraction boundary (file and parser
-# boundaries, malformed input, unit conversion, provenance, optional tools,
-# cleanup and partial-success returns).  Every package listed here is checked
-# with the flags below; a package that is not listed is not checked, and the
-# report says so rather than implying coverage it does not have.
+# The type-check boundary.  It now covers core, database, extraction,
+# documents, and review. Every package listed here is checked with the flags
+# below; a package that is not listed is not checked, and the report says so
+# rather than implying coverage it does not have.
 files = [
     "src/drilling_intelligence/core",
     "src/drilling_intelligence/database",
     "src/drilling_intelligence/extraction",
     "src/drilling_intelligence/documents",
+    "src/drilling_intelligence/review",
 ]
 ignore_missing_imports = true
 warn_unused_ignores = true
