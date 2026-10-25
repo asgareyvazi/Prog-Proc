@@ -48,6 +48,21 @@ narrow and stated:
 > where the sixth came from. Nothing else in this report changes: the
 > decisions are the owner's, and no capability was invented for any of them.
 
+> **V8.17 mission (2026-10-24/25), additive.** A sixteen-phase reliability
+> closure followed this report on branch `arena/5957b76d-prog-proc`. It
+> corrected the mechanism named here (ADR-61), gated the Windows shutdown
+> stress experiment, root-caused the flaky workbench test (ADR-62), widened
+> the type boundary, refactored three functions with their contracts proved
+> identical, measured and published per-package coverage with a baseline,
+> pinned and checked the dependency and action pins, inventoried every broad
+> exception handler and fixed a real secret-redaction defect, reconciled the
+> product-decision count from six to five, wrote the Windows acceptance path,
+> and hardened the release smoke test for Windows paths and a Qt-free
+> install. Reports: [`V8.17_FINAL_REPORT.md`](V8.17_FINAL_REPORT.md) and
+> [`V8.17_PROGRESS.md`](V8.17_PROGRESS.md). The verdict of this mission is
+> engineering scope `DONE`, product `PARTIAL`, manual desktop acceptance
+> **NOT RUN**.
+
 The critical defect is **closed**. The Windows native access violation was
 reproduced (at least ten faults in fifty shutdown attempts at `eab9323`),
 its cause was established — the interpreter finalizer running on the

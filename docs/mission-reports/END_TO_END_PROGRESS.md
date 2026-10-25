@@ -12,6 +12,20 @@ conclusion. The final report is
 [`END_TO_END_FINAL_REPORT.md`](END_TO_END_FINAL_REPORT.md). The historical
 reports in this directory are not edited; this mission adds dated follow-ups.
 
+> **V8.17 mission (2026-10-24/25).** A sixteen-phase reliability closure was
+> run on branch `arena/5957b76d-prog-proc`: the Windows shutdown mechanism
+> corrected (ADR-61), the stress experiment gated, the flaky workbench test
+> root-caused (ADR-62), the type-check boundary widened to `database` and
+> `extraction`, three behaviour-preserving refactors proved by their own
+> contracts, package-level coverage with a recorded baseline, the pins and the
+> auditor pinned and checked, an exception inventory with a written reason per
+> suppression (and a real secret leak fixed in the structured logger), the
+> product-decision count reconciled from six to five, a Windows acceptance
+> path in `docs/WINDOWS_TESTING.md`, and a Windows-first release smoke test.
+> The ledger is [`V8.17_PROGRESS.md`](V8.17_PROGRESS.md) and the report is
+> [`V8.17_FINAL_REPORT.md`](V8.17_FINAL_REPORT.md). The manual Windows
+> checklist remains **NOT RUN**; nothing in this mission completes a box.
+
 > **V8.17 correction (additive).** The mechanism named below as "the
 > interpreter finalizer" is corrected by ADR-61: on Windows `os._exit`
 > is the CRT `_exit` → `ExitProcess`, which notifies the loaded DLLs and
