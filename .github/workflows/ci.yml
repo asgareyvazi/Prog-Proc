@@ -365,7 +365,7 @@ jobs:
           set -o pipefail
           set +e
           xvfb-run -a -s "-screen 0 1280x1024x24" \
-            python -m pytest --cov --cov-branch --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py tests/unit/test_ui_coverage_boost.py \
+            python -m pytest --cov --cov-branch --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py tests/unit/test_ui_coverage_boost.py tests/unit/test_ui_coverage_boost_extra.py \
             2>&1 | tee pytest-ui-output.txt
           status=${PIPESTATUS[0]}
           echo "$status" > pytest-ui-exit.txt
@@ -393,7 +393,7 @@ jobs:
             python -m coverage report
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -f coverage-ui.xml ]; then
-            python tools/coverage_report.py --xml coverage-ui.xml --scope ui-test-selection --test-selection "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py (Qt offscreen)" \
+            python tools/coverage_report.py --xml coverage-ui.xml --scope ui-test-selection --test-selection "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py + tests/unit/test_ui_coverage_boost_extra.py (Qt offscreen)" \
               --output coverage-ui-report.md --json coverage-ui-view.json \
               --label "CI ui (cp3.11), ${{ github.sha }}" | tee coverage-ui-report.txt
             {
@@ -471,7 +471,7 @@ jobs:
           if scope != "ui-test-selection":
               print(f"::error::expected scope ui-test-selection, got {scope}", file=sys.stderr)
               sys.exit(1)
-          expected_sel = "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py (Qt offscreen)"
+          expected_sel = "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py + tests/unit/test_ui_coverage_boost_extra.py (Qt offscreen)"
           if sel != expected_sel:
               print(f"::error::test_selection mismatch: expected '{expected_sel}', got '{sel}'", file=sys.stderr)
               sys.exit(1)
