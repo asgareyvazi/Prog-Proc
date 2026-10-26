@@ -31,6 +31,13 @@ _XFAIL_TYPE = "pytest.xfail"
 _XPASS_MESSAGE = "xfail-marked test passes unexpectedly"
 _EXIT_LINE = re.compile(r"-?\d+")
 _HEADLESS_SKIP_REASON = "QtWidgets unavailable"
+# Additional Qt skip reasons used by ui-marked unit tests (test_ui_coverage_boost*)
+_QT_SKIP_REASONS = (
+    "QtWidgets unavailable",
+    "Qt unavailable",
+    "PySide6",
+    "Qt not available",
+)
 _PLATFORM_SKIP_REASONS = (
     "this platform does not support symlinks",
     "this platform will not move an open database file",
@@ -199,8 +206,15 @@ def skip_is_expected(classname: str, name: str, message: str) -> bool:
     if any(reason in text for reason in _PLATFORM_SKIP_REASONS):
         return True
     identity = f"{classname} {name}"
-    ui = "tests.ui." in classname or classname.startswith("tests.ui") or "tests/ui/" in identity
-    return ui and _HEADLESS_SKIP_REASON in text
+    ui = (
+        "tests.ui." in classname
+        or classname.startswith("tests.ui")
+        or "tests/ui/" in identity
+        or "test_ui_coverage_boost" in classname
+        or "test_qt_" in classname
+        or "test_main_window_mocked" in classname
+    )
+    return ui and any(reason in text for reason in _QT_SKIP_REASONS)
 
 
 def unexpected_skips(path: Path) -> list[str]:
