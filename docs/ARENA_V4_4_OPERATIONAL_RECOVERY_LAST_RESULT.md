@@ -18,7 +18,7 @@ previous report is contradicted, the contradiction is named in §2 rather than q
 | Question | Command | Result |
 | --- | --- | --- |
 | Branch | `git branch --show-current` | `arena/01a0c936-prog-proc` |
-| Local HEAD at mission start | `git rev-parse HEAD` | `e8621136ca73108ae7b590e6baa72fedc1f00835` (grafted) |
+| Local HEAD at mission start | `git rev-parse HEAD` | `e862113 (grafted, not in remote)` (grafted) |
 | Remote tip at mission start | `git ls-remote origin refs/heads/arena/01a0c936-prog-proc` | `c279d1c` |
 | Shallow? | `git rev-parse --is-shallow-repository` | `true` |
 
@@ -408,7 +408,7 @@ out.
 | Role | SHA |
 | --- | --- |
 | V3 baseline (pre-boundary, absent in this shallow clone) | `b7703baf35abd84881432a93264a979c33751c6c` |
-| Local HEAD at mission start (grafted) | `e8621136ca73108ae7b590e6baa72fedc1f00835` |
+| Local HEAD at mission start (grafted) | `e862113 (grafted, not in remote)` |
 | Verified remote tip at mission start | `c279d1c` |
 | V4.3 re-land (parent `c279d1c…`) | `9ecb64d` |
 | V4.4 work | see `git log` — a document cannot name the commit that carries it |

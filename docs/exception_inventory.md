@@ -83,7 +83,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/search/service.py` | 615 | `Exception` | reported | a malformed record is reported, not fatal |
 | `src/drilling_intelligence/search/service.py` | 699 | `Exception` | reported | an unwritable data directory must not stop the app |
 | `src/drilling_intelligence/ui/controller.py` | 102 | `Exception` | re-raised |  |
-| `src/drilling_intelligence/ui/lifetime.py` | 954 | `Exception` | reported | any release failure must still exit 4 |
+| `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
 | `src/drilling_intelligence/ui/main_window.py` | 805 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
 | `src/drilling_intelligence/ui/main_window.py` | 1390 | `Exception` | reported | export must not crash the window |
 | `src/drilling_intelligence/ui/main_window.py` | 1737 | `Exception` | reported | keep selection/read rendering usable |
@@ -95,11 +95,19 @@ to be found by somebody else.
 | `src/drilling_intelligence/ui/worker.py` | 308 | `Exception` | reported | the GUI boundary reports, it does not crash |
 | `src/drilling_intelligence/ui/worker.py` | 375 | `Exception` | reported | preserve an explicit visible worker boundary |
 | `src/drilling_intelligence/ui/worker.py` | 454 | `Exception` | reported | preserve a visible worker boundary |
+| `tools/coverage_report.py` | 384 | `Exception` | suppressed | noqa marker |
+| `tools/coverage_report.py` | 482 | `Exception` | suppressed | noqa marker |
+| `tools/qt_stability_evidence.py` | 66 | `Exception` | suppressed | noqa marker |
+| `tools/qt_stability_evidence.py` | 92 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 143 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 166 | `Exception` | suppressed | noqa marker |
+| `tools/qt_stability_evidence.py` | 340 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 284 | `Exception` | reported | noqa marker |
 
 ## Totals
 
 | kind | count |
 | --- | --- |
 | re-raised | 12 |
-| reported | 54 |
-| suppressed | 21 |
+| reported | 58 |
+| suppressed | 25 |

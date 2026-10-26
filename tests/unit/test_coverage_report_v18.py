@@ -48,7 +48,11 @@ def test_empty_package_group_is_not_described_as_100_without_qualification(
 ) -> None:
     empty = mod.GroupCoverage(name="empty")
     assert empty.statements == 0
-    assert empty.line_percent == 100.0
+    assert empty.line_percent is None
+    assert empty.branch_percent is None
+    assert empty.present is False
+    assert empty.measurement_state == "not_measured"
+    assert empty.as_dict()["line_percent"] is None
     # Rendering must qualify it
     view = {
         "source": "coverage.xml",
@@ -89,7 +93,13 @@ def test_zero_branches_is_not_100_without_qualification() -> None:
             path="core/units.py", statements=2, covered_statements=2, branches=0, covered_branches=0
         )
     ]
-    assert group.branch_percent == 100.0
+    assert group.branch_percent is None
+    assert group.as_dict()["branch_percent"] is None
+    assert (
+        group.measurement_state == "measured" or group.present is True
+    )  # statements measured, branches not
+    # line percent is still measured
+    assert group.line_percent == 100.0
     view = {
         "source": "coverage.xml",
         "commit": "abc",

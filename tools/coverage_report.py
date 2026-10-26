@@ -32,6 +32,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import platform
@@ -111,15 +112,15 @@ class FileCoverage:
     covered_branches: int = 0
 
     @property
-    def line_percent(self) -> float:
+    def line_percent(self) -> float | None:
         if not self.statements:
-            return 100.0
+            return None
         return 100.0 * self.covered_statements / self.statements
 
     @property
-    def branch_percent(self) -> float:
+    def branch_percent(self) -> float | None:
         if not self.branches:
-            return 100.0
+            return None
         return 100.0 * self.covered_branches / self.branches
 
 
@@ -147,26 +148,38 @@ class GroupCoverage:
         return sum(item.covered_branches for item in self.files)
 
     @property
-    def line_percent(self) -> float:
+    def line_percent(self) -> float | None:
         if not self.statements:
-            return 100.0
+            return None
         return 100.0 * self.covered_statements / self.statements
 
     @property
-    def branch_percent(self) -> float:
+    def branch_percent(self) -> float | None:
         if not self.branches:
-            return 100.0
+            return None
         return 100.0 * self.covered_branches / self.branches
 
+    @property
+    def present(self) -> bool:
+        return bool(self.files) and (self.statements > 0 or self.branches > 0)
+
+    @property
+    def measurement_state(self) -> str:
+        return "measured" if self.statements or self.branches else "not_measured"
+
     def as_dict(self) -> dict[str, object]:
+        line = self.line_percent
+        branch = self.branch_percent
         return {
             "statements": self.statements,
             "covered_statements": self.covered_statements,
             "branches": self.branches,
             "covered_branches": self.covered_branches,
-            "line_percent": round(self.line_percent, 2),
-            "branch_percent": round(self.branch_percent, 2),
+            "line_percent": round(line, 2) if line is not None else None,
+            "branch_percent": round(branch, 2) if branch is not None else None,
             "files": len(self.files),
+            "present": self.present,
+            "measurement_state": self.measurement_state,
         }
 
 
@@ -360,7 +373,16 @@ def _infer_scope(xml_path: str) -> str:
     return "unknown"
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+
+def _coverage_version() -> str:
+    try:
+        import coverage
+
+        return coverage.__version__
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 def build_view(
@@ -383,14 +405,20 @@ def build_view(
             test_selection = "tests/ui (Qt offscreen) + relevant Qt lifecycle tests"
         else:
             test_selection = "unknown"
+    # Stable selector fingerprint: hash of sorted file paths
+    selector_fingerprint = hashlib.sha256(test_selection.encode("utf-8")).hexdigest()[:12]
     view: dict[str, object] = {
         "schema_version": SCHEMA_VERSION,
         "source": source,
         "xml_path": source,
         "measurement_scope": measurement_scope,
         "test_selection": test_selection,
+        "test_selection_fingerprint": selector_fingerprint,
         "commit": _commit(),
         "runtime": _runtime(),
+        "platform": platform.platform(),
+        "python_version": platform.python_version(),
+        "coverage_version": _coverage_version(),
         "optional_dependencies": optional_dependencies(),
         "overall": overall,
         "groups": groups,
@@ -405,27 +433,64 @@ def _baseline_comparable(
         return False, "no baseline"
     view_scope = str(view.get("measurement_scope") or "")
     base_scope = str(baseline.get("measurement_scope") or "")
-    # Old baselines have no scope; treat them as full-suite for backward compat
+    # Old baselines have no scope; treat them as full-suite for backward compat, but not comparable if view is ui
     if not base_scope:
         base_scope = "full-suite"
     if view_scope != base_scope:
         return False, f"baseline scope '{base_scope}' != measurement scope '{view_scope}'"
+    # Exact test_selection must match
+    view_sel = str(view.get("test_selection") or "").strip()
+    base_sel = str(baseline.get("test_selection") or "").strip()
+    # Legacy baseline with no selection metadata is not comparable
+    if not base_sel or base_sel == "unknown":
+        return False, "baseline has no test_selection metadata (legacy) — not comparable"
+    if view_sel != base_sel:
+        return False, f"test_selection differs: baseline '{base_sel}' != measurement '{view_sel}'"
+    # Schema version
+    view_schema = view.get("schema_version")
+    base_schema = baseline.get("schema_version")
+    if view_schema != base_schema and base_schema is not None:
+        return False, f"schema_version differs: baseline {base_schema} != measurement {view_schema}"
     view_deps = {
-        str(d.get("name")): bool(d.get("present")) for d in view.get("optional_dependencies", [])
+        str(d.get("name")): d.get("present") for d in view.get("optional_dependencies", [])
     }  # type: ignore[arg-type]
     base_deps = {
-        str(d.get("name")): bool(d.get("present"))
-        for d in baseline.get("optional_dependencies", [])
+        str(d.get("name")): d.get("present") for d in baseline.get("optional_dependencies", [])
     }  # type: ignore[arg-type]
-    # Only ui-test-selection cares about Qt presence difference
-    if (
-        view_scope == "ui-test-selection"
-        and view_deps.get("ui") != base_deps.get("ui")
-        and ("ui" in base_deps or "ui" in view_deps)
-        and base_deps.get("ui") is False
-        and view_deps.get("ui") is True
-    ):
-        return False, "Qt/UI optional dependency presence differs (headless vs Qt-enabled)"
+    # Qt presence: any mismatch or unknown is not comparable for ui-test-selection
+    if view_scope == "ui-test-selection":
+        v_ui = view_deps.get("ui")
+        b_ui = base_deps.get("ui")
+        if v_ui is None or b_ui is None:
+            return (
+                False,
+                "Qt/UI optional dependency presence unknown in baseline or measurement — not comparable",
+            )
+        if v_ui != b_ui:
+            return (
+                False,
+                f"Qt/UI optional dependency presence differs: baseline present={b_ui} vs measurement present={v_ui} (headless vs Qt-enabled)",
+            )
+    # Python version and platform for ui
+    view_runtime = str(view.get("runtime") or "")
+    base_runtime = str(baseline.get("runtime") or "")
+
+    def _python_version(rt: str) -> str:
+        try:
+            part = rt.split()[1] if "CPython" in rt else ""
+            return ".".join(part.split(".")[:2])
+        except Exception:  # noqa: BLE001
+            return ""
+
+    if view_scope == "ui-test-selection":
+        v_py = _python_version(view_runtime)
+        b_py = _python_version(base_runtime)
+        if v_py and b_py and v_py != b_py:
+            return False, f"Python version differs: baseline {b_py} != measurement {v_py}"
+        v_sys = view_runtime.split(" on ")[-1].split()[0] if " on " in view_runtime else ""
+        b_sys = base_runtime.split(" on ")[-1].split()[0] if " on " in base_runtime else ""
+        if v_sys and b_sys and v_sys != b_sys:
+            return False, f"platform differs: baseline {b_sys} != measurement {v_sys}"
     return True, ""
 
 
@@ -450,10 +515,19 @@ def compare(view: dict[str, object], baseline: dict[str, object] | None) -> list
     for name in sorted(set(base_groups) | set(now_groups)):
         base = base_groups.get(name) or {}
         now = now_groups.get(name) or {}
-        base_line = float(base.get("line_percent", 0.0))
-        now_line = float(now.get("line_percent", 0.0))
-        delta = now_line - base_line
-        lines.append(f"{name}: {base_line:.2f}% -> {now_line:.2f}% ({delta:+.2f} points)")
+        base_line = base.get("line_percent")
+        now_line = now.get("line_percent")
+        # Unmeasured groups have None, not 0.0; treat as not comparable for delta but we already checked comparability
+        if base_line is None or now_line is None:
+            # If either is not measured, show as not measured, not as 0->something
+            base_str = "— (not measured)" if base_line is None else f"{float(base_line):.2f}%"
+            now_str = "— (not measured)" if now_line is None else f"{float(now_line):.2f}%"
+            lines.append(f"{name}: {base_str} -> {now_str} (not measured)")
+            continue
+        base_f = float(base_line)
+        now_f = float(now_line)
+        delta = now_f - base_f
+        lines.append(f"{name}: {base_f:.2f}% -> {now_f:.2f}% ({delta:+.2f} points)")
     base_overall = (baseline.get("overall") or {}).get("line_percent", 0.0)
     now_overall = (view.get("overall") or {}).get("line_percent", 0.0)
     lines.append(
@@ -474,9 +548,9 @@ def read_baseline(path: Path) -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
-def _format_percent(value: float, total: int) -> str:
+def _format_percent(value: float | None, total: int) -> str:
     """Format a percentage with qualification when it is 100% of nothing."""
-    if total == 0:
+    if total == 0 or value is None:
         # 100% of 0 statements is not coverage – it is “not measured”.
         return "— (not measured)"
     return f"{value}%"
@@ -502,13 +576,14 @@ def render_markdown(view: dict[str, object], baseline: dict[str, object] | None)
         "",
         f"Generated by `python tools/coverage_report.py --xml {xml_path} --scope {scope}`.",
         f"Measurement scope: **{scope}** — test selection: `{test_sel}` — schema v{schema} — baseline comparable: {comparable} ({comp_reason or 'ok'}) — baseline: {baseline_label}.",
+        f"Platform: `{view.get('platform', 'unknown')}` — Python: `{view.get('python_version', 'unknown')}` — Coverage: `{view.get('coverage_version', 'unknown')}` — Fingerprint: `{view.get('test_selection_fingerprint', '')}` — Commit: `{view['commit']}`",
         "",
         "A single percentage cannot be read: it hides the difference between a",
         "package that is thin and a package that was not measured at all.  This",
         "document is therefore a per-group view, with the optional dependencies",
         "that decide what each group could have measured.",
         "",
-        "> **Terminology (V8.19).** `coverage-full-suite` is the whole-source coverage of the full test suite (coverage.xml);",
+        "> **Terminology (V8.20).** `coverage-full-suite` is the whole-source coverage of the full test suite (coverage.xml);",
         "> `coverage-ui-total` is the whole-source coverage *during* the UI-test selection (coverage-ui.xml);",
         "> `qt/ui` package coverage is the package-specific line/branch coverage of the ui package alone.",
         '> A group with zero measured statements is shown as "\u2014 (not measured)" not "100%".',
@@ -518,17 +593,20 @@ def render_markdown(view: dict[str, object], baseline: dict[str, object] | None)
         f"- xml_path: `{xml_path}`",
         f"- measurement_scope: `{scope}`",
         f"- test_selection: `{test_sel}`",
+        f"- test_selection_fingerprint: `{view.get('test_selection_fingerprint', '')}`",
         f"- commit: `{view['commit']}`",
         f"- runtime: {view['runtime']}",
+        f"- platform: `{view.get('platform', 'unknown')}`",
+        f"- coverage_version: `{view.get('coverage_version', 'unknown')}`",
         "",
         "## The whole product",
         "",
         "| measure | covered | total | percent |",
         "| --- | --- | --- | --- |",
         f"| statements (lines) | {overall['covered_statements']} | {overall['statements']} "
-        f"| {overall['line_percent']}% |",
+        f"| {(overall['line_percent'] if overall['line_percent'] is not None else '— (not measured)')} |",
         f"| branches | {overall['covered_branches']} | {overall['branches']} "
-        f"| {overall['branch_percent']}% |",
+        f"| {(overall['branch_percent'] if overall['branch_percent'] is not None else '— (not measured)')} |",
         "",
         "## By package group",
         "",
@@ -538,8 +616,14 @@ def render_markdown(view: dict[str, object], baseline: dict[str, object] | None)
     groups = view["groups"]
     for name in sorted(groups):
         group = groups[name]
-        line_cell = _format_percent(float(group["line_percent"]), int(group["statements"]))
-        branch_cell = _format_percent(float(group["branch_percent"]), int(group["branches"]))
+        line_val = group.get("line_percent")
+        branch_val = group.get("branch_percent")
+        line_cell = _format_percent(
+            float(line_val) if line_val is not None else None, int(group["statements"])
+        )
+        branch_cell = _format_percent(
+            float(branch_val) if branch_val is not None else None, int(group["branches"])
+        )
         lines.append(
             f"| {name} | {group['files']} | {group['statements']} "
             f"| {group['covered_statements']} | {line_cell} "
@@ -602,11 +686,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--test-selection", default=None, help="pytest selector that produced the XML"
     )
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="allow missing XML as not-measured diagnostic (exit 0)",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="explicit strict mode (default): missing XML is a failure",
+    )
     args = parser.parse_args(argv)
 
+    # Default is strict: missing XML is a failure. --allow-missing opts into diagnostic mode.
     if not args.xml.exists():
-        print(f"no coverage XML at {args.xml}; nothing was measured")
-        return 0
+        if args.allow_missing:
+            print(f"no coverage XML at {args.xml}; nothing was measured")
+            return 0
+        print(f"no coverage XML at {args.xml}; nothing was measured", file=sys.stderr)
+        print("::error::required coverage XML is missing", file=sys.stderr)
+        return 2
 
     coverage = read_cobertura(args.xml)
     view = build_view(
@@ -617,13 +716,21 @@ def main(argv: list[str] | None = None) -> int:
     baseline = read_baseline(args.baseline)
 
     overall = view["overall"]
+    overall_line = overall.get("line_percent")
+    overall_branch = overall.get("branch_percent")
     print(
-        f"coverage total: {overall['line_percent']}% of lines, {overall['branch_percent']}% of branches"
+        f"coverage total: {overall_line if overall_line is not None else '— (not measured)'}% of lines, {overall_branch if overall_branch is not None else '— (not measured)'}% of branches"
     )
     for name in sorted(view["groups"]):
         group = view["groups"][name]
-        line_str = _format_percent(float(group["line_percent"]), int(group["statements"]))
-        branch_str = _format_percent(float(group["branch_percent"]), int(group["branches"]))
+        line_val = group.get("line_percent")
+        branch_val = group.get("branch_percent")
+        line_str = _format_percent(
+            float(line_val) if line_val is not None else None, int(group["statements"])
+        )
+        branch_str = _format_percent(
+            float(branch_val) if branch_val is not None else None, int(group["branches"])
+        )
         print(
             f"  {name}: {line_str} lines, {branch_str} branches "
             f"({group['files']} files, {group['statements']} statements)"

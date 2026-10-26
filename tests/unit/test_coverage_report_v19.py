@@ -159,11 +159,17 @@ def test_historical_headless_baseline_not_comparable_for_ui(tmp_path: Path) -> N
 def test_zero_statements_and_branches(tmp_path: Path) -> None:
     assert cr._format_percent(100.0, 0) == "— (not measured)"
     assert cr._format_percent(0.0, 0) == "— (not measured)"
+    assert cr._format_percent(None, 0) == "— (not measured)"
     assert cr._format_percent(61.9, 10) == "61.9%"
-    # empty group
+    # empty group: not measured, not 100%
     empty = cr.GroupCoverage(name="empty")
     assert empty.statements == 0
-    assert empty.line_percent == 100.0
+    assert empty.line_percent is None
+    assert empty.branch_percent is None
+    assert empty.present is False
+    assert empty.measurement_state == "not_measured"
+    assert empty.as_dict()["line_percent"] is None
+    assert empty.as_dict()["present"] is False
     assert cr._format_percent(empty.line_percent, empty.statements) == "— (not measured)"
 
 
@@ -226,7 +232,10 @@ def test_no_nan_infinity(tmp_path: Path) -> None:
 
 def test_cli_exit_when_xml_missing(tmp_path: Path) -> None:
     missing = tmp_path / "nope.xml"
-    assert cr.main(["--xml", str(missing)]) == 0
+    # Strict mode (default) must fail when required XML is missing
+    assert cr.main(["--xml", str(missing)]) == 2
+    # Diagnostic mode with --allow-missing succeeds
+    assert cr.main(["--xml", str(missing), "--allow-missing"]) == 0
 
 
 def test_integration_small_xml_fixture(tmp_path: Path) -> None:

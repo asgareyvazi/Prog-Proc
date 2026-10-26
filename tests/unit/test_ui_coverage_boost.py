@@ -3,11 +3,14 @@
 Targets low-coverage modules identified in the 866d065 artifact:
 app.py 0/27, lifetime 150/396, chart 32/74, worker 104/208, etc.
 Tests are deterministic, do not require a display, and mock Qt where needed.
+Every assertion is behavior-driven, not a bare import check.
 """
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 def test_app_build_parser():
@@ -18,15 +21,15 @@ def test_app_build_parser():
     assert args.workspace == "/tmp/ws"  # noqa: S108
     assert args.well == "W-1"
     assert args.config == "c.toml"
-    # empty
     args2 = p.parse_args([])
     assert args2.workspace is None
+    assert args2.well is None
 
 
-def test_app_main_qt_import_failure(monkeypatch):
+def test_app_main_qt_import_failure():
+    """When Qt cannot be imported, main returns 2 with actionable message."""
     from drilling_intelligence.ui import app as mod
 
-    # Force ImportError when importing lifetime
     original_import = __import__
 
     def fake_import(name, *a, **k):
@@ -39,105 +42,272 @@ def test_app_main_qt_import_failure(monkeypatch):
         assert rc == 2
 
 
-def test_app_main_success_with_mocked_qt(monkeypatch):
-    from unittest.mock import patch
+def test_app_main_success_with_mocked_qt():
+    """Success path: patches the actual import boundaries used by app.main."""
 
     from drilling_intelligence.ui import app as mod
 
     mock_app = MagicMock()
     mock_app.exec.return_value = 0
     mock_window = MagicMock()
-    # Patch at the module level where main imports
+
+    # Ensure the ui submodules are importable (they may be missing Qt libs in this env)
+    # If they fail to import, we mock them via sys.modules
+    import sys
+
+    # Try to import real modules; if they fail, create mock modules
+    for mod_name in ("drilling_intelligence.ui.lifetime", "drilling_intelligence.ui.main_window"):
+        if mod_name not in sys.modules:
+            sys.modules[mod_name] = MagicMock()
+
     with (
-        patch.object(mod, "create_application", return_value=mock_app, create=True),
-        patch.object(mod, "MainWindow", return_value=mock_window, create=True),
-        patch.object(mod, "application_shutdown", return_value=5, create=True),
+        patch("drilling_intelligence.ui.lifetime.create_application", return_value=mock_app),
+        patch(
+            "drilling_intelligence.ui.main_window.MainWindow", return_value=mock_window
+        ) as MockWindow,
+        patch(
+            "drilling_intelligence.ui.lifetime.application_shutdown", return_value=7
+        ) as mock_shutdown,
     ):
-        # Need to ensure the try block succeeds: mock the imports inside main
-        # Instead directly test that build_parser works and main handles mocked Qt via patching the import
-        # Simplify: just check that main can be called with mocked dependencies
-        try:
-            rc = mod.main(["--workspace", "ws"])
-            # If Qt is not mocked correctly, it may return 2, but at least it doesn't crash
-            assert rc in (2, 5, 0)
-        except SystemExit as e:
-            assert e.code in (0, 2, 5)
+        rc = mod.main(["--workspace", "ws", "--well", "W2", "--config", "cfg.toml"])
+        assert rc == 7
+        MockWindow.assert_called_once()
+        kwargs = MockWindow.call_args.kwargs
+        assert kwargs["startup_workspace"] == "ws"
+        assert kwargs["startup_well"] == "W2"
+        assert kwargs["config_path"] == "cfg.toml"
+        mock_app.setApplicationName.assert_called_once_with("Prog-Proc Review Workbench")
+        mock_window.show.assert_called_once()
+        mock_app.exec.assert_called_once()
+        mock_shutdown.assert_called_once_with(mock_app, 0)
 
 
 def test_chart_exhibit_logic():
     from drilling_intelligence.reporting.layout import layout_exhibit
 
+    # None input
     layout = layout_exhibit(None)
     assert isinstance(layout, dict)
+
+    # Single subject
     exhibit = {"state": "OK", "subjects": [{"id": "s1"}]}
     layout2 = layout_exhibit(exhibit)
     assert isinstance(layout2, dict)
-    try:
-        from drilling_intelligence.ui.chart import ExhibitChart
+    assert "width" in layout2 and "height" in layout2
 
-        assert hasattr(ExhibitChart, "set_exhibit")
-    except Exception:  # noqa: BLE001  # noqa: BLE001
-        pass
+    # Multiple subjects
+    exhibit2 = {"state": "OK", "subjects": [{"id": "s1"}, {"id": "s2"}, {"id": "s3"}]}
+    layout3 = layout_exhibit(exhibit2)
+    assert isinstance(layout3, dict)
+    assert layout3["width"] == layout2["width"]
+
+    # ExhibitChart contract: must have set_exhibit and be importable without swallowing
+    try:
+        from PySide6.QtWidgets import QChartView
+
+        from drilling_intelligence.ui.chart import ExhibitChart
+    except ImportError as exc:
+        pytest.skip(f"Qt unavailable for ExhibitChart: {exc}")
+    assert hasattr(ExhibitChart, "set_exhibit")
+    assert issubclass(ExhibitChart, QChartView)
 
 
 def test_worker_error_redaction():
     from drilling_intelligence.ui.worker import WorkerError
 
-    # safe_detail should redact? Check that message is stripped and normalized
+    # Whitespace normalization
     e = WorkerError(
         category="unexpected", message="  hello   world  ", hint="  hint   with   spaces  "
     )
     assert e.message == "hello world"
     assert e.hint == "hint with spaces"
-    # With secret-like content, safe_detail should mask? At least it goes through safe_detail
-    e2 = WorkerError(category="unexpected", message="sk-1234567890abcdef", hint="")
-    # The message is passed through safe_detail which should mask sk- pattern?
-    # At least it should not crash
-    assert isinstance(e2.message, str)
+
+    # Secret redaction: inject synthetic token via assignment form that triggers redaction
+    secret = "sk-TESTSECRET1234567890abcdef"  # noqa: S105
+    e2 = WorkerError(category="unexpected", message=f"api_key={secret}", hint=f"token={secret}")
+    assert secret not in e2.message
+    assert secret not in e2.hint
+    assert "[redacted]" in e2.message
+    assert "[redacted]" in e2.hint
+
+    # Path redaction
+    e3 = WorkerError(category="unexpected", message="failed at /tmp/secret/file.txt", hint="")
+    assert "/tmp/secret" not in e3.message  # noqa: S108
+    assert e3.message  # not empty
 
 
-def test_review_worker_cancellation():
-    from drilling_intelligence.ui.worker import WorkerError
+def test_review_worker_cancellation_proves_controller_not_called():
 
-    # Just test WorkerError categorization without needing QThread
-    err = WorkerError(category="cancelled", message="cancelled", hint="")
-    assert err.category == "cancelled"
+    from PySide6.QtCore import QThread
+
+    from drilling_intelligence.ui.worker import ReviewWorker, WorkerError
+
+    controller = MagicMock()
+    worker = ReviewWorker(controller, well_id="W1", lifecycle="actual", verify_citations=False)
+    # Simulate interruption requested
+    with patch.object(QThread, "currentThread") as mock_current:
+        mock_thread = MagicMock()
+        mock_thread.isInterruptionRequested.return_value = True
+        mock_current.return_value = mock_thread
+
+        received = {}
+        worker.failed.connect(lambda err: received.setdefault("failed", err))
+        worker.succeeded.connect(lambda val: received.setdefault("succeeded", val))
+
+        worker.run()
+
+        assert "failed" in received
+        assert isinstance(received["failed"], WorkerError)
+        assert received["failed"].category == "cancelled"
+        assert "succeeded" not in received
+        controller.load_review.assert_not_called()
 
 
-def test_review_worker_success():
-    from drilling_intelligence.ui.worker import WorkerError
+def test_review_worker_success_emits_succeeded():
 
-    err = WorkerError(category="input", message="bad", hint="fix")
-    assert err.category == "input"
+    from PySide6.QtCore import QThread
+
+    from drilling_intelligence.ui.worker import ReviewWorker
+
+    controller = MagicMock()
+    expected_review = {"well": "W1", "records": []}
+    controller.load_review.return_value = expected_review
+
+    worker = ReviewWorker(
+        controller, well_id="W1", lifecycle="actual", verify_citations=True, limit=5
+    )
+
+    with patch.object(QThread, "currentThread") as mock_current:
+        mock_thread = MagicMock()
+        mock_thread.isInterruptionRequested.return_value = False
+        mock_current.return_value = mock_thread
+
+        received = {}
+        worker.failed.connect(lambda err: received.setdefault("failed", err))
+        worker.succeeded.connect(lambda val: received.setdefault("succeeded", val))
+
+        worker.run()
+
+        assert received.get("succeeded") == expected_review
+        assert "failed" not in received
+        controller.load_review.assert_called_once_with(
+            "W1", lifecycle="actual", verify_citations=True, limit=5
+        )
 
 
-def test_review_worker_validation_error():
-    from drilling_intelligence.ui.worker import WorkerError
+def test_review_worker_validation_error_emits_input():
 
-    err = WorkerError(category="input", message="bad", hint="fix it")
-    assert "bad" in err.message
+    from PySide6.QtCore import QThread
+
+    from drilling_intelligence.core.errors import ValidationError
+    from drilling_intelligence.ui.worker import ReviewWorker, WorkerError
+
+    controller = MagicMock()
+    controller.load_review.side_effect = ValidationError("bad well", hint="fix it")
+
+    worker = ReviewWorker(controller, well_id="BAD", lifecycle="actual", verify_citations=False)
+
+    with patch.object(QThread, "currentThread") as mock_current:
+        mock_thread = MagicMock()
+        mock_thread.isInterruptionRequested.return_value = False
+        mock_current.return_value = mock_thread
+
+        received = {}
+        worker.failed.connect(lambda err: received.setdefault("failed", err))
+        worker.succeeded.connect(lambda val: received.setdefault("succeeded", val))
+
+        worker.run()
+
+        assert "failed" in received
+        err = received["failed"]
+        assert isinstance(err, WorkerError)
+        assert err.category == "input"
+        assert "bad well" in err.message
+        assert err.exception_type == "ValidationError"
+        assert "succeeded" not in received
 
 
-def test_decision_worker_and_others():
-    from drilling_intelligence.ui.worker import WorkerError
+def test_decision_worker_success_and_validation():
 
-    assert WorkerError(category="internal", message="x", hint="").category == "internal"
+    from PySide6.QtCore import QThread
+
+    from drilling_intelligence.core.errors import ValidationError
+    from drilling_intelligence.ui.worker import DecisionWorker
+
+    # Success
+    controller = MagicMock()
+    expected = {"decision": "ok"}
+    controller.decision.return_value = expected
+    worker = DecisionWorker(controller, well_id="W1")
+    with patch.object(QThread, "currentThread") as mock_current:
+        mock_thread = MagicMock()
+        mock_thread.isInterruptionRequested.return_value = False
+        mock_current.return_value = mock_thread
+        received = {}
+        worker.succeeded.connect(lambda v: received.setdefault("succeeded", v))
+        worker.failed.connect(lambda e: received.setdefault("failed", e))
+        worker.run()
+        assert received.get("succeeded") == expected
+
+    # Validation failure
+    controller2 = MagicMock()
+    controller2.decision.side_effect = ValidationError("bad", hint="hint")
+    worker2 = DecisionWorker(controller2, well_id="W1")
+    with patch.object(QThread, "currentThread") as mock_current:
+        mock_thread = MagicMock()
+        mock_thread.isInterruptionRequested.return_value = False
+        mock_current.return_value = mock_thread
+        received2 = {}
+        worker2.failed.connect(lambda e: received2.setdefault("failed", e))
+        worker2.succeeded.connect(lambda v: received2.setdefault("succeeded", v))
+        worker2.run()
+        assert "failed" in received2
+        assert received2["failed"].category == "input"
+        assert "succeeded" not in received2
 
 
-def test_models_basic():
-    # models.py defines table models for Qt; test simple instantiation
+def test_models_mapping_table_model():
     try:
-        from drilling_intelligence.ui.models import ReviewTableModel
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication
+    except ImportError as exc:
+        pytest.skip(f"Qt unavailable: {exc}")
 
-        # It likely needs Qt, but we can at least import
-        assert ReviewTableModel is not None
-    except Exception:  # noqa: BLE001
-        # If Qt not available, skip
-        pass
+    try:
+        QApplication.instance() or QApplication([])
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"Qt QApplication failed (headless): {exc}")
+
+    from drilling_intelligence.ui.models import MappingTableModel, TableColumn
+
+    cols = [TableColumn("a", "A", 100), TableColumn("b", "B", 100)]
+    rows = [{"a": "hello", "b": "world"}, {"a": "foo", "b": None}]
+    model = MappingTableModel(cols, rows)
+    assert model.rowCount() == 2
+    assert model.columnCount() == 2
+    assert model.headerData(0, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole) == "A"
+    idx = model.index(0, 0)
+    assert model.data(idx, Qt.ItemDataRole.DisplayRole) == "hello"
+    idx2 = model.index(1, 1)
+    assert model.data(idx2, Qt.ItemDataRole.DisplayRole) == "—"  # None -> em dash
+    # Sorting
+    model.sort(0, Qt.SortOrder.AscendingOrder)
+    assert model.rowCount() == 2
+    # Filter via ReviewRecordsModel
+    from drilling_intelligence.ui.models import ReviewRecordsModel
+
+    rm = ReviewRecordsModel([])
+    assert rm.rowCount() == 0
+    assert rm.columnCount() == 7
 
 
 def test_controller_basic():
+
     from drilling_intelligence.ui.controller import ReviewController
 
+    # ReviewController requires no args; it creates its own session
     ctrl = ReviewController()
     assert ctrl is not None
+    # It should have load_review method
+    assert hasattr(ctrl, "load_review")
+    assert hasattr(ctrl, "decision")

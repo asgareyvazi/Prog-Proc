@@ -355,10 +355,10 @@ jobs:
         shell: pwsh
         run: python tools/qt_stability.py --repeats 15
 
-      - name: Verify Qt evidence archive
+      - name: Verify stability evidence (standalone)
         if: always()
         shell: pwsh
-        run: python tools/qt_evidence.py qt-logs/stability --write --repeats 15
+        run: python tools/qt_stability_evidence.py qt-logs/stability --repeats 15
 
       - name: Publish Windows stability logs
         if: always()

@@ -197,13 +197,22 @@ def test_a_group_with_no_measurement_is_not_reported_as_a_percentage() -> None:
     """An empty group is 100% of nothing, and saying so is less misleading than 0%."""
     empty = coverage_report.GroupCoverage(name="empty")
     assert empty.statements == 0
-    assert empty.line_percent == 100.0
+    assert empty.line_percent is None
+    assert empty.branch_percent is None
+    assert empty.present is False
+    assert empty.measurement_state == "not_measured"
+    assert empty.as_dict()["line_percent"] is None
 
 
 def test_the_comparison_names_every_group_and_the_total(tmp_path: Path) -> None:
     coverage = _coverage(tmp_path)
     view = coverage_report.build_view(coverage)
     baseline = {
+        "measurement_scope": view["measurement_scope"],
+        "test_selection": view["test_selection"],
+        "schema_version": view["schema_version"],
+        "optional_dependencies": view["optional_dependencies"],
+        "runtime": view["runtime"],
         "overall": {"line_percent": 50.0},
         "groups": {"core": {"line_percent": 50.0}, "qt/ui": {"line_percent": 0.0}},
     }
@@ -249,8 +258,11 @@ def test_the_report_carries_the_commit_and_the_runtime(tmp_path: Path) -> None:
 
 
 def test_a_missing_xml_is_not_a_failure() -> None:
-    """The tool is a record, not a gate: no measurement is not a defect."""
-    assert coverage_report.main(["--xml", str(ROOT / "does-not-exist.xml")]) == 0
+    """The tool is a record, not a gate: no measurement is not a defect in diagnostic mode."""
+    # Strict (default) must fail for required measurement
+    assert coverage_report.main(["--xml", str(ROOT / "does-not-exist.xml")]) == 2
+    # Diagnostic mode with --allow-missing succeeds
+    assert coverage_report.main(["--xml", str(ROOT / "does-not-exist.xml"), "--allow-missing"]) == 0
 
 
 def test_the_tool_writes_the_markdown_and_the_json(tmp_path: Path) -> None:

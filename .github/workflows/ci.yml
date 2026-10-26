@@ -353,8 +353,7 @@ jobs:
         run: python tools/qt_workbench.py
 
       # The coverage of the Qt layer, measured where Qt is real. The headless test job
-      # above measures everything else, because it is the job that does not install the
-      # optional extra. Two scoped numbers, neither of them a gate.
+      # above measures everything else. This is a required gate: 70% lines and 40% branches for qt/ui.
       - name: Measure the coverage of the Qt layer
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
@@ -366,7 +365,7 @@ jobs:
           set -o pipefail
           set +e
           xvfb-run -a -s "-screen 0 1280x1024x24" \
-            python -m pytest --cov --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py \
+            python -m pytest --cov --cov-branch --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py tests/unit/test_ui_coverage_boost.py \
             2>&1 | tee pytest-ui-output.txt
           status=${PIPESTATUS[0]}
           echo "$status" > pytest-ui-exit.txt
@@ -375,10 +374,13 @@ jobs:
       - name: Record the Qt layer coverage
         if: always()
         run: |
+          if [ ! -f coverage-ui.xml ]; then
+            echo "::error::coverage-ui.xml missing — required Qt/UI coverage was not produced"
+            exit 1
+          fi
           if [ ! -f .coverage ]; then
-            echo "::notice::coverage-ui-total: not measured"
-            echo "::notice::coverage-ui-package: not measured (qt/ui package, UI run)"
-            exit 0
+            echo "::error::.coverage missing — coverage data was not produced"
+            exit 1
           fi
           total=$(python -m coverage report --format=total)
           echo "::notice::coverage-ui-total: ${total}%"
@@ -391,7 +393,7 @@ jobs:
             python -m coverage report
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -f coverage-ui.xml ]; then
-            python tools/coverage_report.py --xml coverage-ui.xml --scope ui-test-selection --test-selection "tests/ui + tests/unit/test_qt_* (Qt offscreen)" \
+            python tools/coverage_report.py --xml coverage-ui.xml --scope ui-test-selection --test-selection "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py (Qt offscreen)" \
               --output coverage-ui-report.md --json coverage-ui-view.json \
               --label "CI ui (cp3.11), ${{ github.sha }}" | tee coverage-ui-report.txt
             {
@@ -408,19 +410,93 @@ jobs:
           print()
           print("### UI package vs whole-source during the UI run")
           print()
-          print(f"- whole-source during UI run: {overall['line_percent']}% lines, {overall['branch_percent']}% branches")
-          print(f"- `qt/ui` package alone: {ui.get('line_percent', 0)}% lines, {ui.get('branch_percent', 0)}% branches ({ui.get('files', 0)} files)")
+          # overall may be None for not measured, handle
+          overall_line = overall.get('line_percent')
+          overall_branch = overall.get('branch_percent')
+          ui_line = ui.get('line_percent')
+          ui_branch = ui.get('branch_percent')
+          print(f"- whole-source during UI run: {overall_line if overall_line is not None else '—'}% lines, {overall_branch if overall_branch is not None else '—'}% branches")
+          print(f"- `qt/ui` package alone: {ui_line if ui_line is not None else '—'}% lines, {ui_branch if ui_branch is not None else '—'}% branches ({ui.get('files', 0)} files)")
           print(f"- `qt/ui` statements: {ui.get('covered_statements', 0)}/{ui.get('statements', 0)}")
+          print(f"- `qt/ui` branches: {ui.get('covered_branches', 0)}/{ui.get('branches', 0)}")
+          print(f"- platform: {view.get('platform', 'unknown')} — Python: {view.get('python_version', 'unknown')} — Coverage: {view.get('coverage_version', 'unknown')}")
+          print(f"- fingerprint: {view.get('test_selection_fingerprint', '')}")
           PY
             python - <<'PY'
           import json
           from pathlib import Path
           view = json.loads(Path("coverage-ui-view.json").read_text(encoding="utf-8"))
           ui = view["groups"].get("qt/ui", {})
-          print(f"::notice::coverage-ui-package: {ui.get('line_percent', 0)}% lines, {ui.get('branch_percent', 0)}% branches (qt/ui package, UI run)")
+          print(f"::notice::coverage-ui-package: {ui.get('line_percent', 0) if ui.get('line_percent') is not None else '—'}% lines, {ui.get('branch_percent', 0) if ui.get('branch_percent') is not None else '—'}% branches (qt/ui package, UI run)")
           print(f"::notice::coverage-ui-package-statements: {ui.get('covered_statements', 0)}/{ui.get('statements', 0)} (qt/ui)")
+          print(f"::notice::coverage-ui-package-branches: {ui.get('covered_branches', 0)}/{ui.get('branches', 0)} (qt/ui)")
+          print(f"::notice::coverage-scope: {view.get('measurement_scope')} -- {view.get('test_selection')}")
           PY
           fi
+
+      - name: Qt/UI coverage gate (70% lines, 40% branches)
+        if: always()
+        run: |
+          set -euo pipefail
+          test -f coverage-ui-view.json
+          test -f coverage-ui.xml
+          python - <<'PY'
+          import json, sys
+          from pathlib import Path
+          view = json.loads(Path("coverage-ui-view.json").read_text(encoding="utf-8"))
+          # Validate SHA, scope, selection metadata
+          import subprocess, pathlib
+          head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+          commit = view.get("commit")
+          scope = view.get("measurement_scope")
+          sel = view.get("test_selection")
+          fp = view.get("test_selection_fingerprint")
+          overall = view.get("overall", {})
+          ui = view.get("groups", {}).get("qt/ui")
+          if not ui:
+              print("::error::qt/ui group missing from coverage view", file=sys.stderr)
+              sys.exit(1)
+          print(f"commit in view: {commit}")
+          print(f"HEAD: {head}")
+          print(f"scope: {scope}")
+          print(f"selection: {sel}")
+          print(f"fingerprint: {fp}")
+          print(f"ui: {ui}")
+          # SHA must match (allow short prefix)
+          if commit not in (head, head[:12], head[:7]) and head not in commit:
+              # But view commit may be short, so check that head starts with commit or vice versa
+              if not head.startswith(commit) and not commit.startswith(head):
+                  print(f"::error::coverage view commit {commit} does not match HEAD {head}", file=sys.stderr)
+                  sys.exit(1)
+          if scope != "ui-test-selection":
+              print(f"::error::expected scope ui-test-selection, got {scope}", file=sys.stderr)
+              sys.exit(1)
+          expected_sel = "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py (Qt offscreen)"
+          if sel != expected_sel:
+              print(f"::error::test_selection mismatch: expected '{expected_sel}', got '{sel}'", file=sys.stderr)
+              sys.exit(1)
+          # Validate file counts
+          if ui.get("statements", 0) == 0:
+              print("::error::qt/ui statements is 0 — not measured", file=sys.stderr)
+              sys.exit(1)
+          line = ui.get("line_percent")
+          branch = ui.get("branch_percent")
+          if line is None or branch is None:
+              print(f"::error::qt/ui percent is None (not measured): line {line}, branch {branch}", file=sys.stderr)
+              sys.exit(1)
+          print(f"qt/ui line {line}% branch {branch}%")
+          if line < 70.0:
+              print(f"::error::qt/ui line coverage {line}% is below 70% gate", file=sys.stderr)
+              sys.exit(1)
+          if branch < 40.0:
+              print(f"::error::qt/ui branch coverage {branch}% is below 40% gate", file=sys.stderr)
+              sys.exit(1)
+          print(f"::notice::coverage-gate: PASS qt/ui {line}% lines, {branch}% branches meets 70/40")
+          # Also validate XML and JSON agree: re-read XML via coverage_report logic is already done, but we can double-check that view matches XML
+          # For now, ensure report file exists and contains expected scope
+          PY
+          echo "coverage gate passed"
+
 
       - name: Publish the Qt layer coverage
         if: always()
@@ -432,7 +508,9 @@ jobs:
             coverage-ui-report.md
             coverage-ui-view.json
             coverage-ui-report.txt
-          if-no-files-found: warn
+            pytest-ui-output.txt
+            pytest-ui-exit.txt
+          if-no-files-found: error
 
       # Qualification, not a silent rerun. Each iteration is independent. A
       # failed iteration fails the job even if a later one passes.

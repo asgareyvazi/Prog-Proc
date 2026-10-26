@@ -139,9 +139,17 @@ def main(argv: list[str] | None = None) -> int:
         for ordinal in range(1, args.repeats + 1):
             log_path = node_dir / f"attempt-{ordinal:02d}.txt"
             started = time.monotonic()
-            code, output = workbench._run_node(node, log_path)
+            try:
+                code, output = workbench._run_node(node, log_path)
+            except (OSError, RuntimeError, ValueError) as exc:
+                # Runner spawn failed — record as failed attempt, never as PASS
+                code = 127
+                output = f"spawn_error: {type(exc).__name__}: {exc}\n"
             duration = time.monotonic() - started
             reason = workbench.stability_failure(code, output)
+            # Treat any spawn_error as failure even if stability_failure doesn't flag it
+            if "spawn_error" in output and not reason:
+                reason = "spawn_error"
             header = (
                 f"ordinal={ordinal} node={node} exit={code} "
                 f"duration_s={duration:.3f} reason={reason or '-'}\n"
