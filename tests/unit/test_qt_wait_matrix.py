@@ -140,16 +140,23 @@ def test_wait_status_inspected_after_already_terminating(monkeypatch: pytest.Mon
 
 
 def test_kernel_wait_returns_wait_failed_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
-    # On Linux, ctypes.WinDLL does not exist, so _kernel_wait hits the
-    # exception path and returns WAIT_FAILED — that is the fail-closed
-    # behavior: a wait that cannot be performed must not be treated as success.
+    # Deterministic injection: simulate a native exception via monkeypatched WinDLL.
+    # The real call on Windows with GetCurrentProcess returns WAIT_TIMEOUT (258),
+    # not WAIT_FAILED, so we must not assert the live OS returns WAIT_FAILED.
+    import ctypes
+
     lines: list[str] = []
     monkeypatch.setattr(lifetime, "_diagnostic", lines.append)
+
+    # Inject a WinDLL that raises on attribute access
+    class _BoomWinDLL:
+        def __init__(self, *a, **k):
+            raise OSError("simulated kernel failure")
+
+    monkeypatch.setattr(ctypes, "WinDLL", _BoomWinDLL, raising=False)
     status = lifetime._kernel_wait_for_termination(0.1)
     assert status == WAIT_FAILED
-    # On Windows it would be WAIT_FAILED with diagnostic; on Linux the
-    # AttributeError is caught and mapped to WAIT_FAILED as well.
-    assert status == 0xFFFFFFFF or status == WAIT_FAILED
+    assert any("WAIT_FAILED" in line or "exception" in line.lower() for line in lines)
 
 
 def test_kernel_wait_malformed_return_treated_as_failed(monkeypatch: pytest.MonkeyPatch) -> None:

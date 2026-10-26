@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 
+@pytest.mark.ui
 def test_main_window_helpers_and_class_structure():
     pytest.importorskip("PySide6")
     try:
@@ -50,6 +51,7 @@ def test_main_window_helpers_and_class_structure():
     _configure_table(mock_table, mock_model)
 
 
+@pytest.mark.ui
 def test_lifetime_create_and_shutdown_paths():
     pytest.importorskip("PySide6")
     try:
@@ -66,6 +68,7 @@ def test_lifetime_create_and_shutdown_paths():
     assert "argv" in sig.parameters or len(sig.parameters) >= 1
 
 
+@pytest.mark.ui
 def test_controller_and_models_import():
     pytest.importorskip("PySide6")
     try:
@@ -79,6 +82,7 @@ def test_controller_and_models_import():
     assert ReviewRecordsModel is not None
 
 
+@pytest.mark.ui
 def test_chart_and_worker_import():
     pytest.importorskip("PySide6")
     try:

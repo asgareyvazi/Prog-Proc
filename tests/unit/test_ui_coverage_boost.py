@@ -51,35 +51,44 @@ def test_app_main_success_with_mocked_qt():
     mock_app.exec.return_value = 0
     mock_window = MagicMock()
 
-    # Ensure the ui submodules are importable (they may be missing Qt libs in this env)
-    # If they fail to import, we mock them via sys.modules
     import sys
 
-    # Try to import real modules; if they fail, create mock modules
+    # Use a clean dict patch to avoid leaking MagicMock modules
+    _orig_modules = {}
     for mod_name in ("drilling_intelligence.ui.lifetime", "drilling_intelligence.ui.main_window"):
         if mod_name not in sys.modules:
+            _orig_modules[mod_name] = None
             sys.modules[mod_name] = MagicMock()
+        else:
+            _orig_modules[mod_name] = sys.modules[mod_name]
 
-    with (
-        patch("drilling_intelligence.ui.lifetime.create_application", return_value=mock_app),
-        patch(
-            "drilling_intelligence.ui.main_window.MainWindow", return_value=mock_window
-        ) as MockWindow,
-        patch(
-            "drilling_intelligence.ui.lifetime.application_shutdown", return_value=7
-        ) as mock_shutdown,
-    ):
-        rc = mod.main(["--workspace", "ws", "--well", "W2", "--config", "cfg.toml"])
-        assert rc == 7
-        MockWindow.assert_called_once()
-        kwargs = MockWindow.call_args.kwargs
-        assert kwargs["startup_workspace"] == "ws"
-        assert kwargs["startup_well"] == "W2"
-        assert kwargs["config_path"] == "cfg.toml"
-        mock_app.setApplicationName.assert_called_once_with("Prog-Proc Review Workbench")
-        mock_window.show.assert_called_once()
-        mock_app.exec.assert_called_once()
-        mock_shutdown.assert_called_once_with(mock_app, 0)
+    try:
+        with (
+            patch("drilling_intelligence.ui.lifetime.create_application", return_value=mock_app),
+            patch(
+                "drilling_intelligence.ui.main_window.MainWindow", return_value=mock_window
+            ) as MockWindow,
+            patch(
+                "drilling_intelligence.ui.lifetime.application_shutdown", return_value=7
+            ) as mock_shutdown,
+        ):
+            rc = mod.main(["--workspace", "ws", "--well", "W2", "--config", "cfg.toml"])
+            assert rc == 7
+            MockWindow.assert_called_once()
+            kwargs = MockWindow.call_args.kwargs
+            assert kwargs["startup_workspace"] == "ws"
+            assert kwargs["startup_well"] == "W2"
+            assert kwargs["config_path"] == "cfg.toml"
+            mock_app.setApplicationName.assert_called_once_with("Prog-Proc Review Workbench")
+            mock_window.show.assert_called_once()
+            mock_app.exec.assert_called_once()
+            mock_shutdown.assert_called_once_with(mock_app, 0)
+    finally:
+        for mod_name, orig in _orig_modules.items():
+            if orig is None:
+                sys.modules.pop(mod_name, None)
+            else:
+                sys.modules[mod_name] = orig
 
 
 def test_chart_exhibit_logic():
@@ -136,9 +145,13 @@ def test_worker_error_redaction():
     assert e3.message  # not empty
 
 
+@pytest.mark.ui
 def test_review_worker_cancellation_proves_controller_not_called():
-
-    from PySide6.QtCore import QThread
+    pytest.importorskip("PySide6")
+    try:
+        from PySide6.QtCore import QThread
+    except ImportError as e:
+        pytest.skip(f"Qt unavailable: {e}")
 
     from drilling_intelligence.ui.worker import ReviewWorker, WorkerError
 
@@ -163,9 +176,13 @@ def test_review_worker_cancellation_proves_controller_not_called():
         controller.load_review.assert_not_called()
 
 
+@pytest.mark.ui
 def test_review_worker_success_emits_succeeded():
-
-    from PySide6.QtCore import QThread
+    pytest.importorskip("PySide6")
+    try:
+        from PySide6.QtCore import QThread
+    except ImportError as e:
+        pytest.skip(f"Qt unavailable: {e}")
 
     from drilling_intelligence.ui.worker import ReviewWorker
 
@@ -195,9 +212,13 @@ def test_review_worker_success_emits_succeeded():
         )
 
 
+@pytest.mark.ui
 def test_review_worker_validation_error_emits_input():
-
-    from PySide6.QtCore import QThread
+    pytest.importorskip("PySide6")
+    try:
+        from PySide6.QtCore import QThread
+    except ImportError as e:
+        pytest.skip(f"Qt unavailable: {e}")
 
     from drilling_intelligence.core.errors import ValidationError
     from drilling_intelligence.ui.worker import ReviewWorker, WorkerError
@@ -227,9 +248,13 @@ def test_review_worker_validation_error_emits_input():
         assert "succeeded" not in received
 
 
+@pytest.mark.ui
 def test_decision_worker_success_and_validation():
-
-    from PySide6.QtCore import QThread
+    pytest.importorskip("PySide6")
+    try:
+        from PySide6.QtCore import QThread
+    except ImportError as e:
+        pytest.skip(f"Qt unavailable: {e}")
 
     from drilling_intelligence.core.errors import ValidationError
     from drilling_intelligence.ui.worker import DecisionWorker
@@ -266,6 +291,7 @@ def test_decision_worker_success_and_validation():
         assert "succeeded" not in received2
 
 
+@pytest.mark.ui
 def test_models_mapping_table_model():
     try:
         from PySide6.QtCore import Qt
