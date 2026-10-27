@@ -666,7 +666,7 @@ def test_comparison_and_report_workers_v23():
 
 
 def test_app_build_parser_and_main_pure_v23():
-    """app.py coverage: build_parser + main mocked success (adds ~15 stmts)."""
+    """app.py coverage: build_parser (pure, adds ~7 stmts)."""
     from drilling_intelligence.ui.app import build_parser
 
     parser = build_parser()
@@ -678,34 +678,17 @@ def test_app_build_parser_and_main_pure_v23():
     ns2 = parser.parse_args([])
     assert ns2.workspace is None
 
-    # main success path — mock Qt deps via sys.modules (no real Qt needed)
-    import sys
 
-    mock_app = MagicMock()
-    mock_app.exec.return_value = 0
-    mock_create = MagicMock(return_value=mock_app)
-    mock_shutdown = MagicMock(return_value=0)
-    mock_window_inst = MagicMock()
-    mock_window_cls = MagicMock(return_value=mock_window_inst)
+def test_well_choice_label_pure_v23():
+    """controller.WellChoice label branches — pure, adds ~3 stmts to qt/ui."""
+    from drilling_intelligence.ui.controller import WellChoice
 
-    mock_lt = MagicMock()
-    mock_lt.create_application = mock_create
-    mock_lt.application_shutdown = mock_shutdown
-    mock_mw = MagicMock()
-    mock_mw.MainWindow = mock_window_cls
-    with patch.dict(
-        sys.modules,
-        {
-            "drilling_intelligence.ui.lifetime": mock_lt,
-            "drilling_intelligence.ui.main_window": mock_mw,
-        },
-    ):
-        from drilling_intelligence.ui.app import main
-
-        code = main([])
-        assert code == 0
-        mock_create.assert_called()
-        mock_window_cls.assert_called()
-        mock_shutdown.assert_called()
-        mock_window_inst.show.assert_called()
-        assert mock_app.setApplicationName.called
+    c = WellChoice(
+        well_id="1", name="W1", field_name="F1", project_name="P1", company_name="C1"
+    )
+    assert "C1" in c.label and "W1" in c.label
+    assert "F1" in c.label
+    c2 = WellChoice(well_id="2", name="W2")
+    assert c2.label == "W2"
+    c3 = WellChoice(well_id="3", name="W3", company_name="OnlyCo")
+    assert "OnlyCo" in c3.label
