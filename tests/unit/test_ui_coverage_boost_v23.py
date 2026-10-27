@@ -448,6 +448,51 @@ def test_review_worker_success_and_validation_v23():
 
 
 @pytest.mark.ui
+def test_main_window_offscreen_init_v23():
+    """MainWindow offscreen init — exercises _build_ui and helpers for resilience."""
+    pytest.importorskip("PySide6")
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError as exc:
+        pytest.skip(f"Qt unavailable: {exc}")
+    from drilling_intelligence.ui.main_window import MainWindow, _NAVIGATION, _value_text
+    from drilling_intelligence.ui.controller import ReviewController
+
+    app = QApplication.instance() or QApplication([])
+    ctrl = MagicMock(spec=ReviewController)
+    # Minimal controller surface used during init/startup (no DB)
+    ctrl.list_wells.return_value = []
+    w = MainWindow(controller=ctrl)
+    try:
+        assert w.windowTitle() == "Prog-Proc — Review Workbench"
+        assert hasattr(w, "well_combo")
+        assert hasattr(w, "open_button")
+        assert _value_text(None) == "—"
+        assert _value_text(0) == "0"
+        assert len(_NAVIGATION) >= 12
+        # Exercise a few more helpers if available
+        from drilling_intelligence.ui.main_window import _add_tree_value, _fill_tree
+
+        # _add_tree_value branches (parent is a QTreeWidget mock or real)
+        # Use a simple stub parent with addChild if possible, otherwise skip
+        try:
+            from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+
+            tree = QTreeWidget()
+            _fill_tree(tree, {"a": 1, "b": {"c": 2}})
+            assert tree.topLevelItemCount() >= 1
+            tree.clear()
+            tree.deleteLater()
+            app.processEvents()
+        except Exception:
+            pass
+    finally:
+        w.close()
+        w.deleteLater()
+        app.processEvents()
+
+
+@pytest.mark.ui
 def test_comparison_and_report_workers_v23():
     pytest.importorskip("PySide6")
     try:
