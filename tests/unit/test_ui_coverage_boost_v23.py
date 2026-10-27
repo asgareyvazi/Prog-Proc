@@ -667,7 +667,7 @@ def test_comparison_and_report_workers_v23():
 
 def test_app_build_parser_and_main_pure_v23():
     """app.py coverage: build_parser + main success path mocked (adds ~15 stmts)."""
-    from drilling_intelligence.ui.app import build_parser, main
+    from drilling_intelligence.ui.app import build_parser
 
     parser = build_parser()
     assert parser.prog == "drillintel-ui"
@@ -678,14 +678,15 @@ def test_app_build_parser_and_main_pure_v23():
     ns2 = parser.parse_args([])
     assert ns2.workspace is None
 
+    # main success path — mock the Qt-dependent imports via sys.modules
+    import sys
+
     mock_app = MagicMock()
     mock_app.exec.return_value = 0
     mock_create = MagicMock(return_value=mock_app)
     mock_shutdown = MagicMock(return_value=0)
     mock_window_inst = MagicMock()
     mock_window_cls = MagicMock(return_value=mock_window_inst)
-
-    import sys
 
     mock_lt = MagicMock()
     mock_lt.create_application = mock_create
@@ -699,6 +700,8 @@ def test_app_build_parser_and_main_pure_v23():
             "drilling_intelligence.ui.main_window": mock_mw,
         },
     ):
+        from drilling_intelligence.ui.app import main
+
         code = main([])
         assert code == 0
         mock_create.assert_called()
