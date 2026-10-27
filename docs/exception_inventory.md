@@ -88,13 +88,13 @@ to be found by somebody else.
 | `src/drilling_intelligence/ui/main_window.py` | 1390 | `Exception` | reported | export must not crash the window |
 | `src/drilling_intelligence/ui/main_window.py` | 1737 | `Exception` | reported | keep selection/read rendering usable |
 | `src/drilling_intelligence/ui/main_window.py` | 1914 | `Exception` | reported | preserve read-side selection on capability errors |
-| `src/drilling_intelligence/ui/worker.py` | 113 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |
-| `src/drilling_intelligence/ui/worker.py` | 176 | `Exception` | reported | the GUI boundary reports, it does not crash |
-| `src/drilling_intelligence/ui/worker.py` | 224 | `Exception` | reported | the GUI boundary reports, it does not crash |
-| `src/drilling_intelligence/ui/worker.py` | 284 | `Exception` | reported | the GUI boundary reports, it does not crash |
-| `src/drilling_intelligence/ui/worker.py` | 308 | `Exception` | reported | the GUI boundary reports, it does not crash |
-| `src/drilling_intelligence/ui/worker.py` | 375 | `Exception` | reported | preserve an explicit visible worker boundary |
-| `src/drilling_intelligence/ui/worker.py` | 454 | `Exception` | reported | preserve a visible worker boundary |
+| `src/drilling_intelligence/ui/worker.py` | 98 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |
+| `src/drilling_intelligence/ui/worker.py` | 161 | `Exception` | reported | the GUI boundary reports, it does not crash |
+| `src/drilling_intelligence/ui/worker.py` | 209 | `Exception` | reported | the GUI boundary reports, it does not crash |
+| `src/drilling_intelligence/ui/worker.py` | 269 | `Exception` | reported | the GUI boundary reports, it does not crash |
+| `src/drilling_intelligence/ui/worker.py` | 293 | `Exception` | reported | the GUI boundary reports, it does not crash |
+| `src/drilling_intelligence/ui/worker.py` | 360 | `Exception` | reported | preserve an explicit visible worker boundary |
+| `src/drilling_intelligence/ui/worker.py` | 439 | `Exception` | reported | preserve a visible worker boundary |
 | `tools/coverage_report.py` | 384 | `Exception` | suppressed | noqa marker |
 | `tools/coverage_report.py` | 482 | `Exception` | suppressed | noqa marker |
 | `tools/qt_stability_evidence.py` | 66 | `Exception` | suppressed | noqa marker |

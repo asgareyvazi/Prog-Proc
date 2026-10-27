@@ -666,7 +666,7 @@ def test_comparison_and_report_workers_v23():
 
 
 def test_app_build_parser_and_main_pure_v23():
-    """app.py coverage: build_parser + main success path mocked (adds ~15 stmts)."""
+    """app.py coverage: build_parser + main mocked success (adds ~15 stmts)."""
     from drilling_intelligence.ui.app import build_parser
 
     parser = build_parser()
@@ -678,7 +678,7 @@ def test_app_build_parser_and_main_pure_v23():
     ns2 = parser.parse_args([])
     assert ns2.workspace is None
 
-    # main success path — mock the Qt-dependent imports via sys.modules
+    # main success path — mock Qt deps via sys.modules (no real Qt needed)
     import sys
 
     mock_app = MagicMock()
