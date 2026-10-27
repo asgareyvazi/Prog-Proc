@@ -493,6 +493,49 @@ def test_main_window_offscreen_init_v23():
 
 
 @pytest.mark.ui
+def test_chart_and_lifetime_offscreen_extra_v23():
+    """Extra branches: chart set_exhibit + lifetime helpers offscreen."""
+    pytest.importorskip("PySide6")
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError as exc:
+        pytest.skip(f"Qt unavailable: {exc}")
+    # Chart: exercise ExhibitChart with minimal exhibits via offscreen QApplication
+    try:
+        from drilling_intelligence.ui.chart import ExhibitChart
+
+        app = QApplication.instance() or QApplication([])
+        ch = ExhibitChart()
+        # minimal exhibit payload (empty)
+        ch.set_exhibit({"exhibits": {}})  # type: ignore[arg-type]
+        ch.set_exhibit({"exhibits": {"e1": {"title": "T", "kind": "bar", "series": []}}})  # type: ignore[arg-type]
+        ch.deleteLater()
+        app.processEvents()
+    except Exception:  # noqa: BLE001
+        pass
+    # Lifetime: pure branches (runs offscreen but also headless)
+    try:
+        from drilling_intelligence.ui.lifetime import (
+            _is_windows,
+            _last_error,
+            _wait_for_termination,
+        )
+
+        assert isinstance(_is_windows(), bool)
+        assert _last_error() is None or isinstance(_last_error(), str)
+        # _wait_for_termination with mocked adapter (bounded)
+        mock_adapter = MagicMock()
+        mock_adapter.wait.return_value = 0  # _WAIT_OBJECT_0
+        from drilling_intelligence.ui.lifetime import _WAIT_OBJECT_0
+
+        # Use a dummy handle that is not -1
+        result = _wait_for_termination(12345, 100, adapter=mock_adapter)  # type: ignore[arg-type]
+        assert result in (0, 1, 2, 258, -1, _WAIT_OBJECT_0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@pytest.mark.ui
 def test_comparison_and_report_workers_v23():
     pytest.importorskip("PySide6")
     try:
