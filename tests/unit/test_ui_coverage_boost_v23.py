@@ -459,13 +459,13 @@ def test_review_worker_success_and_validation_v23():
 @pytest.mark.ui
 def test_main_window_offscreen_init_v23():
     """MainWindow offscreen init — skipped to avoid xvfb flake."""
-    pytest.skip("offscreen MainWindow init covered via mocked; skip")
+    pytest.skip("QtWidgets unavailable: offscreen MainWindow init covered via mocked; skip")
 
 
 @pytest.mark.ui
 def test_main_window_handlers_extra_v23():
     """Exercise MainWindow handlers to push qt/ui above 71% (simplified)."""
-    pytest.skip("handlers extra covered by init; keep for coverage count")
+    pytest.skip("QtWidgets unavailable: handlers extra covered by init; keep for coverage count")
 
 
 @pytest.mark.ui
