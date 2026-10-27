@@ -683,9 +683,7 @@ def test_well_choice_label_pure_v23():
     """controller.WellChoice label branches — pure, adds ~3 stmts to qt/ui."""
     from drilling_intelligence.ui.controller import WellChoice
 
-    c = WellChoice(
-        well_id="1", name="W1", field_name="F1", project_name="P1", company_name="C1"
-    )
+    c = WellChoice(well_id="1", name="W1", field_name="F1", project_name="P1", company_name="C1")
     assert "C1" in c.label and "W1" in c.label
     assert "F1" in c.label
     c2 = WellChoice(well_id="2", name="W2")
