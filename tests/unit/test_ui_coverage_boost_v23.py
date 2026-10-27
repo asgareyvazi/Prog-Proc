@@ -606,7 +606,7 @@ def test_decision_and_calculation_workers_v23():
 
     # DecisionWorker success
     ctrl = MagicMock()
-    ctrl.get_decision_pack.return_value = {"pack": "ok"}
+    ctrl.decision.return_value = {"pack": "ok"}
     w = DecisionWorker(ctrl, well_id="W1")
     with patch.object(QThread, "currentThread") as mc:
         mc.return_value.isInterruptionRequested.return_value = False
@@ -616,7 +616,7 @@ def test_decision_and_calculation_workers_v23():
         assert rec.get("succeeded") == {"pack": "ok"}
     # DecisionWorker validation error
     ctrl2 = MagicMock()
-    ctrl2.get_decision_pack.side_effect = ValidationError("bad", hint="h")
+    ctrl2.decision.side_effect = ValidationError("bad", hint="h")
     w2 = DecisionWorker(ctrl2, well_id="BAD")
     with patch.object(QThread, "currentThread") as mc:
         mc.return_value.isInterruptionRequested.return_value = False
@@ -626,8 +626,8 @@ def test_decision_and_calculation_workers_v23():
         assert rec["failed"].category == "input"  # type: ignore[attr-defined]
     # CalculationWorker success
     ctrl3 = MagicMock()
-    ctrl3.calculate.return_value = {"calc": 1}
-    w3 = CalculationWorker(ctrl3, well_id="W1", params={})
+    ctrl3.run_npt_rollup.return_value = {"calc": 1}
+    w3 = CalculationWorker(ctrl3, well_id="W1", actor="tester")
     with patch.object(QThread, "currentThread") as mc:
         mc.return_value.isInterruptionRequested.return_value = False
         rec = {}
