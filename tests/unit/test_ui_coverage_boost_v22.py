@@ -42,12 +42,14 @@ def test_worker_error_categories():
         assert e.exception_type == "E"
 
 
+@pytest.mark.ui
 def test_chart_exhibit_invalid_and_empty():
     from drilling_intelligence.reporting.layout import layout_exhibit
 
     assert isinstance(layout_exhibit({}), dict)
     assert isinstance(layout_exhibit({"subjects": []}), dict)
     assert isinstance(layout_exhibit({"subjects": [{"id": f"s{i}"} for i in range(5)]}), dict)
+    pytest.importorskip("PySide6")
     try:
         from PySide6.QtWidgets import QChartView
 
@@ -118,8 +120,10 @@ def test_models_pure_tablecolumn():
     assert c.width == 10
 
 
+@pytest.mark.ui
 def test_main_window_helpers_mocked_comprehensive_v22():
     """More main_window helpers (pure, no display needed)."""
+    pytest.importorskip("PySide6")
     try:
         from drilling_intelligence.ui.main_window import (
             _NAVIGATION,
@@ -166,8 +170,10 @@ def test_main_window_helpers_mocked_comprehensive_v22():
     assert True
 
 
+@pytest.mark.ui
 def test_main_window_value_text_edge():
     """Additional _value_text edge cases (pure)."""
+    pytest.importorskip("PySide6")
     try:
         from drilling_intelligence.ui.main_window import _value_text
     except ImportError as exc:
