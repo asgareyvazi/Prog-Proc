@@ -455,8 +455,8 @@ def test_main_window_offscreen_init_v23():
         from PySide6.QtWidgets import QApplication
     except ImportError as exc:
         pytest.skip(f"Qt unavailable: {exc}")
-    from drilling_intelligence.ui.main_window import MainWindow, _NAVIGATION, _value_text
     from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import _NAVIGATION, MainWindow, _value_text
 
     app = QApplication.instance() or QApplication([])
     ctrl = MagicMock(spec=ReviewController)
@@ -471,12 +471,12 @@ def test_main_window_offscreen_init_v23():
         assert _value_text(0) == "0"
         assert len(_NAVIGATION) >= 12
         # Exercise a few more helpers if available
-        from drilling_intelligence.ui.main_window import _add_tree_value, _fill_tree
+        from drilling_intelligence.ui.main_window import _fill_tree
 
         # _add_tree_value branches (parent is a QTreeWidget mock or real)
         # Use a simple stub parent with addChild if possible, otherwise skip
         try:
-            from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+            from PySide6.QtWidgets import QTreeWidget
 
             tree = QTreeWidget()
             _fill_tree(tree, {"a": 1, "b": {"c": 2}})
@@ -484,7 +484,7 @@ def test_main_window_offscreen_init_v23():
             tree.clear()
             tree.deleteLater()
             app.processEvents()
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
     finally:
         w.close()
