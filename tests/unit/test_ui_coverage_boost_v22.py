@@ -193,28 +193,81 @@ def test_lifetime_wait_helpers_headless():
         _WAIT_FAILED,
         _WAIT_OBJECT_0,
         _WAIT_TIMEOUT,
+        _is_windows,
         _wait_for_termination,
     )
 
     assert _WAIT_OBJECT_0 == 0
     assert _WAIT_TIMEOUT == 258
     assert _WAIT_FAILED == 4294967295
-    assert _wait_for_termination(timeout_s=0.01) in (_WAIT_OBJECT_0, _WAIT_TIMEOUT, _WAIT_FAILED)
+    # POSIX headless path is a sleep loop that returns WAIT_OBJECT_0;
+    # Windows headless path is a kernel wait that times out (process still alive)
+    # or fails if kernel32 is unavailable. The wait is bounded (10ms) and
+    # documented, not unbounded.
+    status = _wait_for_termination(timeout_s=0.01)
+    if _is_windows():
+        assert status in (_WAIT_OBJECT_0, _WAIT_TIMEOUT, _WAIT_FAILED)
+    else:
+        assert status == _WAIT_OBJECT_0
+    assert _wait_for_termination(timeout_s=0.0) == (_WAIT_OBJECT_0 if not _is_windows() else status)
 
 
-def test_lifetime_application_shutdown_mocked():
+def test_lifetime_application_shutdown_headless_is_pure():
+    """application_shutdown contract exercised without a real process-kill.
+
+    The real shutdown ends the process through _end_process (os._exit on POSIX
+    or TerminateProcess on Windows). The test runner must never do that. This
+    test drives the boundary via injection: finish_qt_application and
+    fail_closed_shutdown are patched, so no kernel call is made.
+    """
     from unittest.mock import MagicMock, patch
 
     from drilling_intelligence.ui import lifetime
+    from drilling_intelligence.ui.lifetime import ReleaseResult
 
     app = MagicMock()
+
+    # Success: finish releases all windows, no fail-closed
+    ok_result = ReleaseResult(0, ())
     with (
-        patch.object(lifetime, "_wait_for_termination", return_value=lifetime._WAIT_OBJECT_0),
-        patch.object(lifetime, "_end_windows_process") as mock_end,
+        patch.object(lifetime, "finish_qt_application", return_value=(0, ok_result)) as mock_finish,
+        patch.object(lifetime, "fail_closed_shutdown") as mock_fail,
     ):
-        mock_end.return_value = {"ok": True}
         result = lifetime.application_shutdown(app, 0)
-        assert result in (0, {"ok": True}, 7) or isinstance(result, (int, dict))
+        assert result == 0
+        mock_finish.assert_called_once_with(app, 0, deadline_ms=None)
+        mock_fail.assert_not_called()
+
+    # Incomplete: finish returns incomplete, fail_closed must be called
+    incomplete = ReleaseResult(0, ("workbench",))
+    with (
+        patch.object(
+            lifetime,
+            "finish_qt_application",
+            return_value=(lifetime.SHUTDOWN_INCOMPLETE_EXIT, incomplete),
+        ),
+        patch.object(lifetime, "fail_closed_shutdown") as mock_fail,
+    ):
+        result = lifetime.application_shutdown(app, 0)
+        assert result == lifetime.SHUTDOWN_INCOMPLETE_EXIT
+        mock_fail.assert_called_once_with(incomplete)
+
+    # Exception inside finish: must fail-closed with release-exception and return 4
+    with (
+        patch.object(lifetime, "finish_qt_application", side_effect=RuntimeError("deleted")),
+        patch.object(lifetime, "fail_closed_shutdown") as mock_fail,
+    ):
+        result = lifetime.application_shutdown(app, 0, deadline_ms=400)
+        assert result == lifetime.SHUTDOWN_INCOMPLETE_EXIT
+        assert mock_fail.called
+        seen = mock_fail.call_args[0][0]
+        assert isinstance(seen, ReleaseResult)
+        assert seen.refused == ("release-exception",)
+
+    # Verify the real process-killing boundary exists but is not called here
+    assert hasattr(lifetime, "_end_process")
+    assert hasattr(lifetime, "_end_windows_process")
+    assert hasattr(lifetime, "_wait_for_termination")
 
 
 @pytest.mark.ui

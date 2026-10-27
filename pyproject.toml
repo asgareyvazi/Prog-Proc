@@ -67,8 +67,8 @@ dev = [
     "build>=1.1",
     # Coverage is measured in CI.  Full-suite coverage is recorded and comparable (see
     # docs/mission-reports/), while Qt/UI coverage is enforced as a gate in the workbench
-    # job: 70% lines / 40% branches is the contractual minimum and 71% / 42% is the
-    # resilience headroom (see .github/workflows/ci.yml and docs/coverage_report.md).
+    # job: 70% lines / 40% branches is the minimum and 71% / 42% is the contractual
+    # resilience threshold for V8.23 (see .github/workflows/ci.yml and docs/coverage_report.md).
     "pytest-cov>=5.0",
     # Type checking covers one package boundary (see [tool.mypy] below).  It is a dev tool
     # and is never imported by the installed package.

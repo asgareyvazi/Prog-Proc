@@ -365,7 +365,7 @@ jobs:
           set -o pipefail
           set +e
           xvfb-run -a -s "-screen 0 1280x1024x24" \
-            python -m pytest --cov --cov-branch --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py tests/unit/test_ui_coverage_boost.py tests/unit/test_ui_coverage_boost_extra.py tests/unit/test_ui_coverage_boost_v21.py tests/unit/test_main_window_mocked_coverage.py tests/unit/test_ui_coverage_boost_v22.py \
+            python -m pytest --cov --cov-branch --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py tests/unit/test_ui_coverage_boost.py tests/unit/test_ui_coverage_boost_extra.py tests/unit/test_ui_coverage_boost_v21.py tests/unit/test_main_window_mocked_coverage.py tests/unit/test_ui_coverage_boost_v22.py tests/unit/test_ui_coverage_boost_v23.py \
             2>&1 | tee pytest-ui-output.txt
           status=${PIPESTATUS[0]}
           echo "$status" > pytest-ui-exit.txt
@@ -393,7 +393,7 @@ jobs:
             python -m coverage report
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -f coverage-ui.xml ]; then
-            python tools/coverage_report.py --xml coverage-ui.xml --scope ui-test-selection --test-selection "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py + tests/unit/test_ui_coverage_boost_extra.py + tests/unit/test_ui_coverage_boost_v21.py + tests/unit/test_main_window_mocked_coverage.py + tests/unit/test_ui_coverage_boost_v22.py (Qt offscreen)" \
+            python tools/coverage_report.py --xml coverage-ui.xml --scope ui-test-selection --test-selection "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py + tests/unit/test_ui_coverage_boost_extra.py + tests/unit/test_ui_coverage_boost_v21.py + tests/unit/test_main_window_mocked_coverage.py + tests/unit/test_ui_coverage_boost_v22.py + tests/unit/test_ui_coverage_boost_v23.py (Qt offscreen)" \
               --output coverage-ui-report.md --json coverage-ui-view.json \
               --label "CI ui (cp3.11), ${{ github.sha }}" | tee coverage-ui-report.txt
             {
@@ -471,7 +471,7 @@ jobs:
           if scope != "ui-test-selection":
               print(f"::error::expected scope ui-test-selection, got {scope}", file=sys.stderr)
               sys.exit(1)
-          expected_sel = "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py + tests/unit/test_ui_coverage_boost_extra.py + tests/unit/test_ui_coverage_boost_v21.py + tests/unit/test_main_window_mocked_coverage.py + tests/unit/test_ui_coverage_boost_v22.py (Qt offscreen)"
+          expected_sel = "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py + tests/unit/test_ui_coverage_boost_extra.py + tests/unit/test_ui_coverage_boost_v21.py + tests/unit/test_main_window_mocked_coverage.py + tests/unit/test_ui_coverage_boost_v22.py + tests/unit/test_ui_coverage_boost_v23.py (Qt offscreen)"
           if sel != expected_sel:
               print(f"::error::test_selection mismatch: expected '{expected_sel}', got '{sel}'", file=sys.stderr)
               sys.exit(1)
@@ -492,17 +492,16 @@ jobs:
               print(f"::error::qt/ui branch coverage {branch}% is below 40% gate", file=sys.stderr)
               sys.exit(1)
           print(f"::notice::coverage-gate: PASS qt/ui {line}% lines, {branch}% branches meets 70/40")
-          # Resilience headroom: 71% lines, 42% branches (advisory until closure, then strict).
-          # The published minimum is 70/40; 71/42 is the durable-closure target.
-          # Report it as a notice/warning, not a hard gate, until the headroom is proven.
+          # Resilience headroom is now contractual for V8.23: 71/42.
+          # Both thresholds are enforced fail-closed; a below-target measurement
+          # fails the job with ::error::, not a warning.
           if line < 71.0:
-              print(f"::warning::qt/ui line coverage {line}% is below resilience target 71% (minimum 70% is contractual)", file=sys.stderr)
+              print(f"::error::qt/ui line coverage {line}% is below resilience target 71% (V8.23 contractual)", file=sys.stderr)
+              sys.exit(1)
           if branch < 42.0:
-              print(f"::warning::qt/ui branch coverage {branch}% is below resilience target 42% (minimum 40% is contractual)", file=sys.stderr)
-          if line >= 71.0 and branch >= 42.0:
-              print(f"::notice::coverage-resilience: PASS qt/ui {line}% lines, {branch}% branches meets 71/42 headroom")
-          else:
-              print(f"::notice::coverage-resilience: BELOW TARGET qt/ui {line}% lines, {branch}% branches (71/42 headroom not yet met, 70/40 is contractual)")
+              print(f"::error::qt/ui branch coverage {branch}% is below resilience target 42% (V8.23 contractual)", file=sys.stderr)
+              sys.exit(1)
+          print(f"::notice::coverage-resilience: PASS qt/ui {line}% lines, {branch}% branches meets 71/42 headroom (V8.23)")
           # Also validate XML and JSON agree: re-read XML via coverage_report logic is already done, but we can double-check that view matches XML
           # For now, ensure report file exists and contains expected scope
           PY

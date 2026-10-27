@@ -518,8 +518,12 @@ def test_workbench_errors_redact_before_they_reach_the_status_bar():
     import ast
     from pathlib import Path
 
-    source = Path("src/drilling_intelligence/ui/worker.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    # WorkerError lives in the Qt-independent errors module so redaction can
+    # be exercised headless without importing PySide6. The worker layer
+    # re-exports it; check both locations.
+    errors_src = Path("src/drilling_intelligence/ui/errors.py").read_text(encoding="utf-8")
+    worker_src = Path("src/drilling_intelligence/ui/worker.py").read_text(encoding="utf-8")
+    tree = ast.parse(errors_src)
     found = False
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == "WorkerError":
@@ -527,9 +531,21 @@ def test_workbench_errors_redact_before_they_reach_the_status_bar():
                 isinstance(item, ast.FunctionDef) and item.name == "__post_init__"
                 for item in node.body
             )
-    assert found
-    assert "core.redact import safe_detail" in source
-    assert "reporting.audit import safe_detail" not in source
+    assert found, "WorkerError with __post_init__ must be defined in errors.py"
+    assert "core.redact import safe_detail" in errors_src
+    assert "reporting.audit import safe_detail" not in errors_src
+    assert "reporting.audit import safe_detail" not in worker_src
+    # worker.py must re-export WorkerError from the Qt-independent module
+    assert (
+        "from .errors import WorkerError" in worker_src
+        or "from drilling_intelligence.ui.errors import WorkerError" in worker_src
+    )
+    # No duplicate definition in worker.py
+    worker_tree = ast.parse(worker_src)
+    for node in worker_tree.body:
+        assert not (isinstance(node, ast.ClassDef) and node.name == "WorkerError"), (
+            "WorkerError must not be redefined in worker.py"
+        )
 
 
 def test_overall_status_does_not_depend_on_entry_order():

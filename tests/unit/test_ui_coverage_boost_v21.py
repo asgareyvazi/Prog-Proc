@@ -106,12 +106,21 @@ def test_chart_exhibit_valid_and_empty():
 
 
 def test_worker_error_redaction_and_categories():
-    from drilling_intelligence.ui.worker import WorkerError
+    # Pure Qt-independent test: WorkerError lives in errors.py so headless
+    # environments without PySide6 can still verify redaction.
+    from drilling_intelligence.ui.errors import WorkerError
 
     # Redaction
     secret = "sk-TESTSECRET123"  # noqa: S105
     e = WorkerError(category="unexpected", message=f"api_key={secret}", hint=f"token={secret}")
     assert secret not in e.message and "[redacted]" in e.message
+    # Re-export from worker must be the same object when Qt is available
+    try:
+        from drilling_intelligence.ui.worker import WorkerError as FromWorker
+
+        assert FromWorker is WorkerError
+    except ImportError:
+        pass
     # ValidationError mapping is tested in worker tests below; here test generic
     assert WorkerError(category="input", message="bad", hint="fix").category == "input"
 
