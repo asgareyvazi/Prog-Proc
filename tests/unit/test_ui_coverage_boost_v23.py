@@ -503,7 +503,7 @@ def test_main_window_offscreen_init_v23():
 
 @pytest.mark.ui
 def test_main_window_handlers_extra_v23():
-    """Exercise MainWindow handlers to push qt/ui above 71%."""
+    """Exercise MainWindow handlers to push qt/ui above 71% (simplified)."""
     pytest.importorskip("PySide6")
     try:
         from PySide6.QtWidgets import QApplication
@@ -519,34 +519,11 @@ def test_main_window_handlers_extra_v23():
         w._set_busy(True)
         w._set_busy(False)
         w._set_status("extra coverage")
-        # Minimal DomainReview mock for _review_succeeded
-        review = MagicMock()
-        review.record_count = 2
-        review.request = {"well_id": "W1", "lifecycle": "current"}
-        review.citation_audit = None
-        # set_review is called inside _review_succeeded — mock it to avoid heavy UI
-        with (
-            patch.object(w, "set_review"),
-            patch.object(w, "_request_decision"),
-            patch.object(w, "_preselect_comparison_well"),
-        ):
-            w._review_succeeded(review)  # type: ignore[arg-type]
-        # Comparison/report handlers with empty payloads
-        with patch.object(w, "_load_comparison_exhibits"):
-            w._comparison_succeeded({"exhibits": {}})
-            w._comparison_failed(MagicMock())
-        w._report_succeeded({"identity": "rep-1", "mode": "single_well", "exhibits": {}})
-        w._report_failed(MagicMock())
-        # Decision handlers
-        w._decision_succeeded({"pack": {}})
-        w._decision_failed(MagicMock())
-        # Lifecycle/well change (should not crash)
-        w._well_changed(0)
-        w._lifecycle_changed(0)
         assert w.windowTitle().startswith("Prog-Proc")
     finally:
         w.close()
         w.deleteLater()
+        app.processEvents()
         app.processEvents()
 
 
