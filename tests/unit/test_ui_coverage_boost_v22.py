@@ -181,14 +181,8 @@ def test_main_window_value_text_edge():
     assert "a" in _value_text({"a": 1})
 
 
-@pytest.mark.ui
 def test_lifetime_wait_helpers_headless():
-    """Lifetime helpers are deterministic via injection, no real handle."""
-    pytest.importorskip("PySide6")
-    try:
-        from PySide6.QtCore import QThread  # noqa: F401
-    except ImportError as exc:
-        pytest.skip(f"Qt unavailable: {exc}")
+    """Lifetime helpers are deterministic via injection, no real handle (pure)."""
     from drilling_intelligence.ui.lifetime import (
         _WAIT_FAILED,
         _WAIT_OBJECT_0,
@@ -202,13 +196,7 @@ def test_lifetime_wait_helpers_headless():
     assert _wait_for_termination(timeout_s=0.01) in (_WAIT_OBJECT_0, _WAIT_TIMEOUT, _WAIT_FAILED)
 
 
-@pytest.mark.ui
 def test_lifetime_application_shutdown_mocked():
-    pytest.importorskip("PySide6")
-    try:
-        from PySide6.QtCore import QThread  # noqa: F401
-    except ImportError as exc:
-        pytest.skip(f"Qt unavailable: {exc}")
     from unittest.mock import MagicMock, patch
 
     from drilling_intelligence.ui import lifetime
