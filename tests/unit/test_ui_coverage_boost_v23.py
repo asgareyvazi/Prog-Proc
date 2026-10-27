@@ -663,3 +663,46 @@ def test_comparison_and_report_workers_v23():
         w2.succeeded.connect(lambda v: rec.setdefault("succeeded", v))
         w2.run()
         assert rec["succeeded"]["mode"] == "single_well"  # type: ignore[attr-defined]
+
+
+def test_app_build_parser_and_main_pure_v23():
+    """app.py coverage: build_parser + main success path mocked (adds ~15 stmts)."""
+    from drilling_intelligence.ui.app import build_parser, main
+
+    parser = build_parser()
+    assert parser.prog == "drillintel-ui"
+    ns = parser.parse_args(["--workspace", "ws", "--well", "W1", "--config", "cfg"])
+    assert ns.workspace == "ws"
+    assert ns.well == "W1"
+    assert ns.config == "cfg"
+    ns2 = parser.parse_args([])
+    assert ns2.workspace is None
+
+    mock_app = MagicMock()
+    mock_app.exec.return_value = 0
+    mock_create = MagicMock(return_value=mock_app)
+    mock_shutdown = MagicMock(return_value=0)
+    mock_window_inst = MagicMock()
+    mock_window_cls = MagicMock(return_value=mock_window_inst)
+
+    import sys
+
+    mock_lt = MagicMock()
+    mock_lt.create_application = mock_create
+    mock_lt.application_shutdown = mock_shutdown
+    mock_mw = MagicMock()
+    mock_mw.MainWindow = mock_window_cls
+    with patch.dict(
+        sys.modules,
+        {
+            "drilling_intelligence.ui.lifetime": mock_lt,
+            "drilling_intelligence.ui.main_window": mock_mw,
+        },
+    ):
+        code = main([])
+        assert code == 0
+        mock_create.assert_called()
+        mock_window_cls.assert_called()
+        mock_shutdown.assert_called()
+        mock_window_inst.show.assert_called()
+        assert mock_app.setApplicationName.called
