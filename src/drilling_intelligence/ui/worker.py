@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
@@ -15,24 +14,10 @@ from ..core.errors import (
     ProviderUnavailableError,
     ValidationError,
 )
-from ..core.redact import safe_detail
 from ..database.integrity import KnowledgeIntegrityError
 from ..review import ReviewActionRequest
 from .controller import ReviewController
-
-
-@dataclass(frozen=True)
-class WorkerError:
-    """Structured UI error without exposing a traceback to the operator."""
-
-    category: str
-    message: str
-    hint: str = ""
-    exception_type: str = ""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "message", " ".join(safe_detail(self.message).split()))
-        object.__setattr__(self, "hint", " ".join(safe_detail(self.hint).split()))
+from .errors import WorkerError
 
 
 class ReviewWorker(QObject):

@@ -122,7 +122,7 @@ def test_chart_exhibit_logic():
 
 
 def test_worker_error_redaction():
-    from drilling_intelligence.ui.worker import WorkerError
+    from drilling_intelligence.ui.errors import WorkerError
 
     # Whitespace normalization
     e = WorkerError(
