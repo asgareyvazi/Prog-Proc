@@ -97,6 +97,10 @@ to be found by somebody else.
 | `src/drilling_intelligence/ui/worker.py` | 439 | `Exception` | reported | preserve a visible worker boundary |
 | `tools/coverage_report.py` | 384 | `Exception` | suppressed | noqa marker |
 | `tools/coverage_report.py` | 482 | `Exception` | suppressed | noqa marker |
+| `tools/pytest_totals.py` | 217 | `Exception` | suppressed | any import probe failure means not available |
+| `tools/qt_coverage_gate.py` | 483 | `Exception` | reported | any parsing error is a validation error |
+| `tools/qt_coverage_gate.py` | 638 | `Exception` | suppressed | noqa marker |
+| `tools/qt_coverage_gate.py` | 540 | `Exception` | reported | noqa marker |
 | `tools/qt_stability_evidence.py` | 66 | `Exception` | suppressed | noqa marker |
 | `tools/qt_stability_evidence.py` | 92 | `Exception` | reported | noqa marker |
 | `tools/qt_stability_evidence.py` | 143 | `Exception` | reported | noqa marker |
@@ -109,5 +113,5 @@ to be found by somebody else.
 | kind | count |
 | --- | --- |
 | re-raised | 12 |
-| reported | 58 |
-| suppressed | 25 |
+| reported | 60 |
+| suppressed | 27 |
