@@ -365,7 +365,7 @@ jobs:
           set -o pipefail
           set +e
           xvfb-run -a -s "-screen 0 1280x1024x24" \
-            python -m pytest --cov --cov-branch --cov-report=term --cov-report=xml:coverage-ui.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py tests/unit/test_ui_coverage_boost.py tests/unit/test_ui_coverage_boost_extra.py tests/unit/test_ui_coverage_boost_v21.py tests/unit/test_main_window_mocked_coverage.py tests/unit/test_ui_coverage_boost_v22.py tests/unit/test_ui_coverage_boost_v23.py \
+            python -m pytest --cov --cov-branch --cov-report=term --cov-report=xml:coverage-ui.xml --junitxml=pytest-ui-junit.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py tests/unit/test_ui_coverage_boost.py tests/unit/test_ui_coverage_boost_extra.py tests/unit/test_ui_coverage_boost_v21.py tests/unit/test_main_window_mocked_coverage.py tests/unit/test_ui_coverage_boost_v22.py tests/unit/test_ui_coverage_boost_v23.py \
             2>&1 | tee pytest-ui-output.txt
           status=${PIPESTATUS[0]}
           echo "$status" > pytest-ui-exit.txt
@@ -438,74 +438,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          test -f coverage-ui-view.json
-          test -f coverage-ui.xml
-          python - <<'PY'
-          import json, sys
-          from pathlib import Path
-          view = json.loads(Path("coverage-ui-view.json").read_text(encoding="utf-8"))
-          # Validate SHA, scope, selection metadata
-          import subprocess, pathlib
-          head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-          commit = view.get("commit")
-          scope = view.get("measurement_scope")
-          sel = view.get("test_selection")
-          fp = view.get("test_selection_fingerprint")
-          overall = view.get("overall", {})
-          ui = view.get("groups", {}).get("qt/ui")
-          if not ui:
-              print("::error::qt/ui group missing from coverage view", file=sys.stderr)
-              sys.exit(1)
-          print(f"commit in view: {commit}")
-          print(f"HEAD: {head}")
-          print(f"scope: {scope}")
-          print(f"selection: {sel}")
-          print(f"fingerprint: {fp}")
-          print(f"ui: {ui}")
-          # SHA must match (allow short prefix)
-          if commit not in (head, head[:12], head[:7]) and head not in commit:
-              # But view commit may be short, so check that head starts with commit or vice versa
-              if not head.startswith(commit) and not commit.startswith(head):
-                  print(f"::error::coverage view commit {commit} does not match HEAD {head}", file=sys.stderr)
-                  sys.exit(1)
-          if scope != "ui-test-selection":
-              print(f"::error::expected scope ui-test-selection, got {scope}", file=sys.stderr)
-              sys.exit(1)
-          expected_sel = "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py + tests/unit/test_ui_coverage_boost_extra.py + tests/unit/test_ui_coverage_boost_v21.py + tests/unit/test_main_window_mocked_coverage.py + tests/unit/test_ui_coverage_boost_v22.py + tests/unit/test_ui_coverage_boost_v23.py (Qt offscreen)"
-          if sel != expected_sel:
-              print(f"::error::test_selection mismatch: expected '{expected_sel}', got '{sel}'", file=sys.stderr)
-              sys.exit(1)
-          # Validate file counts
-          if ui.get("statements", 0) == 0:
-              print("::error::qt/ui statements is 0 — not measured", file=sys.stderr)
-              sys.exit(1)
-          line = ui.get("line_percent")
-          branch = ui.get("branch_percent")
-          if line is None or branch is None:
-              print(f"::error::qt/ui percent is None (not measured): line {line}, branch {branch}", file=sys.stderr)
-              sys.exit(1)
-          print(f"qt/ui line {line}% branch {branch}%")
-          if line < 70.0:
-              print(f"::error::qt/ui line coverage {line}% is below 70% gate", file=sys.stderr)
-              sys.exit(1)
-          if branch < 40.0:
-              print(f"::error::qt/ui branch coverage {branch}% is below 40% gate", file=sys.stderr)
-              sys.exit(1)
-          print(f"::notice::coverage-gate: PASS qt/ui {line}% lines, {branch}% branches meets 70/40")
-          # Resilience headroom is now contractual for V8.23: 71/42.
-          # Both thresholds are enforced fail-closed; a below-target measurement
-          # fails the job with ::error::, not a warning.
-          if line < 71.0:
-              print(f"::error::qt/ui line coverage {line}% is below resilience target 71% (V8.23 contractual)", file=sys.stderr)
-              sys.exit(1)
-          if branch < 42.0:
-              print(f"::error::qt/ui branch coverage {branch}% is below resilience target 42% (V8.23 contractual)", file=sys.stderr)
-              sys.exit(1)
-          print(f"::notice::coverage-resilience: PASS qt/ui {line}% lines, {branch}% branches meets 71/42 headroom (V8.23)")
-          # Also validate XML and JSON agree: re-read XML via coverage_report logic is already done, but we can double-check that view matches XML
-          # For now, ensure report file exists and contains expected scope
-          PY
-          echo "coverage gate passed"
+          python tools/qt_coverage_gate.py --xml coverage-ui.xml --view coverage-ui-view.json --junit pytest-ui-junit.xml --expected-sha "${{ github.sha }}"
 
 
       - name: Publish the Qt layer coverage
@@ -520,6 +453,7 @@ jobs:
             coverage-ui-report.txt
             pytest-ui-output.txt
             pytest-ui-exit.txt
+            pytest-ui-junit.xml
           if-no-files-found: error
 
       # Qualification, not a silent rerun. Each iteration is independent. A

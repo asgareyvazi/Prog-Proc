@@ -196,11 +196,26 @@ def disagreements(
     return problems
 
 
+def _qt_available() -> bool:
+    """True when PySide6 can be imported in this environment."""
+
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("PySide6") is not None
+    except Exception:  # noqa: BLE001 - any import probe failure means not available
+        return False
+
+
 def skip_is_expected(classname: str, name: str, message: str) -> bool:
     """Headless CI may skip UI tests only because Qt itself cannot load.
 
     A host that cannot create symlinks may skip the tests that say so. That
     skip is not a pass, and a different reason is still unexpected.
+
+    In a Qt-enabled environment (PySide6 importable) a UI test that claims
+    ``QtWidgets unavailable`` is not a genuine headless skip — it is an
+    unconditional or fake dependency message and must be treated as unexpected.
     """
     text = message or ""
     if any(reason in text for reason in _PLATFORM_SKIP_REASONS):
@@ -214,7 +229,50 @@ def skip_is_expected(classname: str, name: str, message: str) -> bool:
         or "test_qt_" in classname
         or "test_main_window_mocked" in classname
     )
-    return ui and any(reason in text for reason in _QT_SKIP_REASONS)
+    if not ui:
+        return False
+    if not any(reason in text for reason in _QT_SKIP_REASONS):
+        return False
+    # If Qt is actually present, a Qt-unavailable message is not credible.
+    return not _qt_available()
+
+
+def skip_is_expected_qt_enabled(classname: str, name: str, message: str) -> bool:
+    """Qt-enabled selection: no skip is expected; require real execution.
+
+    The Qt-enabled UI coverage run measures where Qt is real. Any skipped
+    UI test in that selection is a deficit, not a headless allowance.
+    Only a documented platform skip is accepted; every Qt-unavailable message
+    is unexpected when Qt is present.
+    """
+
+    text = message or ""
+    # No Qt-unavailable skips are expected in Qt-enabled mode
+    return any(reason in text for reason in _PLATFORM_SKIP_REASONS)
+
+
+def unexpected_skips_qt_enabled(path: Path) -> list[str]:
+    """JUnit skips in a Qt-enabled selection — no Qt-unavailable skips allowed."""
+
+    root = ET.parse(path).getroot()  # noqa: S314
+    found: list[str] = []
+    for case in root.iter("testcase"):
+        skipped = case.find("skipped")
+        if skipped is None:
+            continue
+        kind = skipped.attrib.get("type") or ""
+        if kind == _XFAIL_TYPE:
+            continue
+        message = skipped.attrib.get("message") or ""
+        if message.startswith(_XPASS_MESSAGE):
+            continue
+        classname = case.attrib.get("classname") or ""
+        name = case.attrib.get("name") or ""
+        if skip_is_expected_qt_enabled(classname, name, message):
+            continue
+        reason = " ".join(message.split())[:120] or "no reason"
+        found.append(f"{classname}::{name}: {reason}")
+    return found
 
 
 def unexpected_skips(path: Path) -> list[str]:

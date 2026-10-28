@@ -116,11 +116,15 @@ def test_worker_error_redaction_and_categories():
     assert secret not in e.message and "[redacted]" in e.message
     # Re-export from worker must be the same object when Qt is available
     try:
+        import PySide6  # noqa: F401
+
+        qt_available = True
+    except ImportError:
+        qt_available = False
+    if qt_available:
         from drilling_intelligence.ui.worker import WorkerError as FromWorker
 
         assert FromWorker is WorkerError
-    except ImportError:
-        pass
     # ValidationError mapping is tested in worker tests below; here test generic
     assert WorkerError(category="input", message="bad", hint="fix").category == "input"
 

@@ -301,6 +301,12 @@ jobs:
         shell: pwsh
         run: python tools/pytest_totals.py --stats pytest-totals.json --junit qt-logs/pytest-junit.xml --exit-file qt-logs/pytest-exit.txt
 
+      - name: Qt-enabled skip audit (fail-closed — no Qt-unavailable skips when Qt present)
+        if: always()
+        shell: pwsh
+        run: |
+          python -c "import sys; from pathlib import Path; from tools.pytest_totals import unexpected_skips_qt_enabled; bad=unexpected_skips_qt_enabled(Path('qt-logs/pytest-junit.xml')); print(f'unexpected Qt skips (Qt-enabled audit): {bad}'); sys.exit(1 if bad else 0)"
+
       - name: Publish Windows UI logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

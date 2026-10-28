@@ -3,12 +3,13 @@
 Targets main_window helpers, models, chart, lifetime wait/termination and the
 Qt-independent errors module. All mocked tests are pure (no display, no real
 QThread) and not marked ui so they run headless; Qt tests are marked ui and
-skip cleanly via importorskip. No real process-killing call is made in the
-main runner — termination is exercised via the injected _TerminationAdapter.
+require real Qt/PySide6 to be present. No real process-killing call is made in the
+main runner — termination is exercised via injection.
 """
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -31,13 +32,19 @@ def test_worker_error_redaction_v23_pure():
     # Path redaction
     e3 = WorkerError(category="unexpected", message="failed at /tmp/secret/file.txt", hint="")
     assert "/tmp/secret" not in e3.message  # noqa: S108
-    # Re-export from worker must be same object when Qt available
+    # Re-export from worker must be same object when Qt available;
+    # headless without PySide6 cannot exercise the re-export.
     try:
+        import PySide6  # noqa: F401  # check availability, not used directly
+
+        qt_available = True
+    except ImportError:
+        qt_available = False
+
+    if qt_available:
         from drilling_intelligence.ui.worker import WorkerError as FromWorker
 
         assert FromWorker is WorkerError
-    except ImportError:
-        pass
     # All categories retained
     for cat in (
         "cancelled",
@@ -104,7 +111,7 @@ def test_models_mapping_and_review_with_qt_v23():
         pytest.skip(f"Qt unavailable: {exc}")
     try:
         QApplication.instance() or QApplication([])
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - QApplication creation may fail headless without xvfb
         pytest.skip(f"QApplication failed: {exc}")
     from drilling_intelligence.ui.models import MappingTableModel, ReviewRecordsModel, TableColumn
 
@@ -126,60 +133,7 @@ def test_models_mapping_and_review_with_qt_v23():
 
 
 def test_models_tablecolumn_pure_mocked():
-    """TableColumn is a dataclass; can be exercised without Qt via mock."""
-    # Import without Qt by mocking PySide6
-    import sys
-    from unittest.mock import MagicMock
-
-    orig = {
-        k: sys.modules.get(k)
-        for k in ["PySide6", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets"]
-    }
-    try:
-        for name in ["PySide6", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets"]:
-            if name not in sys.modules:
-                sys.modules[name] = MagicMock()
-        # Also mock shiboken6
-        if "shiboken6" not in sys.modules:
-            sys.modules["shiboken6"] = MagicMock()
-        # Force reimport of models
-        if "drilling_intelligence.ui.models" in sys.modules:
-            del sys.modules["drilling_intelligence.ui.models"]
-        import importlib
-
-        mod = importlib.import_module("drilling_intelligence.ui.models")
-        TableColumn = mod.TableColumn
-        c = TableColumn("k", "K", 10)
-        assert c.key == "k"
-        assert c.title == "K"
-        assert c.width == 10
-        # MappingTableModel with mocked Qt should still instantiate
-        cols = [TableColumn("a", "A", 100)]
-        rows = [{"a": "hello"}, {"a": None}]
-        m = mod.MappingTableModel(cols, rows)
-        # When Qt is mocked, rowCount is a MagicMock; just verify instantiation
-        assert m is not None
-        try:
-            rc = m.rowCount()
-            if isinstance(rc, int):
-                assert rc == 2
-            cc = m.columnCount()
-            if isinstance(cc, int):
-                assert cc == 1
-        except Exception:  # noqa: BLE001
-            pass
-    finally:
-        for k, v in orig.items():
-            if v is None:
-                sys.modules.pop(k, None)
-            else:
-                sys.modules[k] = v
-        sys.modules.pop("drilling_intelligence.ui.models", None)
-
-
-def test_main_window_value_text_and_tree_mocked():
-    """main_window helpers via mocked Qt — no display needed, exercises branches."""
-    import sys
+    """TableColumn is a dataclass; exercised via mocked Qt import graph."""
 
     orig = {
         k: sys.modules.get(k)
@@ -188,7 +142,64 @@ def test_main_window_value_text_and_tree_mocked():
     mocked = {}
     for name in ["PySide6", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "shiboken6"]:
         mocked[name] = MagicMock()
-    # Provide necessary Qt classes
+    # Minimal Qt types needed for models import to succeed with mocks
+    mocked["PySide6.QtCore"].QAbstractTableModel = MagicMock
+    mocked["PySide6.QtCore"].QSortFilterProxyModel = MagicMock
+    mocked["PySide6.QtCore"].Qt = MagicMock()
+    mocked["PySide6.QtCore"].QModelIndex = MagicMock
+    # Patch sys.modules
+    for k, v in mocked.items():
+        sys.modules[k] = v
+    # Ensure the target module is reloaded under mocked environment
+    models_was_loaded = "drilling_intelligence.ui.models" in sys.modules
+    if models_was_loaded:
+        del sys.modules["drilling_intelligence.ui.models"]
+    try:
+        import importlib
+
+        mod = importlib.import_module("drilling_intelligence.ui.models")
+        TableColumn = mod.TableColumn
+        c = TableColumn("k", "K", 10)
+        assert c.key == "k"
+        assert c.title == "K"
+        assert c.width == 10
+        # MappingTableModel with mocked Qt still has pure Python row_count
+        cols = [TableColumn("a", "A", 100)]
+        rows = [{"a": "hello"}, {"a": None}]
+        m = mod.MappingTableModel(cols, rows)  # type: ignore[arg-type]
+        # Pure attribute, not Qt method, proves data handling without Qt
+        assert m.row_count == 2
+        assert len(m.columns) == 1
+        assert m.row_payload(0) == {"a": "hello"}
+        assert m.row_payload(1) == {"a": None}
+        assert m.row_payload(99) is None
+    finally:
+        for k, v in orig.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+        sys.modules.pop("drilling_intelligence.ui.models", None)
+        # Re-import real module for later tests that need real Qt
+        try:
+            if "PySide6" in sys.modules:
+                # Only re-import if Qt was originally available; otherwise leave mocked state cleaned
+                pass
+        except Exception:  # noqa: BLE001 - cleanup must not raise
+            pass
+
+
+def test_main_window_value_text_and_tree_mocked():
+    """main_window helpers via mocked Qt — no display needed, exercises branches."""
+
+    orig = {
+        k: sys.modules.get(k)
+        for k in ["PySide6", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "shiboken6"]
+    }
+    mocked: dict[str, MagicMock] = {}
+    for name in ["PySide6", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets", "shiboken6"]:
+        mocked[name] = MagicMock()
+    # Provide necessary Qt classes for main_window import
     for mod in ["PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets"]:
         for cls in [
             "QModelIndex",
@@ -227,10 +238,14 @@ def test_main_window_value_text_and_tree_mocked():
             "QWidget",
         ]:
             mocked[mod].__dict__.setdefault(cls, MagicMock())
-    # Patch sys.modules
+    # Ensure Qt enums have required attributes for main_window code
+    mocked["PySide6.QtCore"].Qt.ItemDataRole = MagicMock()
+    mocked["PySide6.QtCore"].Qt.Orientation = MagicMock()
+    mocked["PySide6.QtCore"].Qt.SortOrder = MagicMock()
     for k, v in mocked.items():
         sys.modules[k] = v
-    if "drilling_intelligence.ui.main_window" in sys.modules:
+    had_main = "drilling_intelligence.ui.main_window" in sys.modules
+    if had_main:
         del sys.modules["drilling_intelligence.ui.main_window"]
     try:
         import importlib
@@ -274,7 +289,7 @@ def test_main_window_value_text_and_tree_mocked():
                 c.key = "k"
                 c.title = "K"
                 c.width = 100
-        mod._configure_table(table, tc)
+        mod._configure_table(table, tc)  # type: ignore[arg-type]
         # Navigation constants
         assert hasattr(mod, "_NAVIGATION")
         assert isinstance(mod._NAVIGATION, (list, tuple))
@@ -288,52 +303,84 @@ def test_main_window_value_text_and_tree_mocked():
         sys.modules.pop("drilling_intelligence.ui.main_window", None)
 
 
-def test_lifetime_helpers_pure_v23():
-    """Lifetime helpers pure — no real handle, bounded waits, mocked termination."""
-    from drilling_intelligence.ui.lifetime import (
-        _WAIT_FAILED,
-        _WAIT_OBJECT_0,
-        _WAIT_TIMEOUT,
-        SHUTDOWN_INCOMPLETE_EXIT,
-        _is_windows,
-        _wait_for_termination,
-        is_fail_closed_shutdown_exit,
-        remaining_budget_ms,
-        wait_slice_ms,
-        worker_join_limit_ms,
-    )
+def test_lifetime_helpers_pure_v23(monkeypatch):
+    """Lifetime helpers pure — deterministic via injection, no real kernel wait."""
+
+    from drilling_intelligence.ui import lifetime as lt
 
     # Constants
-    assert _WAIT_OBJECT_0 == 0
-    assert _WAIT_TIMEOUT == 258
-    assert _WAIT_FAILED == 4294967295
-    assert SHUTDOWN_INCOMPLETE_EXIT == 4
+    assert lt._WAIT_OBJECT_0 == 0
+    assert lt._WAIT_TIMEOUT == 258
+    assert lt._WAIT_FAILED == 4294967295
+    assert lt.SHUTDOWN_INCOMPLETE_EXIT == 4
     # is_fail_closed_shutdown_exit strict: only int 4
-    assert is_fail_closed_shutdown_exit(4) is True
-    assert is_fail_closed_shutdown_exit(0) is False
-    assert is_fail_closed_shutdown_exit(1) is False
-    assert is_fail_closed_shutdown_exit(True) is False  # type: ignore[arg-type]
-    assert is_fail_closed_shutdown_exit(3221225477) is False
-    assert is_fail_closed_shutdown_exit(-1073741819) is False
-    assert is_fail_closed_shutdown_exit(5) is False
-    # Bounded wait
-    status = _wait_for_termination(timeout_s=0.01)
-    if _is_windows():
-        assert status in (_WAIT_OBJECT_0, _WAIT_TIMEOUT, _WAIT_FAILED)
-    else:
-        assert status == _WAIT_OBJECT_0
+    assert lt.is_fail_closed_shutdown_exit(4) is True
+    assert lt.is_fail_closed_shutdown_exit(0) is False
+    assert lt.is_fail_closed_shutdown_exit(1) is False
+    assert lt.is_fail_closed_shutdown_exit(True) is False  # type: ignore[arg-type]
+    assert lt.is_fail_closed_shutdown_exit(3221225477) is False
+    assert lt.is_fail_closed_shutdown_exit(-1073741819) is False
+    assert lt.is_fail_closed_shutdown_exit(5) is False
+
+    # Deterministic injection: _kernel_wait_for_termination is the seam
+    # Only _WAIT_OBJECT_0 is success; other values are distinct non-success
+    monkeypatch.setattr(lt, "_is_windows", lambda: True)
+
+    monkeypatch.setattr(lt, "_kernel_wait_for_termination", lambda timeout_s: lt._WAIT_OBJECT_0)
+    assert lt._wait_for_termination(timeout_s=0.01) == lt._WAIT_OBJECT_0
+
+    monkeypatch.setattr(lt, "_kernel_wait_for_termination", lambda timeout_s: lt._WAIT_TIMEOUT)
+    assert lt._wait_for_termination(timeout_s=0.01) == lt._WAIT_TIMEOUT
+
+    monkeypatch.setattr(lt, "_kernel_wait_for_termination", lambda timeout_s: lt._WAIT_FAILED)
+    assert lt._wait_for_termination(timeout_s=0.01) == lt._WAIT_FAILED
+
+    # Unexpected/malformed value must be returned as-is and not treated as success
+    monkeypatch.setattr(lt, "_kernel_wait_for_termination", lambda timeout_s: 999)
+    result = lt._wait_for_termination(timeout_s=0.01)
+    assert result == 999
+    assert result != lt._WAIT_OBJECT_0
+
+    # Native-call exception path: _kernel_wait catches and returns _WAIT_FAILED
+    # We simulate by making the monkeypatched kernel raise, then ensure
+    # the wrapper that catches is exercised via the real function.
+    # For _wait_for_termination, if _kernel_wait raises, it propagates;
+    # the real production _kernel_wait handles the exception internally.
+    # So test the real _kernel_wait's exception handling via patching ctypes.WinDLL.
+    monkeypatch.setattr(lt, "_is_windows", lambda: True)
+
+    def _raise_win(_timeout_s: float):  # type: ignore[no-untyped-def]
+        raise OSError("native failure")
+
+    monkeypatch.setattr(lt, "_kernel_wait_for_termination", _raise_win)
+    # _wait_for_termination will propagate the OSError from the seam;
+    # the inner _kernel_wait's own try/except is not exercised when we patch at this level.
+    # Instead verify that the caller correctly treats non-zero as non-success.
+    try:
+        r = lt._wait_for_termination(timeout_s=0.01)
+        # If it propagated, it is not success
+        assert r != lt._WAIT_OBJECT_0
+    except OSError:
+        # Propagated exception is also not success — deterministic failure mode
+        assert True
+
+    # Restore POSIX path — must return WAIT_OBJECT_0 without kernel
+    monkeypatch.setattr(lt, "_is_windows", lambda: False)
+    assert lt._wait_for_termination(timeout_s=0.01) == lt._WAIT_OBJECT_0
+
     # Budget helpers
-    assert remaining_budget_ms(120_000, 10_000) == 110_000
-    assert remaining_budget_ms(250, 250) == 0
-    assert remaining_budget_ms(250, 300) < 0
-    assert worker_join_limit_ms(10_000, 120_000) == 10_000
-    assert worker_join_limit_ms(10_000, 50) == 50
-    assert wait_slice_ms(5) == 5
-    assert wait_slice_ms(0) == 0
+    assert lt.remaining_budget_ms(120_000, 10_000) == 110_000
+    assert lt.remaining_budget_ms(250, 250) == 0
+    assert lt.remaining_budget_ms(250, 300) < 0
+    assert lt.worker_join_limit_ms(10_000, 120_000) == 10_000
+    assert lt.worker_join_limit_ms(10_000, 50) == 50
+    assert lt.wait_slice_ms(5) == 5
+    assert lt.wait_slice_ms(0) == 0
 
 
 def test_lifetime_termination_injected_v23(monkeypatch):
     """Termination adapter injected — no real kernel call, no os._exit in runner."""
+
     import drilling_intelligence.ui.lifetime as lifetime
 
     class _Scripted:
@@ -386,6 +433,7 @@ def test_lifetime_termination_injected_v23(monkeypatch):
 
 def test_lifetime_application_shutdown_pure_v23():
     """application_shutdown via injection — no real os._exit, three branches."""
+
     from unittest.mock import MagicMock
 
     from drilling_intelligence.ui import lifetime
@@ -458,62 +506,136 @@ def test_review_worker_success_and_validation_v23():
 
 @pytest.mark.ui
 def test_main_window_offscreen_init_v23():
-    """MainWindow offscreen init — skipped to avoid xvfb flake."""
-    pytest.skip("QtWidgets unavailable: offscreen MainWindow init covered via mocked; skip")
+    """MainWindow offscreen init — exercises _build_ui and helpers with real Qt."""
 
-
-@pytest.mark.ui
-def test_main_window_handlers_extra_v23():
-    """Exercise MainWindow handlers to push qt/ui above 71% (simplified)."""
-    pytest.skip("QtWidgets unavailable: handlers extra covered by init; keep for coverage count")
-
-
-@pytest.mark.ui
-def test_chart_and_lifetime_offscreen_extra_v23():
-    """Extra branches: chart set_exhibit + lifetime helpers offscreen."""
     pytest.importorskip("PySide6")
     try:
         from PySide6.QtWidgets import QApplication
     except ImportError as exc:
         pytest.skip(f"Qt unavailable: {exc}")
-    # Chart: exercise ExhibitChart with minimal exhibits via offscreen QApplication
     try:
-        from drilling_intelligence.ui.chart import ExhibitChart
-
         app = QApplication.instance() or QApplication([])
-        ch = ExhibitChart()
-        # minimal exhibit payload (empty)
-        ch.set_exhibit({"exhibits": {}})  # type: ignore[arg-type]
-        ch.set_exhibit({"exhibits": {"e1": {"title": "T", "kind": "bar", "series": []}}})  # type: ignore[arg-type]
-        ch.deleteLater()
-        app.processEvents()
-    except Exception:  # noqa: BLE001
-        pass
-    # Lifetime: pure branches (runs offscreen but also headless)
+    except Exception as exc:  # noqa: BLE001 - QApplication may fail without display
+        pytest.skip(f"QApplication unavailable: {exc}")
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import (
+        _NAVIGATION,
+        MainWindow,
+        _fill_tree,
+        _value_text,
+    )
+
+    ctrl = MagicMock(spec=ReviewController)
+    ctrl.list_wells.return_value = []
+    w = MainWindow(controller=ctrl)
     try:
-        from drilling_intelligence.ui.lifetime import (
-            _is_windows,
-            _last_error,
-            _wait_for_termination,
-        )
+        assert w.windowTitle() == "Prog-Proc — Review Workbench"
+        assert hasattr(w, "well_combo")
+        assert hasattr(w, "open_button")
+        assert _value_text(None) == "—"
+        assert _value_text(0) == "0"
+        assert _value_text("") == "—"
+        assert len(_NAVIGATION) >= 12
+        # _fill_tree via real QTreeWidget
+        from PySide6.QtWidgets import QTreeWidget
 
-        assert isinstance(_is_windows(), bool)
-        assert _last_error() is None or isinstance(_last_error(), str)
-        # _wait_for_termination with mocked adapter (bounded)
-        mock_adapter = MagicMock()
-        mock_adapter.wait.return_value = 0  # _WAIT_OBJECT_0
-        from drilling_intelligence.ui.lifetime import _WAIT_OBJECT_0
+        tree = QTreeWidget()
+        _fill_tree(tree, {"a": 1, "b": {"c": 2}})
+        assert tree.topLevelItemCount() >= 1
+        tree.clear()
+        tree.deleteLater()
+        app.processEvents()
+    finally:
+        w.close()
+        w.deleteLater()
+        app.processEvents()
 
-        # Use a dummy handle that is not -1
-        result = _wait_for_termination(12345, 100, adapter=mock_adapter)  # type: ignore[arg-type]
-        assert result in (0, 1, 2, 258, -1, _WAIT_OBJECT_0)
-    except Exception:  # noqa: BLE001
-        pass
+
+@pytest.mark.ui
+def test_main_window_handlers_extra_v23():
+    """Exercise MainWindow handlers — deterministic, no worker start."""
+
+    pytest.importorskip("PySide6")
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError as exc:
+        pytest.skip(f"Qt unavailable: {exc}")
+    try:
+        app = QApplication.instance() or QApplication([])
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"QApplication unavailable: {exc}")
+    from drilling_intelligence.ui.main_window import MainWindow
+
+    ctrl = MagicMock()
+    ctrl.list_wells.return_value = []
+    w = MainWindow(controller=ctrl)
+    try:
+        w._set_busy(True)
+        w._set_busy(False)
+        w._set_status("extra coverage")
+        # Lifecycle/well change must not crash even with empty model
+        w._well_changed(0)
+        w._lifecycle_changed(0)
+        assert w.windowTitle().startswith("Prog-Proc")
+    finally:
+        w.close()
+        w.deleteLater()
+        app.processEvents()
+
+
+@pytest.mark.ui
+def test_chart_and_lifetime_offscreen_extra_v23():
+    """Chart set_exhibit + lifetime helpers offscreen — deterministic, no broad except."""
+
+    pytest.importorskip("PySide6")
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError as exc:
+        pytest.skip(f"Qt unavailable: {exc}")
+    try:
+        app = QApplication.instance() or QApplication([])
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"QApplication unavailable: {exc}")
+
+    from drilling_intelligence.ui.chart import ExhibitChart
+
+    ch = ExhibitChart()
+    ch.set_exhibit({"exhibits": {}})  # type: ignore[arg-type]
+    ch.set_exhibit({"exhibits": {"e1": {"title": "T", "kind": "bar", "series": []}}})  # type: ignore[arg-type]
+    ch.deleteLater()
+    app.processEvents()
+
+    # Lifetime deterministic branches — monkeypatched kernel wait
+
+    from drilling_intelligence.ui import lifetime as lt
+
+    assert isinstance(lt._is_windows(), bool)
+    # _last_error returns int (0 on POSIX) — check type
+    le = lt._last_error()
+    assert isinstance(le, int)
+
+    # Inject kernel wait outcomes and verify _wait_for_termination forwards them
+    original_is_win = lt._is_windows
+    original_kernel = lt._kernel_wait_for_termination
+    try:
+        lt._is_windows = lambda: True  # type: ignore[assignment]
+        lt._kernel_wait_for_termination = lambda timeout_s: lt._WAIT_OBJECT_0  # type: ignore[assignment]
+        assert lt._wait_for_termination(timeout_s=0.01) == lt._WAIT_OBJECT_0
+
+        lt._kernel_wait_for_termination = lambda timeout_s: lt._WAIT_TIMEOUT  # type: ignore[assignment]
+        assert lt._wait_for_termination(timeout_s=0.01) == lt._WAIT_TIMEOUT
+
+        lt._kernel_wait_for_termination = lambda timeout_s: lt._WAIT_FAILED  # type: ignore[assignment]
+        assert lt._wait_for_termination(timeout_s=0.01) == lt._WAIT_FAILED
+    finally:
+        lt._is_windows = original_is_win  # type: ignore[assignment]
+        lt._kernel_wait_for_termination = original_kernel  # type: ignore[assignment]
 
 
 @pytest.mark.ui
 def test_decision_and_calculation_workers_v23():
     """Decision/Calculation workers — extra qt/ui statements."""
+
     pytest.importorskip("PySide6")
     try:
         from PySide6.QtCore import QThread
@@ -585,6 +707,7 @@ def test_comparison_and_report_workers_v23():
 
 def test_app_build_parser_and_main_pure_v23():
     """app.py coverage: build_parser (pure, adds ~7 stmts)."""
+
     from drilling_intelligence.ui.app import build_parser
 
     parser = build_parser()
@@ -599,6 +722,7 @@ def test_app_build_parser_and_main_pure_v23():
 
 def test_well_choice_label_pure_v23():
     """controller.WellChoice label branches — pure, adds ~3 stmts to qt/ui."""
+
     from drilling_intelligence.ui.controller import WellChoice
 
     c = WellChoice(well_id="1", name="W1", field_name="F1", project_name="P1", company_name="C1")
@@ -611,20 +735,26 @@ def test_well_choice_label_pure_v23():
 
 
 def test_controller_workspace_info_pure_v23():
-    """ReviewController workspace_info — pure, adds ~6 stmts to qt/ui."""
+    """ReviewController workspace_info — pure, exact exception contract."""
+
     from pathlib import Path
 
+    from drilling_intelligence.core.errors import WorkspaceError
     from drilling_intelligence.ui.controller import ReviewController
 
     ws = MagicMock()
     ws.path = Path("dummy_ws")
     ws.manifest = MagicMock()
     ws.manifest.wells = []
+    # workspace.config is accessed in workspace_info
+    ws.config = MagicMock()
+    ws.config.name = "test-ws"
+    ws.database_path = Path("dummy.db")
+    ws.migration = None
     info = ReviewController.workspace_info(ws)  # type: ignore[arg-type]
     assert isinstance(info, dict)
+    assert info["name"] == "test-ws"
+    assert "root" in info
     ctrl = ReviewController()
-    try:
+    with pytest.raises(WorkspaceError, match="no workspace is open"):
         ctrl._require_workspace()  # type: ignore[attr-defined]
-        assert False, "should have raised"
-    except Exception as exc:  # noqa: BLE001
-        assert "workspace" in str(exc).lower() or isinstance(exc, Exception)

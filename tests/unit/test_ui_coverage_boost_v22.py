@@ -15,6 +15,7 @@ import pytest
 
 def test_worker_error_redaction_via_errors_module_is_pure():
     """WorkerError redaction is Qt-independent: import without PySide6."""
+
     from drilling_intelligence.ui.errors import WorkerError
 
     e = WorkerError(category="unexpected", message="  a   b  c  ", hint="  h  ")
@@ -26,11 +27,15 @@ def test_worker_error_redaction_via_errors_module_is_pure():
     assert secret not in e2.hint
     assert "[redacted]" in e2.message
     try:
+        import PySide6  # noqa: F401
+
+        qt_available = True
+    except ImportError:
+        qt_available = False
+    if qt_available:
         from drilling_intelligence.ui.worker import WorkerError as FromWorker
 
         assert FromWorker is WorkerError
-    except ImportError:
-        pass
 
 
 def test_worker_error_categories():
@@ -167,7 +172,8 @@ def test_main_window_helpers_mocked_comprehensive_v22():
             c.title = "K"
             c.width = 100
     _configure_table(table, tc)
-    assert True
+    # Verify table configuration did not raise and column key preserved
+    assert tc[0].key == "k"
 
 
 @pytest.mark.ui
