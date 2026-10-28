@@ -197,12 +197,23 @@ def disagreements(
 
 
 def _qt_available() -> bool:
-    """True when PySide6 can be imported in this environment."""
+    """True when PySide6 can be imported and QtWidgets loads in this environment.
+
+    ``find_spec`` alone can be true when the package is discoverable but its
+    native libraries (libGL, platform plugins) are missing. Importing
+    ``PySide6.QtWidgets`` catches that case and prevents a headless skip from
+    being mis-classified as unexpected when Qt is not actually usable.
+    """
 
     try:
         import importlib.util
 
-        return importlib.util.find_spec("PySide6") is not None
+        if importlib.util.find_spec("PySide6") is None:
+            return False
+        import PySide6
+        import PySide6.QtWidgets  # noqa: F401
+
+        return True
     except Exception:  # noqa: BLE001 - any import probe failure means not available
         return False
 

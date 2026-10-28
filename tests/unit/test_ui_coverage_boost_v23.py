@@ -179,14 +179,16 @@ def test_models_tablecolumn_pure_mocked():
                 sys.modules.pop(k, None)
             else:
                 sys.modules[k] = v
+        # Remove the mocked models module so subsequent imports get the real one
         sys.modules.pop("drilling_intelligence.ui.models", None)
-        # Re-import real module for later tests that need real Qt
-        try:
-            if "PySide6" in sys.modules:
-                # Only re-import if Qt was originally available; otherwise leave mocked state cleaned
+        # Re-import real module for later tests that need real Qt, if originally present
+        if orig.get("PySide6") is not None:
+            try:
+                import importlib
+
+                importlib.import_module("drilling_intelligence.ui.models")
+            except Exception:  # noqa: BLE001 - cleanup must not raise
                 pass
-        except Exception:  # noqa: BLE001 - cleanup must not raise
-            pass
 
 
 def test_main_window_value_text_and_tree_mocked():
@@ -301,6 +303,17 @@ def test_main_window_value_text_and_tree_mocked():
             else:
                 sys.modules[k] = v
         sys.modules.pop("drilling_intelligence.ui.main_window", None)
+        # If models was imported under mocked Qt, remove it so next import gets real Qt
+        if "drilling_intelligence.ui.models" in sys.modules and orig.get("PySide6") is not None:
+            # Check if the cached models was loaded with mocked Qt by inspecting its Qt dependency
+            # Simplest: pop and re-import if Qt was originally present
+            try:
+                sys.modules.pop("drilling_intelligence.ui.models", None)
+                import importlib
+
+                importlib.import_module("drilling_intelligence.ui.models")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def test_lifetime_helpers_pure_v23(monkeypatch):

@@ -25,6 +25,10 @@ def _make_view(
     line_percent: float | None = None,
     branch_percent: float | None = None,
     present: bool = True,
+    overall_statements: int | None = None,
+    overall_covered: int | None = None,
+    overall_branches: int | None = None,
+    overall_covered_branches: int | None = None,
 ) -> dict:
     if fingerprint is None:
         fingerprint = _fingerprint(test_selection)
@@ -32,6 +36,22 @@ def _make_view(
         line_percent = round(100.0 * covered / statements, 2) if statements else None
     if branch_percent is None:
         branch_percent = round(100.0 * covered_branches / branches, 2) if branches else None
+    # Overall defaults to match the XML we generate (2 lines, 1 branch)
+    # but allow override for specific tests
+    if overall_statements is None:
+        overall_statements = 2
+    if overall_covered is None:
+        overall_covered = 2
+    if overall_branches is None:
+        overall_branches = 1
+    if overall_covered_branches is None:
+        overall_covered_branches = 1
+    overall_line = (
+        round(100.0 * overall_covered / overall_statements, 2) if overall_statements else 0
+    )
+    overall_branch = (
+        round(100.0 * overall_covered_branches / overall_branches, 2) if overall_branches else 0
+    )
     return {
         "commit": commit,
         "measurement_scope": scope,
@@ -42,12 +62,12 @@ def _make_view(
         "coverage_version": "7.0",
         "optional_dependencies": [{"name": "ui", "present": present, "groups": ["qt/ui"]}],
         "overall": {
-            "statements": 10000,
-            "covered_statements": 5000,
-            "branches": 2000,
-            "covered_branches": 1000,
-            "line_percent": 50.0,
-            "branch_percent": 50.0,
+            "statements": overall_statements,
+            "covered_statements": overall_covered,
+            "branches": overall_branches,
+            "covered_branches": overall_covered_branches,
+            "line_percent": overall_line,
+            "branch_percent": overall_branch,
         },
         "groups": {
             "qt/ui": {
@@ -57,7 +77,7 @@ def _make_view(
                 "covered_branches": covered_branches,
                 "line_percent": line_percent,
                 "branch_percent": branch_percent,
-                "files": 10,
+                "files": 1,
                 "present": True,
                 "measurement_state": "measured",
             },
@@ -78,9 +98,9 @@ def _make_view(
 
 def _make_xml(tmp_path: Path, xml_content: str = "<coverage></coverage>") -> Path:
     p = tmp_path / "coverage-ui.xml"
-    # Minimal valid coverage XML with one class
+    # Minimal valid coverage XML with one class and root totals matching view overall
     if xml_content == "<coverage></coverage>":
-        xml_content = """<coverage><sources><source>src</source></sources><packages><package><classes><class filename="src/drilling_intelligence/ui/app.py"><lines><line number="1" hits="1" branch="false"/><line number="2" hits="1" branch="true" condition-coverage="50% (1/2)"/></lines></class></classes></package></packages></coverage>"""
+        xml_content = """<coverage line-rate="1.0" branch-rate="1.0" lines-covered="2" lines-valid="2" branches-covered="1" branches-valid="1"><sources><source>src</source></sources><packages><package><classes><class filename="src/drilling_intelligence/ui/app.py"><lines><line number="1" hits="1" branch="false"/><line number="2" hits="1" branch="true" condition-coverage="50% (1/2)"/></lines></class></classes></package></packages></coverage>"""
     p.write_text(xml_content, encoding="utf-8")
     return p
 
@@ -91,7 +111,9 @@ def test_valid_gate_passes(tmp_path: Path, monkeypatch):  # type: ignore[no-unty
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )  # type: ignore[attr-defined]
     view = _make_view(commit="a" * 40)
     xml = _make_xml(tmp_path)
@@ -111,7 +133,9 @@ def test_wrong_sha_fails(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "b" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "b" * 40, "returncode": 0})(),
     )
     view = _make_view(commit="a" * 40)
     xml = _make_xml(tmp_path)
@@ -131,7 +155,9 @@ def test_empty_fingerprint_fails(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )
     view = _make_view(fingerprint="")
     xml = _make_xml(tmp_path)
@@ -151,7 +177,9 @@ def test_wrong_selector_fails(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )
     view = _make_view(test_selection="some other selection")
     view["test_selection_fingerprint"] = _fingerprint(
@@ -174,7 +202,9 @@ def test_pyside_absent_fails(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )
     view = _make_view(present=False)
     xml = _make_xml(tmp_path)
@@ -194,7 +224,9 @@ def test_empty_coverage_group_fails(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )
     view = _make_view(statements=0, covered=0, branches=0, covered_branches=0)
     xml = _make_xml(tmp_path)
@@ -214,7 +246,9 @@ def test_invalid_percentages_fails(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )
     view = _make_view(line_percent=999, branch_percent=-5)
     xml = _make_xml(tmp_path)
@@ -234,7 +268,9 @@ def test_below_threshold_fails(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )
     # 69% line, below 70 and 71
     view = _make_view(covered=1688, statements=2447, covered_branches=229, branches=512)  # ~69%
@@ -257,7 +293,9 @@ def test_missing_junit_fails(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )
     view = _make_view()
     xml = _make_xml(tmp_path)
@@ -273,7 +311,9 @@ def test_unapproved_skips_fails(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )
     view = _make_view()
     xml = _make_xml(tmp_path)
@@ -296,7 +336,9 @@ def test_xml_json_disagreement_missing_xml(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "a" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
     )
     view = _make_view()
     view_path = tmp_path / "view.json"
@@ -313,7 +355,9 @@ def test_stale_report_wrong_sha(tmp_path: Path, monkeypatch):
     import tools.qt_coverage_gate as gate
 
     monkeypatch.setattr(
-        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "b" * 40})()
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "b" * 40, "returncode": 0})(),
     )
     view = _make_view(commit="a" * 40)
     xml = _make_xml(tmp_path)

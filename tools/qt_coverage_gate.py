@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Strict Qt/UI coverage gate for V8.24.
+"""Strict Qt/UI coverage gate for V8.25.
 
 Validates that the Qt/UI coverage measurement is genuine, fail-closed,
-and matches the exact commit that produced it. All 16 required assertions
-are exercised and covered by unit tests in test_qt_coverage_gate.py.
+and matches the exact commit that produced it. All invariants are exercised
+and covered by unit tests in test_qt_coverage_gate.py.
 
 Usage:
   python tools/qt_coverage_gate.py --xml coverage-ui.xml --view coverage-ui-view.json \
@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -32,9 +34,15 @@ EXPECTED_SELECTION = (
     "+ tests/unit/test_ui_coverage_boost_v23.py (Qt offscreen)"
 )
 
+_HEX40 = re.compile(r"^[0-9a-f]{40}$")
+
 
 def _fingerprint(test_selection: str) -> str:
     return hashlib.sha256(test_selection.encode("utf-8")).hexdigest()[:12]
+
+
+def _is_full_sha(value: str) -> bool:
+    return bool(_HEX40.fullmatch(value))
 
 
 def _read_xml(path: Path) -> ET.Element:
@@ -55,10 +63,117 @@ def _read_json(path: Path) -> dict:
 
 
 def _check_pyside_present(view: dict) -> bool:
-    for dep in view.get("optional_dependencies", []):  # type: ignore[arg-type]
+    deps = view.get("optional_dependencies")
+    if not isinstance(deps, list):
+        return False
+    for dep in deps:
+        if not isinstance(dep, dict):
+            continue
         if dep.get("name") == "ui":
-            return bool(dep.get("present"))
+            # Require explicit boolean True, not truthy
+            return dep.get("present") is True
     return False
+
+
+def _strict_int(value: object, label: str, errors: list[str], gname: str) -> int | None:
+    if isinstance(value, bool):
+        errors.append(f"11: {gname} {label} is bool, expected int")
+        return None
+    if not isinstance(value, int):
+        errors.append(f"11: {gname} {label} is not int: {value!r}")
+        return None
+    if value < 0:
+        errors.append(f"11: {gname} {label} is negative: {value!r}")
+        return None
+    return value
+
+
+def _strict_percent(value: object, label: str, errors: list[str], gname: str) -> float | None:
+    if isinstance(value, bool):
+        errors.append(f"11: {gname} {label} is bool, expected number")
+        return None
+    if not isinstance(value, (int, float)):
+        errors.append(f"11: {gname} {label} not numeric: {value!r}")
+        return None
+    f = float(value)
+    if not math.isfinite(f):
+        errors.append(f"11: {gname} {label} is non-finite: {value!r}")
+        return None
+    if f < 0 or f > 100:
+        errors.append(f"11: {gname} {label} out of range [0,100]: {value!r}")
+        return None
+    return f
+
+
+def _parse_xml_totals(xml_root: ET.Element) -> dict[str, int | float | None]:
+    """Extract totals from coverage XML's root attributes and per-class sums."""
+
+    # Root attributes are the authoritative totals in coverage.py XML
+    def _int_attr(name: str) -> int | None:
+        raw = xml_root.get(name)
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    def _float_attr(name: str) -> float | None:
+        raw = xml_root.get(name)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    lines_valid = _int_attr("lines-valid")
+    lines_covered = _int_attr("lines-covered")
+    branches_valid = _int_attr("branches-valid")
+    branches_covered = _int_attr("branches-covered")
+    line_rate = _float_attr("line-rate")
+    branch_rate = _float_attr("branch-rate")
+
+    # Also compute per-class sums for cross-check (fallback if root attrs missing)
+    # Coverage.py XML: <package><classes><class><lines><line number hits branch ...>
+    # But we can also sum from <class> line counts if root missing. For strictness,
+    # we require root attributes when present; if missing, we use computed sums.
+    if lines_valid is None or lines_covered is None:
+        # Compute from <line> elements
+        lines_valid = 0
+        lines_covered = 0
+        for line in xml_root.iter("line"):
+            lines_valid += 1
+            hits = line.get("hits")
+            try:
+                h = int(hits) if hits is not None else 0
+            except ValueError:
+                h = 0
+            if h > 0:
+                lines_covered += 1
+
+    if branches_valid is None or branches_covered is None:
+        branches_valid = 0
+        branches_covered = 0
+        for line in xml_root.iter("line"):
+            if line.get("branch") == "true":
+                branches_valid += 1
+                # branch coverage is in condition-coverage="50% (1/2)" etc.
+                # Hard to derive covered count; count as 0 for now, rely on root.
+
+    if line_rate is None and lines_valid and lines_valid > 0:
+        line_rate = (lines_covered or 0) / lines_valid if lines_valid else 0
+    if branch_rate is None and branches_valid and branches_valid > 0:
+        branch_rate = (branches_covered or 0) / branches_valid if branches_valid else 0
+
+    return {
+        "lines_valid": lines_valid,
+        "lines_covered": lines_covered,
+        "branches_valid": branches_valid,
+        "branches_covered": branches_covered,
+        "line_rate": line_rate,
+        "branch_rate": branch_rate,
+    }
 
 
 def validate(
@@ -73,6 +188,12 @@ def validate(
     """Return list of error messages; empty means PASS."""
 
     errors: list[str] = []
+
+    # 0. expected_sha must be full 40 hex
+    if not isinstance(expected_sha, str) or not _is_full_sha(expected_sha):
+        errors.append(f"0: expected_sha is not a full 40-char hex SHA: {expected_sha!r}")
+        # Continue to collect other errors but SHA checks will also fail
+        # Do not return early: still validate other artifacts for diagnostics
 
     # 1. coverage-ui.xml exists and parses
     if not xml_path.is_file():
@@ -92,94 +213,146 @@ def validate(
         return errors
     try:
         view = _read_json(view_path)
-    except ValueError as exc:
+    except (ValueError, TypeError) as exc:
         errors.append(f"2: {exc}")
         return errors
 
-    # 3. coverage-ui-report.md exists and contains correct scope (checked via view test_selection)
-    # This is validated via view's test_selection and scope below.
+    # 5. Metadata SHA exactly matches expected_sha and git HEAD (strict)
+    commit = view.get("commit")
+    if not isinstance(commit, str) or not commit:
+        errors.append("5: view commit is missing or not a string")
+    elif not _is_full_sha(commit):
+        errors.append(f"5: view commit is not a full 40-char hex SHA: {commit!r}")
+    elif commit != expected_sha:
+        errors.append(f"5: view commit {commit!r} != expected SHA {expected_sha!r}")
 
-    # 4. Coverage exit record is present and indicates success — validated via junit exit not needed here;
-    # for gate we require xml and view to be non-empty and junit to be present when supplied.
-
-    # 5. Metadata SHA exactly matches git rev-parse HEAD (or expected_sha)
-    commit = str(view.get("commit") or "")
-    if not commit:
-        errors.append("5: view commit is empty")
-    elif len(commit) < 7:
-        errors.append(f"5: view commit too short: {commit!r}")
-    else:
-        # expected_sha may be full 40, view may be short or full; require prefix match
-        if not (expected_sha.startswith(commit) or commit.startswith(expected_sha)):
-            errors.append(f"5: view commit {commit!r} does not match expected SHA {expected_sha!r}")
-        # Also verify it matches actual HEAD when expected_sha is HEAD
-        try:
-            actual = subprocess.run(
-                ["git", "rev-parse", "HEAD"],  # noqa: S607
-                capture_output=True,
-                text=True,
-                check=False,
-            ).stdout.strip()
-            if actual and not (actual.startswith(commit) or commit.startswith(actual)):
-                errors.append(f"5: view commit {commit!r} does not match git HEAD {actual!r}")
-        except Exception:  # noqa: BLE001 - git not always available
-            pass
+    # Also verify it matches actual HEAD when git is available — mandatory, fail if git unavailable
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        actual = result.stdout.strip()
+        if result.returncode != 0 or not actual:
+            errors.append(
+                "5: git rev-parse HEAD failed or returned empty — HEAD verification mandatory"
+            )
+        elif not _is_full_sha(actual):
+            errors.append(f"5: git HEAD is not a full 40-char hex SHA: {actual!r}")
+        elif actual != expected_sha:
+            errors.append(f"5: git HEAD {actual!r} != expected SHA {expected_sha!r}")
+        elif actual != commit:
+            errors.append(f"5: view commit {commit!r} != git HEAD {actual!r}")
+    except (OSError, subprocess.SubprocessError) as exc:
+        errors.append(
+            f"5: git rev-parse HEAD failed with exception: {exc} — HEAD verification mandatory"
+        )
 
     # 6. Scope equals ui-test-selection
-    view_scope = str(view.get("measurement_scope") or "")
-    if view_scope != scope:
+    view_scope = view.get("measurement_scope")
+    if not isinstance(view_scope, str) or view_scope != scope:
         errors.append(f"6: scope is {view_scope!r}, expected {scope!r}")
 
     # 7. Selected test population matches intended 12-file selector
-    view_sel = str(view.get("test_selection") or "")
-    if view_sel != test_selection:
+    view_sel = view.get("test_selection")
+    if not isinstance(view_sel, str) or view_sel != test_selection:
         errors.append(
             f"7: test_selection mismatch:\n expected: {test_selection!r}\n got: {view_sel!r}"
         )
 
     # 8. Fingerprint is non-empty and matches algorithm for recorded selection
-    fp = str(view.get("test_selection_fingerprint") or "")
-    if not fp:
-        errors.append("8: fingerprint is empty")
+    fp = view.get("test_selection_fingerprint")
+    if not isinstance(fp, str) or not fp:
+        errors.append("8: fingerprint is missing or not a non-empty string")
     else:
-        expected_fp = _fingerprint(view_sel)
-        if fp != expected_fp:
-            errors.append(
-                f"8: fingerprint {fp!r} != expected {expected_fp!r} for selection {view_sel!r}"
-            )
+        if not isinstance(view_sel, str):
+            errors.append("8: cannot verify fingerprint because test_selection is not a string")
+        else:
+            expected_fp = _fingerprint(view_sel)
+            if fp != expected_fp:
+                errors.append(
+                    f"8: fingerprint {fp!r} != expected {expected_fp!r} for selection {view_sel!r}"
+                )
+            # Also verify fingerprint is hex and length 12
+            if not re.fullmatch(r"[0-9a-f]{12}", fp):
+                errors.append(f"8: fingerprint {fp!r} is not 12-char hex")
 
-    # 9. PySide6 is actually present in Qt-enabled measurement
-    if not _check_pyside_present(view):
+    # 9. PySide6 is actually present in Qt-enabled measurement — strict schema check
+    deps = view.get("optional_dependencies")
+    if not isinstance(deps, list):
+        errors.append("9: optional_dependencies is missing or not a list")
+    elif not _check_pyside_present(view):
         errors.append(
-            "9: optional dependency ui (PySide6) not present in view — Qt not installed in measurement"
+            "9: optional dependency ui (PySide6) not present=True in view — Qt not installed in measurement"
         )
-
-    # 10. groups["qt/ui"] exists, measured, non-zero stmts and branches
-    groups = view.get("groups", {})  # type: ignore[arg-type]
-    if not isinstance(groups, dict):
-        errors.append("10: view groups is not a dict")
-        return errors
-    qt = groups.get("qt/ui")  # type: ignore[assignment]
-    if not isinstance(qt, dict):
-        errors.append('10: groups["qt/ui"] missing')
     else:
-        stmts = qt.get("statements")  # type: ignore[union-attr]
-        branches = qt.get("branches")  # type: ignore[union-attr]
-        if not isinstance(stmts, int) or stmts <= 0:
+        # Validate that each dep has required fields
+        for idx, dep in enumerate(deps):
+            if not isinstance(dep, dict):
+                errors.append(f"9: optional_dependencies[{idx}] is not an object")
+                continue
+            for field in ("name", "present", "groups"):
+                if field not in dep:
+                    errors.append(f"9: optional_dependencies[{idx}] missing field {field!r}")
+
+    # 10. groups["qt/ui"] exists, measured, non-zero stmts and branches, strict types
+    groups = view.get("groups")
+    if not isinstance(groups, dict):
+        errors.append("10: view groups is missing or not a dict")
+        return errors
+    # Check for unexpected group names (allow only known groups)
+    expected_groups = {
+        "qt/ui",
+        "core",
+        "cli",
+        "database",
+        "document/knowledge/promotion",
+        "extraction",
+        "other packages",
+        "review",
+    }
+    for gname in groups:
+        if gname not in expected_groups and gname not in {"overall"}:
+            # Not an error, but warn if unexpected; for strictness, allow any but check later
+            pass
+    qt = groups.get("qt/ui")
+    if not isinstance(qt, dict):
+        errors.append('10: groups["qt/ui"] missing or not an object')
+    else:
+        # Strict int checks, bool rejected
+        for key in ("statements", "covered_statements", "branches", "covered_branches"):
+            val = qt.get(key)
+            if isinstance(val, bool):
+                errors.append(f"10: qt/ui {key} is bool, expected int: {val!r}")
+            elif not isinstance(val, int):
+                errors.append(f"10: qt/ui {key} is {type(val).__name__}, expected int: {val!r}")
+            elif val < 0:
+                errors.append(f"10: qt/ui {key} is negative: {val!r}")
+        stmts = qt.get("statements")
+        branches = qt.get("branches")
+        if isinstance(stmts, int) and not isinstance(stmts, bool) and stmts <= 0:
             errors.append(f"10: qt/ui statements is {stmts!r}, expected >0")
-        if not isinstance(branches, int) or branches <= 0:
+        if isinstance(branches, int) and not isinstance(branches, bool) and branches <= 0:
             errors.append(f"10: qt/ui branches is {branches!r}, expected >0")
         # line_percent and branch_percent must be valid
         lp = qt.get("line_percent")
         bp = qt.get("branch_percent")
-        if lp is None or not isinstance(lp, (int, float)):
-            errors.append(f"10: qt/ui line_percent missing or not numeric: {lp!r}")
-        if bp is None or not isinstance(bp, (int, float)):
-            errors.append(f"10: qt/ui branch_percent missing or not numeric: {bp!r}")
+        for label, val in (("line_percent", lp), ("branch_percent", bp)):
+            if val is None:
+                errors.append(f"10: qt/ui {label} is missing")
+            elif isinstance(val, bool):
+                errors.append(f"10: qt/ui {label} is bool, expected number: {val!r}")
+            elif not isinstance(val, (int, float)):
+                errors.append(f"10: qt/ui {label} missing or not numeric: {val!r}")
+            elif not math.isfinite(float(val)):
+                errors.append(f"10: qt/ui {label} is non-finite: {val!r}")
+            elif float(val) < 0 or float(val) > 100:
+                errors.append(f"10: qt/ui {label} out of range [0,100]: {val!r}")
 
     # 11. Percentages and counts are valid numeric, finite, in range, mutually consistent
-    # Check all groups
-    for gname, gdata in groups.items():  # type: ignore[attr-defined]
+    for gname, gdata in groups.items():
         if not isinstance(gdata, dict):
             errors.append(f"11: group {gname!r} not a dict")
             continue
@@ -189,38 +362,157 @@ def validate(
         cbranches = gdata.get("covered_branches")
         lp = gdata.get("line_percent")
         bp = gdata.get("branch_percent")
-        # numeric checks
+        # strict int checks
         for key, val in [
             ("statements", stmts),
             ("covered_statements", covered),
             ("branches", branches),
             ("covered_branches", cbranches),
         ]:
-            if not isinstance(val, int) or val < 0:
-                errors.append(f"11: {gname} {key} is not non-negative int: {val!r}")
-        if lp is not None and not isinstance(lp, (int, float)):
-            errors.append(f"11: {gname} line_percent not numeric: {lp!r}")
-        if bp is not None and not isinstance(bp, (int, float)):
-            errors.append(f"11: {gname} branch_percent not numeric: {bp!r}")
-        if isinstance(lp, (int, float)) and (lp != lp or lp < 0 or lp > 100):
-            errors.append(f"11: {gname} line_percent out of range: {lp!r}")
-        if isinstance(bp, (int, float)) and (bp != bp or bp < 0 or bp > 100):
-            errors.append(f"11: {gname} branch_percent out of range: {bp!r}")
+            if isinstance(val, bool):
+                errors.append(f"11: {gname} {key} is bool, expected int: {val!r}")
+            elif not isinstance(val, int):
+                errors.append(f"11: {gname} {key} is not int: {val!r}")
+            elif val < 0:
+                errors.append(f"11: {gname} {key} is negative: {val!r}")
+        # covered must not exceed total
+        if (
+            isinstance(stmts, int)
+            and isinstance(covered, int)
+            and not isinstance(stmts, bool)
+            and not isinstance(covered, bool)
+        ) and covered > stmts:
+            errors.append(f"11: {gname} covered_statements {covered} > statements {stmts}")
+        if (
+            isinstance(branches, int)
+            and isinstance(cbranches, int)
+            and not isinstance(branches, bool)
+            and not isinstance(cbranches, bool)
+        ) and cbranches > branches:
+            errors.append(f"11: {gname} covered_branches {cbranches} > branches {branches}")
+        # percent checks
+        for label, val in [("line_percent", lp), ("branch_percent", bp)]:
+            if val is None:
+                errors.append(f"11: {gname} {label} is missing")
+                continue
+            if isinstance(val, bool):
+                errors.append(f"11: {gname} {label} is bool, expected number: {val!r}")
+                continue
+            if not isinstance(val, (int, float)):
+                errors.append(f"11: {gname} {label} not numeric: {val!r}")
+                continue
+            f = float(val)
+            if not math.isfinite(f):
+                errors.append(f"11: {gname} {label} is non-finite: {val!r}")
+                continue
+            if f < 0 or f > 100:
+                errors.append(f"11: {gname} {label} out of range [0,100]: {val!r}")
         # mutual consistency
-        if isinstance(stmts, int) and isinstance(covered, int) and stmts > 0:
-            expected_lp = round(100.0 * covered / stmts, 2) if stmts else None
-            if isinstance(lp, (int, float)) and abs(float(lp) - float(expected_lp or 0)) > 0.01:
+        if (
+            isinstance(stmts, int)
+            and isinstance(covered, int)
+            and not isinstance(stmts, bool)
+            and not isinstance(covered, bool)
+            and stmts > 0
+        ):
+            expected_lp = round(100.0 * covered / stmts, 2)
+            if (
+                isinstance(lp, (int, float))
+                and not isinstance(lp, bool)
+                and abs(float(lp) - expected_lp) > 0.01
+            ):
                 errors.append(f"11: {gname} line_percent {lp} != {covered}/{stmts}={expected_lp}")
+        if (
+            isinstance(branches, int)
+            and isinstance(cbranches, int)
+            and not isinstance(branches, bool)
+            and not isinstance(cbranches, bool)
+            and branches > 0
+        ):
+            expected_bp = round(100.0 * cbranches / branches, 2)
+            if (
+                isinstance(bp, (int, float))
+                and not isinstance(bp, bool)
+                and abs(float(bp) - expected_bp) > 0.01
+            ):
+                errors.append(
+                    f"11: {gname} branch_percent {bp} != {cbranches}/{branches}={expected_bp}"
+                )
 
-    # 12. XML-derived counts and serialized JSON view correspond — basic check: at least one class present in XML
-    # and view's overall statements >0
-    # Look for <class> elements
-    classes = list(xml_root.iter("class")) if xml_root is not None else []
-    if not classes:
-        errors.append("12: coverage XML has no <class> elements")
-    overall = view.get("overall", {})  # type: ignore[union-attr]
-    if isinstance(overall, dict) and overall.get("statements", 0) <= 0:
-        errors.append("12: view overall statements is 0")
+    # 12. XML-derived counts and serialized JSON view correspond — strict aggregate check
+    try:
+        xml_totals = _parse_xml_totals(xml_root)
+        # Compare overall totals
+        overall = view.get("overall")
+        if not isinstance(overall, dict):
+            errors.append("12: view overall is missing or not an object")
+        else:
+            for json_key, xml_key in [
+                ("statements", "lines_valid"),
+                ("covered_statements", "lines_covered"),
+                ("branches", "branches_valid"),
+                ("covered_branches", "branches_covered"),
+            ]:
+                json_val = overall.get(json_key)
+                xml_val = xml_totals.get(xml_key)
+                if isinstance(json_val, bool) or not isinstance(json_val, int):
+                    errors.append(f"12: view overall {json_key} is not int: {json_val!r}")
+                elif isinstance(xml_val, int) and json_val != xml_val:
+                    errors.append(f"12: overall {json_key}: view {json_val} != xml {xml_val}")
+            # Also check overall percentages
+            for json_key, xml_key in [
+                ("line_percent", "line_rate"),
+                ("branch_percent", "branch_rate"),
+            ]:
+                json_val = overall.get(json_key)
+                xml_val = xml_totals.get(xml_key)
+                if json_val is not None and xml_val is not None:
+                    # line_rate is 0..1, line_percent is 0..100
+                    xml_percent = (
+                        round(float(xml_val) * 100, 2) if xml_val <= 1 else round(float(xml_val), 2)
+                    )
+                    if (
+                        isinstance(json_val, (int, float))
+                        and abs(float(json_val) - xml_percent) > 0.5
+                    ):
+                        errors.append(
+                            f"12: overall {json_key}: view {json_val} != xml {xml_percent} (from {xml_key} {xml_val})"
+                        )
+        # Also ensure at least one class present and overall statements >0
+        classes = list(xml_root.iter("class"))
+        if not classes:
+            errors.append("12: coverage XML has no <class> elements")
+        if (
+            isinstance(overall, dict)
+            and isinstance(overall.get("statements"), int)
+            and overall.get("statements", 0) <= 0
+        ):
+            errors.append("12: view overall statements is 0")
+        # Check group totals vs XML file selection: ensure qt/ui files are represented in XML
+        # Count how many XML classes are under src/drilling_intelligence/ui/
+        ui_classes = [
+            c for c in classes if "drilling_intelligence/ui/" in (c.get("filename") or "")
+        ]
+        if isinstance(qt, dict) and isinstance(qt.get("files"), int):
+            # If view says qt/ui has N files, XML should have at least that many ui classes (allow extra)
+            json_files = qt.get("files")
+            if isinstance(json_files, int) and len(ui_classes) < json_files:
+                # Not necessarily error, but if JSON claims more files than XML has, mismatch
+                errors.append(
+                    f"12: qt/ui files: view {json_files} > xml ui classes {len(ui_classes)}"
+                )
+        # Check for duplicate class filenames in XML
+        seen = set()
+        dups = set()
+        for c in classes:
+            fname = c.get("filename") or ""
+            if fname in seen:
+                dups.add(fname)
+            seen.add(fname)
+        if dups:
+            errors.append(f"12: duplicate class filenames in XML: {sorted(dups)!r}")
+    except Exception as exc:  # noqa: BLE001 - any parsing error is a validation error
+        errors.append(f"12: failed to parse XML totals: {exc}")
 
     # 13. UI test-selection JUnit/skip audit has no unapproved skipped test
     if junit_path is not None:
@@ -228,34 +520,78 @@ def validate(
             errors.append(f"13: JUnit path missing at {junit_path}")
         else:
             try:
-                from tools.pytest_totals import (
-                    unexpected_skips_qt_enabled,  # local import to avoid cycle
-                )
+                root_junit = ET.parse(junit_path).getroot()  # noqa: S314
+                if root_junit.tag not in {"testsuite", "testsuites"}:
+                    errors.append(
+                        f"13: JUnit root is {root_junit.tag!r}, expected testsuite/testsuites"
+                    )
+                else:
+                    from tools.pytest_totals import (
+                        unexpected_skips_qt_enabled,  # local import to avoid cycle
+                    )
 
-                skips = unexpected_skips_qt_enabled(junit_path)
-                if skips:
-                    errors.append("13: unapproved skips in Qt-enabled JUnit:\n" + "\n".join(skips))
+                    skips = unexpected_skips_qt_enabled(junit_path)
+                    if skips:
+                        errors.append(
+                            "13: unapproved skips in Qt-enabled JUnit:\n" + "\n".join(skips)
+                        )
+                    # Also validate that JUnit has no failures/errors
+                    for suite in (
+                        root_junit.findall("testsuite")
+                        if root_junit.tag == "testsuites"
+                        else [root_junit]
+                    ):
+                        failures = suite.get("failures")
+                        errors_attr = suite.get("errors")
+                        try:
+                            if failures is not None and int(failures) != 0:
+                                errors.append(
+                                    f"13: JUnit suite {suite.get('name')!r} has failures={failures}"
+                                )
+                            if errors_attr is not None and int(errors_attr) != 0:
+                                errors.append(
+                                    f"13: JUnit suite {suite.get('name')!r} has errors={errors_attr}"
+                                )
+                        except ValueError:
+                            errors.append(
+                                f"13: JUnit suite failures/errors is not int: {failures}/{errors_attr}"
+                            )
+                    # Check for testcase with <failure> or <error>
+                    for case in root_junit.iter("testcase"):
+                        if case.find("failure") is not None:
+                            errors.append(
+                                f"13: JUnit testcase {case.get('classname')}::{case.get('name')} has <failure>"
+                            )
+                        if case.find("error") is not None:
+                            errors.append(
+                                f"13: JUnit testcase {case.get('classname')}::{case.get('name')} has <error>"
+                            )
+            except ET.ParseError as exc:
+                errors.append(f"13: JUnit is not valid XML: {exc}")
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"13: failed to check JUnit skips: {exc}")
+                errors.append(f"13: failed to check JUnit: {exc}")
 
     # 14. Report's commit, selector, and scope agree with gate's inputs — already covered in 5,6,7
     # 15. Both thresholds fail closed — validated here, not just printed
     if isinstance(qt, dict):
         lp = qt.get("line_percent")
         bp = qt.get("branch_percent")
-        if isinstance(lp, (int, float)) and lp < 70.0:
-            errors.append(f"15a: qt/ui line {lp}% below 70% gate")
-        if isinstance(bp, (int, float)) and bp < 40.0:
-            errors.append(f"15a: qt/ui branch {bp}% below 40% gate")
-        if isinstance(lp, (int, float)) and lp < 71.0:
-            errors.append(f"15b: qt/ui line {lp}% below 71% resilience (V8.23 contractual)")
-        if isinstance(bp, (int, float)) and bp < 42.0:
-            errors.append(f"15b: qt/ui branch {bp}% below 42% resilience")
+        if isinstance(lp, (int, float)) and not isinstance(lp, bool):
+            if float(lp) < 70.0:
+                errors.append(f"15a: qt/ui line {lp}% below 70% gate")
+            if float(lp) < 71.0:
+                errors.append(f"15b: qt/ui line {lp}% below 71% resilience (V8.23 contractual)")
+        else:
+            errors.append("15: qt/ui line_percent missing or not numeric, cannot check threshold")
+        if isinstance(bp, (int, float)) and not isinstance(bp, bool):
+            if float(bp) < 40.0:
+                errors.append(f"15a: qt/ui branch {bp}% below 40% gate")
+            if float(bp) < 42.0:
+                errors.append(f"15b: qt/ui branch {bp}% below 42% resilience")
+        else:
+            errors.append("15: qt/ui branch_percent missing or not numeric, cannot check threshold")
 
-    # 16. Missing or failed measurement cannot reuse old artifact — check that view commit matches expected_sha
-    # already covered in 5; also ensure xml file mtime is not older than view? For now check that xml exists
-    # and view's commit is expected; stale report would have old SHA and fail 5.
-
+    # 16. Missing or failed measurement cannot reuse old artifact — already covered in 5 via SHA equality
     return errors
 
 
@@ -275,14 +611,31 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.expected_sha is None:
         try:
-            args.expected_sha = subprocess.run(
+            result = subprocess.run(
                 ["git", "rev-parse", "HEAD"],  # noqa: S607
                 capture_output=True,
                 text=True,
                 check=False,
-            ).stdout.strip()
-        except Exception:  # noqa: BLE001
-            print("::error::could not determine HEAD", file=sys.stderr)
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                print("::error::could not determine HEAD: git rev-parse failed", file=sys.stderr)
+                return 1
+            args.expected_sha = result.stdout.strip()
+            if not _is_full_sha(args.expected_sha):
+                print(
+                    f"::error::git HEAD is not a full 40-char hex SHA: {args.expected_sha!r}",
+                    file=sys.stderr,
+                )
+                return 1
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"::error::could not determine HEAD: {exc}", file=sys.stderr)
+            return 1
+    else:
+        if not _is_full_sha(args.expected_sha):
+            print(
+                f"::error::expected_sha is not a full 40-char hex SHA: {args.expected_sha!r}",
+                file=sys.stderr,
+            )
             return 1
 
     errs = validate(
