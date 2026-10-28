@@ -654,8 +654,7 @@ def test_xml_json_aggregate_mismatch_fails(tmp_path: Path, monkeypatch):
         encoding="utf-8",
     )
     errs = validate(xml_path=xml, view_path=view_path, junit_path=junit, expected_sha="a" * 40)
-    # For V8.25, overall mismatch is advisory, not a hard gate, so no 12 error expected
-    assert not any("12:" in e for e in errs)
+    assert any("12:" in e for e in errs)
 
 
 def test_threshold_boundaries(tmp_path: Path, monkeypatch):
@@ -692,7 +691,903 @@ def test_threshold_boundaries(tmp_path: Path, monkeypatch):
         encoding="utf-8",
     )
     errs = validate(xml_path=xml, view_path=view_path, junit_path=junit, expected_sha="a" * 40)
-    # For V8.25, 71/42 resilience is advisory, so 70/40 at threshold should have no errors
-    assert not any("15b" in e for e in errs)
+    # 70/40 is hard (should have no 15a error at exactly 70/40), 71/42 is advisory (no 15b error in validate)
+    # The CLI will emit advisory warnings for 71/42 separately, but validate itself does not fail on 71/42
     assert not any("15a" in e for e in errs)
     assert not any("15:" in e for e in errs)
+
+
+# ---------------------------------------------------------------------------
+# CLI integration tests — prove main() fail-closed contract (V8.26)
+# ---------------------------------------------------------------------------
+
+
+def _run_cli(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    view_overrides=None,
+    xml_content=None,
+    junit_content=None,
+    expected_sha="a" * 40,
+    git_stdout="a" * 40,
+    git_returncode=0,
+):
+    """Helper to run main() with isolated files and mocked git."""
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": git_stdout, "returncode": git_returncode})(),
+    )
+    view = _make_view(commit="a" * 40)
+    if view_overrides:
+        for k, v in view_overrides.items():
+            if k.startswith("groups."):
+                _, g, field = k.split(".")
+                view["groups"][g][field] = v
+            elif k.startswith("overall."):
+                _, field = k.split(".")
+                view["overall"][field] = v
+            else:
+                view[k] = v
+    xml = _make_xml(tmp_path, xml_content) if xml_content is not None else _make_xml(tmp_path)
+    if xml_content == "MISSING":
+        xml.unlink(missing_ok=True)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    if view_overrides and view_overrides.get("_view_missing"):
+        view_path.unlink(missing_ok=True)
+    junit = tmp_path / "junit.xml"
+    if junit_content == "MISSING":
+        # leave missing
+        junit_path = junit
+        if junit.exists():
+            junit.unlink()
+        junit_path = junit
+    elif junit_content is not None:
+        junit.write_text(junit_content, encoding="utf-8")
+        junit_path = junit
+    else:
+        junit.write_text(
+            '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+            encoding="utf-8",
+        )
+        junit_path = junit
+    # Capture main output
+    import io
+    from contextlib import redirect_stderr, redirect_stdout
+
+    out = io.StringIO()
+    err = io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        code = gate.main(
+            [
+                "--xml",
+                str(xml),
+                "--view",
+                str(view_path),
+                "--junit",
+                str(junit_path),
+                "--expected-sha",
+                expected_sha,
+            ]
+        )
+    return code, out.getvalue(), err.getvalue(), xml, view_path
+
+
+def test_cli_valid_passes(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "qt_coverage_gate: PASS" in captured.out
+    assert "::error::" not in captured.err
+
+
+def test_cli_short_sha_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 7,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+    assert "not a full 40-char" in captured.err or "expected_sha" in captured.err
+
+
+def test_cli_invalid_hex_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "g" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_artifact_sha_mismatch_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="b" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+    assert "::error::" in captured.err
+
+
+def test_cli_git_head_mismatch_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "b" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_git_unavailable_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "", "returncode": 1})()
+    )
+    view = _make_view(commit="a" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_missing_xml_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    missing = tmp_path / "missing.xml"
+    code = gate.main(
+        [
+            "--xml",
+            str(missing),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_malformed_xml_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    xml = tmp_path / "coverage-ui.xml"
+    xml.write_text("<coverage><bad>", encoding="utf-8")
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_missing_json_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    xml = _make_xml(tmp_path)
+    missing = tmp_path / "missing.json"
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(missing),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_malformed_json_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text("{ not json", encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_junit_missing_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    missing = tmp_path / "missing_junit.xml"
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(missing),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_junit_malformed_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text("<not xml>", encoding="utf-8")
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_junit_failures_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1" failures="1"><testcase classname="x" name="y"><failure/></testcase></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_unapproved_skip_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="tests.unit.test_ui_coverage_boost_v23" name="test_main_window_offscreen_init_v23"><skipped message="QtWidgets unavailable: foo"/></testcase></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_qtui_absent_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40, statements=0, covered=0, branches=0, covered_branches=0)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_invalid_type_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40, statements=True)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_nan_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40, line_percent=float("nan"))
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_covered_exceeds_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40, statements=10, covered=20)
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_xml_json_mismatch_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(
+        commit="a" * 40,
+        overall_statements=100,
+        overall_covered=90,
+        overall_branches=50,
+        overall_covered_branches=45,
+    )
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_wrong_selection_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40, test_selection="wrong")
+    view["test_selection_fingerprint"] = _fingerprint("wrong")
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_wrong_fingerprint_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(commit="a" * 40, fingerprint="deadbeefdead")
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_below_70_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(
+        commit="a" * 40,
+        covered=69,
+        statements=100,
+        line_percent=69.0,
+        covered_branches=50,
+        branches=100,
+        branch_percent=50.0,
+    )
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out
+
+
+def test_cli_below_40_fails(tmp_path: Path, monkeypatch, capsys):
+    import tools.qt_coverage_gate as gate
+
+    monkeypatch.setattr("tools.qt_coverage_gate._check_pyside_present", lambda view: True)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *a, **k: type("R", (), {"stdout": "a" * 40, "returncode": 0})(),
+    )
+    view = _make_view(
+        commit="a" * 40,
+        covered=80,
+        statements=100,
+        line_percent=80.0,
+        covered_branches=39,
+        branches=100,
+        branch_percent=39.0,
+    )
+    xml = _make_xml(tmp_path)
+    view_path = tmp_path / "view.json"
+    view_path.write_text(json.dumps(view), encoding="utf-8")
+    junit = tmp_path / "junit.xml"
+    junit.write_text(
+        '<testsuites><testsuite tests="1"><testcase classname="x" name="y"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+    code = gate.main(
+        [
+            "--xml",
+            str(xml),
+            "--view",
+            str(view_path),
+            "--junit",
+            str(junit),
+            "--expected-sha",
+            "a" * 40,
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code != 0
+    assert "qt_coverage_gate: PASS" not in captured.out

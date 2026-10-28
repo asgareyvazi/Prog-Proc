@@ -98,9 +98,9 @@ to be found by somebody else.
 | `tools/coverage_report.py` | 384 | `Exception` | suppressed | noqa marker |
 | `tools/coverage_report.py` | 482 | `Exception` | suppressed | noqa marker |
 | `tools/pytest_totals.py` | 217 | `Exception` | suppressed | any import probe failure means not available |
-| `tools/qt_coverage_gate.py` | 483 | `Exception` | reported | any parsing error is a validation error |
-| `tools/qt_coverage_gate.py` | 638 | `Exception` | suppressed | noqa marker |
-| `tools/qt_coverage_gate.py` | 540 | `Exception` | reported | noqa marker |
+| `tools/qt_coverage_gate.py` | 510 | `Exception` | reported | any parsing error is a validation error |
+| `tools/qt_coverage_gate.py` | 686 | `Exception` | suppressed | noqa marker |
+| `tools/qt_coverage_gate.py` | 567 | `Exception` | reported | noqa marker |
 | `tools/qt_stability_evidence.py` | 66 | `Exception` | suppressed | noqa marker |
 | `tools/qt_stability_evidence.py` | 92 | `Exception` | reported | noqa marker |
 | `tools/qt_stability_evidence.py` | 143 | `Exception` | reported | noqa marker |

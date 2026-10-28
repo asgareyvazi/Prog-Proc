@@ -441,21 +441,42 @@ def validate(
 
     # 12. XML-derived counts and serialized JSON view correspond — strict aggregate check
     try:
-        _ = _parse_xml_totals(xml_root)
-        # Compare overall totals — lenient: only fail if overall is missing or clearly wrong type, not on exact XML aggregate mismatch
-        # The strict aggregate check is advisory; the gate's hard requirement is that overall exists and is non-zero.
-        # XML vs JSON totals are compared as a diagnostic, not a hard gate, to avoid false positives from
-        # coverage.py filtering or source-path differences. See V8.25 forensic refresh.
+        xml_totals = _parse_xml_totals(xml_root)
+        # Compare overall totals — strict: view overall must exactly match XML root totals
         overall = view.get("overall")
         if not isinstance(overall, dict):
             errors.append("12: view overall is missing or not an object")
         else:
-            for json_key in ("statements", "covered_statements", "branches", "covered_branches"):
+            for json_key, xml_key in [
+                ("statements", "lines_valid"),
+                ("covered_statements", "lines_covered"),
+                ("branches", "branches_valid"),
+                ("covered_branches", "branches_covered"),
+            ]:
                 json_val = overall.get(json_key)
+                xml_val = xml_totals.get(xml_key)
                 if isinstance(json_val, bool) or not isinstance(json_val, int):
                     errors.append(f"12: view overall {json_key} is not int: {json_val!r}")
-            # Percentages are checked leniently: only missing is an error here, numeric checks are in 11.
-            # The XML-derived line_rate/branch_rate is not compared strictly to avoid source-filter mismatches.
+                elif isinstance(xml_val, int) and json_val != xml_val:
+                    errors.append(f"12: overall {json_key}: view {json_val} != xml {xml_val}")
+            # Also check overall percentages — normalize line-rate (0-1) to percent (0-100)
+            for json_key, xml_key in [
+                ("line_percent", "line_rate"),
+                ("branch_percent", "branch_rate"),
+            ]:
+                json_val = overall.get(json_key)
+                xml_val = xml_totals.get(xml_key)
+                if json_val is not None and xml_val is not None:
+                    xml_percent = (
+                        round(float(xml_val) * 100, 2) if xml_val <= 1 else round(float(xml_val), 2)
+                    )
+                    if (
+                        isinstance(json_val, (int, float))
+                        and abs(float(json_val) - xml_percent) > 0.5
+                    ):
+                        errors.append(
+                            f"12: overall {json_key}: view {json_val} != xml {xml_percent} (from {xml_key} {xml_val})"
+                        )
         # Also ensure at least one class present and overall statements >0
         classes = list(xml_root.iter("class"))
         if not classes:
@@ -467,9 +488,15 @@ def validate(
         ):
             errors.append("12: view overall statements is 0")
         # Check group totals vs XML file selection: ensure qt/ui files are represented in XML
-        # The file-count cross-check is advisory; the package view may count files differently
-        # than the Cobertura class list (e.g., __init__ with zero statements). No hard gate here.
-        _ = [c for c in classes if "drilling_intelligence/ui/" in (c.get("filename") or "")]
+        ui_classes = [
+            c for c in classes if "drilling_intelligence/ui/" in (c.get("filename") or "")
+        ]
+        if isinstance(qt, dict) and isinstance(qt.get("files"), int):
+            json_files = qt.get("files")
+            if isinstance(json_files, int) and len(ui_classes) < json_files:
+                errors.append(
+                    f"12: qt/ui files: view {json_files} > xml ui classes {len(ui_classes)}"
+                )
         # Check for duplicate class filenames in XML
         seen = set()
         dups = set()
@@ -616,24 +643,45 @@ def main(argv: list[str] | None = None) -> int:
     )
     if errs:
         for e in errs:
-            # For V8.25, gate failures are advisory: emit as warnings but do not fail the job,
-            # to allow the evidence archive to be built while the forensic audit is completed.
-            print(f"::warning::{e}", file=sys.stderr)
-        print("qt_coverage_gate: ADVISORY FAIL (not blocking CI)", file=sys.stderr)
+            print(f"::error::{e}", file=sys.stderr)
+        print("qt_coverage_gate: FAIL", file=sys.stderr)
         for e in errs:
             print(e, file=sys.stderr)
-        # Do not return 1; treat as PASS for CI while still recording the diagnostic.
-        # The hard 70/40 and 71/42 thresholds are likewise advisory for this refresh.
-    # Emit notices for pass, mirroring previous gate
+        return 1
+    # Emit notices for pass, mirroring previous gate — only on success
+    # Advisory resilience check: 71/42 is not a hard gate, but emit warning if below
     try:
         view = json.loads(args.view.read_text(encoding="utf-8"))
         qt = view.get("groups", {}).get("qt/ui", {})
         lp = qt.get("line_percent")
         bp = qt.get("branch_percent")
+        # Advisory: warn if below 71/42 but do not fail
+        if isinstance(lp, (int, float)) and not isinstance(lp, bool) and float(lp) < 71.0:
+            print(
+                f"::warning::coverage-resilience: qt/ui line {lp}% below 71% resilience target",
+                file=sys.stderr,
+            )
+        if isinstance(bp, (int, float)) and not isinstance(bp, bool) and float(bp) < 42.0:
+            print(
+                f"::warning::coverage-resilience: qt/ui branch {bp}% below 42% resilience target",
+                file=sys.stderr,
+            )
         print(f"::notice::coverage-gate: PASS qt/ui {lp}% lines, {bp}% branches meets 70/40")
-        print(
-            f"::notice::coverage-resilience: PASS qt/ui {lp}% lines, {bp}% branches meets 71/42 headroom (V8.23)"
-        )
+        # Only emit resilience PASS if actually meets 71/42
+        if (
+            isinstance(lp, (int, float))
+            and isinstance(bp, (int, float))
+            and float(lp) >= 71.0
+            and float(bp) >= 42.0
+        ):
+            print(
+                f"::notice::coverage-resilience: PASS qt/ui {lp}% lines, {bp}% branches meets 71/42 headroom (V8.23)"
+            )
+        else:
+            print(
+                f"::notice::coverage-resilience: ADVISORY qt/ui {lp}% lines, {bp}% branches below 71/42 headroom",
+                file=sys.stderr,
+            )
         print(f"::notice::coverage-ui-package: {lp}% lines, {bp}% branches (qt/ui package, UI run)")
     except Exception:  # noqa: BLE001
         pass
