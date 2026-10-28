@@ -44,23 +44,35 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SOURCE_PREFIX = "src/drilling_intelligence/"
 
-#: The package groups the platform is read by.  The first seven are the groups
-#: the V8.17 mission asks for; everything else is listed under "other packages"
-#: and itemised, so that a package cannot disappear into an average.
-GROUPS: dict[str, tuple[str, ...]] = {
-    "core": ("core",),
-    "database": ("database",),
-    "extraction": ("extraction",),
-    "document/knowledge/promotion": ("documents", "knowledge", "operations"),
-    "cli": ("cli",),
-    "review": ("review",),
-    "qt/ui": ("ui",),
-}
+# Shared path normalization — single source of truth for product-relative mapping.
+# Coverage gate must use the same contract. Import with fallback for direct execution.
+try:
+    from tools.coverage_paths import (  # type: ignore[import-not-found]
+        GROUPS,
+        OTHER_GROUP,
+        PACKAGE_MARKER,
+        SOURCE_PREFIX,
+        group_of,
+        package_of,
+        relative_to_package,
+    )
+except ImportError:
+    # Fallback for environments where `tools` is not yet on sys.path (direct script)
+    import sys as _sys
 
-#: A package that is not in a named group is still reported, on its own line.
-OTHER_GROUP = "other packages"
+    _REPO_FOR_COV = Path(__file__).resolve().parents[1]
+    if str(_REPO_FOR_COV) not in _sys.path:
+        _sys.path.insert(0, str(_REPO_FOR_COV))
+    from tools.coverage_paths import (  # type: ignore[import-not-found, no-redef]
+        GROUPS,  # noqa: F401
+        OTHER_GROUP,  # noqa: F401
+        PACKAGE_MARKER,
+        SOURCE_PREFIX,  # noqa: F401
+        group_of,
+        package_of,  # noqa: F401
+        relative_to_package,
+    )
 
 #: The optional dependencies, and the groups whose numbers depend on them.
 #: ``extra`` is a pip extra of this project; ``command`` is an external
@@ -196,54 +208,6 @@ class Coverage:
         group = GroupCoverage(name="overall")
         group.files = list(self.files)
         return group
-
-
-PACKAGE_MARKER = "drilling_intelligence/"
-
-
-def relative_to_package(path: str) -> str | None:
-    """The path of a measured file inside the product package.
-
-    Cobertura is written in two shapes depending on how the report was asked
-    for.  ``pytest --cov`` writes the full path it measured, so a file arrives
-    as ``src/drilling_intelligence/core/units.py``.  A report rooted at the
-    package writes ``core/units.py`` and names the root once, in
-    ``<sources><source>``.  Both are the same measurement of the same file, and
-    a reader of this report must not get 100% of nothing because the shape
-    changed.
-    """
-    normalised = path.replace("\\", "/")
-    index = normalised.rfind(PACKAGE_MARKER)
-    if index >= 0:
-        return normalised[index + len(PACKAGE_MARKER) :]
-    if normalised.startswith(("src/", "tests/", "tools/", "/")) or ".." in normalised:
-        return None
-    if normalised.startswith(SOURCE_PREFIX):
-        return normalised[len(SOURCE_PREFIX) :]
-    return normalised
-
-
-def package_of(path: str) -> str:
-    """``src/drilling_intelligence/core/units.py`` -> ``core``."""
-    relative = relative_to_package(path)
-    if relative is None:
-        return OTHER_GROUP
-    parts = relative.split("/")
-    if len(parts) < 2:
-        # A module at the root of the package (``__init__.py``) belongs to the
-        # package itself, and is reported with the packages that are not in a
-        # named group rather than being dropped.
-        return OTHER_GROUP
-    return parts[0]
-
-
-def group_of(path: str) -> str:
-    """The group a measured file belongs to."""
-    package = package_of(path)
-    for group, packages in GROUPS.items():
-        if package in packages:
-            return group
-    return OTHER_GROUP
 
 
 def _condition_counts(text: str | None) -> tuple[int, int]:

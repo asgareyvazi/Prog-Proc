@@ -25,6 +25,45 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Bootstrap for direct script execution (``python tools/qt_coverage_gate.py``)
+# When invoked as a file, ``__package__`` is empty and ``tools`` is not on
+# sys.path as a package. The gate needs ``tools.pytest_totals`` (which itself
+# imports ``drilling_intelligence`` from ``src/``) and ``tools.coverage_paths``.
+# Insert both the repository root and ``src`` so both the in-process
+# (``pytest`` imports ``tools.qt_coverage_gate``) and the direct CLI
+# (``python tools/qt_coverage_gate.py``) paths resolve identically.
+# This is the documented, minimally invasive bootstrap for V8.27.
+# ---------------------------------------------------------------------------
+if __package__ in (None, ""):  # direct execution
+    _REPO_ROOT_GATE = Path(__file__).resolve().parents[1]
+    _SRC_ROOT_GATE = _REPO_ROOT_GATE / "src"
+    for _P in (str(_REPO_ROOT_GATE), str(_SRC_ROOT_GATE)):
+        if _P not in sys.path:
+            sys.path.insert(0, _P)
+
+# Shared path normalization — must match coverage_report's contract.
+try:
+    from tools.coverage_paths import (  # type: ignore[import-not-found]
+        PACKAGE_MARKER,  # type: ignore[import-not-found]
+        group_of,
+        relative_to_package,
+        xml_filename_to_relative,
+    )
+except ImportError:
+    # Fallback when bootstrap hasn't yet run (e.g. import order)
+    _FALLBACK_ROOT = Path(__file__).resolve().parents[1]
+    _FALLBACK_SRC = _FALLBACK_ROOT / "src"
+    for _P in (str(_FALLBACK_ROOT), str(_FALLBACK_SRC)):
+        if _P not in sys.path:
+            sys.path.insert(0, _P)
+    from tools.coverage_paths import (  # type: ignore[no-redef, import-not-found]
+        PACKAGE_MARKER,  # type: ignore[no-redef]
+        group_of,
+        relative_to_package,
+        xml_filename_to_relative,
+    )
+
 EXPECTED_SELECTION = (
     "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py "
     "+ tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py "
@@ -106,27 +145,54 @@ def _strict_percent(value: object, label: str, errors: list[str], gname: str) ->
 
 
 def _parse_xml_totals(xml_root: ET.Element) -> dict[str, int | float | None]:
-    """Extract package-filtered totals from coverage XML.
+    """Extract product-filtered totals from coverage XML.
 
-    Root attributes (lines-valid etc) count all measured files including tests/tools,
-    while view overall only counts drilling_intelligence package files (same filter
-    as tools/coverage_report.py). For strict consistency we compute totals from
-    <class> elements filtered to drilling_intelligence/.
+    Must match :func:`tools.coverage_report.read_cobertura` and
+    :func:`tools.coverage_paths.relative_to_package` so that the JSON view's
+    ``overall`` (product-only) is compared with the same population in XML.
+
+    Handling:
+    - Normalizes ``\\`` to ``/``.
+    - Inspects ``<sources>`` to determine ``rooted_in_package`` (any source
+      containing ``drilling_intelligence``). This determines whether a bare
+      ``ui/foo.py`` is a plausible product path or an ambiguous non-product
+      path that must be rejected.
+    - Empty/missing ``filename`` is not a product file.
+    - Branch counts are derived from ``condition-coverage="50% (1/2)"`` in the
+      same deterministic way as the producer; malformed values are treated as
+      0/0 but will be caught elsewhere if totals mismatch.
+    - If no product classes are found, we return zero totals rather than
+      silently falling back to "all classes" — the caller will then fail with
+      an actionable error (covers the ``view 9 > xml 0`` case).
     """
 
-    # Filter to product package (same as coverage_report.py::read_cobertura)
-    package_classes = [
-        c
-        for c in xml_root.iter("class")
-        if "drilling_intelligence/" in (c.get("filename") or "").replace("\\", "/")
-    ]
-    classes_for_total = package_classes if package_classes else list(xml_root.iter("class"))
+    sources = [(el.text or "").strip() for el in xml_root.iter("source") if el.text]
+    rooted_in_package = any("drilling_intelligence" in s for s in sources)
 
+    # Single, correct product-class selection (mirrors coverage_report.read_cobertura):
+    # - If filename contains drilling_intelligence/, it's product regardless of sources.
+    # - Else if rooted_in_package is True, a bare "ui/foo.py" is product if relative_to_package maps it.
+    # - Else (not rooted, no marker) it's ambiguous/non-product and we skip (fail closed).
+    product_classes: list[ET.Element] = []
+    for cls in xml_root.iter("class"):
+        fname = cls.get("filename") or ""
+        if not fname:
+            continue
+        if PACKAGE_MARKER in fname.replace("\\", "/"):
+            product_classes.append(cls)
+            continue
+        if rooted_in_package:
+            rel2 = relative_to_package(fname)
+            if rel2 is not None:
+                product_classes.append(cls)
+
+    # Do not fall back to "all classes" — if no product files, totals are zero
+    # and the caller will report mismatch (e.g. view 9 > xml 0).
     lines_valid = 0
     lines_covered = 0
     branches_valid = 0
     branches_covered = 0
-    for cls in classes_for_total:
+    for cls in product_classes:
         for line in cls.iter("line"):
             lines_valid += 1
             hits = line.get("hits")
@@ -159,6 +225,9 @@ def _parse_xml_totals(xml_root: ET.Element) -> dict[str, int | float | None]:
         "branches_covered": branches_covered,
         "line_rate": line_rate,
         "branch_rate": branch_rate,
+        "_product_classes": product_classes,  # internal, for caller checks
+        "_sources": sources,
+        "_rooted": rooted_in_package,
     }
 
 
@@ -474,25 +543,78 @@ def validate(
         ):
             errors.append("12: view overall statements is 0")
         # Check group totals vs XML file selection: ensure qt/ui files are represented in XML
-        ui_classes = [
-            c for c in classes if "drilling_intelligence/ui/" in (c.get("filename") or "")
-        ]
+        # Use shared normalization (sources + Package marker) to count UI classes correctly
+        # for both full paths (src/drilling_intelligence/ui/...) and package-rooted (ui/...)
+        sources_for_ui = xml_totals.get("_sources", []) if isinstance(xml_totals, dict) else []
+        rooted_for_ui = xml_totals.get("_rooted", False) if isinstance(xml_totals, dict) else False
+        # Re-derive UI classes via the same logic as _parse_xml_totals
+        ui_classes = []
+        for c in classes:
+            fname = c.get("filename") or ""
+            if not fname:
+                continue
+            # Use shared helper: if it maps to product and its group is qt/ui
+            # We need to check both marker and rooted cases
+            if PACKAGE_MARKER in fname.replace("\\", "/"):
+                rel = relative_to_package(fname)
+            else:
+                rel = xml_filename_to_relative(fname, sources_for_ui, rooted_for_ui)
+                if rel is None:
+                    # Try fallback: if relative_to_package would succeed but xml helper rejected
+                    # due to not-rooted, we already handled marker case; so skip
+                    continue
+            if rel is not None and group_of(rel) == "qt/ui":
+                ui_classes.append(c)
         if isinstance(qt, dict) and isinstance(qt.get("files"), int):
             json_files = qt.get("files")
             if isinstance(json_files, int) and len(ui_classes) < json_files:
                 errors.append(
                     f"12: qt/ui files: view {json_files} > xml ui classes {len(ui_classes)}"
                 )
-        # Check for duplicate class filenames in XML
+            if isinstance(json_files, int) and len(ui_classes) == 0 and json_files > 0:
+                # Provide more context when zero UI classes found
+                # Check if XML has any product classes at all
+                product_classes = xml_totals.get("_product_classes", [])
+                if isinstance(product_classes, list) and len(product_classes) == 0:
+                    errors.append(
+                        f"12: no product classes found in XML (sources={sources_for_ui!r}, rooted={rooted_for_ui}) — cannot verify qt/ui"
+                    )
+        # Check for duplicate normalized class filenames in XML
+        # Duplicate raw filenames are already caught, but normalized duplicates (e.g.
+        # src/drilling_intelligence/ui/foo.py vs ui/foo.py with package-root source)
+        # should also be flagged as they represent the same product file.
         seen = set()
         dups = set()
+        seen_norm = set()
+        dups_norm = set()
         for c in classes:
             fname = c.get("filename") or ""
             if fname in seen:
                 dups.add(fname)
             seen.add(fname)
+            # Normalized duplicate check
+            if fname:
+                rel_norm = relative_to_package(fname)
+                # For bare ui/ paths, relative_to_package returns "ui/..." even without
+                # rooted check — which is correct for duplicate detection.
+                # If rel_norm is None, we still consider raw fname for duplicate
+                norm = rel_norm if rel_norm is not None else fname.replace("\\", "/")
+                if norm in seen_norm:
+                    dups_norm.add(norm)
+                seen_norm.add(norm)
         if dups:
             errors.append(f"12: duplicate class filenames in XML: {sorted(dups)!r}")
+        if dups_norm and not dups:
+            # Only report normalized dups if not already reported as raw dups
+            errors.append(f"12: duplicate normalized product paths in XML: {sorted(dups_norm)!r}")
+        # Validate that every class filename can be mapped (empty/missing)
+        missing_filenames = [c for c in classes if not (c.get("filename") or "").strip()]
+        if missing_filenames:
+            errors.append(
+                f"12: XML has {len(missing_filenames)} <class> with missing/empty filename"
+            )
+        # If the XML claims to be product-rooted but has ambiguous bare paths without root, fail closed
+        # (already handled by product_classes==0 case above)
     except Exception as exc:  # noqa: BLE001 - any parsing error is a validation error
         errors.append(f"12: failed to parse XML totals: {exc}")
 

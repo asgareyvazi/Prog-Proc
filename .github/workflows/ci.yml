@@ -458,7 +458,11 @@ jobs:
 
       # Qualification, not a silent rerun. Each iteration is independent. A
       # failed iteration fails the job even if a later one passes.
+      # V8.27: must run even after coverage gate failure so evidence is
+      # produced and the verifier does not misreport "missing evidence" as
+      # though the producer had run. The job still fails due to the gate.
       - name: Qt stability qualification
+        if: always()
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           QT_OPENGL: software
@@ -472,6 +476,7 @@ jobs:
       # Windows. The same experiment runs here so the two platforms are
       # compared on the same contract, and every attempt is reported.
       - name: Fail-closed shutdown stress
+        if: always()
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           QT_OPENGL: software
