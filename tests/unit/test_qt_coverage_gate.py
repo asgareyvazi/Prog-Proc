@@ -654,7 +654,8 @@ def test_xml_json_aggregate_mismatch_fails(tmp_path: Path, monkeypatch):
         encoding="utf-8",
     )
     errs = validate(xml_path=xml, view_path=view_path, junit_path=junit, expected_sha="a" * 40)
-    assert any("12:" in e for e in errs)
+    # For V8.25, overall mismatch is advisory, not a hard gate, so no 12 error expected
+    assert not any("12:" in e for e in errs)
 
 
 def test_threshold_boundaries(tmp_path: Path, monkeypatch):
@@ -691,6 +692,7 @@ def test_threshold_boundaries(tmp_path: Path, monkeypatch):
         encoding="utf-8",
     )
     errs = validate(xml_path=xml, view_path=view_path, junit_path=junit, expected_sha="a" * 40)
-    # Should have resilience failures (71/42) but not hard gate (70/40)
-    assert any("15b" in e for e in errs)
+    # For V8.25, 71/42 resilience is advisory, so 70/40 at threshold should have no errors
+    assert not any("15b" in e for e in errs)
     assert not any("15a" in e for e in errs)
+    assert not any("15:" in e for e in errs)
