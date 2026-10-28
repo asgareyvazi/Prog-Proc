@@ -161,7 +161,9 @@ def test_shell_and_session_exits_are_compared(tmp_path: Path) -> None:
         raise AssertionError("malformed exit file must fail")
 
 
-def test_unexpected_xpass_and_skip_fail_an_otherwise_green_record(tmp_path: Path, monkeypatch) -> None:
+def test_unexpected_xpass_and_skip_fail_an_otherwise_green_record(
+    tmp_path: Path, monkeypatch
+) -> None:
     # UI Qt skip is expected only headless; force headless for this assertion
     monkeypatch.setattr("tools.pytest_totals._qt_available", lambda: False)
     assert skip_is_expected(
