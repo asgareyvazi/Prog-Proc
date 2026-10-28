@@ -161,7 +161,9 @@ def test_shell_and_session_exits_are_compared(tmp_path: Path) -> None:
         raise AssertionError("malformed exit file must fail")
 
 
-def test_unexpected_xpass_and_skip_fail_an_otherwise_green_record(tmp_path: Path) -> None:
+def test_unexpected_xpass_and_skip_fail_an_otherwise_green_record(tmp_path: Path, monkeypatch) -> None:
+    # UI Qt skip is expected only headless; force headless for this assertion
+    monkeypatch.setattr("tools.pytest_totals._qt_available", lambda: False)
     assert skip_is_expected(
         "tests.ui.test_workbench",
         "test_real",
@@ -213,7 +215,8 @@ def test_unexpected_xpass_and_skip_fail_an_otherwise_green_record(tmp_path: Path
     assert publish(stats, junit, exit_file, None) == 1
 
 
-def test_a_known_ui_skip_can_still_publish_a_green_record(tmp_path: Path) -> None:
+def test_a_known_ui_skip_can_still_publish_a_green_record(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("tools.pytest_totals._qt_available", lambda: False)
     stats = tmp_path / "pytest-totals.json"
     junit = tmp_path / "pytest-junit.xml"
     _stats_file(
