@@ -112,13 +112,13 @@ def test_chart_exhibit_logic():
 
     # ExhibitChart contract: must have set_exhibit and be importable without swallowing
     try:
-        from PySide6.QtWidgets import QChartView
+        from PySide6.QtWidgets import QWidget
 
         from drilling_intelligence.ui.chart import ExhibitChart
     except ImportError as exc:
         pytest.skip(f"Qt unavailable for ExhibitChart: {exc}")
     assert hasattr(ExhibitChart, "set_exhibit")
-    assert issubclass(ExhibitChart, QChartView)
+    assert issubclass(ExhibitChart, QWidget)
 
 
 def test_worker_error_redaction():

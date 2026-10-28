@@ -86,14 +86,14 @@ def test_app_main_success_patches_real_boundaries():
 def test_chart_exhibit_valid_and_empty():
     pytest.importorskip("PySide6")
     try:
-        from PySide6.QtWidgets import QChartView
+        from PySide6.QtWidgets import QWidget
 
         from drilling_intelligence.reporting.layout import layout_exhibit
         from drilling_intelligence.ui.chart import ExhibitChart
     except ImportError as e:
         pytest.skip(f"Qt unavailable: {e}")
 
-    assert issubclass(ExhibitChart, QChartView)
+    assert issubclass(ExhibitChart, QWidget)
     assert hasattr(ExhibitChart, "set_exhibit")
     # layout_exhibit branches
     assert layout_exhibit(None) == layout_exhibit(None)

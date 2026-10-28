@@ -75,12 +75,12 @@ def test_chart_layout_exhibit_branches():
     # ExhibitChart contract mocked — no display needed
     pytest.importorskip("PySide6")
     try:
-        from PySide6.QtWidgets import QChartView
+        from PySide6.QtWidgets import QWidget
 
         from drilling_intelligence.ui.chart import ExhibitChart
 
         assert hasattr(ExhibitChart, "set_exhibit")
-        assert issubclass(ExhibitChart, QChartView)
+        assert issubclass(ExhibitChart, QWidget)
     except ImportError as exc:
         pytest.skip(f"Qt unavailable for ExhibitChart: {exc}")
 
