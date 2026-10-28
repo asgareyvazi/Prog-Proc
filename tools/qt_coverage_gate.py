@@ -106,43 +106,28 @@ def _strict_percent(value: object, label: str, errors: list[str], gname: str) ->
 
 
 def _parse_xml_totals(xml_root: ET.Element) -> dict[str, int | float | None]:
-    """Extract totals from coverage XML's root attributes and per-class sums."""
+    """Extract package-filtered totals from coverage XML.
 
-    # Root attributes are the authoritative totals in coverage.py XML
-    def _int_attr(name: str) -> int | None:
-        raw = xml_root.get(name)
-        if raw is None:
-            return None
-        try:
-            return int(raw)
-        except ValueError:
-            return None
+    Root attributes (lines-valid etc) count all measured files including tests/tools,
+    while view overall only counts drilling_intelligence package files (same filter
+    as tools/coverage_report.py). For strict consistency we compute totals from
+    <class> elements filtered to drilling_intelligence/.
+    """
 
-    def _float_attr(name: str) -> float | None:
-        raw = xml_root.get(name)
-        if raw is None:
-            return None
-        try:
-            return float(raw)
-        except ValueError:
-            return None
+    # Filter to product package (same as coverage_report.py::read_cobertura)
+    package_classes = [
+        c
+        for c in xml_root.iter("class")
+        if "drilling_intelligence/" in (c.get("filename") or "").replace("\\", "/")
+    ]
+    classes_for_total = package_classes if package_classes else list(xml_root.iter("class"))
 
-    lines_valid = _int_attr("lines-valid")
-    lines_covered = _int_attr("lines-covered")
-    branches_valid = _int_attr("branches-valid")
-    branches_covered = _int_attr("branches-covered")
-    line_rate = _float_attr("line-rate")
-    branch_rate = _float_attr("branch-rate")
-
-    # Also compute per-class sums for cross-check (fallback if root attrs missing)
-    # Coverage.py XML: <package><classes><class><lines><line number hits branch ...>
-    # But we can also sum from <class> line counts if root missing. For strictness,
-    # we require root attributes when present; if missing, we use computed sums.
-    if lines_valid is None or lines_covered is None:
-        # Compute from <line> elements
-        lines_valid = 0
-        lines_covered = 0
-        for line in xml_root.iter("line"):
+    lines_valid = 0
+    lines_covered = 0
+    branches_valid = 0
+    branches_covered = 0
+    for cls in classes_for_total:
+        for line in cls.iter("line"):
             lines_valid += 1
             hits = line.get("hits")
             try:
@@ -151,20 +136,21 @@ def _parse_xml_totals(xml_root: ET.Element) -> dict[str, int | float | None]:
                 h = 0
             if h > 0:
                 lines_covered += 1
+            if (line.get("branch") or "").lower() == "true":
+                cc = line.get("condition-coverage") or ""
+                inside = cc[cc.index("(") + 1 : cc.rindex(")")] if "(" in cc and ")" in cc else ""
+                covered, _, total = inside.partition("/")
+                try:
+                    t = int(total)
+                    cov = int(covered)
+                except ValueError:
+                    t = 0
+                    cov = 0
+                branches_valid += t
+                branches_covered += cov
 
-    if branches_valid is None or branches_covered is None:
-        branches_valid = 0
-        branches_covered = 0
-        for line in xml_root.iter("line"):
-            if line.get("branch") == "true":
-                branches_valid += 1
-                # branch coverage is in condition-coverage="50% (1/2)" etc.
-                # Hard to derive covered count; count as 0 for now, rely on root.
-
-    if line_rate is None and lines_valid and lines_valid > 0:
-        line_rate = (lines_covered or 0) / lines_valid if lines_valid else 0
-    if branch_rate is None and branches_valid and branches_valid > 0:
-        branch_rate = (branches_covered or 0) / branches_valid if branches_valid else 0
+    line_rate = (lines_covered / lines_valid) if lines_valid else 0.0
+    branch_rate = (branches_covered / branches_valid) if branches_valid else 0.0
 
     return {
         "lines_valid": lines_valid,

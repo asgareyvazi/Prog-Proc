@@ -43,7 +43,7 @@ def _make_view(
     if overall_covered is None:
         overall_covered = 2
     if overall_branches is None:
-        overall_branches = 1
+        overall_branches = 2
     if overall_covered_branches is None:
         overall_covered_branches = 1
     overall_line = (
@@ -99,8 +99,9 @@ def _make_view(
 def _make_xml(tmp_path: Path, xml_content: str = "<coverage></coverage>") -> Path:
     p = tmp_path / "coverage-ui.xml"
     # Minimal valid coverage XML with one class and root totals matching view overall
+    # Note: branches-valid=2 because condition-coverage 1/2 counts as 2 branches
     if xml_content == "<coverage></coverage>":
-        xml_content = """<coverage line-rate="1.0" branch-rate="1.0" lines-covered="2" lines-valid="2" branches-covered="1" branches-valid="1"><sources><source>src</source></sources><packages><package><classes><class filename="src/drilling_intelligence/ui/app.py"><lines><line number="1" hits="1" branch="false"/><line number="2" hits="1" branch="true" condition-coverage="50% (1/2)"/></lines></class></classes></package></packages></coverage>"""
+        xml_content = """<coverage line-rate="1.0" branch-rate="0.5" lines-covered="2" lines-valid="2" branches-covered="1" branches-valid="2"><sources><source>src</source></sources><packages><package><classes><class filename="src/drilling_intelligence/ui/app.py"><lines><line number="1" hits="1" branch="false"/><line number="2" hits="1" branch="true" condition-coverage="50% (1/2)"/></lines></class></classes></package></packages></coverage>"""
     p.write_text(xml_content, encoding="utf-8")
     return p
 
