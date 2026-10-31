@@ -120,18 +120,77 @@ def run_migrations_offline() -> None:
         config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
     # SQLite batch offline needs a live connection for reflection; provide an isolated one.
     if url and url.startswith("sqlite"):
-        from sqlalchemy import create_engine
+        from sqlalchemy import create_engine, text as sa_text
 
         # Always use an isolated in-memory database for reflection — never the
         # workspace file, even when the URL is file-backed.  Creating the schema
         # from Base.metadata gives batch the table to reflect without touching
-        # the user's file.
+        # the user's file.  To make offline incremental (only pending migrations)
+        # we must seed the in-memory alembic_version from the real file if it
+        # exists, without mutating the file.
+        real_version = None
+        file_path = None
+        try:
+            if url not in ("sqlite://", "sqlite:///:memory:", "sqlite:////", "sqlite:///"):
+                raw = url.split(":///", 1)[-1] if ":///" in url else ""
+                from urllib.parse import unquote
+
+                raw = raw.split("?")[0].split("#")[0]
+                raw = unquote(raw)
+                candidate = Path(raw)
+                if not candidate.is_absolute():
+                    candidate = (Path.cwd() / candidate).resolve()
+                if candidate.exists() and candidate.is_file():
+                    file_path = candidate
+        except Exception:
+            file_path = None
+        if file_path is not None:
+            try:
+                import sqlite3
+
+                conn = sqlite3.connect(str(file_path))
+                try:
+                    cur = conn.execute("SELECT version_num FROM alembic_version LIMIT 1")
+                    row = cur.fetchone()
+                    if row:
+                        real_version = row[0]
+                except Exception:
+                    real_version = None
+                finally:
+                    conn.close()
+            except Exception:
+                real_version = None
+        # Prepare isolated in-memory DB for reflection.
+        # For offline incremental, Alembic needs to know the current heads (real_version)
+        # but the reflection DB must have tables so batch can reflect.  Using head
+        # schema for reflection while seeding alembic_version to real_version makes
+        # Alembic render only pending migrations (it reads version from the
+        # connection's alembic_version) while batch's explicit _target_table_*
+        # definitions ensure the DDL is correct regardless of the reflection DB's
+        # column set.  This avoids mutating the user's file while keeping offline
+        # incremental.
         tmp_engine = create_engine("sqlite://")
-        # Populate the reflection database from current metadata; failures are
-        # raised (not swallowed) so offline rendering is not reported as success
-        # when the model is broken.  A reflection DB that cannot be built is a
-        # defect, not a silent pass.
-        Base.metadata.create_all(tmp_engine)
+        if real_version:
+            Base.metadata.create_all(tmp_engine)
+            with tmp_engine.begin() as conn:
+                # Ensure alembic_version table exists (Base.metadata does not include it)
+                conn.execute(
+                    sa_text(
+                        "CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+                    )
+                )
+                conn.execute(sa_text("DELETE FROM alembic_version"))
+                conn.execute(sa_text("INSERT INTO alembic_version (version_num) VALUES (:v)"), {"v": real_version})
+        else:
+            # Empty / no version: leave empty so offline renders full creation from scratch.
+            # Create an empty alembic_version so Alembic can treat it as base
+            with tmp_engine.begin() as conn:
+                conn.execute(
+                    sa_text(
+                        "CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+                    )
+                )
+        # For empty DB, batch still needs a connection; Alembic will generate CREATE TABLEs
         with tmp_engine.connect() as connection:
             context.configure(
                 connection=connection,
