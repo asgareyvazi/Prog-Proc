@@ -1651,6 +1651,8 @@ class LessonLearned(Base, TimestampMixin):
             sqlite_where=text("is_current = 1 AND code IS NOT NULL"),
             postgresql_where=text("is_current AND code IS NOT NULL"),
         ),
+        UniqueConstraint("identity_key", name="uq_lesson_identity"),
+        Index("ix_lesson_version", "document_version_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -1708,6 +1710,12 @@ class LessonLearned(Base, TimestampMixin):
     attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     #: Why a superseded lesson was replaced: kept on the row so history explains itself.
     status_note: Mapped[str | None] = mapped_column(Text)
+    # -- promotion linkage: a promoted lesson is a derived row from one artefact version ------------
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
 
 
 class ProcedureRecord(Base, TimestampMixin):

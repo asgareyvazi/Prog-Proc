@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Windows acceptance result (machine-readable)",
+  "description": "Fill after running docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1. One file per acceptance run; commit alongside logs artifact link. Status is NOT RUN until the real-display manual checklist has been ticked.",
+  "run": {
+    "stamp": "20261031-HHMMSS",
+    "host": "<hostname>",
+    "os": "Windows 11 Pro 22H2 (build 22621)",
+    "python": "Python 3.11.x",
+    "sha": "<git rev-parse HEAD>",
+    "offscreen": false,
+    "branch": "arena/5957b76d-prog-proc"
+  },
+  "ci": {
+    "linux_run_id": "<406...>",
+    "linux_sha": "<exact HEAD that ran>",
+    "linux_gate": "PASS|FAIL|UNKNOWN",
+    "windows_run_id": "<...>",
+    "windows_sha": "<exact HEAD that ran>",
+    "windows_gate": "PASS|FAIL|UNKNOWN"
+  },
+  "evidence": {
+    "ruff_check": "PASS|FAIL|SKIPPED|NOT RUN",
+    "ruff_format_check": "PASS|FAIL|SKIPPED|NOT RUN",
+    "mypy": "PASS|FAIL|SKIPPED|NOT RUN",
+    "compileall": "PASS|FAIL|SKIPPED|NOT RUN",
+    "pytest_q": "PASS|FAIL|SKIPPED|NOT RUN",
+    "pytest_e2e": "PASS|FAIL|SKIPPED|NOT RUN",
+    "release_smoke": "PASS|FAIL|SKIPPED|NOT RUN"
+  },
+  "figures": {
+    "ci_ubuntu_offscreen": "PASS — .venv, QT_QPA_PLATFORM=offscreen, regression only",
+    "ci_windows_offscreen": "PASS — windows-* runner, offscreen, no manual tick",
+    "pilot_windows_offscreen": "NOT RUN — same script locally, offscreen, not manual",
+    "manual_windows_display": "NOT RUN — real display, owner ticks docs/WINDOWS_TESTING.md items 1–16"
+  },
+  "windows_testing_checklist": {
+    "items_ticked": [],
+    "items_not_run": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    "checked_by": "",
+    "checked_at": "",
+    "display": "NOT RUN — requires real display"
+  },
+  "logs": {
+    "dir": "out/windows-acceptance/<stamp>/",
+    "artifact_url": "",
+    "sanitized": true,
+    "notes": "Absolute paths replaced with <workdir>. Do not upload secrets."
+  },
+  "status": "NOT RUN",
+  "owner_decision_required": false,
+  "blocked_reasons": []
+}

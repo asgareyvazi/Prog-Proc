@@ -72,6 +72,9 @@ to be found by somebody else.
 | `src/drilling_intelligence/knowledge/service.py` | 564 | `Exception` | reported | the index is disposable; the registry is not |
 | `src/drilling_intelligence/knowledge/service.py` | 195 | `Exception` | reported | a workspace without a usable sidecar still gets knowledge |
 | `src/drilling_intelligence/knowledge/service.py` | 912 | `Exception` | reported | a broken sidecar must not hide the registry's answer |
+| `src/drilling_intelligence/operations/promote.py` | 4181 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/operations/promote.py` | 4204 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/operations/promote.py` | 4214 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/reporting/audit.py` | 382 | `Exception` | reported | an unexpected read failure is an incomplete audit |
 | `src/drilling_intelligence/reporting/audit.py` | 396 | `Exception` | reported | a batch failure must not erase resolved rows |
 | `src/drilling_intelligence/reporting/html.py` | 351 | `Exception` | re-raised |  |
@@ -113,5 +116,5 @@ to be found by somebody else.
 | kind | count |
 | --- | --- |
 | re-raised | 12 |
-| reported | 60 |
+| reported | 63 |
 | suppressed | 27 |

@@ -1,7 +1,7 @@
 # Product capability inventory
 
 **Status:** source-derived inventory and finite milestone list
-**As of:** 2026-10-17
+**As of:** 2026-10-31 (V9.0)
 **Authority for document classes:** [`DOCUMENT_DOMAIN_COVERAGE.md`](DOCUMENT_DOMAIN_COVERAGE.md)
 
 This file is not a second domain matrix and not a progress percentage. Document
@@ -33,7 +33,7 @@ test that exercises it, or says that the evidence is only a schema or a comment.
 | Deterministic classification | Implemented and end-to-end tested | `classification/taxonomy.py`, corpus tests. No model call. |
 | Registry, versions, supersession, audit | Implemented and end-to-end tested | `documents/registry.py`, `documents/repository.py`, document invariant tests |
 | Knowledge facts, relations, conflicts, human resolution | Implemented and end-to-end tested | `knowledge/service.py`, `tests/unit/test_knowledge_facts.py`, conflict integration tests |
-| Domain promotion for the certified classes | Implemented and end-to-end tested | `operations/contracts.py` and the coverage matrix. 13 end-to-end certified, 8 knowledge-supported, 5 extract-only. |
+| Domain promotion for the certified classes | Implemented and end-to-end tested | `operations/contracts.py` and the coverage matrix. 14 end-to-end certified, 7 knowledge-supported, 5 extract-only (LESSON_LEARNED admitted in V9.0). |
 | DDR, NPT, and operational events | Implemented and end-to-end tested | `operations/promote.py`, forensic corpus tests |
 | Engineering records and the NPT roll-up | Implemented and end-to-end tested | `engineering/repository.py`, `engineering/costs.py` persists source costs and does not convert currency. NPT roll-up is the only executable method. |
 | Search, retrieval, evidence packages | Implemented and end-to-end tested | `search/service.py`, `retrieval/service.py`, `evidence/service.py`, forensic tests |
@@ -42,8 +42,8 @@ test that exercises it, or says that the evidence is only a schema or a comment.
 | Decision and comparison packs | Implemented and end-to-end tested | `intelligence/decision.py`, `comparison.py`, V7.5 and V7.6 tests |
 | Analyst question catalog | Implemented and end-to-end tested | `intelligence/analyst.py`. Fixed question ids. No natural-language parser and no model. |
 | Engineering report and source lineage | Implemented and end-to-end tested | `reporting/service.py`, `lineage.py`, report tests. Renderers issue no SQL. |
-| Desktop Review Workbench | Implemented with limited coverage | `ui/main_window.py`, `ui/lifetime.py`, Qt CI jobs. Headless pytest skips the UI tests when PySide6 is absent. That skip is not a pass. |
-| SQLite lifecycle and migrations | Implemented and end-to-end tested | Alembic head `0019`. `database/engine.py` binds datetimes on the SQLite engine only. |
+| Desktop Review Workbench | Implemented and end-to-end tested (governed) | `ui/main_window.py` reads via `DomainReviewService` (read-only) and mutates via `ReviewActionService` (`review/actions.py`) with `ReviewActionWorker` outside the GUI thread. `available_actions()` drives the UI. Tests cover enabled/disabled, reason/actor, independent-actor, conflict selection, confirmation, success reload and stale failure. Headless pytest skips the UI tests when PySide6 is absent. |
+| SQLite lifecycle and migrations | Implemented and end-to-end tested | Alembic head `0020` (lesson promotion linkage). `database/engine.py` binds datetimes on the SQLite engine only. |
 | Package, CLI, and release smoke | Implemented and end-to-end tested | `pyproject.toml` scripts `drillintel` and `drillintel-ui`, `tools/release_smoke.py`, clean-install CI job |
 | Ollama probe, completion, and embedding | Implemented with limited coverage | `integrations/ai/ollama.py`, `tests/unit/test_ai_provider.py`. Success requires a finite vector per input and an exact model name. Not called by extraction, promotion, search, or citation. A live Ollama is opt-in via `DRILLINTEL_AI_LIVE=1` and is not a CI pass. |
 | OpenAI-compatible provider | Architecture or interface only | `AiSettings.provider` accepts the name. No adapter sends a request. |
@@ -57,19 +57,31 @@ test that exercises it, or says that the evidence is only a schema or a comment.
 
 ## This milestone
 
-V8.11 implements the Ollama capability contract because the audit found the AI
-seam still architecture-only, and ADR-0005 already chose the protocol, the
-transport, and the local provider. It does not invent a calculation, a risk
-scale, or a vector index.
+V9.0 delivers one source-grounded product capability (M6) and proves the
+entire operator workflow. LESSON_LEARNED moves from `KNOWLEDGE_SUPPORTED` to
+`END_TO_END_CERTIFIED` via `lesson_learned` handler (contract `v8`), with
+migration `0020` adding promotion linkage to `lesson_learned`. The tally
+requires a `lesson` column plus `lesson_code` or `title`; each row is one
+`lesson_learned` kept verbatim with provenance, well/field/project scope,
+problem type, observation, context, recommendation, root cause (UNKNOWN when
+absent), applicable operations and hole size. Narrative TXT lessons stay
+knowledge evidence (refused by shape). Identity is `promotion_identity`;
+revision supersedes by document; lessons start `DRAFT` and require evidence
+plus second reviewer for `APPROVED`. No inference beyond source-stated facts.
+
+It also corrects README's read-only claim to describe the governed
+`ReviewActionService` boundary, and proves the workflow from workspace
+creation through ingest, promotion, knowledge conflict, search, evidence,
+decision/comparison/report and governed review.
 
 Exit criteria for this milestone:
 
-- `provider = none` and `openai-compatible` send no request.
-- A successful probe requires the configured model to be listed.
-- `doctor` does not open a socket and does not report configuration as availability.
-- Completion and embedding results are non-authoritative.
-- The engineering packages listed in ADR-51 do not import the adapter.
-- Alembic head remains `0019`.
+- `LESSON_LEARNED` XLSX tally promotes to `lesson_learned` with provenance and `DRAFT`; TXT without a table is `UNSUPPORTED`.
+- Duplicate, cross-well, missing-field, ambiguous and revision cases are refused or superseded as specified (12 corpus tests).
+- A promoted lesson can be approved only with evidence and a different reviewer; stale and self-approval are rejected.
+- Full workflow test crosses the public boundary from workspace creation to report.
+- README and WINDOWS_TESTING describe the `DomainReviewService`/`ReviewActionService` split correctly.
+- Alembic head is `0020`.
 
 The blocked milestones below are specified further in
 [`PRODUCT_DECISIONS_REQUIRED.md`](PRODUCT_DECISIONS_REQUIRED.md). That file
@@ -82,11 +94,11 @@ all of them.
 
 | Milestone | What is missing | Why it waits | Acceptance test |
 | --- | --- | --- | --- |
-| M2. OpenAI-compatible adapter | A real HTTP adapter for the name already accepted in settings | The ADR chose Ollama. The cloud URL, auth header, and whether `ai status` may leave the machine are not specified. | Mocked 401, 404, and 200 tests; no request when the env key is absent; no key in logs; engineering packages still do not import it. |
-| M3. Non-authoritative embedding sidecar | A place to store vectors and a similarity rule | ADR-0005 rejected Chroma. Dimension, metric, and whether a sidecar may affect retrieval are unspecified. | A rebuild can drop the sidecar; retrieval answers do not change when it is absent; no domain table gains a vector column without a migration test. |
-| M4. Skills runtime | Behavior for the `skill` tables | The tables have no service and no operator contract. | A skill cannot become a calculation or a promoted row unless a written contract says so. |
-| M5. One additional calculation method | Any engine besides NPT roll-up | The method, units, and failure mode are not specified. | The method id, inputs, and refusal cases exist before the code, and review does not recalculate. |
-| M6. One knowledge-supported document class | A domain writer for a class the matrix leaves without a handler | Each admission so far required a source-shape contract. Inventing one is out of scope. | The coverage matrix moves that class only after a forensic corpus test. |
+| M2. OpenAI-compatible adapter | A real HTTP adapter for the name already accepted in settings | The ADR chose Ollama. The cloud URL, auth header, and whether `ai status` may leave the machine are not specified. | Mocked 401, 404, and 200 tests; no request when the env key is absent; no key in logs; engineering packages still do not import it. Blocked — see `PRODUCT_DECISIONS_REQUIRED.md` M2 packet. |
+| M3. Non-authoritative embedding sidecar | A place to store vectors and a similarity rule | ADR-0005 rejected Chroma. Dimension, metric, and whether a sidecar may affect retrieval are unspecified. | A rebuild can drop the sidecar; retrieval answers do not change when it is absent; no domain table gains a vector column without a migration test. Blocked — see M3 packet. |
+| M4. Skills runtime | Behavior for the `skill` tables | The tables have no service and no operator contract. | A skill cannot become a calculation or a promoted row unless a written contract says so. Blocked — see M4 packet. |
+| M5. One additional calculation method | Any engine besides NPT roll-up | The method, units, and failure mode are not specified. | The method id, inputs, and refusal cases exist before the code, and review does not recalculate. Blocked — see M5 packet. |
+| M6. Lesson-learned tally (V9.0) | **Delivered** — source-shaped lesson writer | Was knowledge-supported without a handler; a narrative TXT is evidence only. | **Done:** `LESSON_LEARNED` XLSX tally → `lesson_learned` (v8), 12 forensic tests, provenance, idempotence, governance. |
 
 ## Deliberately not scheduled
 

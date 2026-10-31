@@ -1,15 +1,17 @@
 # Product decisions required before the next capabilities
 
 **Status:** decision register, not an implementation plan
-**As of:** 2026-10-24 (V8.17 reconciliation; the decisions themselves are unchanged)
+**As of:** 2026-10-31 (V9.0: M6 delivered, M2–M5 remain blocked; decisions unchanged)
 **Companion:** [`PRODUCT_CAPABILITY.md`](PRODUCT_CAPABILITY.md)
+**V9.0 note:** `M6` (`LESSON_LEARNED` tally → `lesson_learned`) was delivered in this milestone with contract `v8`, migration `0020` and 12 corpus tests (`tests/integration/test_lesson_promotion.py`). The remaining four milestones `M2`–`M5` are still open and fail-closed as described below; none is implemented by a setting, table or protocol.
 
 These items are not defects. The current code fails closed. None of them is
 implemented by a setting name, a table, or a protocol.
 
-**The count, and where it comes from.** This register holds **five open
-decisions** and one list of capabilities that stay excluded. The five are the
-five milestones `PRODUCT_CAPABILITY.md` schedules after the current one (M2
+**The count, and where it comes from.** This register now holds **four open
+decisions** (`M2`–`M5`) and one delivered milestone (`M6` in V9.0) plus the
+excluded list. `M6` was `LESSON_LEARNED` → `lesson_learned` (v8) and is no
+longer open. The five were the five milestones `PRODUCT_CAPABILITY.md` schedules after the current one (M2
 to M6); the excluded list is the boundary, not a decision. A report that
 counts "six product decisions" is counting the excluded list as a decision, and
 that count was corrected in the end-to-end report on 2026-10-24.
@@ -160,6 +162,24 @@ ADR-0015 (a citation is verified by re-reading the file, not by trusting the
 row);
 `docs/DOCUMENT_DOMAIN_COVERAGE.md` (the matrix);
 `tests/golden_corpus/` (the corpus a new class must be proven against).
+
+---
+
+## Delivered — Additional document-class writer (V9.0)
+
+**Delivered decision.** `LESSON_LEARNED` lesson tally → `lesson_learned` via `lesson_learned` handler (`v8`).
+
+**Source contract.** XLSX sheet with header containing `lesson` plus at least one of `lesson code`/`title`; optional `observation`, `context`, `recommendation`, `root cause`, `problem type`, `well`, `field`, `project`, `section`, `applicable operations`, `hole size`. Narrative TXT is `KNOWLEDGE_SUPPORTED` only.
+
+**Target model.** `lesson_learned` (`lesson`, `title`, `code`, `observation`, `context`, `recommendation`, `root_cause`/`root_cause_status`, `problem_type`, `well_id`/`field_id`/`project_id`, `applicable_operations`, `hole_size_in`, `provenance`, `origin=DERIVED`, `identity_key`, `document_id`/`document_version_id`).
+
+**Refusal reasons.** `NO_RECOGNISED_TABLE` (no lesson table), `WELL_SCOPE_CONFLICT`, `UNRESOLVED_WELL_REFERENCE`, `CONFLICT` (duplicate code), `MISSING_PROVENANCE`.
+
+**Idempotence.** `promotion_identity(version_id, kind, table_id, row_index, well_id, code)`; revision chain on same code.
+
+**Governance.** Lessons start `DRAFT`; `approve` requires evidence and `approved_by != created_by`; stale/revision/scope checks via `ReviewActionService`.
+
+**Evidence.** 12 forensic tests in `tests/integration/test_lesson_promotion.py`; contract `document:LESSON_LEARNED:promotion:v8`; migration `0020`.
 
 ---
 

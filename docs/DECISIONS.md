@@ -3020,3 +3020,68 @@ job runs the same suite.
 **Consequences.** The product's release path is now exercised by the tests
 that use it, and the fixture fails loudly instead of leaving a native abort
 for a later run to explain.
+
+## ADR-63 — V9.0: a source-grounded lesson-learned writer
+
+**Status:** accepted (2026-10-31); implemented, tested and shipped
+
+**The gap.** `LESSON_LEARNED` was `KNOWLEDGE_SUPPORTED`: a narrative TXT lesson
+(`lesson_learned_ll-2025-014.txt`) was citable as knowledge and as evidence,
+but no static contract could write a `lesson_learned` row from a document. A
+candidate that required a table shape had to be invented, not reused. The
+lessons a project actually accumulates are therefore not a writer until a
+contract says what a lesson tally is, and what it is not.
+
+**The shape that was chosen.** An XLSX sheet with an explicit header row.
+The header must contain a `lesson` column (`lesson`, `lesson learned`, …) plus
+at least one identifier column (`lesson code` or `title`). Optional columns are
+`observation`, `context`, `recommendation`, `root cause`, `problem type`,
+`well`, `field`, `project`, `section`, `applicable operations`, `hole size`.
+A TXT narrative, a table with only a `lesson` column, or a table with no
+`lesson` column is refused with `NO_RECOGNISED_TABLE` and remains evidence.
+A footnote row with a description but no sizing is not a component; here a
+row with no `lesson` text or with neither code nor title is not a lesson.
+
+**What is not inferred.** `root_cause` is stored when the column exists and
+left absent otherwise; `root_cause_status` is `KNOWN` only when the source
+states a cause, else `UNKNOWN` — never `INFERRED`. Problem type is a closed
+vocabulary token matched whole; an unknown string keeps its own token. Hole
+size is kept as text plus a parsed numeric when the header stated a unit;
+otherwise it stays text. Lesson wording is kept verbatim.
+
+**Identity, idempotence and revision.** One promotion identity per row:
+`promotion_identity(version_id, "lesson-learned", table_id, row_index, well_id, code)`.
+A second promotion of the same version is `UNCHANGED` via `_confirm_row`.
+A changed source creates a new `DocumentVersion`; the old derived lessons are
+stood down (`is_current=False`) by `_supersede_by_document`, and the new row
+gets `revision = prior.revision + 1` with `supersedes_id` pointing at the old.
+A duplicate code in the same artefact is refused as `CONFLICT`; a row naming
+a well that is not the document's well is `WELL_SCOPE_CONFLICT`; a
+site-scoped document that is asked for a well is `UNRESOLVED_WELL_REFERENCE`.
+All are exclusive outcomes, not silent merges.
+
+**Governance.** A promoted lesson starts `DRAFT` with `origin=DERIVED`,
+`document_id`/`document_version_id`/`identity_key` and a provenance entry that
+carries the sheet, table id, row index and file hash. It requires evidence
+(`provenance` plus any edge) and a reviewer distinct from `created_by`
+(`promotion`) for `APPROVED`. Stale `expected_status`/`revision`/`updated_at`
+and independent-actor checks are the same `ReviewActionService` boundary the
+workbench already uses; the UI derives its actions from `available_actions()`
+and executes them outside the GUI thread.
+
+**Migration.** `0020` adds nullable `document_id`, `document_version_id` and
+`identity_key` to `lesson_learned` with `uq_lesson_identity` and
+`ix_lesson_version`, via `batch_alter_table` for SQLite. Manual lessons keep
+`NULL` there; promoted lessons fill them.
+
+**Tests.** 12 forensic cases in `tests/integration/test_lesson_promotion.py`:
+two valid rows, missing shape, incomplete row, cross-well, duplicate in file,
+revision supersession, idempotence, unsupported unit/provenance, TXT refused,
+provenance re-read, human approval (self-approval and evidence gates), and
+`root_cause` not inferred. A duplicate code from a different document is
+`CONFLICT`.
+
+**Consequences.** `LESSON_LEARNED` moves to `END_TO_END_CERTIFIED` (`v8`);
+the coverage matrix becomes 14/7/5 with 12 handlers and head `0020`. The
+knowledge-only TXT corpus stays valid and is still the negative case that
+proves promotion does not invent from prose.

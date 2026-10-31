@@ -205,8 +205,7 @@ $ws = Join-Path $env:TEMP "drillintel-sample"
 ```
 
 Close the window from its close control. Repeat open and close a few times.
-Review actions in the workbench are read-only; they must not create or
-promote a record.
+Opening the review without confirming an action is read-only: `DomainReviewService` does not mutate the workspace. Explicit, confirmed actions through `ReviewActionService` (`src/drilling_intelligence/review/actions.py`) are the governed mutation boundary — they are submitted as an immutable request with expected preconditions, executed outside the GUI thread by `ReviewActionWorker`, and re-read into a fresh review on success. Promotion of a new domain row is still `records promote`, not a review click.
 
 Offscreen automated UI tests, not a substitute for that window:
 
@@ -409,12 +408,11 @@ happily print an error and carry on.
     application event log. Record the number of launches and the exit code
     of each one.
 
-14. **The review controls are read-only.**
-    In the workbench, open the review surface and use its controls. Then
+14. **The review surface is read-only until an action is explicitly confirmed.**
+    In the workbench, open the review surface and browse without confirming any action. Then
     `drillintel.exe records list --workspace $ws2 --well "SAMPLE-1"` and
     compare with the same command before the window was opened.
-    Pass: the rows are identical. A review control that writes a new
-    engineering record is a failure, not a feature.
+    Pass: the rows are identical — passive review does not mutate. A confirmed action through `ReviewActionService` does mutate via its owning domain repository (it is not a silent promotion), reloads a fresh `DomainReview` on success, and leaves the display unchanged on failure. The prompt must derive its actions from `available_actions()`, require actor/reason/evidence according to the lifecycle, block concurrent submissions, and run outside the GUI thread — see `docs/HUMAN_REVIEW_ACTION_INVENTORY.md` and `src/drilling_intelligence/ui/worker.py` `ReviewActionWorker`.
 
 15. **Non-ASCII text survives the console.**
     `.\.venv\Scripts\drillintel.exe wells create --name "Ø-test" --workspace $ws2`

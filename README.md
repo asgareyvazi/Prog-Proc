@@ -37,7 +37,7 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
 | Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
 | Domain CLI: `records`, `records rollup`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
-| Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented, read-only** — PySide6-Essentials is optional; it consumes `DomainReviewService`, supports current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model. A close refused by a running worker does not quit the process or destroy that window |
+| Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented** — PySide6-Essentials is optional; it consumes `DomainReviewService` for a read-only authoritative review and `ReviewActionService` as the separate, governed mutation boundary. The workbench derives its permitted actions from current domain state, submits an immutable request with expected preconditions, and executes it outside the GUI thread via `ReviewActionWorker`. Supported surfaces include current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model. A close refused by a running worker does not quit the process or destroy that window |
 | Ollama provider adapter: `drillintel ai status` probes `/api/tags`; completion and embedding calls return non-authoritative text or vectors | **implemented, not on the engineering path** — an embedding is accepted only when it is finite, one vector per input, and names the requested model; a path, query, or credential in the endpoint sends no request; `doctor` does not probe; `openai-compatible` has no adapter (`docs/DECISIONS.md` ADR-51, ADR-52) |
 | Skills and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
@@ -104,7 +104,7 @@ drillintel doctor --workspace /tmp/well-a3                # what is healthy, and
 
 ### Desktop Review Workbench (optional)
 
-The first desktop consumer is deliberately a read-only review surface. Install it only where a Qt
+The desktop consumer is an operator review surface with a governed action boundary. Install it only where a Qt
 workbench is wanted:
 
 ```bash
@@ -114,13 +114,12 @@ drillintel-ui --workspace /tmp/well-a3 --well A-3
 ```
 
 The workbench opens the existing `workspace.toml`, loads the registered well hierarchy through the
-existing repositories, and requests `DomainReviewRequest` values from `DomainReviewService`. The
-Current/History selector changes the service lifecycle request; it does not hide rows in the client.
-`Verify citations` is an explicit opt-in call to the existing citation auditor. Tables use Qt
-model/view adapters and presentation-only filters, while the review result remains authoritative for
-scope, provenance, missing values, conflicts, calculation status and plan/actual semantics.
-
-No UI state is persisted and no review action mutates the workspace. The default installation does
+existing repositories, and requests `DomainReviewRequest` values from `DomainReviewService` — the
+read-only authoritative review. The Current/History selector changes the service lifecycle request; it
+does not hide rows in the client. `Verify citations` is an explicit opt-in call to the existing
+citation auditor. Tables use Qt model/view adapters and presentation-only filters, while the review
+result remains authoritative for scope, provenance, missing values, conflicts, calculation status and
+plan/actual semantics. The distinct mutation boundary is `ReviewActionService` (`src/drilling_intelligence/review/actions.py`): the UI derives its permitted actions from `available_actions()`, submits an immutable `ReviewActionRequest` carrying the displayed `expected_status`/revision/scope/`updated_at` preconditions, and hands it to `ReviewActionWorker` to execute outside the GUI thread. On success the window reloads a fresh `DomainReview`; on failure the displayed state is unchanged and the domain error is shown. No UI state is persisted beyond the window. The default installation does
 not import Qt. On a host where Qt's native runtime libraries cannot load, `drillintel-ui` reports the
 missing runtime dependency and `pytest -m ui` skips with the preserved loader reason; the UI tests run
 offscreen on hosts with a working Qt installation. CI retries a workbench process only when the

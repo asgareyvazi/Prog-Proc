@@ -52,6 +52,8 @@ def test_only_registered_handlers_are_domain_promotable() -> None:
         # while an HSE event may have no well.
         DocumentClassification.WELL_CONTROL: "well_control",
         DocumentClassification.HSE: "hse",
+        # V9.0: lesson-learned tally is a source-shaped writer with its own table; narrative TXT stays evidence.
+        DocumentClassification.LESSON_LEARNED: "lesson_learned",
     }
 
 
@@ -83,18 +85,20 @@ def test_the_v4_writers_are_versioned_rather_than_silently_reattached() -> None:
         DocumentClassification.CEMENT_REPORT: "v7",
         DocumentClassification.WELL_CONTROL: "v7",
         DocumentClassification.HSE: "v7",
+        # V9.0: lesson tally is a new writer with its own revision; earlier TXT stays evidence.
+        DocumentClassification.LESSON_LEARNED: "v8",
     }
-    # Thirteen rather than eight: V7 added cost and V7.1 added casing and cement, each both
+    # Fourteen rather than eight: V7 added cost and V7.1 added casing and cement, V9 added lesson — each both
     # domain-promotable and end-to-end certified.  These counts are deliberately absolute so that
     # admitting a classification cannot happen without a reviewer changing a number here.
-    assert sum(1 for contract in contract_registry() if contract.domain_promotable) == 13
+    assert sum(1 for contract in contract_registry() if contract.domain_promotable) == 14
     assert (
         sum(
             1
             for contract in contract_registry()
             if contract.level == CoverageLevel.END_TO_END_CERTIFIED
         )
-        == 13
+        == 14
     )
 
 
@@ -115,11 +119,11 @@ def test_a_promoted_domain_names_the_tables_it_is_allowed_to_write() -> None:
 
 def test_evidence_only_classes_are_not_a_fallback_domain_writer() -> None:
     for classification in (
-        # COST was in this list until V7, when it gained a deterministic writer.  It is
-        # deliberately not replaced here by another classification: the point of the list is that
-        # these specific classes are not a fallback domain writer.
+        # COST was in this list until V7, when it gained a deterministic writer, and LESSON_LEARNED
+        # until V9.0, when the tally gained a handler.  Each is deliberately not replaced here by
+        # another classification: the point of the list is that these specific classes are not a
+        # fallback domain writer.
         DocumentClassification.PROCEDURE,
-        DocumentClassification.LESSON_LEARNED,
         DocumentClassification.OTHER,
     ):
         contract = promotion_contract(classification)
