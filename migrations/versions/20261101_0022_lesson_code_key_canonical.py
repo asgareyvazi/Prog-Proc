@@ -33,7 +33,7 @@ def _dialect_name() -> str:
         bind = op.get_bind()
         if bind is not None and hasattr(bind, "dialect"):
             return str(getattr(bind.dialect, "name", "") or "").lower()
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     try:
         from alembic import context as alembic_context
@@ -43,7 +43,7 @@ def _dialect_name() -> str:
             return "postgresql"
         if "sqlite" in url.lower():
             return "sqlite"
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     return "sqlite"
 
@@ -53,13 +53,15 @@ def _column_exists(bind, table: str, column: str) -> bool:
         insp = inspect(bind)
         cols = {c["name"] for c in insp.get_columns(table)}
         return column in cols
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Fallback via sqlite_master
         try:
-            rows = bind.execute(text(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table}'")).fetchone()
+            rows = bind.execute(
+                text("SELECT sql FROM sqlite_master WHERE type='table' AND name=:t"), {"t": table}
+            ).fetchone()
             if rows and rows[0] and column in rows[0]:
                 return True
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         return False
 
@@ -67,17 +69,19 @@ def _column_exists(bind, table: str, column: str) -> bool:
 def _index_exists(bind, name: str) -> bool:
     try:
         # Check sqlite_master
-        row = bind.execute(text("SELECT 1 FROM sqlite_master WHERE type='index' AND name=:n"), {"n": name}).fetchone()
+        row = bind.execute(
+            text("SELECT 1 FROM sqlite_master WHERE type='index' AND name=:n"), {"n": name}
+        ).fetchone()
         if row:
             return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     try:
         insp = inspect(bind)
         for idx in insp.get_indexes("lesson_learned"):
             if idx.get("name") == name:
                 return True
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     return False
 
@@ -85,7 +89,9 @@ def _index_exists(bind, name: str) -> bool:
 def _index_definition_correct(bind, name: str) -> bool:
     """Check that the existing index has the expected definition (columns, predicate, uniqueness)."""
     try:
-        row = bind.execute(text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:n"), {"n": name}).fetchone()
+        row = bind.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:n"), {"n": name}
+        ).fetchone()
         if not row or not row[0]:
             return False
         sql = row[0].lower()
@@ -95,10 +101,8 @@ def _index_definition_correct(bind, name: str) -> bool:
             return False
         if "is_current" not in sql:
             return False
-        if "unique" not in sql:
-            return False
-        return True
-    except Exception:
+        return "unique" in sql
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -107,7 +111,7 @@ def _is_offline() -> bool:
         from alembic import context as alembic_context
 
         return bool(alembic_context.is_offline_mode())
-    except Exception:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -116,7 +120,7 @@ def upgrade() -> None:
     offline = _is_offline()
     try:
         bind = op.get_bind()
-    except Exception:
+    except Exception:  # noqa: BLE001
         bind = None
     # In offline, the mock connection may return None for execute; treat as offline
     if offline:
@@ -155,7 +159,9 @@ def upgrade() -> None:
     if bind is not None and hasattr(bind, "execute"):
         # Detect rows where lower(trim) != casefold(trim) and fix them
         # Select all rows with code
-        rows = bind.execute(text("SELECT id, code, code_key FROM lesson_learned WHERE code IS NOT NULL")).fetchall()
+        rows = bind.execute(
+            text("SELECT id, code, code_key FROM lesson_learned WHERE code IS NOT NULL")
+        ).fetchall()
         for row_id, code, existing_key in rows:
             if code is None:
                 continue
@@ -163,7 +169,10 @@ def upgrade() -> None:
             if not raw:
                 # Empty code should have null code_key
                 if existing_key is not None:
-                    bind.execute(text("UPDATE lesson_learned SET code_key = NULL WHERE id = :id"), {"id": row_id})
+                    bind.execute(
+                        text("UPDATE lesson_learned SET code_key = NULL WHERE id = :id"),
+                        {"id": row_id},
+                    )
                 continue
             canonical = raw.casefold()
             # If existing_key already equals canonical, no action
@@ -173,7 +182,10 @@ def upgrade() -> None:
             # Also handle case where existing_key is None (backfill missed due to lower vs casefold difference)
             if existing_key != canonical:
                 # Only update if needed; this is a genuine correction, not silent success
-                bind.execute(text("UPDATE lesson_learned SET code_key = :ck WHERE id = :id"), {"ck": canonical, "id": row_id})
+                bind.execute(
+                    text("UPDATE lesson_learned SET code_key = :ck WHERE id = :id"),
+                    {"ck": canonical, "id": row_id},
+                )
 
     # 4. Legacy collision detection — must be correct, not swallowed
     # Distinguish offline (no bind) vs live. Offline check is skipped but index will still enforce;
@@ -183,11 +195,15 @@ def upgrade() -> None:
         # For SQLite, is_current is integer 0/1; for Postgres boolean
         if dialect == "postgresql":
             rows = bind.execute(
-                text("SELECT id, code, is_current, code_key FROM lesson_learned WHERE is_current AND code IS NOT NULL AND btrim(code) != ''")
+                text(
+                    "SELECT id, code, is_current, code_key FROM lesson_learned WHERE is_current AND code IS NOT NULL AND btrim(code) != ''"
+                )
             ).fetchall()
         else:
             rows = bind.execute(
-                text("SELECT id, code, is_current, code_key FROM lesson_learned WHERE is_current = 1 AND code IS NOT NULL AND trim(code) != ''")
+                text(
+                    "SELECT id, code, is_current, code_key FROM lesson_learned WHERE is_current = 1 AND code IS NOT NULL AND trim(code) != ''"
+                )
             ).fetchall()
         from collections import defaultdict
 
@@ -228,23 +244,22 @@ def upgrade() -> None:
             if idx_correct:
                 # Already correctly applied — idempotent success
                 return
-            else:
-                # Index exists but with wrong definition — drop and recreate
-                # This is a repairable partial state — failure to drop is not tolerated as success
+            # Index exists but with wrong definition — drop and recreate
+            # This is a repairable partial state — failure to drop is not tolerated as success
+            try:
+                op.drop_index("uq_lesson_code_key_current", table_name="lesson_learned")
+            except Exception as e:
                 try:
-                    op.drop_index("uq_lesson_code_key_current", table_name="lesson_learned")
-                except Exception as e:
-                    try:
-                        op.execute(text("DROP INDEX IF EXISTS uq_lesson_code_key_current"))
-                    except Exception as e2:
-                        raise RuntimeError(
-                            f"failed to drop incorrect index uq_lesson_code_key_current: {e2}"
-                        ) from e
-                    if _index_exists(bind, "uq_lesson_code_key_current"):
-                        raise RuntimeError(
-                            "index uq_lesson_code_key_current still exists after drop attempt of incorrect definition"
-                        ) from e
-                idx_exists = False
+                    op.execute(text("DROP INDEX IF EXISTS uq_lesson_code_key_current"))
+                except Exception as e2:  # noqa: BLE001
+                    raise RuntimeError(
+                        f"failed to drop incorrect index uq_lesson_code_key_current: {e2}"
+                    ) from e
+                if _index_exists(bind, "uq_lesson_code_key_current"):
+                    raise RuntimeError(
+                        "index uq_lesson_code_key_current still exists after drop attempt of incorrect definition"
+                    ) from e
+            idx_exists = False
     if not idx_exists:
         if dialect == "postgresql":
             op.execute(
@@ -270,7 +285,7 @@ def downgrade() -> None:
     bind = None
     try:
         bind = op.get_bind()
-    except Exception:
+    except Exception:  # noqa: BLE001
         bind = None
     if offline:
         bind = None
@@ -297,10 +312,12 @@ def downgrade() -> None:
         except Exception as e:
             try:
                 op.execute(text("DROP INDEX IF EXISTS uq_lesson_code_key_current"))
-            except Exception as e2:
+            except Exception as e2:  # noqa: BLE001
                 raise RuntimeError(f"failed to drop index uq_lesson_code_key_current: {e2}") from e
             if bind is not None and _index_exists(bind, "uq_lesson_code_key_current"):
-                raise RuntimeError("index uq_lesson_code_key_current still exists after drop attempt") from e
+                raise RuntimeError(
+                    "index uq_lesson_code_key_current still exists after drop attempt"
+                ) from e
         # Verify dropped
         if bind is not None and _index_exists(bind, "uq_lesson_code_key_current"):
             raise RuntimeError("index uq_lesson_code_key_current still exists after drop")
@@ -326,4 +343,6 @@ def downgrade() -> None:
             if bind is not None and not _column_exists(bind, "lesson_learned", "code_key"):
                 # Already absent — success
                 return
-            raise RuntimeError(f"failed to drop column code_key (already absent check failed): {e}") from e
+            raise RuntimeError(
+                f"failed to drop column code_key (already absent check failed): {e}"
+            ) from e

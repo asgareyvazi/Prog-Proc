@@ -204,9 +204,7 @@ def _normalize_code(code: object) -> str | None:
     return stripped.casefold()
 
 
-def _ensure_code_unique(
-    session: Session, code: object, *, exclude_id: str | None = None
-) -> None:
+def _ensure_code_unique(session: Session, code: object, *, exclude_id: str | None = None) -> None:
     """Raise if another *current* lesson already uses ``code`` case-insensitively.
 
     The check is global (not scoped to well/field/project) and excludes the row with
@@ -470,9 +468,7 @@ class LessonRepository:
             )
         if "code" in payload:
             _ensure_code_unique(self.session, payload["code"], exclude_id=str(source.id))
-        new_code = (
-            str(payload["code"]).strip() or None if "code" in payload else source.code
-        )
+        new_code = str(payload["code"]).strip() or None if "code" in payload else source.code
         row = LessonLearned(
             id=new_id("les"),
             code=new_code,
@@ -599,9 +595,7 @@ class LessonRepository:
         forward_cur = target
         while True:
             nxt = self.session.execute(
-                select(LessonLearned).where(
-                    LessonLearned.supersedes_id == str(forward_cur.id)
-                )
+                select(LessonLearned).where(LessonLearned.supersedes_id == str(forward_cur.id))
             ).scalar_one_or_none()
             if nxt is None or str(nxt.id) in seen:
                 break
@@ -630,7 +624,7 @@ class LessonRepository:
             # in the same flush.
             try:
                 self.session.flush()
-            except Exception:
+            except Exception:  # noqa: BLE001 - transient unique violation is expected before predecessor restore
                 pass
             predecessor.is_current = True
             # target was current, so its status is the governing status; predecessor
@@ -726,7 +720,9 @@ class LessonRepository:
         rows = [self.get_lesson(str(lid)) for lid in lesson_ids]
         # Order by discovery chain position: delete latest first.  Simplest is
         # sort by revision descending (higher revision is newer) then by is_current.
-        rows.sort(key=lambda r: (bool(r.is_current), int(getattr(r, "revision", 0) or 0)), reverse=True)
+        rows.sort(
+            key=lambda r: (bool(r.is_current), int(getattr(r, "revision", 0) or 0)), reverse=True
+        )
         results: list[dict[str, Any]] = []
         for row in rows:
             # Re-resolve after earlier deletions may have mutated chain; but

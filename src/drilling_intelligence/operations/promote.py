@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, Final
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.enums import (

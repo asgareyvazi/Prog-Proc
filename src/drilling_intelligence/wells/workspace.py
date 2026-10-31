@@ -287,7 +287,7 @@ class Workspace:
             if db is not None:
                 try:
                     db.dispose()
-                except Exception:
+                except Exception:  # noqa: BLE001 - dispose is best-effort during close
                     pass
                 setattr(self, name, None)
 

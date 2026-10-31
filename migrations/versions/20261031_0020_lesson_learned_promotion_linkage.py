@@ -35,8 +35,19 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy import Column, ForeignKey, String, Table, MetaData
-from sqlalchemy import Integer, Boolean, Float, JSON, Text, DateTime
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+)
 
 revision = "0020"
 down_revision = "0019"
@@ -91,7 +102,11 @@ def _target_table_0020() -> Table:
         Column("status_note", Text),
         Column("identity_key", String(200)),
         Column("document_id", String(36), ForeignKey("document.id", ondelete="SET NULL")),
-        Column("document_version_id", String(36), ForeignKey("document_version.id", ondelete="SET NULL")),
+        Column(
+            "document_version_id",
+            String(36),
+            ForeignKey("document_version.id", ondelete="SET NULL"),
+        ),
         Column("created_at", DateTime, nullable=False),
         Column("updated_at", DateTime, nullable=False),
         sa.UniqueConstraint("code", "revision", name="uq_lesson_code_revision"),

@@ -116,11 +116,12 @@ def run_migrations_offline() -> None:
         from drilling_intelligence.database.migrations import alembic_config_url
 
         config.set_main_option("sqlalchemy.url", alembic_config_url(url))
-    except Exception:
+    except Exception:  # noqa: BLE001
         config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
     # SQLite batch offline needs a live connection for reflection; provide an isolated one.
     if url and url.startswith("sqlite"):
-        from sqlalchemy import create_engine, text as sa_text
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sa_text
 
         # Always use an isolated in-memory database for reflection — never the
         # workspace file, even when the URL is file-backed.  Creating the schema
@@ -142,7 +143,7 @@ def run_migrations_offline() -> None:
                     candidate = (Path.cwd() / candidate).resolve()
                 if candidate.exists() and candidate.is_file():
                     file_path = candidate
-        except Exception:
+        except Exception:  # noqa: BLE001
             file_path = None
         if file_path is not None:
             try:
@@ -154,11 +155,11 @@ def run_migrations_offline() -> None:
                     row = cur.fetchone()
                     if row:
                         real_version = row[0]
-                except Exception:
+                except Exception:  # noqa: BLE001
                     real_version = None
                 finally:
                     conn.close()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 real_version = None
         # Prepare isolated in-memory DB for reflection.
         # For offline incremental, Alembic needs to know the current heads (real_version)
@@ -180,7 +181,10 @@ def run_migrations_offline() -> None:
                     )
                 )
                 conn.execute(sa_text("DELETE FROM alembic_version"))
-                conn.execute(sa_text("INSERT INTO alembic_version (version_num) VALUES (:v)"), {"v": real_version})
+                conn.execute(
+                    sa_text("INSERT INTO alembic_version (version_num) VALUES (:v)"),
+                    {"v": real_version},
+                )
         else:
             # Empty / no version: leave empty so offline renders full creation from scratch.
             # Create an empty alembic_version so Alembic can treat it as base

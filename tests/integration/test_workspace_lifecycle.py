@@ -11,8 +11,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from drilling_intelligence.cli.app import main
 from drilling_intelligence.wells.workspace import Workspace
 

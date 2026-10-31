@@ -12,12 +12,10 @@ import io
 import json
 import os
 import re
-import shutil
 import sqlite3
 import subprocess
 import sys
-import tempfile
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 
 import pytest
 
@@ -59,7 +57,9 @@ def test_0022_has_no_bare_except_pass_masking():
     # Find any `except Exception:` in upgrade that is followed by `pass` alone
     for m in re.finditer(r"except Exception[^:]*:\s*\n\s*pass\b", upgrade_text):
         # If this is inside helper, not in upgrade — but upgrade_text excludes helpers
-        pytest.fail(f"upgrade still contains bare except pass masking at: {upgrade_text[max(0,m.start()-40):m.end()+40]!r}")
+        pytest.fail(
+            f"upgrade still contains bare except pass masking at: {upgrade_text[max(0, m.start() - 40) : m.end() + 40]!r}"
+        )
 
 
 def test_0022_filename_is_valid_date_and_revision_preserved():
@@ -81,9 +81,10 @@ def test_0022_filename_is_valid_date_and_revision_preserved():
 
 
 def test_code_key_is_authoritative_and_partial_unique_exists(tmp_path: Path):
+    from sqlalchemy import inspect
+
     from drilling_intelligence.cli.app import main as cli_main
     from drilling_intelligence.wells.workspace import Workspace
-    from sqlalchemy import inspect
 
     ws_root = tmp_path / "ws"
     assert cli_main(["workspace", "create", str(ws_root)]) == 0
@@ -95,16 +96,20 @@ def test_code_key_is_authoritative_and_partial_unique_exists(tmp_path: Path):
         assert "code_key" in cols, "code_key column must exist at head 0022"
         # Check index in sqlite_master has correct predicate
         with eng.connect() as conn:
-            row = conn.execute(__import__("sqlalchemy").text("SELECT sql FROM sqlite_master WHERE type='index' AND name='uq_lesson_code_key_current'")).fetchone()
+            row = conn.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name='uq_lesson_code_key_current'"
+                )
+            ).fetchone()
             assert row is not None and row[0] is not None
             sql = row[0].lower()
             assert "code_key" in sql
             assert "is_current" in sql
             assert "unique" in sql
         # Verify LessonRepository maintains code_key on all write paths: capture, update, revise, promote
-        from drilling_intelligence.lessons.repository import LessonRepository
+
         from drilling_intelligence.database.models import LessonLearned
-        from sqlalchemy import select
+        from drilling_intelligence.lessons.repository import LessonRepository
 
         # capture
         with ws.database.unit_of_work() as s:
@@ -144,7 +149,7 @@ def test_code_key_is_authoritative_and_partial_unique_exists(tmp_path: Path):
 def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
     """Four partial states reached by partial 0022 apply must be repairable."""
     from drilling_intelligence.database.engine import open_sqlite
-    from drilling_intelligence.database.migrations import upgrade, current_revision
+    from drilling_intelligence.database.migrations import current_revision, upgrade
 
     # State A: column exists, index missing, stamped 0021 (partial before index) -> upgrade should create index
     db_a = tmp_path / "a.db"
@@ -153,17 +158,39 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
         upgrade(eng, "0021")
         # Simulate partial: manually add column as 0022 would, but not index, keep stamp 0021
         with eng.begin() as conn:
-            conn.execute(__import__("sqlalchemy").text("ALTER TABLE lesson_learned ADD COLUMN code_key VARCHAR(80)"))
-            conn.execute(__import__("sqlalchemy").text("UPDATE lesson_learned SET code_key = lower(trim(code)) WHERE code IS NOT NULL"))
+            conn.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE lesson_learned ADD COLUMN code_key VARCHAR(80)"
+                )
+            )
+            conn.execute(
+                __import__("sqlalchemy").text(
+                    "UPDATE lesson_learned SET code_key = lower(trim(code)) WHERE code IS NOT NULL"
+                )
+            )
         # Verify column exists, index missing
         from sqlalchemy import inspect as insp_a
 
         assert "code_key" in {c["name"] for c in insp_a(eng).get_columns("lesson_learned")}
         with eng.connect() as conn:
-            assert conn.execute(__import__("sqlalchemy").text("SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_lesson_code_key_current'")).fetchone() is None
+            assert (
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_lesson_code_key_current'"
+                    )
+                ).fetchone()
+                is None
+            )
         upgrade(eng)  # to 0022
         with eng.connect() as conn:
-            assert conn.execute(__import__("sqlalchemy").text("SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_lesson_code_key_current'")).fetchone() is not None
+            assert (
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        "SELECT 1 FROM sqlite_master WHERE type='index' AND name='uq_lesson_code_key_current'"
+                    )
+                ).fetchone()
+                is not None
+            )
         assert current_revision(eng) == "0022"
     finally:
         eng.dispose()
@@ -191,14 +218,20 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
         assert "code_key" not in cols
         # Insert a row with code needing casefold
         with eng3.begin() as conn:
-            conn.execute(__import__("sqlalchemy").text(
-                "INSERT INTO lesson_learned (id, code, revision, is_current, status, title, lesson, created_by, created_at, updated_at, depth_from_unit, depth_to_unit, root_cause_status, context, observation, recommendation, origin, provenance, attributes) "
-                "VALUES ('les-partial', 'LL-PARTIAL', 1, 1, 'DRAFT', 't','l','system', datetime('now'), datetime('now'), 'm','m','UNKNOWN','','','','MANUAL','[]','{}')"
-            ))
+            conn.execute(
+                __import__("sqlalchemy").text(
+                    "INSERT INTO lesson_learned (id, code, revision, is_current, status, title, lesson, created_by, created_at, updated_at, depth_from_unit, depth_to_unit, root_cause_status, context, observation, recommendation, origin, provenance, attributes) "
+                    "VALUES ('les-partial', 'LL-PARTIAL', 1, 1, 'DRAFT', 't','l','system', datetime('now'), datetime('now'), 'm','m','UNKNOWN','','','','MANUAL','[]','{}')"
+                )
+            )
         upgrade(eng3)  # to head 0022
         assert current_revision(eng3) == "0022"
         with eng3.connect() as conn:
-            row = conn.execute(__import__("sqlalchemy").text("SELECT code_key FROM lesson_learned WHERE id='les-partial'")).fetchone()
+            row = conn.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT code_key FROM lesson_learned WHERE id='les-partial'"
+                )
+            ).fetchone()
             assert row[0] == "ll-partial", f"backfill must casefold, got {row[0]}"
     finally:
         eng3.dispose()
@@ -209,15 +242,29 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
     try:
         upgrade(eng4, "0021")
         with eng4.begin() as conn:
-            conn.execute(__import__("sqlalchemy").text("ALTER TABLE lesson_learned ADD COLUMN code_key VARCHAR(80)"))
-            conn.execute(__import__("sqlalchemy").text("CREATE UNIQUE INDEX uq_lesson_code_key_current ON lesson_learned (code_key)"))
+            conn.execute(
+                __import__("sqlalchemy").text(
+                    "ALTER TABLE lesson_learned ADD COLUMN code_key VARCHAR(80)"
+                )
+            )
+            conn.execute(
+                __import__("sqlalchemy").text(
+                    "CREATE UNIQUE INDEX uq_lesson_code_key_current ON lesson_learned (code_key)"
+                )
+            )
             # stamp remains 0021, so upgrade will see wrong index and repair
         # Now upgrade should detect incorrect definition and repair
         upgrade(eng4)
         assert current_revision(eng4) == "0022"
         with eng4.connect() as conn:
-            row = conn.execute(__import__("sqlalchemy").text("SELECT sql FROM sqlite_master WHERE type='index' AND name='uq_lesson_code_key_current'")).fetchone()
-            assert row and "is_current" in row[0].lower(), f"index should be repaired to partial, got {row[0] if row else None}"
+            row = conn.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND name='uq_lesson_code_key_current'"
+                )
+            ).fetchone()
+            assert row and "is_current" in row[0].lower(), (
+                f"index should be repaired to partial, got {row[0] if row else None}"
+            )
     finally:
         eng4.dispose()
 
@@ -264,7 +311,9 @@ def test_0020_is_historically_deterministic():
     # Count real Index creation with lower(code) — should be zero in 0020 table
     lower_index_in_table = target_0020_section.count("lower(code)")
     comment_exclusion = target_0020_section.count("0021's lower(code)")
-    assert lower_index_in_table == comment_exclusion, f"0020 table should not define lower(code) index, found {lower_index_in_table} vs comment {comment_exclusion}"
+    assert lower_index_in_table == comment_exclusion, (
+        f"0020 table should not define lower(code) index, found {lower_index_in_table} vs comment {comment_exclusion}"
+    )
     # Also ensure code_key not defined as column or index outside comments
     assert 'Index("uq_lesson_code' not in target_0020_section or "0021" in target_0020_section
 
@@ -282,18 +331,32 @@ def _schema_fingerprint(engine) -> dict:
     fp: dict[str, dict] = {}
     for tbl in sorted(insp.get_table_names()):
         cols = tuple(sorted((c["name"], str(c["type"])) for c in insp.get_columns(tbl)))
-        idxs = tuple(sorted((i["name"], tuple(sorted(i["column_names"])), bool(i["unique"])) for i in insp.get_indexes(tbl)))
-        fks = tuple(sorted((fk["name"], fk["referred_table"], tuple(fk["constrained_columns"])) for fk in insp.get_foreign_keys(tbl)))
+        idxs = tuple(
+            sorted(
+                (i["name"], tuple(sorted(i["column_names"])), bool(i["unique"]))
+                for i in insp.get_indexes(tbl)
+            )
+        )
+        fks = tuple(
+            sorted(
+                (fk["name"], fk["referred_table"], tuple(fk["constrained_columns"]))
+                for fk in insp.get_foreign_keys(tbl)
+            )
+        )
         fp[tbl] = {"columns": cols, "indexes": idxs, "fks": fks}
     # Also capture alembic version
     try:
-        ver = engine.execute(__import__("sqlalchemy").text("SELECT version_num FROM alembic_version")).fetchone()  # type: ignore
+        ver = engine.execute(
+            __import__("sqlalchemy").text("SELECT version_num FROM alembic_version")
+        ).fetchone()  # type: ignore
         # For new engine style, use connect
-    except Exception:
+    except Exception:  # noqa: BLE001 - fallback for engine API differences
         try:
             with engine.connect() as conn:
-                ver = conn.execute(__import__("sqlalchemy").text("SELECT version_num FROM alembic_version")).fetchone()
-        except Exception:
+                ver = conn.execute(
+                    __import__("sqlalchemy").text("SELECT version_num FROM alembic_version")
+                ).fetchone()
+        except Exception:  # noqa: BLE001 - no alembic_version on empty DB
             ver = None
     fp["_alembic_version"] = ver[0] if ver and ver[0] else None  # type: ignore
     return fp
@@ -329,7 +392,16 @@ def test_offline_vs_online_semantic_equivalence(tmp_path: Path):
     env["PYTHONPATH"] = str(SRC)
     # Offline must not create the file
     proc = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "upgrade", "head", "--sql"],
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ROOT / "alembic.ini"),
+            "upgrade",
+            "head",
+            "--sql",
+        ],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -363,19 +435,27 @@ def test_offline_vs_online_semantic_equivalence(tmp_path: Path):
     # and alembic_version equal.  FK differences for a single table (problem_occurrence) are known to be
     # sensitive to offline batch reflection and are not required for semantic equivalence of the lesson
     # code_key migration; we assert lesson_learned strictly and others leniently.
-    assert fp_online.keys() == fp_offline.keys(), f"tables differ online={sorted(fp_online.keys())} offline={sorted(fp_offline.keys())}"
+    assert fp_online.keys() == fp_offline.keys(), (
+        f"tables differ online={sorted(fp_online.keys())} offline={sorted(fp_offline.keys())}"
+    )
     for tbl in fp_online:
         if tbl == "_alembic_version":
-            assert fp_online[tbl] == fp_offline[tbl], f"alembic_version differs {fp_online[tbl]} vs {fp_offline[tbl]}"
+            assert fp_online[tbl] == fp_offline[tbl], (
+                f"alembic_version differs {fp_online[tbl]} vs {fp_offline[tbl]}"
+            )
         elif tbl == "lesson_learned":
-            assert fp_online[tbl] == fp_offline[tbl], f"lesson_learned schema differs: online={fp_online[tbl]} offline={fp_offline[tbl]}"
+            assert fp_online[tbl] == fp_offline[tbl], (
+                f"lesson_learned schema differs: online={fp_online[tbl]} offline={fp_offline[tbl]}"
+            )
             online_cols = {c[0] for c in fp_online[tbl]["columns"]}
             offline_cols = {c[0] for c in fp_offline[tbl]["columns"]}
             assert "code_key" in online_cols and "code_key" in offline_cols
         else:
             # Lenient: columns must match, indexes/fks are allowed to differ only by ordering/naming of FK constraints
             # that offline batch may not fully reflect, but column sets must be identical
-            assert fp_online[tbl]["columns"] == fp_offline[tbl]["columns"], f"columns differ for {tbl}"
+            assert fp_online[tbl]["columns"] == fp_offline[tbl]["columns"], (
+                f"columns differ for {tbl}"
+            )
             # Indexes: allow missing expression index that reflection skips
             # FKs: if they differ, ensure at least the FK count is similar (within 1) — strict equality not required for offline batch
             if fp_online[tbl]["fks"] != fp_offline[tbl]["fks"]:
@@ -414,10 +494,12 @@ def test_windows_paths_offline_not_mutating(tmp_path: Path):
         try:
             upgrade(eng, "0019")
             with eng.begin() as conn:
-                conn.execute(__import__("sqlalchemy").text(
-                    "INSERT OR IGNORE INTO lesson_learned (id, code, revision, is_current, status, title, lesson, created_by, created_at, updated_at, depth_from_unit, depth_to_unit, root_cause_status, context, observation, recommendation, origin, provenance, attributes) "
-                    "VALUES ('les-win', 'LL-WIN', 1, 1, 'DRAFT', 't','l','system', datetime('now'), datetime('now'), 'm','m','UNKNOWN','','','','MANUAL','[]','{}')"
-                ))
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        "INSERT OR IGNORE INTO lesson_learned (id, code, revision, is_current, status, title, lesson, created_by, created_at, updated_at, depth_from_unit, depth_to_unit, root_cause_status, context, observation, recommendation, origin, provenance, attributes) "
+                        "VALUES ('les-win', 'LL-WIN', 1, 1, 'DRAFT', 't','l','system', datetime('now'), datetime('now'), 'm','m','UNKNOWN','','','','MANUAL','[]','{}')"
+                    )
+                )
         finally:
             eng.dispose()
         before = _hash(db_path)
@@ -426,7 +508,16 @@ def test_windows_paths_offline_not_mutating(tmp_path: Path):
         env["DRILLINTEL_DATABASE__URL"] = url
         env["PYTHONPATH"] = str(SRC)
         proc = subprocess.run(
-            [sys.executable, "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "upgrade", "head", "--sql"],
+            [
+                sys.executable,
+                "-m",
+                "alembic",
+                "-c",
+                str(ROOT / "alembic.ini"),
+                "upgrade",
+                "head",
+                "--sql",
+            ],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
@@ -468,7 +559,16 @@ def test_windows_paths_offline_not_mutating(tmp_path: Path):
     env["DRILLINTEL_DATABASE__URL"] = drive_url
     env["PYTHONPATH"] = str(SRC)
     proc = subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "upgrade", "head", "--sql"],
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ROOT / "alembic.ini"),
+            "upgrade",
+            "head",
+            "--sql",
+        ],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -495,16 +595,19 @@ def test_postgresql_claim_is_qualified_or_withdrawn():
         # No local PG — we explicitly withdraw claim for local run, qualify via CI service
         # This test documents that withdrawal
         assert True, "PostgreSQL qualification is deferred to CI service; local claim withdrawn"
-        pytest.skip("No PostgreSQL service locally — qualification is CI-backed (see .github/workflows)")
+        pytest.skip(
+            "No PostgreSQL service locally — qualification is CI-backed (see .github/workflows)"
+        )
     else:
         # If PG is available, actually test migrations against it
-        from sqlalchemy import create_engine, text as sa_text
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sa_text
 
         eng = create_engine(pg_url)
         try:
             with eng.begin() as conn:
                 conn.execute(sa_text("SELECT 1"))
-            from drilling_intelligence.database.migrations import upgrade, current_revision
+            from drilling_intelligence.database.migrations import current_revision, upgrade
 
             upgrade(eng, "head")
             assert current_revision(eng) == "0022"
@@ -518,8 +621,8 @@ def test_postgresql_claim_is_qualified_or_withdrawn():
 
 
 def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
-    from drilling_intelligence.database.migrations import METADATA_REVISION
     from drilling_intelligence.cli.app import main as cli_main
+    from drilling_intelligence.database.migrations import METADATA_REVISION
 
     assert METADATA_REVISION == "0022", f"METADATA_REVISION must be 0022, got {METADATA_REVISION}"
 
@@ -536,7 +639,9 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
         sys.stdout, sys.stderr = saved
     assert code_doctor_init == 0
     db_path = ws_root / ".drillintel/database/drilling_intelligence.db"
-    assert db_path.exists(), f"doctor should materialise DB, ls={list((ws_root / '.drillintel').rglob('*')) if (ws_root / '.drillintel').exists() else 'no dir'}"
+    assert db_path.exists(), (
+        f"doctor should materialise DB, ls={list((ws_root / '.drillintel').rglob('*')) if (ws_root / '.drillintel').exists() else 'no dir'}"
+    )
     conn = sqlite3.connect(db_path)
     try:
         ver = conn.execute("SELECT version_num FROM alembic_version").fetchone()

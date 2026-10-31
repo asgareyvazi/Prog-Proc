@@ -97,7 +97,7 @@ def test_delete_latest_current_restores_predecessor(ws: Workspace) -> None:
     r2 = repo.revise(les.id, by="a", changes={"lesson": "v2"})
     sess.commit()
     # Delete latest current (r2) — predecessor les should become current
-    res = repo.delete_lesson(r2.id, by="a", reason="latest")
+    repo.delete_lesson(r2.id, by="a", reason="latest")
     sess.commit()
     les_after = sess.get(LessonLearned, les.id)
     assert les_after.is_current is True
@@ -111,7 +111,6 @@ def test_delete_with_evidence_source_and_target(ws: Workspace) -> None:
     les = repo.capture(lesson="v1", code="LL-EVI", title="t")
     sess.commit()
     # Create evidence edges manually
-    from drilling_intelligence.database.models import KnowledgeItem
 
     # Insert dummy knowledge item
     with ws.database.engine.begin() as conn:
@@ -127,7 +126,11 @@ def test_delete_with_evidence_source_and_target(ws: Workspace) -> None:
     sess.commit()
     # Verify edge exists
     with ws.database.read_only() as ro:
-        edges = list(ro.execute(select(KnowledgeRelation).where(KnowledgeRelation.source_id == les.id)).scalars())
+        edges = list(
+            ro.execute(
+                select(KnowledgeRelation).where(KnowledgeRelation.source_id == les.id)
+            ).scalars()
+        )
         assert len(edges) == 1
     # Delete lesson — edges should be removed
     repo2, sess2 = _repo(ws)
@@ -136,9 +139,17 @@ def test_delete_with_evidence_source_and_target(ws: Workspace) -> None:
     repo2.delete_lesson(les_id, by="a", reason="with evidence")
     sess2.commit()
     with ws.database.read_only() as ro:
-        edges = list(ro.execute(select(KnowledgeRelation).where(KnowledgeRelation.source_id == les_id)).scalars())
+        edges = list(
+            ro.execute(
+                select(KnowledgeRelation).where(KnowledgeRelation.source_id == les_id)
+            ).scalars()
+        )
         assert len(edges) == 0
-        edges2 = list(ro.execute(select(KnowledgeRelation).where(KnowledgeRelation.target_id == les_id)).scalars())
+        edges2 = list(
+            ro.execute(
+                select(KnowledgeRelation).where(KnowledgeRelation.target_id == les_id)
+            ).scalars()
+        )
         assert len(edges2) == 0
     sess2.close()
 
@@ -149,7 +160,7 @@ def test_bulk_delete_rollback_on_failure(ws: Workspace) -> None:
     b = repo.capture(lesson="b", code="LL-BULK-B", title="t")
     sess.commit()
     # Bulk delete where second id is invalid — should fail before mutating
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017 - any validation failure is acceptable here
         repo.delete_lessons([a.id, "no-such-id"], by="actor", reason="bulk")
         sess.commit()
     sess.rollback()

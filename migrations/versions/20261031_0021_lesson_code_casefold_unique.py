@@ -46,18 +46,18 @@ def upgrade() -> None:
         from alembic import context as alembic_context
 
         is_offline = bool(alembic_context.is_offline_mode())
-    except Exception:
+    except Exception:  # noqa: BLE001
         try:
             ctx = op.get_context()
             is_offline = bool(ctx is not None and getattr(ctx, "is_offline_mode", lambda: False)())
-        except Exception:
+        except Exception:  # noqa: BLE001
             is_offline = False
     if not is_offline:
         # Online live checks: existence check to skip quickly, then legacy
         # collision check for case-insensitive duplicates.
         try:
             bind = op.get_bind()
-        except Exception:
+        except Exception:  # noqa: BLE001
             bind = None
         if bind is not None and getattr(bind, "execute", None) is not None:
             try:
@@ -68,7 +68,7 @@ def upgrade() -> None:
                 ).fetchone()
                 if exists:
                     return
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             try:
                 dupes = bind.execute(
@@ -85,12 +85,11 @@ def upgrade() -> None:
                         """
                     )
                 ).fetchall()
-            except Exception:
+            except Exception:  # noqa: BLE001
                 dupes = []
             if dupes:
                 details = "; ".join(
-                    f"canonical={row[0]!r} ids=[{row[2]}] codes=[{row[3]}]"
-                    for row in dupes
+                    f"canonical={row[0]!r} ids=[{row[2]}] codes=[{row[3]}]" for row in dupes
                 )
                 raise RuntimeError(
                     "cannot create uq_lesson_code_current_ci: current lessons collide case-insensitively: "
@@ -109,7 +108,7 @@ def upgrade() -> None:
             )
         )
         return
-    except Exception:
+    except Exception:  # noqa: BLE001
         pass
     op.create_index(
         "uq_lesson_code_current_ci",

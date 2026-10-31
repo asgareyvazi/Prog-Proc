@@ -72,14 +72,15 @@ def test_unicode_casefold_ss_vs_sharp_s(ws: Workspace) -> None:
     sess2.rollback()
     sess2.close()
     # Reverse
-    repo3, sess3 = _repo(ws)
+    _repo3, _sess3 = _repo(ws)
     # Clean up first DB? Use fresh workspace via tmp_path not shared — create new ws
     # Instead test in same ws after deleting ß
     # Find and delete ß lesson
-    from sqlalchemy.orm import Session
 
     with ws.database.unit_of_work() as s:
-        row = s.execute(select(LessonLearned).where(LessonLearned.code_key == "ss")).scalar_one_or_none()
+        row = s.execute(
+            select(LessonLearned).where(LessonLearned.code_key == "ss")
+        ).scalar_one_or_none()
         if row:
             s.delete(row)
     # Now SS should be allowed after ß removed
@@ -106,7 +107,7 @@ def test_superseded_does_not_block(ws: Workspace) -> None:
     repo, sess = _repo(ws)
     les = repo.capture(lesson="orig", code="LL-003", title="t1")
     sess.commit()
-    rev = repo.revise(les.id, by="tester", changes={"lesson": "revised"})
+    repo.revise(les.id, by="tester", changes={"lesson": "revised"})
     sess.commit()
     # les is now superseded, rev is current with same code
     # Superseded row's code_key still exists but is_current=0, so it must not block
@@ -118,7 +119,7 @@ def test_superseded_does_not_block(ws: Workspace) -> None:
     sess2.rollback()
     sess2.close()
     # But after deleting current rev, superseded should not block reuse
-    repo3, sess3 = _repo(ws)
+    _repo3, sess3 = _repo(ws)
     # Delete rev (current) — predecessor les will be restored to current? Actually les is superseded, rev is current.
     # Delete rev should restore les to current, still blocking. So create a new code that only exists as superseded
     # Create a separate chain and delete its current, then reuse should be blocked by restored predecessor, not superseded.
@@ -127,8 +128,8 @@ def test_superseded_does_not_block(ws: Workspace) -> None:
 
 def test_cross_well_global_uniqueness(ws: Workspace) -> None:
     # Create two wells via direct DB? Use repository capture with well_id scope
-    from drilling_intelligence.database.models import Well, Field, Project
-    from sqlalchemy.orm import Session
+
+    from drilling_intelligence.database.models import Field, Project, Well
 
     with ws.database.unit_of_work() as s:
         proj = Project(id="proj-1", name="P1")
@@ -174,7 +175,7 @@ def test_revision_retains_code_and_changing_code_is_checked(ws: Workspace) -> No
     sess.commit()
     assert rev.code == "LL-005" and rev.code_key == "ll-005"
     # Create another lesson with different code
-    other = repo.capture(lesson="other", code="LL-006", title="t2")
+    repo.capture(lesson="other", code="LL-006", title="t2")
     sess.commit()
     # Try to revise rev to collide with other — should fail
     with pytest.raises(Exception, match="already in use"):
@@ -193,7 +194,7 @@ def test_db_unique_enforces_concurrency_via_direct_insert(ws: Workspace) -> None
                 "VALUES ('les-direct-a', 'LL-DB', 'll-db', 1, 1, 'DRAFT', 't', 'l', 'system', datetime('now'), datetime('now'), 'm', 'm', 'UNKNOWN', '', '', '', 'MANUAL', '[]', '{}')"
             )
         )
-        with pytest.raises(Exception, match="UNIQUE.*code_key|unique"):
+        with pytest.raises(Exception, match=r"UNIQUE.*code_key|unique"):
             conn.execute(
                 text(
                     "INSERT INTO lesson_learned (id, code, code_key, revision, is_current, status, title, lesson, created_by, created_at, updated_at, depth_from_unit, depth_to_unit, root_cause_status, context, observation, recommendation, origin, provenance, attributes) "

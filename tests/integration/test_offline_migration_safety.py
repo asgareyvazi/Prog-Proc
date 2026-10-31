@@ -12,7 +12,6 @@ import os
 import sqlite3
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -69,7 +68,11 @@ def _make_db(path: Path, version: str = "0019", with_data: bool = False) -> None
                             "VALUES ('les-sentinel', 'LL-999', 1, 1, 'DRAFT', 't', 'l', 'system', datetime('now'), datetime('now'), 'm', 'm', 'UNKNOWN', '', '', '', 'MANUAL', '[]', '{}')"
                         )
                     )
-                conn.execute(__import__("sqlalchemy").text("CREATE TABLE IF NOT EXISTS unrelated (x INTEGER)"))
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        "CREATE TABLE IF NOT EXISTS unrelated (x INTEGER)"
+                    )
+                )
                 conn.execute(__import__("sqlalchemy").text("INSERT INTO unrelated VALUES (99)"))
     finally:
         engine.dispose()
@@ -83,11 +86,13 @@ def _capture_state(path: Path) -> tuple[str | None, int | None, list[tuple] | No
         try:
             conn = sqlite3.connect(path)
             try:
-                rows = conn.execute("SELECT id, code FROM lesson_learned WHERE id='les-sentinel'").fetchall()
+                rows = conn.execute(
+                    "SELECT id, code FROM lesson_learned WHERE id='les-sentinel'"
+                ).fetchall()
             except sqlite3.OperationalError:
                 rows = None
             conn.close()
-        except Exception:
+        except Exception:  # noqa: BLE001 - sqlite operational error is expected for sentinel check
             rows = None
     return h, size, rows
 
@@ -131,7 +136,9 @@ def test_offline_preserves_populated_pre0020(tmp_path: Path) -> None:
     db = tmp_path / "pre0020.db"
     _make_db(db, version="0019", with_data=True)
     before = _hash(db)
-    result = _run_offline(f"sqlite:///{db}", ["upgrade", "0020", "--sql"])  # note double --sql handled by helper
+    result = _run_offline(
+        f"sqlite:///{db}", ["upgrade", "0020", "--sql"]
+    )  # note double --sql handled by helper
     # Our helper already adds --sql, so test with head
     result = _run_offline(f"sqlite:///{db}", ["upgrade", "head"])
     after = _hash(db)
