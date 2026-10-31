@@ -12,7 +12,7 @@
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
-# Generated on 2026-10-24.
+# Generated on 2026-10-31.
 
 packaging==26.3
 setuptools==84.2.1

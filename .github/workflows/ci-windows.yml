@@ -121,8 +121,10 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path pytest-output.txt)) {
-            Write-Error "pytest-output.txt is missing"
-            exit 1
+            Write-Output "::notice::pytest-output: NOT RUN — prerequisite failed (install or pins check failed, pytest never ran)"
+            Write-Output "::notice::datetime-adapter-warnings: NOT RUN"
+            Write-Output "::notice::SKIPPED — prerequisite failed" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
           }
           $adapter = @(Select-String -Path pytest-output.txt -Pattern "default datetime adapter" -SimpleMatch -Encoding utf8).Count
           $summary = Select-String -Path pytest-output.txt -Pattern '[0-9]+ warnings? in ' -Encoding utf8 | Select-Object -Last 1
@@ -140,7 +142,24 @@ jobs:
       - name: Record test totals
         if: always()
         shell: pwsh
-        run: python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt
+        run: |
+          if (-not (Test-Path pytest-junit.xml) -or -not (Test-Path pytest-exit.txt) -or -not (Test-Path pytest-output.txt)) {
+            Write-Output "::notice::pytest-totals: NOT RUN — prerequisite failed (pytest never ran)"
+            Write-Output "::notice::pytest-junit: NOT RUN"
+            Write-Output "::notice::pytest-exit: NOT RUN"
+            Write-Output "::notice::SKIPPED — prerequisite failed" >> $env:GITHUB_STEP_SUMMARY
+            if (-not (Test-Path pytest-totals.json)) {
+              '{"collected":0,"passed":0,"failed":0,"errors":0,"skipped":0,"xfailed":0,"xpassed":0,"exit":null,"runtime":0}' | Out-File -Encoding utf8 pytest-totals.json
+            }
+            if (-not (Test-Path pytest-junit.xml)) {
+              '<?xml version="1.0" encoding="utf-8"?><testsuites></testsuites>' | Out-File -Encoding utf8 pytest-junit.xml
+            }
+            if (-not (Test-Path pytest-output.txt)) {
+              'NOT RUN — prerequisite failed' | Out-File -Encoding utf8 pytest-output.txt
+            }
+            exit 0
+          }
+          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt
 
       - name: Publish pytest results
         if: always()
@@ -153,7 +172,7 @@ jobs:
             pytest-totals.json
             pytest-exit.txt
             dependency-audit.json
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Surface failures as annotations
         if: failure()

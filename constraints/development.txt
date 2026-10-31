@@ -12,7 +12,7 @@
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
-# Generated on 2026-10-28.
+# Generated on 2026-10-31.
 
 alembic==1.20.1
 anyio==4.15.1
@@ -30,7 +30,7 @@ librt==0.16.0
 lxml==6.1.3
 Mako==1.4.3
 MarkupSafe==3.0.4
-mypy==2.4.0
+mypy==2.4.1
 mypy_extensions==1.1.0
 openpyxl==3.1.5
 packaging==26.3

@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.enums import (
@@ -72,6 +72,7 @@ from ..database.models import (
     Extraction,
     Field,
     HseIncident,
+    KnowledgeRelation,
     LessonLearned,
     MudMeasurement,
     MudReport,
@@ -942,6 +943,18 @@ class VersionPromoter:
         to do - a promotion made from what turned out to be somebody's draft, for instance.  Children
         before parents, one flush at a time: the record tables point at each other by ordinary foreign
         keys, and SQLite enforces only what it is given, in the order it is given it.
+
+        Lessons are part of this surface: only ``DERIVED`` rows for this ``version_id``
+        are removed; ``MANUAL`` lessons are preserved, rows for other versions are left
+        alone, the delete is transactional (no partial commit on failure), evidence
+        edges (``knowledge_relation`` where source or target is the lesson) are removed
+        with the lesson, and a superseded predecessor (``supersedes_id``) is reinstated
+        as current when the superseding derived row is deleted.  Approved/reviewed
+        derived lessons are removed like any other derived row — the operation is a
+        governed un-derive of a specific document version, not a silent erasure of an
+        engineering decision: approval is versioned, and the audit log retains the
+        decision; a caller that needs a policy gate should check ``status`` before
+        calling this method.
         """
         removed = 0
         # Children before parents, one flush at a time: the record tables point at each other by
@@ -956,6 +969,62 @@ class VersionPromoter:
         # way.  Order is constrained by the foreign keys: problem occurrences and the NPT-referencing
         # domains go first, ``npt_record`` next, then the cement/casing pair in that order because
         # ``cement_job.casing_run_id`` points at ``casing_run``.
+        #
+        # LessonLearned is version-owned via ``document_version_id`` and must be handled
+        # before the generic loop so its knowledge edges and supersession can be treated
+        # transactionally.  KnowledgeRelation rows for the lesson are deleted first to
+        # avoid leaving graph orphans, then the lesson row itself.
+        lesson_rows = list(
+            self.session.execute(
+                select(LessonLearned).where(
+                    LessonLearned.document_version_id == version_id,
+                    LessonLearned.origin == KnowledgeOrigin.DERIVED.value,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Collect supersession links before deletion to avoid UNIQUE violation
+        # on uq_lesson_one_current (code) when both predecessor and superseding row
+        # are is_current=True momentarily.  Deletion goes first, then reinstatement.
+        supersedes_ids: list[str] = []
+        for lesson in lesson_rows:
+            # Delete evidence edges where this lesson is source or target.
+            for edge in list(
+                self.session.execute(
+                    select(KnowledgeRelation).where(
+                        (KnowledgeRelation.source_type == "lesson")
+                        & (KnowledgeRelation.source_id == lesson.id)
+                    )
+                ).scalars()
+            ):
+                self.session.delete(edge)
+            for edge in list(
+                self.session.execute(
+                    select(KnowledgeRelation).where(
+                        (KnowledgeRelation.target_type == "lesson")
+                        & (KnowledgeRelation.target_id == lesson.id)
+                    )
+                ).scalars()
+            ):
+                self.session.delete(edge)
+            sid = str(getattr(lesson, "supersedes_id", "") or "")
+            if sid:
+                supersedes_ids.append(sid)
+            self.session.delete(lesson)
+        if lesson_rows:
+            self.session.flush()
+            # Reinstate superseded predecessors as current after the superseding rows
+            # are gone, preserving audit (status stays SUPERSEDED — the predecessor
+            # remains readable as superseded-but-current after an un-derive; a full
+            # status revert would invent history).
+            for sid in supersedes_ids:
+                predecessor = self.session.get(LessonLearned, sid)
+                if predecessor is not None and not predecessor.is_current:
+                    predecessor.is_current = True
+            if supersedes_ids:
+                self.session.flush()
+        removed += len(lesson_rows)
         for model in (
             ProblemOccurrence,
             WellControlEvent,
@@ -4185,7 +4254,10 @@ class VersionPromoter:
                 str(getattr(entry.table, "get", lambda *a, **k: "")("table_id", "")) or "lesson"
             )
         extra = entry.lesson_code.strip() if entry.lesson_code.strip() else entry.title.strip()[:40]
-        # Include well scope in identity so the same code on two wells is two lessons
+        # Well scope is part of identity for idempotence (same row on same version
+        # must re-find the same row), but code uniqueness itself is global via
+        # uq_lesson_one_current — the same code on two wells is a conflict, not two
+        # lessons (checked above).
         identity = promotion_identity(
             version_id=version.id,
             kind="lesson-learned",
@@ -4271,17 +4343,17 @@ class VersionPromoter:
             result.bump("lesson_learned", outcome)
             # Ensure provenance survives but do not mutate the row's lifecycle
             return existing
-        # Check duplicate code in same promotion pass (different row, same code+well)
-        # The unique partial index on (code) would hit at commit time; report earlier.
-        # For a revision of the same document, the old row has already been superseded
-        # (is_current=False) by _supersede_by_document, so it will not be found here.
-        # A live lesson from a *different* document with the same code is a true conflict.
+        # Check duplicate code globally (same code, any well) — the unique partial
+        # index ``uq_lesson_one_current`` on (code) where is_current enforces this at
+        # commit time; report earlier.  For a revision of the same document, the old
+        # row has already been superseded (is_current=False) by _supersede_by_document,
+        # so it will not be found here.  A live lesson from a *different* document
+        # with the same code is a true conflict (code is globally unique, not per-well).
         if content["code"]:
             duplicate = (
                 self.session.execute(
                     select(LessonLearned).where(
-                        LessonLearned.code == content["code"],
-                        LessonLearned.well_id == well_id,
+                        func.lower(LessonLearned.code) == str(content["code"]).casefold(),
                         LessonLearned.is_current.is_(True),
                     )
                 )
@@ -4294,7 +4366,7 @@ class VersionPromoter:
                 result.skipped.append(
                     {
                         "reason": "CONFLICT",
-                        "detail": f"lesson code {content['code']!r} already exists for well {well_id!r} as {duplicate.id}",
+                        "detail": f"lesson code {content['code']!r} already exists globally as {duplicate.id}",
                     }
                 )
                 return None
@@ -4312,7 +4384,7 @@ class VersionPromoter:
             prior = (
                 self.session.execute(
                     select(LessonLearned)
-                    .where(LessonLearned.code == content["code"], LessonLearned.well_id == well_id)
+                    .where(func.lower(LessonLearned.code) == str(content["code"]).casefold())
                     .order_by(LessonLearned.revision.desc())
                 )
                 .scalars()
@@ -4445,8 +4517,9 @@ class VersionPromoter:
                 target_field_id = str(document.field_id)
             if target_project_id is None and document.project_id:
                 target_project_id = str(document.project_id)
-            # Duplicate within same artefact: same code+well is a repeated row
-            code_key = (entry.lesson_code.strip().casefold(), str(target_well_id or ""))
+            # Duplicate within same artefact: same code globally is a repeated row
+            # (code is globally unique, not per-well).
+            code_key = entry.lesson_code.strip().casefold()
             if entry.lesson_code.strip() and code_key in seen_codes:
                 result.skipped.append(
                     {

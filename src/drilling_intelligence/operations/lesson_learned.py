@@ -19,9 +19,13 @@ What it does **not** do:
 * it never converts or normalises lesson wording.  The source's own text is
   kept verbatim.
 
-Row identity is the source's own `lesson_code` when stated, otherwise a
-stable hash of the lesson text plus the document's well scope.  Duplicates
-within a single artefact are reported, not silently merged.
+Row identity is assigned by the promoter via :func:`promotion_identity` as
+``version_id + kind + table_id + row_index + well_id + (code or title[:40])``,
+so a re-extraction that changes a lesson's wording (title/extra) or its well
+scope produces a different ``identity_key`` and is reported as a content
+change, not a silent edit.  Duplicates within a single artefact (same code)
+are reported, not silently merged.  The ``code`` itself is globally unique
+when live (``uq_lesson_one_current`` on ``code``), not per-well.
 """
 
 from __future__ import annotations
