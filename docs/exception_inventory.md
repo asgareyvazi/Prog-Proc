@@ -72,6 +72,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/knowledge/service.py` | 564 | `Exception` | reported | the index is disposable; the registry is not |
 | `src/drilling_intelligence/knowledge/service.py` | 195 | `Exception` | reported | a workspace without a usable sidecar still gets knowledge |
 | `src/drilling_intelligence/knowledge/service.py` | 912 | `Exception` | reported | a broken sidecar must not hide the registry's answer |
+| `src/drilling_intelligence/lessons/repository.py` | 627 | `Exception` | suppressed | transient unique violation is expected before predecessor restore |
 | `src/drilling_intelligence/operations/promote.py` | 4250 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4276 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4286 | `Exception` | reported | noqa marker |
@@ -98,6 +99,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/ui/worker.py` | 293 | `Exception` | reported | the GUI boundary reports, it does not crash |
 | `src/drilling_intelligence/ui/worker.py` | 360 | `Exception` | reported | preserve an explicit visible worker boundary |
 | `src/drilling_intelligence/ui/worker.py` | 439 | `Exception` | reported | preserve a visible worker boundary |
+| `src/drilling_intelligence/wells/workspace.py` | 290 | `Exception` | suppressed | dispose is best-effort during close |
 | `tools/coverage_report.py` | 348 | `Exception` | suppressed | noqa marker |
 | `tools/coverage_report.py` | 446 | `Exception` | suppressed | noqa marker |
 | `tools/pytest_totals.py` | 217 | `Exception` | suppressed | any import probe failure means not available |
@@ -117,4 +119,4 @@ to be found by somebody else.
 | --- | --- |
 | re-raised | 12 |
 | reported | 63 |
-| suppressed | 27 |
+| suppressed | 29 |
