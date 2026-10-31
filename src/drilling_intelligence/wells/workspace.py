@@ -279,12 +279,17 @@ class Workspace:
         return SearchService.for_workspace(self, in_memory=in_memory)
 
     def close(self) -> None:
-        if self._database is not None:
-            self._database.dispose()
-            self._database = None
-        if self._index_database is not None:
-            self._index_database.dispose()
-            self._index_database = None
+        # Safe to call repeatedly, after partial construction, or after worker
+        # cancellation.  Each Workspace owns its engine, so disposing does not
+        # affect an unrelated Workspace pointing at the same path.
+        for name in ("_database", "_index_database"):
+            db = getattr(self, name, None)
+            if db is not None:
+                try:
+                    db.dispose()
+                except Exception:
+                    pass
+                setattr(self, name, None)
 
     # -- presentation -------------------------------------------------------
     def summary(self) -> dict[str, Any]:

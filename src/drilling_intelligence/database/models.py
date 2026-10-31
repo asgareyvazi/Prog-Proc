@@ -1660,12 +1660,24 @@ class LessonLearned(Base, TimestampMixin):
         # ``LessonRepository._ensure_code_unique``; PostgreSQL's ``LOWER()`` is
         # likewise case-insensitive for the 7-bit codes in use, and the Python
         # check remains authoritative for Unicode edge cases (e.g. ``ß``).
+        # NOTE: This index is retained for 0021 history; the authoritative
+        # enforcement from 0022 onward is ``code_key`` (strip+casefold) via
+        # ``uq_lesson_code_key_current`` which matches ADR 003 exactly.
         Index(
             "uq_lesson_code_current_ci",
             text("lower(code)"),
             unique=True,
             sqlite_where=text("is_current = 1 AND code IS NOT NULL"),
             postgresql_where=text("is_current AND code IS NOT NULL"),
+        ),
+        # Canonical key for ADR 003: stripped + casefolded.  Unique among
+        # current lessons, global, not per-well.
+        Index(
+            "uq_lesson_code_key_current",
+            "code_key",
+            unique=True,
+            sqlite_where=text("is_current = 1 AND code_key IS NOT NULL"),
+            postgresql_where=text("is_current AND code_key IS NOT NULL"),
         ),
         UniqueConstraint("identity_key", name="uq_lesson_identity"),
         Index("ix_lesson_version", "document_version_id"),
@@ -1674,6 +1686,10 @@ class LessonLearned(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     #: The number the organisation gave it (``LL-2025-014``), when it has one.
     code: Mapped[str | None] = mapped_column(String(80))
+    # Canonical key per ADR 003: strip+casefold, enforced via partial unique index
+    # ``uq_lesson_code_key_current``.  Kept in sync with ``code`` by
+    # ``LessonRepository`` and the 0022 backfill.
+    code_key: Mapped[str | None] = mapped_column(String(80))
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     #: The label as authored ("Rev 2", "Rev B"), kept next to the integer that orders them.
     revision_label: Mapped[str | None] = mapped_column(String(64))

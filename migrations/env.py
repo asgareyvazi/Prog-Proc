@@ -73,6 +73,21 @@ def _resolve_url() -> str:
     return url
 
 
+def _resolve_url_no_side_effect() -> str:
+    """Resolve URL without creating parent directories (for offline safety)."""
+    x_args = context.get_x_argument(as_dictionary=True)
+    explicit = (x_args.get("url") or "").strip()
+    if explicit:
+        return explicit
+    from_env = (os.environ.get("DRILLINTEL_DATABASE__URL") or "").strip()
+    if from_env:
+        return from_env
+    config_path = (os.environ.get("DRILLINTEL_CONFIG") or "").strip() or None
+    settings = Settings.load(config_path)
+    url = settings.database_url_for(Path.cwd())
+    return url
+
+
 def _configure() -> None:
     from drilling_intelligence.database.migrations import alembic_config_url
 
@@ -82,29 +97,41 @@ def _configure() -> None:
 def run_migrations_offline() -> None:
     """Emit SQL to stdout (``alembic upgrade head --sql``) for review before apply.
 
-    SQLite batch migrations (``op.batch_alter_table(recreate="auto")``) need a
+    SQLite batch migrations (``op.batch_alter_table(recreate=\"auto\")``) need a
     live connection to reflect the existing table.  Offline mode normally has
     only a URL, so batch would fail with
     ``batch mode with dialect sqlite requires a live database connection``.
-    We therefore create a temporary in-memory SQLite database, create the
-    current metadata there for reflection, and render SQL against that
-    connection with ``literal_binds``.  Non-SQLite URLs keep the original
-    URL-based path.
+
+    The previous implementation created a temporary engine from the configured
+    file URL and called ``Base.metadata.create_all(tmp_engine)``, which for a
+    file-backed URL points at the real workspace database — an offline SQL
+    render must never mutate a user's database or create a file that did not
+    exist.  This implementation uses a genuinely isolated in-memory SQLite
+    database for reflection, never touching the workspace path.
     """
-    _configure()
-    url = config.get_main_option("sqlalchemy.url") or _resolve_url()
-    # SQLite batch offline needs a live connection for reflection; provide one.
+    # Resolve URL without side effects (no mkdir, no file creation).
+    url = _resolve_url_no_side_effect()
+    # Keep config url in sync for Alembic's bookkeeping, but do not create parent dirs.
+    try:
+        from drilling_intelligence.database.migrations import alembic_config_url
+
+        config.set_main_option("sqlalchemy.url", alembic_config_url(url))
+    except Exception:
+        config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    # SQLite batch offline needs a live connection for reflection; provide an isolated one.
     if url and url.startswith("sqlite"):
         from sqlalchemy import create_engine
 
-        # Use a temporary file-backed DB when the URL points to a file, otherwise memory.
-        # Creating the schema from Base.metadata gives batch the table to reflect.
-        tmp_engine = create_engine(url.replace("%", "%%") if "%%" not in url else url)
-        # For in-memory or missing file, ensure metadata exists for reflection.
-        try:
-            Base.metadata.create_all(tmp_engine)
-        except Exception:
-            pass
+        # Always use an isolated in-memory database for reflection — never the
+        # workspace file, even when the URL is file-backed.  Creating the schema
+        # from Base.metadata gives batch the table to reflect without touching
+        # the user's file.
+        tmp_engine = create_engine("sqlite://")
+        # Populate the reflection database from current metadata; failures are
+        # raised (not swallowed) so offline rendering is not reported as success
+        # when the model is broken.  A reflection DB that cannot be built is a
+        # defect, not a silent pass.
+        Base.metadata.create_all(tmp_engine)
         with tmp_engine.connect() as connection:
             context.configure(
                 connection=connection,

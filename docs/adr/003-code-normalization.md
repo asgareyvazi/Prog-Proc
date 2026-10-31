@@ -19,15 +19,16 @@ Empty and null codes are distinct from any non-empty code and are exempt (no con
 - Superseded revisions (``is_current = 0``) keep their code but do not participate; this allows ``revise()`` to create a successor with the same canonical code after marking the predecessor not current.
 - Both ``LessonLearned`` and promotion writer enforce the same rule; manual ``capture``/``update_lesson``/``revise`` and CLI/UI share ``LessonRepository._ensure_code_unique``.
 
-### Enforcement layers
+### Enforcement layers (amended 2026-11-01 for V10.2 §4)
 
 | Layer | Mechanism | Where |
 |-------|-----------|-------|
-| Application | ``LessonRepository._ensure_code_unique`` — queries ``is_current`` rows and compares ``strip().casefold()`` in Python; raises ``ValidationError`` with ``conflicting_id`` | ``src/drilling_intelligence/lessons/repository.py`` |
-| Storage | Partial unique index ``uq_lesson_code_current_ci`` on ``lower(code) WHERE is_current=1 AND code IS NOT NULL`` (SQLite & PostgreSQL) | ``src/drilling_intelligence/database/models.py`` + migration ``20261031_0021_lesson_code_casefold_unique.py`` |
-| Promotion | ``doc_promotion`` writer uses ``func.lower(code) == content["code"].casefold()`` + per-batch ``code_key`` set | ``src/drilling_intelligence/operations/promote.py`` |
+| Application | ``LessonRepository._ensure_code_unique`` — queries ``is_current`` rows and compares ``strip().casefold()`` in Python (via ``code_key`` when present, fallback to ``code``); raises ``ValidationError`` with ``conflicting_id`` | ``src/drilling_intelligence/lessons/repository.py`` |
+| Storage (0021 legacy) | Partial unique index ``uq_lesson_code_current_ci`` on ``lower(code) WHERE is_current=1 AND code IS NOT NULL`` (SQLite & PostgreSQL) — retained for history, superseded by ``code_key`` | ``src/drilling_intelligence/database/models.py`` + migration ``20261031_0021_lesson_code_casefold_unique.py`` |
+| Storage (0022 authoritative) | Persisted ``code_key = strip().casefold()`` + partial unique index ``uq_lesson_code_key_current`` on ``code_key WHERE is_current=1 AND code_key IS NOT NULL`` — matches ADR exactly, including ``ß`` vs ``SS`` | ``src/drilling_intelligence/database/models.py`` + migration ``20261032_0022_lesson_code_key_canonical.py`` |
+| Promotion | ``doc_promotion`` writer computes ``code_key`` from ``code`` and checks ``LessonLearned.code_key == normalized`` + per-batch ``code_key`` set | ``src/drilling_intelligence/operations/promote.py`` |
 
-If application and DB disagree (e.g. ``ß``), application wins — request is rejected before the DB sees it.
+If application and DB disagree (e.g. ``ß``), application wins — request is rejected before the DB sees it.  From 0022 onward the DB's ``code_key`` index agrees with ``casefold`` exactly (SQLite backfill uses ``lower(trim)`` as approximation then Python corrects ``ß``).
 
 ## Legacy Collision Procedure
 
@@ -49,11 +50,11 @@ Historical (non-current) collisions need no action.
 ## Alternatives Considered
 
 - **Per-well uniqueness:** Rejected — codes are organization-wide identifiers (``LL-2025-014``) printed on reports; allowing ``LL-014`` twice in two wells creates ambiguity when cited.
-- **Store canonical column:** Rejected for now — an extra ``code_canonical`` column would duplicate data and require backfill; a functional index achieves the same invariant with less migration risk.  Can be revisited if ``casefold`` divergence becomes material.
-- **DB-only enforcement:** Rejected — ``LOWER()`` alone does not handle ``ß`` and trimming; application check must remain.
+- **Store canonical column:** Initially rejected for 0021 (functional index lower risk), adopted for 0022 because ``lower()`` ≠ ``casefold()`` (trim and ``ß``).  ``code_key`` is the persisted canonical; backfill is idempotent and collision-checked.
+- **DB-only enforcement:** Rejected — ``LOWER()`` alone does not handle ``ß`` and trimming; application check must remain, now backed by ``code_key`` unique index for concurrency.
 
 ## Consequences
 
-- New captures/updates/revisions that collide case-insensitively fail fast with ``ValidationError(code already in use)``.
-- Migration ``0021`` is offline-renderable (``alembic upgrade --sql``) and live-safe (collision check only when a connection is present).
-- Existing tests that previously tolerated case-divergent duplicates must use distinct canonical codes.
+- New captures/updates/revisions that collide case-insensitively fail fast with ``ValidationError(code already in use)``; concurrent duplicates are rejected at the DB via ``uq_lesson_code_key_current`` (IntegrityError).
+- Migration ``0021`` is offline-renderable and live-safe (collision check only when live); ``0022`` backfills ``code_key`` and enforces the exact ``strip().casefold()`` canonical.
+- Existing tests that previously tolerated case-divergent duplicates must use distinct canonical codes; ``ß`` vs ``SS`` now collide (casefold) as intended.

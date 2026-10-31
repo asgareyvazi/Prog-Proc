@@ -57,6 +57,7 @@ LATER_MIGRATION_COLUMNS = (
     "lesson_learned.document_id",  # 0020
     "lesson_learned.document_version_id",  # 0020
     "lesson_learned.identity_key",  # 0020
+    "lesson_learned.code_key",  # 0022
 )
 
 #: (subject_key, expected kind, expected id).  Each row is a real shape the platform can hold.

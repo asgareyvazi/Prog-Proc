@@ -4350,10 +4350,11 @@ class VersionPromoter:
         # so it will not be found here.  A live lesson from a *different* document
         # with the same code is a true conflict (code is globally unique, not per-well).
         if content["code"]:
+            normalized_dup = str(content["code"]).strip().casefold()
             duplicate = (
                 self.session.execute(
                     select(LessonLearned).where(
-                        func.lower(LessonLearned.code) == str(content["code"]).casefold(),
+                        LessonLearned.code_key == normalized_dup,
                         LessonLearned.is_current.is_(True),
                     )
                 )
@@ -4381,15 +4382,19 @@ class VersionPromoter:
         supersedes_id: str | None = None
         revision = 1
         if content.get("code"):
-            prior = (
-                self.session.execute(
-                    select(LessonLearned)
-                    .where(func.lower(LessonLearned.code) == str(content["code"]).casefold())
-                    .order_by(LessonLearned.revision.desc())
+            normalized = str(content["code"]).strip().casefold()
+            if normalized:
+                prior = (
+                    self.session.execute(
+                        select(LessonLearned)
+                        .where(LessonLearned.code_key == normalized)
+                        .order_by(LessonLearned.revision.desc())
+                    )
+                    .scalars()
+                    .first()
                 )
-                .scalars()
-                .first()
-            )
+            else:
+                prior = None
             if prior is not None:
                 revision = int(prior.revision or 1) + 1
                 supersedes_id = str(prior.id)
@@ -4401,6 +4406,11 @@ class VersionPromoter:
         content["revision"] = revision
         if supersedes_id:
             content["supersedes_id"] = supersedes_id
+        # Canonical key for ADR 003: strip+casefold, kept in sync with code
+        if "code" in content and content["code"] is not None:
+            raw = str(content["code"]).strip()
+            content["code_key"] = raw.casefold() if raw else None
+            content["code"] = raw or None
         row = LessonLearned(
             id=new_id("les"),
             origin=KnowledgeOrigin.DERIVED.value,

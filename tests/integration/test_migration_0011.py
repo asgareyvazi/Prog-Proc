@@ -35,6 +35,7 @@ LATER_MIGRATION_COLUMNS = (
     "lesson_learned.document_id",  # 0020
     "lesson_learned.document_version_id",  # 0020
     "lesson_learned.identity_key",  # 0020
+    "lesson_learned.code_key",  # 0022
 )
 #: Tables migrations after this one create.  Listed rather than tolerated, so a parity test still
 #: detects a table that went missing rather than one that merely arrived late.

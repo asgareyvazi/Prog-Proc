@@ -212,23 +212,41 @@ def _ensure_code_unique(
     The check is global (not scoped to well/field/project) and excludes the row with
     ``exclude_id`` so ``update_lesson`` and ``revise`` can keep their own code.  It
     queries ``is_current == True`` because superseded revisions keep their code but
-    must not block reuse of the successor's code - the DB partial unique index (see
-    ADR ``docs/adr/003-code-normalization.md``) enforces the same rule at the storage
-    layer.
+    must not block reuse of the successor's code - the DB partial unique index on
+    ``code_key`` (see ADR ``docs/adr/003-code-normalization.md``) enforces the same
+    rule at the storage layer, with ``code_key = strip().casefold()``.
     """
     normalized = _normalize_code(code)
     if normalized is None:
         return
+    # Prefer code_key when available (post-0022), but also check legacy ``code``
+    # for databases that have not yet been backfilled.  This loop is Python-side
+    # so ``ß`` vs ``SS`` (casefold != lower) is handled correctly.
     rows = session.execute(
-        select(LessonLearned).where(
-            LessonLearned.is_current.is_(True), LessonLearned.code.is_not(None)
-        )
+        select(LessonLearned).where(LessonLearned.is_current.is_(True))
     ).scalars()
     for row in rows:
+        # Skip self
+        if str(row.id) == str(exclude_id or ""):
+            continue
+        # Check canonical via code_key if present, else via code
+        existing_key = getattr(row, "code_key", None)
+        if existing_key is not None:
+            existing_cf = str(existing_key).strip().casefold() if str(existing_key).strip() else ""
+            # code_key is already casefolded, but casefold again is idempotent
+            if existing_cf == normalized:
+                raise ValidationError(
+                    f"lesson code {str(code).strip()!r} is already in use (case-insensitive)",
+                    code=str(code).strip(),
+                    conflicting_id=str(row.id),
+                    hint="codes are globally unique ignoring case; pick a distinct code",
+                )
+            continue
+        # Fallback for legacy rows without code_key
         existing_cf = str(row.code or "").strip().casefold()
         if not existing_cf:
             continue
-        if existing_cf == normalized and str(row.id) != str(exclude_id or ""):
+        if existing_cf == normalized:
             raise ValidationError(
                 f"lesson code {str(code).strip()!r} is already in use (case-insensitive)",
                 code=str(code).strip(),
@@ -322,9 +340,11 @@ class LessonRepository:
         for key in sorted(set(scope) - accepted):
             raise ValidationError(f"lesson has no field named {key}")
         _ensure_code_unique(self.session, code)
+        normalized = _normalize_code(code)
         row = LessonLearned(
             id=new_id("les"),
             code=str(code or "").strip() or None,
+            code_key=normalized,
             title=str(title or "").strip()[:400] or _title_from(lesson),
             problem_type=match_problem_type(problem_type).token,
             lesson=str(lesson).strip(),
@@ -387,6 +407,13 @@ class LessonRepository:
             _ensure_code_unique(self.session, values["code"], exclude_id=str(row.id))
         applied: dict[str, Any] = {}
         for field, value in values.items():
+            if field == "code":
+                payload = str(value or "").strip() or None
+                setattr(row, field, payload)
+                # keep code_key in sync (ADR 003 canonical)
+                row.code_key = _normalize_code(payload)
+                applied[field] = payload
+                continue
             if field in _LIST_FIELDS:
                 payload: Any = _list(value)
             elif field == "problem_type":
@@ -443,13 +470,13 @@ class LessonRepository:
             )
         if "code" in payload:
             _ensure_code_unique(self.session, payload["code"], exclude_id=str(source.id))
+        new_code = (
+            str(payload["code"]).strip() or None if "code" in payload else source.code
+        )
         row = LessonLearned(
             id=new_id("les"),
-            code=(
-                str(payload["code"]).strip() or None
-                if "code" in payload
-                else source.code
-            ),
+            code=new_code,
+            code_key=_normalize_code(new_code),
             title=str(payload.get("title") or source.title)[:400],
             problem_type=str(payload.get("problem_type") or source.problem_type or ""),
             lesson=str(payload.get("lesson") or source.lesson),
@@ -593,8 +620,18 @@ class LessonRepository:
         if successor is not None:
             successor.supersedes_id = str(predecessor.id) if predecessor else None
 
-        # If deleting the current, restore predecessor
+        # If deleting the current, restore predecessor — avoid transient duplicate
+        # current code_key (both would be is_current=1 with same canonical).
         if bool(target.is_current) and predecessor is not None:
+            # Clear target current first so predecessor can become current without
+            # violating the partial unique index on code_key.
+            target.is_current = False
+            # Flush the change before setting predecessor to avoid unique violation
+            # in the same flush.
+            try:
+                self.session.flush()
+            except Exception:
+                pass
             predecessor.is_current = True
             # target was current, so its status is the governing status; predecessor
             # was marked SUPERSEDED on supersession and lost its original approval
