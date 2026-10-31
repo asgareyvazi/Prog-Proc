@@ -173,6 +173,17 @@ def test_unexpected_xpass_and_skip_fail_an_otherwise_green_record(
     )
     assert not skip_is_expected("tests.integration.test_x", "test_y", "symlinks")
     assert skip_is_expected(
+        "tests.integration.test_phase1_finalization",
+        "test_postgresql_claim_is_qualified_or_withdrawn",
+        "PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; "
+        "no disposable PostgreSQL service job exists.",
+    )
+    assert not skip_is_expected(
+        "tests.integration.test_phase1_finalization",
+        "test_postgresql_claim_is_qualified_or_withdrawn",
+        "PostgreSQL qualified by CI",
+    )
+    assert skip_is_expected(
         "tests.integration.test_path_and_process_boundary",
         "test_symlinks_pointing_outside_the_scan_root_are_never_followed",
         "this platform does not support symlinks",

@@ -53,9 +53,9 @@ case of a UI and a pipeline touching the same file.
 
 **Status:** accepted (2026-09-05)
 
-**Context.** The platform starts on SQLite and may be deployed against PostgreSQL for a
-shared project database. Silent `create_all()` in production is how schemas drift apart
-from the code that reads them.
+**Context.** The platform currently supports SQLite workspaces only. PostgreSQL is a future
+possibility, not a supported or qualified backend. Silent `create_all()` in production is
+how schemas drift apart from the code that reads them.
 
 **Decision.** Alembic is the only writer of schema; `create_all()` exists for tests that
 want a throwaway database, and `ensure_schema()` runs the migration chain when a
@@ -67,9 +67,16 @@ application opens. Primary keys are application-generated strings (`core/ids.py`
 than dialect-specific serials, and offline mode (`upgrade --sql`) stays working so a DBA
 can review a migration before running it.
 
+**Support boundary.** PostgreSQL is **NOT QUALIFIED and not a currently supported backend**.
+The portability choices below are design intent only; they do not establish compatibility.
+There is no service-backed PostgreSQL workflow, and no PostgreSQL migration, data, concurrency,
+Doctor, downgrade, or offline qualification is claimed. Do not point production data at a
+PostgreSQL URL. Enabling it requires a dedicated disposable service job and the complete
+migration/data qualification matrix.
+
 **Consequences.** `migrations/env.py` is small and boring, which is the point. Drift is a
 CI failure: `schema_diff()` compares live tables with ORM metadata, and a test asserts it
-comes back empty.
+comes back empty. This guarantee currently applies to SQLite only.
 
 ## ADR-0005 — Own the AI seams; talk to Ollama over HTTP
 
@@ -358,9 +365,10 @@ another, with nothing forcing the two to agree.
     `VocabMatch(raw=...)` exist so that "what did the file say" stays answerable after a classifier
     changes. A token nobody recognises is kept as `("rig_move", recognised=False)`, not discarded and not
     coerced to `other`.
-*   **SQLite now, PostgreSQL later, by staying in the common subset.** Partial unique indexes carry the
-    one-current-revision rules; no `ARRAY`, no `JSONB` operators, no enum types; `PRAGMA foreign_keys=ON`
-    on connect makes the schema's foreign keys real here as well as there.
+*   **SQLite is current; PostgreSQL remains unqualified future work.** Partial unique indexes and common
+    data types are portability-oriented design choices, not PostgreSQL support evidence. `PRAGMA
+    foreign_keys=ON` is SQLite-specific; PostgreSQL behavior requires an isolated service-backed
+    qualification before support can be claimed.
 *   **Two documented deviations, stated rather than hidden.** `ddr_report.report_date` is nullable with
     `report_date_text` beside it: a daily report that writes "14 June 2025" in prose would otherwise have
     forced promotion to invent a date or fail, and inventing is the one thing this layer is not for. And
@@ -549,9 +557,9 @@ same inputs. Widening a table that already has rows in it is the part with choic
     DBA uses on a shared file - and would leave a fresh workspace and a migrated one structurally different.
     So 0005 adds plain columns, the ORM models declare exactly those (a model that believes in a constraint
     the database does not enforce is worse than either alone), and `check_promoted_evidence` plus the
-    document-version checks police the promise where corruption can actually arrive. On PostgreSQL the same
-    migration stays a fast `ADD COLUMN`, and real constraints can be added there in a later one-line
-    migration with no data movement.
+    document-version checks police the promise where corruption can actually arrive. A PostgreSQL migration
+    shape was considered theoretically, but PostgreSQL remains unqualified: do not infer that this migration
+    or its constraints have been tested there.
 *   **Existing rows are told the truth about.** `origin` is backfilled to `'MANUAL'` and `created_by` to
     `'system'`, with `NOT NULL` and server defaults so a raw insert that forgets the column cannot create an
     unattributable record. `'MANUAL'` is the only honest backfill: nobody has seen these rows' sources, and

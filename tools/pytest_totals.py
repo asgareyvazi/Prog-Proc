@@ -43,6 +43,12 @@ _PLATFORM_SKIP_REASONS = (
     "this platform will not move an open database file",
     "Windows process handle count is not a file-descriptor leak measurement",
 )
+_UNQUALIFIED_BACKEND_SKIP = (
+    "tests.integration.test_phase1_finalization",
+    "test_postgresql_claim_is_qualified_or_withdrawn",
+    "PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; "
+    "no disposable PostgreSQL service job exists.",
+)
 _KEYS = (
     "collected",
     "passed",
@@ -229,6 +235,11 @@ def skip_is_expected(classname: str, name: str, message: str) -> bool:
     unconditional or fake dependency message and must be treated as unexpected.
     """
     text = message or ""
+    if (classname, name, text) == _UNQUALIFIED_BACKEND_SKIP:
+        # This remains a recorded skip, never a pass. The exact named test and
+        # exact reason make the current unsupported PostgreSQL boundary visible
+        # without turning unrelated skips into green outcomes.
+        return True
     if any(reason in text for reason in _PLATFORM_SKIP_REASONS):
         return True
     identity = f"{classname} {name}"

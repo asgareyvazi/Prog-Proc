@@ -6,10 +6,11 @@ Create Date: 2026-11-01
 
 The 0021 index used ``lower(code)`` which is not equivalent to the ADR's
 ``strip().casefold()`` (trim and Unicode casefold, e.g. `` LL-001 `` vs
-``LL-001``, ``ß`` vs ``SS``).  This migration adds the authoritative
+``LL-001``, ``ß`` vs ``SS``). This migration adds the authoritative
 ``code_key`` column (persisted canonical) and a partial unique index on it
-among current lessons.  Existing rows are backfilled from ``code`` via
-``trim + casefold``; the backfill is dialect-aware.
+among current lessons. Existing rows are backfilled with Python
+``strip().casefold()`` semantics. SQLite is the only qualified backend;
+PostgreSQL code paths are retained as future work and are NOT QUALIFIED.
 
 Legacy collision handling is per-ADR: if two current lessons share the same
 canonical, the migration aborts with a diagnostic containing canonical, ids,
@@ -17,6 +18,8 @@ codes and is_current, requiring operator resolution before re-running.
 """
 
 from __future__ import annotations
+
+import re
 
 import sqlalchemy as sa
 from alembic import op
@@ -67,15 +70,26 @@ def _column_exists(bind, table: str, column: str) -> bool:
 
 
 def _index_exists(bind, name: str) -> bool:
-    try:
-        # Check sqlite_master
-        row = bind.execute(
-            text("SELECT 1 FROM sqlite_master WHERE type='index' AND name=:n"), {"n": name}
-        ).fetchone()
-        if row:
-            return True
-    except Exception:  # noqa: BLE001
-        pass
+    dialect = _dialect_name()
+    if dialect == "postgresql":
+        try:
+            row = bind.execute(
+                text("SELECT 1 FROM pg_indexes WHERE indexname = :n"), {"n": name}
+            ).fetchone()
+            if row:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    else:
+        try:
+            row = bind.execute(
+                text("SELECT 1 FROM sqlite_master WHERE type='index' AND name=:n"),
+                {"n": name},
+            ).fetchone()
+            if row:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
     try:
         insp = inspect(bind)
         for idx in insp.get_indexes("lesson_learned"):
@@ -87,22 +101,70 @@ def _index_exists(bind, name: str) -> bool:
 
 
 def _index_definition_correct(bind, name: str) -> bool:
-    """Check that the existing index has the expected definition (columns, predicate, uniqueness)."""
+    """Verify the full partial-unique index contract using the active dialect catalog."""
+    if name != "uq_lesson_code_key_current":
+        return False
+    dialect = str(getattr(getattr(bind, "dialect", None), "name", "") or _dialect_name())
     try:
+        if dialect == "postgresql":
+            row = bind.execute(
+                text(
+                    "SELECT ns.nspname, current_schema(), tbl.relname, idx.indisunique, "
+                    "idx.indisvalid, idx.indisready, idx.indnatts, idx.indnkeyatts, "
+                    "pg_get_expr(idx.indpred, idx.indrelid), "
+                    "ARRAY(SELECT att.attname FROM unnest(idx.indkey) WITH ORDINALITY "
+                    "AS key(attnum, ord) JOIN pg_attribute att "
+                    "ON att.attrelid = idx.indrelid AND att.attnum = key.attnum "
+                    "ORDER BY key.ord) "
+                    "FROM pg_class ix JOIN pg_index idx ON idx.indexrelid = ix.oid "
+                    "JOIN pg_class tbl ON tbl.oid = idx.indrelid "
+                    "JOIN pg_namespace ns ON ns.oid = tbl.relnamespace "
+                    "WHERE ix.relname = :n"
+                ),
+                {"n": name},
+            ).fetchall()
+            if len(row) != 1:
+                return False
+            (
+                schema,
+                active_schema,
+                table,
+                unique,
+                valid,
+                ready,
+                total_columns,
+                key_columns,
+                predicate,
+                columns,
+            ) = row[0]
+            if schema != active_schema or table != "lesson_learned" or not unique:
+                return False
+            if not valid or not ready or total_columns != 1 or key_columns != 1:
+                return False
+            if list(columns or ()) != ["code_key"]:
+                return False
+            # pg_get_expr may add grouping parentheses. Remove parentheses and
+            # whitespace, then require exactly the complete AND predicate.
+            predicate_norm = re.sub(r"[\s\"`()]+", "", str(predicate or "").lower())
+            return predicate_norm == "is_currentandcode_keyisnotnull"
+
         row = bind.execute(
-            text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:n"), {"n": name}
-        ).fetchone()
-        if not row or not row[0]:
+            text("SELECT tbl_name, sql FROM sqlite_master WHERE type='index' AND name=:n"),
+            {"n": name},
+        ).fetchall()
+        if len(row) != 1:
             return False
-        sql = row[0].lower()
-        # Expected for SQLite: ON lesson_learned (code_key) WHERE is_current = 1 AND code_key IS NOT NULL
-        # Check components
-        if "code_key" not in sql:
+        table, definition = row[0]
+        if table != "lesson_learned" or not definition:
             return False
-        if "is_current" not in sql:
-            return False
-        return "unique" in sql
-    except Exception:  # noqa: BLE001
+        sql_norm = re.sub(r"[\s\"`\[\]]+", "", str(definition).lower())
+        expected = re.compile(
+            r"^createuniqueindex(?:ifnotexists)?uq_lesson_code_key_current"
+            r"onlesson_learned\(code_key\)"
+            r"whereis_current=1andcode_keyisnotnull$"
+        )
+        return expected.fullmatch(sql_norm) is not None
+    except Exception:  # noqa: BLE001 - catalog/reflection failure is not a verified index
         return False
 
 
@@ -137,55 +199,32 @@ def upgrade() -> None:
         # Already applied — verify type
         pass
 
-    # 2. Backfill canonical values for rows where code is present but code_key is null
-    # Use dialect-appropriate SQL for the bulk; then Python correction for casefold divergence
-    if dialect == "postgresql":
-        op.execute(
-            text(
-                "UPDATE lesson_learned SET code_key = lower(btrim(code)) "
-                "WHERE code IS NOT NULL AND btrim(code) != '' AND code_key IS NULL"
-            )
-        )
-    else:
-        op.execute(
-            text(
-                "UPDATE lesson_learned SET code_key = lower(trim(code)) "
-                "WHERE code IS NOT NULL AND trim(code) != '' AND code_key IS NULL"
-            )
-        )
+    # 2. Backfill with the exact Python strip().casefold() contract.
+    if offline:
+        from alembic import context as alembic_context
 
-    # 3. Python-side correction for casefold divergence (e.g. ß -> ss) when live connection is available
-    # This must succeed; a failure here is not tolerated as success.
-    if bind is not None and hasattr(bind, "execute"):
-        # Detect rows where lower(trim) != casefold(trim) and fix them
-        # Select all rows with code
-        rows = bind.execute(
-            text("SELECT id, code, code_key FROM lesson_learned WHERE code IS NOT NULL")
-        ).fetchall()
-        for row_id, code, existing_key in rows:
-            if code is None:
-                continue
-            raw = str(code).strip()
-            if not raw:
-                # Empty code should have null code_key
-                if existing_key is not None:
-                    bind.execute(
-                        text("UPDATE lesson_learned SET code_key = NULL WHERE id = :id"),
-                        {"id": row_id},
-                    )
-                continue
-            canonical = raw.casefold()
-            # If existing_key already equals canonical, no action
-            if existing_key == canonical:
-                continue
-            # If existing_key is lower-approx and differs, correct it
-            # Also handle case where existing_key is None (backfill missed due to lower vs casefold difference)
-            if existing_key != canonical:
-                # Only update if needed; this is a genuine correction, not silent success
-                bind.execute(
-                    text("UPDATE lesson_learned SET code_key = :ck WHERE id = :id"),
-                    {"ck": canonical, "id": row_id},
-                )
+        canonical_rows = alembic_context.config.attributes.get("offline_lesson_code_keys")
+        if canonical_rows is None:
+            raise RuntimeError(
+                "offline 0022 requires a read-only source snapshot; rerun against an existing "
+                "SQLite database or use the supported online migration path"
+            )
+        for row_id, canonical in canonical_rows:
+            statement = text("UPDATE lesson_learned SET code_key = :ck WHERE id = :id").bindparams(
+                ck=canonical, id=row_id
+            )
+            op.execute(statement)
+    elif bind is not None:
+        rows = bind.execute(text("SELECT id, code FROM lesson_learned ORDER BY id")).fetchall()
+        updates = [
+            {
+                "ck": (str(code).strip().casefold() or None) if code is not None else None,
+                "id": row_id,
+            }
+            for row_id, code in rows
+        ]
+        if updates:
+            bind.execute(text("UPDATE lesson_learned SET code_key = :ck WHERE id = :id"), updates)
 
     # 4. Legacy collision detection — must be correct, not swallowed
     # Distinguish offline (no bind) vs live. Offline check is skipped but index will still enforce;

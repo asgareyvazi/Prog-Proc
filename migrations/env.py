@@ -111,6 +111,13 @@ def run_migrations_offline() -> None:
     """
     # Resolve URL without side effects (no mkdir, no file creation).
     url = _resolve_url_no_side_effect()
+    from sqlalchemy.engine import make_url
+
+    if make_url(url).get_backend_name() != "sqlite":
+        raise RuntimeError(
+            "offline migration SQL is qualified for SQLite only; PostgreSQL is NOT QUALIFIED "
+            "and must use no migration path until service-backed qualification exists"
+        )
     # Keep config url in sync for Alembic's bookkeeping, but do not create parent dirs.
     try:
         from drilling_intelligence.database.migrations import alembic_config_url
@@ -131,36 +138,79 @@ def run_migrations_offline() -> None:
         # exists, without mutating the file.
         real_version = None
         file_path = None
+        offline_code_keys: list[tuple[str, str | None]] = []
+        source_tables: set[str] = set()
+        lesson_has_code_key = False
         try:
-            if url not in ("sqlite://", "sqlite:///:memory:", "sqlite:////", "sqlite:///"):
-                raw = url.split(":///", 1)[-1] if ":///" in url else ""
-                from urllib.parse import unquote
+            from urllib.parse import unquote
 
-                raw = raw.split("?")[0].split("#")[0]
-                raw = unquote(raw)
+            from sqlalchemy.engine import make_url
+
+            parsed_url = make_url(url)
+            database = parsed_url.database
+            if parsed_url.get_backend_name() == "sqlite" and database not in (None, "", ":memory:"):
+                raw = unquote(database)
                 candidate = Path(raw)
                 if not candidate.is_absolute():
                     candidate = (Path.cwd() / candidate).resolve()
                 if candidate.exists() and candidate.is_file():
                     file_path = candidate
-        except Exception:  # noqa: BLE001
-            file_path = None
+        except Exception as exc:
+            raise RuntimeError(f"cannot safely resolve SQLite offline source URL: {exc}") from exc
         if file_path is not None:
-            try:
-                import sqlite3
+            import sqlite3
 
-                conn = sqlite3.connect(str(file_path))
-                try:
-                    cur = conn.execute("SELECT version_num FROM alembic_version LIMIT 1")
-                    row = cur.fetchone()
-                    if row:
-                        real_version = row[0]
-                except Exception:  # noqa: BLE001
-                    real_version = None
-                finally:
+            # Read the source snapshot strictly read-only. The emitted row updates
+            # use exactly Python strip().casefold(), unlike SQL lower()/trim().
+            source_uri = file_path.resolve().as_uri() + "?mode=ro"
+            conn = None
+            try:
+                conn = sqlite3.connect(source_uri, uri=True)
+                source_tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    ).fetchall()
+                }
+                if "alembic_version" in source_tables:
+                    versions = conn.execute("SELECT version_num FROM alembic_version").fetchall()
+                    if len(versions) > 1:
+                        raise RuntimeError(
+                            "offline migration source has multiple Alembic heads; repair online first"
+                        )
+                    real_version = versions[0][0] if versions else None
+                if "lesson_learned" in source_tables:
+                    lesson_columns = {
+                        row[1] for row in conn.execute("PRAGMA table_info(lesson_learned)")
+                    }
+                    lesson_has_code_key = "code_key" in lesson_columns
+                    for row_id, code in conn.execute(
+                        "SELECT id, code FROM lesson_learned ORDER BY id"
+                    ):
+                        canonical = (
+                            (str(code).strip().casefold() or None) if code is not None else None
+                        )
+                        offline_code_keys.append((str(row_id), canonical))
+            except sqlite3.Error as exc:
+                raise RuntimeError(
+                    f"cannot read offline SQLite source snapshot read-only: {file_path}: {exc}"
+                ) from exc
+            finally:
+                if conn is not None:
                     conn.close()
-            except Exception:  # noqa: BLE001
-                real_version = None
+        if file_path is not None:
+            application_tables = source_tables - {"alembic_version"}
+            if application_tables and real_version is None:
+                raise RuntimeError(
+                    "offline migration source has application tables but no single alembic_version; "
+                    "repair/stamp online first"
+                )
+            if real_version == "0021" and lesson_has_code_key:
+                raise RuntimeError(
+                    "offline migration cannot certify partially applied 0022 with code_key already "
+                    "present; use the online idempotent repair path"
+                )
+        context.config.attributes["offline_lesson_code_keys"] = tuple(offline_code_keys)
         # Prepare isolated in-memory DB for reflection.
         # For offline incremental, Alembic needs to know the current heads (real_version)
         # but the reflection DB must have tables so batch can reflect.  Using head

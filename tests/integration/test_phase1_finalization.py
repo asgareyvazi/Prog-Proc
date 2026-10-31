@@ -323,74 +323,22 @@ def test_0020_is_historically_deterministic():
 # ---------------------------------------------------------------------------
 
 
-def _schema_fingerprint(engine) -> dict:
-    """Fingerprint: tables -> (columns, indexes, fks) for comparison."""
-    from sqlalchemy import inspect
-
-    insp = inspect(engine)
-    fp: dict[str, dict] = {}
-    for tbl in sorted(insp.get_table_names()):
-        cols = tuple(sorted((c["name"], str(c["type"])) for c in insp.get_columns(tbl)))
-        idxs = tuple(
-            sorted(
-                (i["name"], tuple(sorted(i["column_names"])), bool(i["unique"]))
-                for i in insp.get_indexes(tbl)
-            )
-        )
-        fks = tuple(
-            sorted(
-                (fk["name"], fk["referred_table"], tuple(fk["constrained_columns"]))
-                for fk in insp.get_foreign_keys(tbl)
-            )
-        )
-        fp[tbl] = {"columns": cols, "indexes": idxs, "fks": fks}
-    # Also capture alembic version
-    try:
-        ver = engine.execute(
-            __import__("sqlalchemy").text("SELECT version_num FROM alembic_version")
-        ).fetchone()  # type: ignore
-        # For new engine style, use connect
-    except Exception:  # noqa: BLE001 - fallback for engine API differences
-        try:
-            with engine.connect() as conn:
-                ver = conn.execute(
-                    __import__("sqlalchemy").text("SELECT version_num FROM alembic_version")
-                ).fetchone()
-        except Exception:  # noqa: BLE001 - no alembic_version on empty DB
-            ver = None
-    fp["_alembic_version"] = ver[0] if ver and ver[0] else None  # type: ignore
-    return fp
-
-
-def test_offline_vs_online_semantic_equivalence(tmp_path: Path):
-    """Online upgrade head vs offline SQL applied to disposable empty copy produce identical schema.
-
-    The offline renderer in env.py is intentionally isolated (sqlite://) and
-    currently renders the full history from base to head.  Applying that SQL to
-    an empty disposable copy must yield the same fingerprint as an online
-    upgrade to head from empty.  This proves offline is not mutating the
-    source and its SQL is semantically equivalent to the online path.
-    """
+def test_empty_full_offline_sql_matches_online_migration_exactly(tmp_path: Path):
+    """A full-history SQL script applied to a fresh file matches online head exactly."""
     from drilling_intelligence.database.engine import open_sqlite
     from drilling_intelligence.database.migrations import upgrade
 
-    # Online path: empty -> head
-    online_db = tmp_path / "online.db"
-    eng_online = open_sqlite(f"sqlite:///{online_db}")
+    online = tmp_path / "empty-online.db"
+    engine = open_sqlite(f"sqlite:///{online}")
     try:
-        upgrade(eng_online, "head")
-        fp_online = _schema_fingerprint(eng_online)
+        upgrade(engine, "head")
     finally:
-        eng_online.dispose()
+        engine.dispose()
 
-    # Offline path: render SQL for empty URL and apply to a fresh empty DB via sqlite3
-    offline_db = tmp_path / "offline.db"
-    # Ensure empty file does not exist before render
-    assert not offline_db.exists()
+    source = tmp_path / "offline-source-does-not-exist.db"
     env = dict(os.environ)
-    env["DRILLINTEL_DATABASE__URL"] = f"sqlite:///{offline_db}"
+    env["DRILLINTEL_DATABASE__URL"] = f"sqlite:///{source}"
     env["PYTHONPATH"] = str(SRC)
-    # Offline must not create the file
     proc = subprocess.run(
         [
             sys.executable,
@@ -408,74 +356,17 @@ def test_offline_vs_online_semantic_equivalence(tmp_path: Path):
         env=env,
         check=False,
     )
-    assert proc.returncode == 0, proc.stderr[-1000:]
-    assert not offline_db.exists(), "offline must not create file"
-    sql = proc.stdout
-    assert "lesson_learned" in sql and "code_key" in sql
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert not source.exists(), "offline rendering must not create its source URL"
 
-    # Apply offline SQL to a new empty DB via sqlite3 executescript (disposable copy)
-    # Use an isolated file for the apply
-    apply_db = tmp_path / "apply.db"
-    conn = sqlite3.connect(apply_db)
-    try:
-        # Remove Alembic comments that sqlite cannot execute and split
-        # The offline SQL is already pure SQL, executescript can handle it
-        conn.executescript(sql)
-        conn.commit()
-    finally:
-        conn.close()
+    offline = tmp_path / "empty-offline.db"
+    with sqlite3.connect(offline) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript(proc.stdout)
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        assert violations == []
 
-    eng_offline = open_sqlite(f"sqlite:///{apply_db}")
-    try:
-        fp_offline = _schema_fingerprint(eng_offline)
-    finally:
-        eng_offline.dispose()
-
-    # Compare fingerprints — core checks: tables set equal, lesson_learned columns/indexes must match,
-    # and alembic_version equal.  FK differences for a single table (problem_occurrence) are known to be
-    # sensitive to offline batch reflection and are not required for semantic equivalence of the lesson
-    # code_key migration; we assert lesson_learned strictly and others leniently.
-    assert fp_online.keys() == fp_offline.keys(), (
-        f"tables differ online={sorted(fp_online.keys())} offline={sorted(fp_offline.keys())}"
-    )
-    for tbl in fp_online:
-        if tbl == "_alembic_version":
-            assert fp_online[tbl] == fp_offline[tbl], (
-                f"alembic_version differs {fp_online[tbl]} vs {fp_offline[tbl]}"
-            )
-        elif tbl == "lesson_learned":
-            assert fp_online[tbl] == fp_offline[tbl], (
-                f"lesson_learned schema differs: online={fp_online[tbl]} offline={fp_offline[tbl]}"
-            )
-            online_cols = {c[0] for c in fp_online[tbl]["columns"]}
-            offline_cols = {c[0] for c in fp_offline[tbl]["columns"]}
-            assert "code_key" in online_cols and "code_key" in offline_cols
-        else:
-            # Lenient: columns must match, indexes/fks are allowed to differ only by ordering/naming of FK constraints
-            # that offline batch may not fully reflect, but column sets must be identical
-            assert fp_online[tbl]["columns"] == fp_offline[tbl]["columns"], (
-                f"columns differ for {tbl}"
-            )
-            # Indexes: allow missing expression index that reflection skips
-            # FKs: if they differ, ensure at least the FK count is similar (within 1) — strict equality not required for offline batch
-            if fp_online[tbl]["fks"] != fp_offline[tbl]["fks"]:
-                # Log difference but not fail if core lesson_learned is correct and most tables match
-                # For strict offline equivalence we require FKs to match for at least 90% of tables
-                pass
-
-    # Also test incremental equivalence: upgrade from 0019 online vs offline incremental rendering
-    # Online incremental
-    inc_online_db = tmp_path / "inc_online.db"
-    eng_inc_on = open_sqlite(f"sqlite:///{inc_online_db}")
-    try:
-        upgrade(eng_inc_on, "0019")
-        upgrade(eng_inc_on, "head")
-        fp_inc_online = _schema_fingerprint(eng_inc_on)
-    finally:
-        eng_inc_on.dispose()
-    # Fingerprint should match the full head fingerprint for lesson_learned at least
-    assert fp_inc_online["lesson_learned"] == fp_online["lesson_learned"]
-    assert fp_inc_online["_alembic_version"] == fp_online["_alembic_version"]
+    assert _strict_sqlite_snapshot(online) == _strict_sqlite_snapshot(offline)
 
 
 # ---------------------------------------------------------------------------
@@ -582,37 +473,321 @@ def test_windows_paths_offline_not_mutating(tmp_path: Path):
     assert not Path("C:/tmp/drive_letter_test.db").exists()
 
 
+def _strict_sqlite_snapshot(path: Path) -> dict[str, object]:
+    """Capture complete SQLite schema and row state for offline/online comparison."""
+    from sqlalchemy import MetaData, Table, create_engine, inspect
+
+    engine = create_engine(f"sqlite:///{path}")
+    try:
+        inspector = inspect(engine)
+        schema: dict[str, object] = {}
+        data: dict[str, object] = {}
+        with engine.connect() as conn:
+            catalog = conn.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT type, name, tbl_name, sql "
+                    "FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' "
+                    "ORDER BY name"
+                )
+            ).fetchall()
+            schema["catalog"] = tuple(
+                (kind, name, table, re.sub(r"\s+", " ", sql or "").strip().lower())
+                for kind, name, table, sql in catalog
+            )
+            for table in sorted(inspector.get_table_names()):
+                schema[table] = {
+                    "columns": tuple(
+                        (
+                            column["name"],
+                            str(column["type"]),
+                            column["nullable"],
+                            column["default"],
+                            column["primary_key"],
+                        )
+                        for column in inspector.get_columns(table)
+                    ),
+                    "foreign_keys": tuple(
+                        sorted(
+                            (
+                                fk.get("name"),
+                                tuple(fk.get("constrained_columns") or ()),
+                                fk.get("referred_schema"),
+                                fk.get("referred_table"),
+                                tuple(fk.get("referred_columns") or ()),
+                                tuple(sorted((fk.get("options") or {}).items())),
+                            )
+                            for fk in inspector.get_foreign_keys(table)
+                        )
+                    ),
+                    "unique_constraints": tuple(
+                        sorted(
+                            (
+                                constraint.get("name"),
+                                tuple(constraint.get("column_names") or ()),
+                            )
+                            for constraint in inspector.get_unique_constraints(table)
+                        )
+                    ),
+                    "check_constraints": tuple(
+                        sorted(
+                            (constraint.get("name"), constraint.get("sqltext"))
+                            for constraint in inspector.get_check_constraints(table)
+                        )
+                    ),
+                    "indexes": tuple(
+                        sorted(
+                            (
+                                index.get("name"),
+                                tuple(index.get("column_names") or ()),
+                                bool(index.get("unique")),
+                                str((index.get("dialect_options") or {}).get("sqlite_where"))
+                                if (index.get("dialect_options") or {}).get("sqlite_where")
+                                is not None
+                                else "",
+                            )
+                            for index in inspector.get_indexes(table)
+                        )
+                    ),
+                }
+                reflected = Table(table, MetaData(), autoload_with=engine)
+                rows = conn.execute(reflected.select()).fetchall()
+                data[table] = tuple(sorted((tuple(row) for row in rows), key=repr))
+        return {"schema": schema, "data": data}
+    finally:
+        engine.dispose()
+
+
+def _seed_historical_lesson_rows(engine, *, collision: bool = False) -> None:
+    from sqlalchemy import text
+
+    rows = [
+        ("a", "LL-001", 1),
+        ("b", " ll-001 ", 0),
+        ("sharp-s", "ß", 1),
+        ("ascii-ss", "SS", 0),
+        ("unicode", "LL-Ü", 1),
+        ("null", None, 1),
+        ("empty", "", 1),
+        ("spaces", "   ", 1),
+        ("superseded", "OLD-001", 0),
+        ("current", "OLD-002", 1),
+    ]
+    if collision:
+        rows = [("sharp-s", "ß", 1), ("ascii-ss", "SS", 1)]
+    statement = text(
+        "INSERT INTO lesson_learned "
+        "(id, code, revision, is_current, status, title, context, observation, "
+        "root_cause_status, lesson, recommendation, depth_from_unit, depth_to_unit, "
+        "created_by, origin, created_at, updated_at) "
+        "VALUES (:id, :code, 1, :current, 'DRAFT', :title, '', '', 'UNKNOWN', '', '', "
+        "'m', 'm', 'test', 'MANUAL', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            statement,
+            [
+                {"id": row_id, "code": code, "current": current, "title": row_id}
+                for row_id, code, current in rows
+            ],
+        )
+
+
+@pytest.mark.parametrize("start_revision", ["0019", "0020", "0021"])
+def test_populated_offline_sql_matches_online_migration_exactly(
+    tmp_path: Path, start_revision: str
+):
+    """Apply generated incremental SQL to an identical copy and compare all schema/data."""
+    import shutil
+
+    from drilling_intelligence.database.engine import open_sqlite
+    from drilling_intelligence.database.migrations import upgrade
+
+    source = tmp_path / f"historical-{start_revision}.db"
+    source_engine = open_sqlite(f"sqlite:///{source}")
+    try:
+        upgrade(source_engine, start_revision)
+        _seed_historical_lesson_rows(source_engine)
+    finally:
+        source_engine.dispose()
+
+    online = tmp_path / f"online-{start_revision}.db"
+    offline = tmp_path / f"offline-{start_revision}.db"
+    shutil.copy2(source, online)
+    shutil.copy2(source, offline)
+    source_hash = _hash(source)
+    online_engine = open_sqlite(f"sqlite:///{online}")
+    try:
+        upgrade(online_engine, "head")
+    finally:
+        online_engine.dispose()
+
+    env = dict(os.environ)
+    env["DRILLINTEL_DATABASE__URL"] = f"sqlite:///{source}"
+    env["PYTHONPATH"] = str(SRC)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ROOT / "alembic.ini"),
+            "upgrade",
+            f"{start_revision}:head",
+            "--sql",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert _hash(source) == source_hash, "SQL rendering must leave source DB bytes unchanged"
+    assert "ss" in proc.stdout.lower(), "the offline script must contain the Python-casefold value"
+
+    raw = sqlite3.connect(offline)
+    try:
+        raw.execute("PRAGMA foreign_keys=ON")
+        raw.executescript(proc.stdout)
+        raw.commit()
+        violations = raw.execute("PRAGMA foreign_key_check").fetchall()
+        assert violations == [], f"offline copy has FK violations: {violations}"
+    finally:
+        raw.close()
+
+    online_snapshot = _strict_sqlite_snapshot(online)
+    offline_snapshot = _strict_sqlite_snapshot(offline)
+    assert online_snapshot == offline_snapshot, (
+        f"offline/online mismatch from {start_revision}: "
+        f"schema keys online={sorted(online_snapshot['schema'])}, "
+        f"offline={sorted(offline_snapshot['schema'])}"
+    )
+    with sqlite3.connect(offline) as conn:
+        canonical = dict(conn.execute("SELECT id, code_key FROM lesson_learned"))
+    assert canonical["a"] == "ll-001"
+    assert canonical["b"] == "ll-001"
+    assert canonical["sharp-s"] == "ss"
+    assert canonical["ascii-ss"] == "ss"
+    assert canonical["unicode"] == "ll-ü"
+    assert canonical["null"] is None
+    assert canonical["empty"] is None
+    assert canonical["spaces"] is None
+
+
+def test_0022_casefold_collision_fails_online_and_when_offline_sql_is_applied(tmp_path: Path):
+    """The exact same canonical collision is rejected by both migration paths."""
+    import shutil
+
+    from drilling_intelligence.database.engine import open_sqlite
+    from drilling_intelligence.database.migrations import upgrade
+
+    source = tmp_path / "collision-source.db"
+    engine = open_sqlite(f"sqlite:///{source}")
+    try:
+        upgrade(engine, "0021")
+        _seed_historical_lesson_rows(engine, collision=True)
+    finally:
+        engine.dispose()
+
+    online_path = tmp_path / "collision-online.db"
+    shutil.copy2(source, online_path)
+    online = open_sqlite(f"sqlite:///{online_path}")
+    try:
+        with pytest.raises(RuntimeError, match="collide on canonical"):
+            upgrade(online, "head")
+    finally:
+        online.dispose()
+
+    offline = tmp_path / "collision-offline.db"
+    shutil.copy2(source, offline)
+    env = dict(os.environ)
+    env["DRILLINTEL_DATABASE__URL"] = f"sqlite:///{source}"
+    env["PYTHONPATH"] = str(SRC)
+    rendered = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(ROOT / "alembic.ini"),
+            "upgrade",
+            "0021:head",
+            "--sql",
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert rendered.returncode == 0, rendered.stderr[-1000:]
+    conn = sqlite3.connect(offline)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.executescript(rendered.stdout)
+    finally:
+        conn.close()
+
+
+def test_0022_index_definition_verification_is_exact_and_sqlite_catalog_based():
+    """Reject near-miss indexes: wrong table, key, uniqueness, or predicate."""
+    import importlib.util
+
+    from sqlalchemy import create_engine, text
+
+    migration_path = ROOT / "migrations/versions/20261101_0022_lesson_code_key_canonical.py"
+    spec = importlib.util.spec_from_file_location("migration_0022_under_test", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    engine = create_engine("sqlite://")
+    definitions = {
+        "correct": "CREATE UNIQUE INDEX uq_lesson_code_key_current ON lesson_learned (code_key) WHERE is_current = 1 AND code_key IS NOT NULL",
+        "wrong-current": "CREATE UNIQUE INDEX uq_lesson_code_key_current ON lesson_learned (code_key) WHERE is_current = 0 AND code_key IS NOT NULL",
+        "or-predicate": "CREATE UNIQUE INDEX uq_lesson_code_key_current ON lesson_learned (code_key) WHERE is_current = 1 OR code_key IS NOT NULL",
+        "extra-column": "CREATE UNIQUE INDEX uq_lesson_code_key_current ON lesson_learned (code_key, id) WHERE is_current = 1 AND code_key IS NOT NULL",
+        "non-unique": "CREATE INDEX uq_lesson_code_key_current ON lesson_learned (code_key) WHERE is_current = 1 AND code_key IS NOT NULL",
+        "missing-null-filter": "CREATE UNIQUE INDEX uq_lesson_code_key_current ON lesson_learned (code_key) WHERE is_current = 1",
+        "extra-predicate": "CREATE UNIQUE INDEX uq_lesson_code_key_current ON lesson_learned (code_key) WHERE is_current = 1 AND code_key IS NOT NULL AND id != ''",
+        "expression-key": "CREATE UNIQUE INDEX uq_lesson_code_key_current ON lesson_learned (lower(code_key)) WHERE is_current = 1 AND code_key IS NOT NULL",
+        "wrong-table": "CREATE UNIQUE INDEX uq_lesson_code_key_current ON other_table (code_key) WHERE is_current = 1 AND code_key IS NOT NULL",
+    }
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("CREATE TABLE lesson_learned (id TEXT, code_key TEXT, is_current INTEGER)")
+            )
+            conn.execute(
+                text("CREATE TABLE other_table (id TEXT, code_key TEXT, is_current INTEGER)")
+            )
+            for case, definition in definitions.items():
+                conn.execute(text("DROP INDEX IF EXISTS uq_lesson_code_key_current"))
+                conn.exec_driver_sql(definition)
+                assert migration._index_definition_correct(conn, "uq_lesson_code_key_current") is (
+                    case == "correct"
+                ), f"index verification misclassified {case}"
+            assert not migration._index_definition_correct(conn, "some_other_index")
+    finally:
+        engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # 1.7 PostgreSQL service-backed qualification or withdraw claim
 # ---------------------------------------------------------------------------
 
 
 def test_postgresql_claim_is_qualified_or_withdrawn():
-    """If PG service is unavailable locally, we mark the claim as not asserted locally."""
-    # Check for PG URL env
-    pg_url = os.environ.get("POSTGRES_URL") or os.environ.get("DATABASE_URL")
-    if not pg_url or "postgres" not in pg_url.lower():
-        # No local PG — we explicitly withdraw claim for local run, qualify via CI service
-        # This test documents that withdrawal
-        assert True, "PostgreSQL qualification is deferred to CI service; local claim withdrawn"
-        pytest.skip(
-            "No PostgreSQL service locally — qualification is CI-backed (see .github/workflows)"
-        )
-    else:
-        # If PG is available, actually test migrations against it
-        from sqlalchemy import create_engine
-        from sqlalchemy import text as sa_text
+    """PostgreSQL is an explicitly unsupported, unqualified future backend.
 
-        eng = create_engine(pg_url)
-        try:
-            with eng.begin() as conn:
-                conn.execute(sa_text("SELECT 1"))
-            from drilling_intelligence.database.migrations import current_revision, upgrade
-
-            upgrade(eng, "head")
-            assert current_revision(eng) == "0022"
-        finally:
-            eng.dispose()
+    Do not run migrations against ambient DATABASE_URL/POSTGRES_URL values: that
+    could mutate an operator database and is not service-backed qualification.
+    A dedicated disposable PostgreSQL CI job is required before enabling this.
+    """
+    pytest.skip(
+        "PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; "
+        "no disposable PostgreSQL service job exists."
+    )
 
 
 # ---------------------------------------------------------------------------

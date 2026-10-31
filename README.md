@@ -387,7 +387,9 @@ version does. Nothing in the projection is ever written back to the domain table
   duration and a computed one are kept apart by `duration_basis` so they cannot be averaged together.
 - **A workspace is the folder and its database, and nothing else may say otherwise.** One
   SQLite file under `.drillintel/database/` is the system of record for one workspace (ADR-0003).
-  Documents are identified by `(workspace_id, identity_path)`, the identity is attached where
+  SQLite is the only currently supported and qualified database backend; PostgreSQL is NOT QUALIFIED
+  and must not be used as a deployment target (ADR-0004). Documents are identified by
+  `(workspace_id, identity_path)`, the identity is attached where
   documents are written rather than where commands are parsed, and a workspace moved to a new path
   is the same workspace because the database travels with it. An explicit `workspace_id` is
   validated against that binding, never trusted over it.

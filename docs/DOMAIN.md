@@ -447,11 +447,11 @@ The rest of the sketch is present under the names the brief used: `cause_status`
 
 ## Portability
 
-Everything here stays in the subset SQLite and PostgreSQL share: partial unique indexes instead of trigger
-logic, `JSON` columns read by the application rather than queried with `JSONB` operators, `TEXT` for
-verbatim wording, `REAL` for values that came from a spreadsheet cell, `TIMESTAMP` stored in UTC. The one
-SQLite-specific thing is `PRAGMA foreign_keys=ON`, which the engine issues on every connection, and the
-integrity checks exist because cross-well link rules are not expressible as constraints on either server.
+The schema uses several constructs chosen with portability in mind (partial unique indexes, JSON read by
+the application, text for verbatim wording, UTC timestamps). This is design intent only: **SQLite is the
+only currently supported and qualified backend. PostgreSQL is NOT QUALIFIED** and must not be treated as a
+supported deployment target. The SQLite engine issues `PRAGMA foreign_keys=ON` on every connection; the
+integrity checks exist because cross-well link rules are not expressible as constraints on this backend.
 
 One exception is worth naming, because it looks like an oversight. The citation columns 0005 adds to
 `calculation` carry **no foreign keys**. SQLite cannot add a constraint to a table it has already filled
