@@ -30,23 +30,44 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
+from drilling_intelligence.database.models import Base
+
 revision = "0020"
 down_revision = "0019"
 branch_labels = None
 depends_on = None
 
 
+def _table():
+    return Base.metadata.tables["lesson_learned"]
+
+
 def upgrade() -> None:
-    with op.batch_alter_table("lesson_learned", recreate="auto") as batch_op:
-        batch_op.add_column(sa.Column("identity_key", sa.String(length=200), nullable=True))
-        batch_op.add_column(sa.Column("document_id", sa.String(length=36), nullable=True))
-        batch_op.add_column(sa.Column("document_version_id", sa.String(length=36), nullable=True))
-        batch_op.create_index("ix_lesson_version", ["document_version_id"])
-        batch_op.create_unique_constraint("uq_lesson_identity", ["identity_key"])
+    # SQLite can add nullable columns without a table rebuild, and --sql must
+    # render without a live connection.  Use plain ADD COLUMN for the three
+    # new leaf columns, then a copy_from batch for the constraints/indexes
+    # which do need a rebuild but can now render offline (the destination
+    # table already has ix_lesson_version, uq_lesson_identity and the two FKs).
+    op.add_column("lesson_learned", sa.Column("identity_key", sa.String(length=200), nullable=True))
+    op.add_column("lesson_learned", sa.Column("document_id", sa.String(length=36), nullable=True))
+    op.add_column(
+        "lesson_learned", sa.Column("document_version_id", sa.String(length=36), nullable=True)
+    )
+    # FKs/indexes/unique need a table rebuild on SQLite; copy_from makes it offline-renderable.
+    with op.batch_alter_table(
+        "lesson_learned", copy_from=_table(), recreate="always"
+    ):
+        pass
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("lesson_learned", recreate="auto") as batch_op:
+    with op.batch_alter_table(
+        "lesson_learned", copy_from=_table(), recreate="always"
+    ) as batch_op:
+        batch_op.drop_constraint(
+            "fk_lesson_learned_document_version_id_document_version", type_="foreignkey"
+        )
+        batch_op.drop_constraint("fk_lesson_learned_document_id_document", type_="foreignkey")
         batch_op.drop_constraint("uq_lesson_identity", type_="unique")
         batch_op.drop_index("ix_lesson_version")
         batch_op.drop_column("document_version_id")

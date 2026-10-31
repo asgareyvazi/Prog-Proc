@@ -278,7 +278,13 @@ def test_records_promote_is_idempotent_from_the_terminal(ready) -> None:
     assert again["totals"]["created"] == 0, again
     assert again["totals"]["unchanged"] == 47, again["totals"]
     assert again["totals"]["conflict"] == 0
-    assert set(again["skipped"]) == {"ZERO_NPT", "TOTAL_ALREADY_COUNTED"}, again["skipped"]
+    # NO_RECOGNISED_TABLE is the lesson_learned_ll-2025-014.txt prose note:
+    # extraction succeeds but promotion has no recognised lesson table (M6 contract).
+    assert set(again["skipped"]) == {
+        "ZERO_NPT",
+        "TOTAL_ALREADY_COUNTED",
+        "NO_RECOGNISED_TABLE",
+    }, again["skipped"]
 
 
 def test_patterns_find_snapshot_and_recheck_a_snapshot(ready) -> None:

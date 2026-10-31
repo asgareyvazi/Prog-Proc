@@ -69,6 +69,9 @@ LATER_MIGRATION_COLUMNS = (
     "cost_item.document_id",  # 0013
     "cost_item.document_version_id",  # 0013
     "cost_item.is_current",  # 0013
+    "lesson_learned.document_id",  # 0020
+    "lesson_learned.document_version_id",  # 0020
+    "lesson_learned.identity_key",  # 0020
 )
 LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015
     "problem_definition",

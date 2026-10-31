@@ -54,6 +54,9 @@ LATER_MIGRATION_COLUMNS = (
     "cost_item.document_id",  # 0013
     "cost_item.document_version_id",  # 0013
     "cost_item.is_current",  # 0013
+    "lesson_learned.document_id",  # 0020
+    "lesson_learned.document_version_id",  # 0020
+    "lesson_learned.identity_key",  # 0020
 )
 
 #: (subject_key, expected kind, expected id).  Each row is a real shape the platform can hold.

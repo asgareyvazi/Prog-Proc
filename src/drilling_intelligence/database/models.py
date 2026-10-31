@@ -287,7 +287,11 @@ class Document(Base, TimestampMixin):
     #: and PostgreSQL both enforce them at COMMIT), so this is not a SQLite-only trick.
     current_version_id: Mapped[str | None] = mapped_column(
         ForeignKey(
-            "document_version.id", ondelete="SET NULL", deferrable=True, initially="DEFERRED"
+            "document_version.id",
+            ondelete="SET NULL",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
         )
     )
     #: Number of times this slot was seen with different content.
@@ -1647,6 +1651,18 @@ class LessonLearned(Base, TimestampMixin):
         Index(
             "uq_lesson_one_current",
             "code",
+            unique=True,
+            sqlite_where=text("is_current = 1 AND code IS NOT NULL"),
+            postgresql_where=text("is_current AND code IS NOT NULL"),
+        ),
+        # Global case-insensitive code uniqueness among current lessons.  SQLite
+        # ``LOWER()`` is a superset of the Python ``casefold`` check in
+        # ``LessonRepository._ensure_code_unique``; PostgreSQL's ``LOWER()`` is
+        # likewise case-insensitive for the 7-bit codes in use, and the Python
+        # check remains authoritative for Unicode edge cases (e.g. ``ß``).
+        Index(
+            "uq_lesson_code_current_ci",
+            text("lower(code)"),
             unique=True,
             sqlite_where=text("is_current = 1 AND code IS NOT NULL"),
             postgresql_where=text("is_current AND code IS NOT NULL"),

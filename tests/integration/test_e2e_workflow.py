@@ -50,6 +50,11 @@ def test_e2e_operator_workflow(tmp_path):
     with ws2.database.session() as s:
         repo = WellRepository(s)
         assert repo.get_well(well_a_id) is not None
+    # Windows holds an open SQLite file lock while any engine is alive; the
+    # workspace must be closed before the folder is moved, otherwise
+    # shutil.move fails with WinError 32.  Close both handles explicitly.
+    ws.close()
+    ws2.close()
     # Move disposable workspace to different path and prove canonical relative paths still resolve
     moved_root = tmp_path / "moved_ws"
     shutil.move(str(ws_root), str(moved_root))

@@ -80,10 +80,47 @@ def _configure() -> None:
 
 
 def run_migrations_offline() -> None:
-    """Emit SQL to stdout (``alembic upgrade head --sql``) for review before apply."""
+    """Emit SQL to stdout (``alembic upgrade head --sql``) for review before apply.
+
+    SQLite batch migrations (``op.batch_alter_table(recreate="auto")``) need a
+    live connection to reflect the existing table.  Offline mode normally has
+    only a URL, so batch would fail with
+    ``batch mode with dialect sqlite requires a live database connection``.
+    We therefore create a temporary in-memory SQLite database, create the
+    current metadata there for reflection, and render SQL against that
+    connection with ``literal_binds``.  Non-SQLite URLs keep the original
+    URL-based path.
+    """
     _configure()
+    url = config.get_main_option("sqlalchemy.url") or _resolve_url()
+    # SQLite batch offline needs a live connection for reflection; provide one.
+    if url and url.startswith("sqlite"):
+        from sqlalchemy import create_engine
+
+        # Use a temporary file-backed DB when the URL points to a file, otherwise memory.
+        # Creating the schema from Base.metadata gives batch the table to reflect.
+        tmp_engine = create_engine(url.replace("%", "%%") if "%%" not in url else url)
+        # For in-memory or missing file, ensure metadata exists for reflection.
+        try:
+            Base.metadata.create_all(tmp_engine)
+        except Exception:
+            pass
+        with tmp_engine.connect() as connection:
+            context.configure(
+                connection=connection,
+                url=url,
+                target_metadata=target_metadata,
+                literal_binds=True,
+                dialect_opts={"paramstyle": "named"},
+                compare_type=True,
+                render_as_batch=True,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+        tmp_engine.dispose()
+        return
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

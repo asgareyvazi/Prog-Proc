@@ -187,6 +187,56 @@ def _cause_state(value: object, text: object) -> str:
     return str(CauseStatus.UNKNOWN)
 
 
+def _normalize_code(code: object) -> str | None:
+    """Canonical form for code uniqueness: stripped + casefolded (Unicode aware).
+
+    The stored ``LessonLearned.code`` keeps the author's casing (so ``LL-001A`` stays
+    ``LL-001A``), but the uniqueness contract is on the casefolded value.  Using
+    :meth:`str.casefold` rather than :meth:`str.lower` matches the Python-layer
+    enforcement in promotion (``doc_identities -> classified_before_promotion``) and
+    the SQLite ``LOWER()`` fallback for the DB index, while handling e.g. ``ß``/``SS``.
+    """
+    if code is None:
+        return None
+    stripped = str(code).strip()
+    if not stripped:
+        return None
+    return stripped.casefold()
+
+
+def _ensure_code_unique(
+    session: Session, code: object, *, exclude_id: str | None = None
+) -> None:
+    """Raise if another *current* lesson already uses ``code`` case-insensitively.
+
+    The check is global (not scoped to well/field/project) and excludes the row with
+    ``exclude_id`` so ``update_lesson`` and ``revise`` can keep their own code.  It
+    queries ``is_current == True`` because superseded revisions keep their code but
+    must not block reuse of the successor's code - the DB partial unique index (see
+    ADR ``docs/adr/003-code-normalization.md``) enforces the same rule at the storage
+    layer.
+    """
+    normalized = _normalize_code(code)
+    if normalized is None:
+        return
+    rows = session.execute(
+        select(LessonLearned).where(
+            LessonLearned.is_current.is_(True), LessonLearned.code.is_not(None)
+        )
+    ).scalars()
+    for row in rows:
+        existing_cf = str(row.code or "").strip().casefold()
+        if not existing_cf:
+            continue
+        if existing_cf == normalized and str(row.id) != str(exclude_id or ""):
+            raise ValidationError(
+                f"lesson code {str(code).strip()!r} is already in use (case-insensitive)",
+                code=str(code).strip(),
+                conflicting_id=str(row.id),
+                hint="codes are globally unique ignoring case; pick a distinct code",
+            )
+
+
 class LessonRepository:
     """Capture, evidence, approve, promote - and the derived advice nobody has accepted yet."""
 
@@ -271,6 +321,7 @@ class LessonRepository:
         }
         for key in sorted(set(scope) - accepted):
             raise ValidationError(f"lesson has no field named {key}")
+        _ensure_code_unique(self.session, code)
         row = LessonLearned(
             id=new_id("les"),
             code=str(code or "").strip() or None,
@@ -332,6 +383,8 @@ class LessonRepository:
             raise ValidationError(
                 f"lesson has no field named {', '.join(unknown)}", allowed=sorted(LESSON_FIELDS)
             )
+        if "code" in values:
+            _ensure_code_unique(self.session, values["code"], exclude_id=str(row.id))
         applied: dict[str, Any] = {}
         for field, value in values.items():
             if field in _LIST_FIELDS:
@@ -388,9 +441,15 @@ class LessonRepository:
             raise ValidationError(
                 f"lesson has no field named {', '.join(unknown)}", allowed=sorted(LESSON_FIELDS)
             )
+        if "code" in payload:
+            _ensure_code_unique(self.session, payload["code"], exclude_id=str(source.id))
         row = LessonLearned(
             id=new_id("les"),
-            code=source.code,
+            code=(
+                str(payload["code"]).strip() or None
+                if "code" in payload
+                else source.code
+            ),
             title=str(payload.get("title") or source.title)[:400],
             problem_type=str(payload.get("problem_type") or source.problem_type or ""),
             lesson=str(payload.get("lesson") or source.lesson),
@@ -464,6 +523,181 @@ class LessonRepository:
             moved += 1
         self.session.flush()
         return moved
+
+    # -- governed deletion (V10.1 §5) -----------------------------------------
+    def delete_lesson(self, lesson_id: str, *, by: str, reason: str) -> dict[str, Any]:
+        """Governed, chain-safe deletion of a single lesson revision.
+
+        The deletion is atomic and audited.  ``by`` and ``reason`` are required
+        and recorded to ``audit_event`` (``action=lesson.delete``).  The revision
+        chain is preserved:
+
+        * **only version** — removed, no successor to fix up.
+        * **earliest** — its successor's ``supersedes_id`` becomes ``NULL``.
+        * **middle** — successor's ``supersedes_id`` is re-pointed to the deleted
+          row's predecessor, preserving the chain around the gap.
+        * **latest (current)** — predecessor is restored to ``is_current=True`` and
+          its status re-derives from whether it was approved (``approved_by`` set)
+          otherwise ``DRAFT``; evidence edges on the deleted current are moved back
+          to the predecessor so proof is not lost.
+
+        Evidence edges where the deleted lesson is source or target are removed
+        unless re-pointed (latest case).  The method flushes but does not commit;
+        callers must commit the session.
+        """
+        actor = str(by or "").strip()
+        why = str(reason or "").strip()
+        if not actor:
+            raise ValidationError("deleting a lesson needs an actor", hint="pass by=<who>")
+        if not why:
+            raise ValidationError("deleting a lesson needs a reason", hint="explain why")
+
+        target = self.get_lesson(lesson_id)
+
+        # Build ordered chain via supersedes links.  Walk backwards to root.
+        chain: list[LessonLearned] = []
+        # backwards
+        cur: LessonLearned | None = target
+        seen: set[str] = set()
+        backward: list[LessonLearned] = []
+        while cur is not None and str(cur.id) not in seen:
+            seen.add(str(cur.id))
+            backward.append(cur)
+            if cur.supersedes_id:
+                cur = self.session.get(LessonLearned, str(cur.supersedes_id))
+            else:
+                cur = None
+        backward = list(reversed(backward))
+        # forwards from target
+        forward_cur = target
+        while True:
+            nxt = self.session.execute(
+                select(LessonLearned).where(
+                    LessonLearned.supersedes_id == str(forward_cur.id)
+                )
+            ).scalar_one_or_none()
+            if nxt is None or str(nxt.id) in seen:
+                break
+            seen.add(str(nxt.id))
+            backward.append(nxt)
+            forward_cur = nxt
+        chain = backward
+        try:
+            idx = next(i for i, r in enumerate(chain) if str(r.id) == str(target.id))
+        except StopIteration:
+            idx = -1  # shouldn't happen
+        predecessor = chain[idx - 1] if idx > 0 else None
+        successor = chain[idx + 1] if idx >= 0 and idx + 1 < len(chain) else None
+
+        # Preserve successor chain
+        if successor is not None:
+            successor.supersedes_id = str(predecessor.id) if predecessor else None
+
+        # If deleting the current, restore predecessor
+        if bool(target.is_current) and predecessor is not None:
+            predecessor.is_current = True
+            # target was current, so its status is the governing status; predecessor
+            # was marked SUPERSEDED on supersession and lost its original approval
+            # state.  Infer by whether it was ever approved (approved_by set).
+            if str(predecessor.status) == str(LessonLifecycle.SUPERSEDED):
+                if getattr(predecessor, "approved_by", None):
+                    predecessor.status = str(LessonLifecycle.APPROVED)
+                else:
+                    # REJECTED never becomes current via deletion; draft is the safe fallback
+                    predecessor.status = str(LessonLifecycle.DRAFT)
+            # Move evidence back from deleted current to predecessor so history keeps proof
+            for edge in self.session.execute(
+                select(KnowledgeRelation).where(
+                    KnowledgeRelation.source_type == "lesson",
+                    KnowledgeRelation.source_id == str(target.id),
+                )
+            ).scalars():
+                edge.source_id = str(predecessor.id)
+            for edge in self.session.execute(
+                select(KnowledgeRelation).where(
+                    KnowledgeRelation.target_type == "lesson",
+                    KnowledgeRelation.target_id == str(target.id),
+                )
+            ).scalars():
+                edge.target_id = str(predecessor.id)
+        else:
+            # Non-current deletion: just drop edges where target is endpoint
+            for edge in list(
+                self.session.execute(
+                    select(KnowledgeRelation).where(
+                        (KnowledgeRelation.source_type == "lesson")
+                        & (KnowledgeRelation.source_id == str(target.id))
+                    )
+                ).scalars()
+            ):
+                self.session.delete(edge)
+            for edge in list(
+                self.session.execute(
+                    select(KnowledgeRelation).where(
+                        (KnowledgeRelation.target_type == "lesson")
+                        & (KnowledgeRelation.target_id == str(target.id))
+                    )
+                ).scalars()
+            ):
+                self.session.delete(edge)
+
+        # Audit before hard delete so subject ids are still readable
+        from ..database.audit import AuditLog  # local to avoid cycle
+
+        AuditLog(self.session).record(
+            action="lesson.delete",
+            subject_type="lesson_learned",
+            subject_id=str(target.id),
+            actor=actor,
+            detail={
+                "reason": why,
+                "code": getattr(target, "code", None),
+                "revision": getattr(target, "revision", None),
+                "was_current": bool(target.is_current),
+                "chain_length": len(chain),
+                "position": idx,
+                "predecessor_id": str(predecessor.id) if predecessor else None,
+                "successor_id": str(successor.id) if successor else None,
+            },
+        )
+        self.session.delete(target)
+        self.session.flush()
+        return {
+            "deleted_id": str(lesson_id),
+            "chain_length": len(chain),
+            "position": idx,
+            "was_current": bool(target.is_current),
+            "predecessor_id": str(predecessor.id) if predecessor else None,
+            "successor_id": str(successor.id) if successor else None,
+        }
+
+    def delete_lessons(
+        self, lesson_ids: Sequence[str], *, by: str, reason: str
+    ) -> list[dict[str, Any]]:
+        """Atomically delete multiple lesson revisions (governed, chain-safe).
+
+        Deletes are applied from newest to oldest (by chain order) so that
+        successors are fixed up before their predecessors are removed.  The
+        whole batch shares one flush/commit boundary; if any id is unknown the
+        call fails before mutating.
+        """
+        actor = str(by or "").strip()
+        why = str(reason or "").strip()
+        if not actor or not why:
+            raise ValidationError("bulk delete needs actor and reason")
+        # Validate all exist upfront
+        rows = [self.get_lesson(str(lid)) for lid in lesson_ids]
+        # Order by discovery chain position: delete latest first.  Simplest is
+        # sort by revision descending (higher revision is newer) then by is_current.
+        rows.sort(key=lambda r: (bool(r.is_current), int(getattr(r, "revision", 0) or 0)), reverse=True)
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            # Re-resolve after earlier deletions may have mutated chain; but
+            # get_lesson will still find remaining rows.
+            if self.session.get(LessonLearned, str(row.id)) is None:
+                continue
+            results.append(self.delete_lesson(str(row.id), by=actor, reason=why))
+        return results
 
     # -- evidence -------------------------------------------------------------
     def attach_evidence(
