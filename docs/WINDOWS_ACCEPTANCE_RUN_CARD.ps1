@@ -266,7 +266,7 @@ function Invoke-PackageSmoke {
     if ($install.Status -ne "PASS") { return $install }
     $check = Invoke-NativeProcess -FilePath $cleanPython -ArgumentList @(
         "-c",
-        'import drilling_intelligence; revision = getattr(__import__(''drilling_intelligence.database.migrations''), ''METADATA_REVISION''); assert revision == ''0024''; print(revision)'
+        'import importlib; revision = importlib.import_module(''drilling_intelligence.database.migrations'').METADATA_REVISION; assert revision == ''0024''; print(revision)'
     ) -StepId "$($script:ActiveStepId)-$Label-import"
     if ($check.Status -ne "PASS") { return $check }
     $cli = Join-Path $cleanVenv "Scripts\drillintel.exe"
