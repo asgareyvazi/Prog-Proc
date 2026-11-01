@@ -417,7 +417,16 @@ jobs:
             "PowerShell 5.1 run-card failure: $message" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             throw
           }
-          finally { Stop-Transcript }
+          finally {
+            Stop-Transcript
+            $transcriptPath = Join-Path $evidence "powershell-5.1-transcript.txt"
+            if (Test-Path -LiteralPath $transcriptPath) {
+              $tail = (@(Get-Content -LiteralPath $transcriptPath | Select-Object -Last 20) -join " | ")
+              $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A").Replace(":", "%3A").Replace(",", "%2C")
+              Write-Output "::notice title=PowerShell 5.1 transcript tail::$annotation"
+              "PowerShell 5.1 transcript tail: $tail" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            }
+          }
 
       - name: Behavioral run-card tests under PowerShell 7
         shell: pwsh
@@ -432,7 +441,16 @@ jobs:
             "PowerShell 7 run-card failure: $message" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
             throw
           }
-          finally { Stop-Transcript }
+          finally {
+            Stop-Transcript
+            $transcriptPath = Join-Path $evidence "powershell-7-transcript.txt"
+            if (Test-Path -LiteralPath $transcriptPath) {
+              $tail = (@(Get-Content -LiteralPath $transcriptPath | Select-Object -Last 20) -join " | ")
+              $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A").Replace(":", "%3A").Replace(",", "%2C")
+              Write-Output "::notice title=PowerShell 7 transcript tail::$annotation"
+              "PowerShell 7 transcript tail: $tail" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            }
+          }
 
       - name: Publish run-card behavioral evidence
         if: always()
