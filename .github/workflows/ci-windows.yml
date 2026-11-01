@@ -393,3 +393,29 @@ jobs:
           path: qt-logs/stability/
           if-no-files-found: error
 
+
+  run-card-powershell:
+    name: Windows run-card behavioral tests (PowerShell 5.1 and 7)
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Explicit shell selects inbox Windows PowerShell 5.1, not pwsh.
+      - name: Behavioral run-card tests under Windows PowerShell 5.1
+        shell: powershell
+        run: '& "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1"'
+
+      - name: Behavioral run-card tests under PowerShell 7
+        shell: pwsh
+        run: '& "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1"'
+
+      - name: Publish run-card behavioral evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-run-card-powershell-logs
+          path: out/windows-acceptance/behavioral-runs/
+          if-no-files-found: error

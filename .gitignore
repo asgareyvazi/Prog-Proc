@@ -45,6 +45,9 @@ workspace/.drillintel/
 *.pdf.txt
 experiments/
 
+# Generated per-run acceptance evidence (raw logs may contain local paths)
+/out/windows-acceptance/
+
 # OS / editor
 .DS_Store
 .idea/
