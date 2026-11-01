@@ -322,15 +322,29 @@ function Sanitize-RunLogs {
 
 function New-MinimalResult {
     return [pscustomobject]@{
+        schema_version = "V10.3"
+        description = "Per-run evidence contract. NOT RUN is the default; an offscreen run never represents physical display acceptance."
         version = "V10.3"
         run = [pscustomobject]@{}
         ci = [pscustomobject]@{ linux_run_id = ""; linux_sha = ""; linux_conclusion = "NOT RUN"; linux_jobs = @(); windows_run_id = ""; windows_sha = ""; windows_conclusion = "NOT RUN"; windows_jobs = @() }
         steps = @()
-        evidence = [pscustomobject]@{}
-        logs = [pscustomobject]@{}
-        figures = [pscustomobject]@{}
+        evidence = [pscustomobject]@{
+            ruff_check = "NOT RUN"; ruff_format_check = "NOT RUN"; mypy = "NOT RUN"
+            compileall = "NOT RUN"; alembic_heads = "NOT RUN"; offline_sql = "NOT RUN"
+            migration_smoke = "NOT RUN"; pytest_q = "NOT RUN"; pytest_q_counts = $null
+            ui_offscreen = "NOT RUN"; e2e_disposable = "NOT RUN"; release_smoke = "NOT RUN"
+            wheel_install = "NOT RUN"; sdist_install = "NOT RUN"
+        }
+        logs = [pscustomobject]@{
+            dir = ""; raw_logs = @(); sanitized = $false
+            note = "Raw stdout/stderr logs are retained separately from sanitized copies."
+        }
+        figures = [pscustomobject]@{
+            ci_ubuntu_offscreen = "NOT RUN"; ci_windows_offscreen = "NOT RUN"
+            pilot_windows_offscreen = "NOT RUN"; manual_windows_display = "NOT RUN - real display and owner checklist required"
+        }
         windows_testing_checklist = [pscustomobject]@{ items_ticked = @(); items_not_run = @(1..16); checked_by = ""; checked_at = ""; display = "NOT RUN - requires real display" }
-        manual_checklist = "NOT RUN - offscreen is not physical display acceptance"
+        manual_checklist = "NOT RUN - offscreen is not physical Windows acceptance"
         status = "FAIL"
         owner_decision_required = $false
         blocked_reasons = @()
@@ -461,6 +475,7 @@ try {
         }
         $template = Get-Content -LiteralPath $templatePath -Raw | ConvertFrom-Json
         if ($null -eq $template.steps -or $null -eq $template.run) { throw "result template is missing run/steps contract" }
+        $result = $template
     } catch {
         $finalStatus = "FAIL"
         $result.blocked_reasons += "result template invalid: $($_.Exception.Message)"
