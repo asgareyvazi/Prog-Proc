@@ -226,7 +226,7 @@ function Invoke-Step {
         $script:StepResults.Add($record)
         return $record
     }
-    Write-Host "`n=== $Id — $Name ===" -ForegroundColor Cyan
+    Write-Host "`n=== $Id - $Name ===" -ForegroundColor Cyan
     $outcome = $null
     try {
         $outcome = & $Action
@@ -304,8 +304,8 @@ function Invoke-PackageSmoke {
     }
     return [pscustomobject]@{
         Status = "PASS"; ExitCode = 0; StartedAt = $doctor.StartedAt; EndedAt = Get-UtcNow
-        Stdout = $doctor.Stdout; Stderr = $uiMissing.Stderr; Log = "$($doctor.Log); $($uiMissing.Log)"
-        Message = "$Label import, CLI, workspace bootstrap, Doctor 0024, and missing-UI behavior passed"; Ran = $true
+        Stdout = $doctor.Stdout; Stderr = $uiMissing.Stderr; Log = ($doctor.Log + "; " + $uiMissing.Log)
+        Message = ($Label + " import, CLI, workspace bootstrap, Doctor 0024, and missing-UI behavior passed"); Ran = $true
     }
 }
 
@@ -329,8 +329,8 @@ function New-MinimalResult {
         evidence = [pscustomobject]@{}
         logs = [pscustomobject]@{}
         figures = [pscustomobject]@{}
-        windows_testing_checklist = [pscustomobject]@{ items_ticked = @(); items_not_run = @(1..16); checked_by = ""; checked_at = ""; display = "NOT RUN — requires real display" }
-        manual_checklist = "NOT RUN — offscreen is not physical display acceptance"
+        windows_testing_checklist = [pscustomobject]@{ items_ticked = @(); items_not_run = @(1..16); checked_by = ""; checked_at = ""; display = "NOT RUN - requires real display" }
+        manual_checklist = "NOT RUN - offscreen is not physical display acceptance"
         status = "FAIL"
         owner_decision_required = $false
         blocked_reasons = @()
@@ -345,7 +345,7 @@ try {
     $env:PYTHONUTF8 = "1"
     if ($Offscreen) { $env:QT_QPA_PLATFORM = "offscreen" }
 
-    # 01 — Resolve and execute the selected interpreter; missing Python is FAIL, never PASS.
+    # 01 - Resolve and execute the selected interpreter; missing Python is FAIL, never PASS.
     $command = Get-Command $Python -ErrorAction SilentlyContinue
     Invoke-Step -Id "01-python" -Name "Resolve Python and record version" -Action {
         if ($null -eq $command) {
@@ -355,7 +355,7 @@ try {
         return Invoke-NativeProcess -FilePath $script:PythonExe -ArgumentList @("--version") -StepId $script:ActiveStepId
     } | Out-Null
 
-    # 02 — A fresh virtual environment for every run; no project-root .venv reuse.
+    # 02 - A fresh virtual environment for every run; no project-root .venv reuse.
     Invoke-Step -Id "02-venv" -Name "Create isolated run environment" -Action {
         if (-not $script:PythonExe) { throw "Python executable was not resolved" }
         $result = Invoke-NativeProcess -FilePath $script:PythonExe -ArgumentList @("-m", "venv", $script:VenvDir) -StepId $script:ActiveStepId
@@ -365,7 +365,7 @@ try {
         return $result
     } | Out-Null
 
-    # 03 — UI extra is mandatory for a UI-qualified run; never fall back to [dev].
+    # 03 - UI extra is mandatory for a UI-qualified run; never fall back to [dev].
     Invoke-Step -Id "03-install-dev-ui" -Name "Install pinned development and UI dependencies" -Action {
         $constraints = @(
             "-c", (Join-Path $script:RepoRoot "constraints/development.txt"),
@@ -522,8 +522,8 @@ try {
         note = "Raw stdout/stderr are preserved separately; .sanitized.log copies redact worktree and user paths."
     }
     $result.status = $finalStatus
-    $result.manual_checklist = "NOT RUN — offscreen/pilot is not physical Windows acceptance"
-    $result.windows_testing_checklist.display = "NOT RUN — requires real display"
+    $result.manual_checklist = "NOT RUN - offscreen/pilot is not physical Windows acceptance"
+    $result.windows_testing_checklist.display = "NOT RUN - requires real display"
     try {
         $json = $result | ConvertTo-Json -Depth 20
         Write-Utf8File -Path (Join-Path $script:RunDir "result.json") -Text ($json + "`n")
