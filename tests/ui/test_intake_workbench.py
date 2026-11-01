@@ -12,11 +12,26 @@ pytestmark = pytest.mark.ui
 
 def test_intake_page_uses_worker_and_renders_persisted_queue(qt_app, tmp_path: Path) -> None:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtTest import QSignalSpy
 
     from drilling_intelligence.ui.controller import ReviewController
     from drilling_intelligence.ui.main_window import MainWindow
     from drilling_intelligence.wells.workspace import Workspace
+
+    def wait_for_signal(spy: QSignalSpy, signal, timeout_ms: int) -> bool:
+        if spy.count():
+            return True
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        signal.connect(loop.quit)
+        timer.timeout.connect(loop.quit)
+        timer.start(timeout_ms)
+        loop.exec()
+        timer.stop()
+        signal.disconnect(loop.quit)
+        return bool(spy.count())
 
     root = tmp_path / "workspace"
     from drilling_intelligence.cli.app import main
@@ -42,7 +57,7 @@ def test_intake_page_uses_worker_and_renders_persisted_queue(qt_app, tmp_path: P
         assert queued[0].status == "QUEUED"
         spy = QSignalSpy(window.intake_operation_finished)
         window._start_intake_operation("list")
-        assert spy.wait(15000), (
+        assert wait_for_signal(spy, window.intake_operation_finished, 15000), (
             "intake list worker did not finish before its bounded 15-second deadline; "
             f"status={window.status_label.text()!r}, "
             f"thread_running={window._intake_thread.isRunning() if window._intake_thread else False}"
@@ -52,7 +67,7 @@ def test_intake_page_uses_worker_and_renders_persisted_queue(qt_app, tmp_path: P
 
         spy = QSignalSpy(window.intake_operation_finished)
         window._start_intake_operation("preview", item_id=queued[0].id)
-        assert spy.wait(10000), (
+        assert wait_for_signal(spy, window.intake_operation_finished, 10000), (
             "local extraction preview did not finish before its bounded deadline"
         )
         assert window.intake_preview_tree.topLevelItemCount() > 0
