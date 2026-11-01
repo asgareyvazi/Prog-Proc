@@ -161,4 +161,7 @@ Set-Content -LiteralPath $notDirectory -Value "sentinel" -Encoding ASCII
 & $enginePath -NoProfile -NonInteractive -File $card -Python "__progproc_missing_python_for_test__" -OutDir ("out/windows-acceptance/" + $notDirectoryName)
 Assert-True ($LASTEXITCODE -ne 0) "uncreatable result directory cannot be reported as success"
 
+# The last native child intentionally exits nonzero; all assertions above verified that result.
+# Clear the automatic native exit status so this successful test script itself exits zero.
+$global:LASTEXITCODE = 0
 Write-Host "All V10.3 run-card AST and behavioral tests PASS on PowerShell $($PSVersionTable.PSVersion)" -ForegroundColor Green
