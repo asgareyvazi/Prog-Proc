@@ -10,6 +10,20 @@ from sqlalchemy import inspect
 pytestmark = pytest.mark.ui
 
 
+def _select_navigation_page(window, label: str) -> None:
+    """Select a workbench page by its visible label, not a brittle ordinal."""
+    matches = [
+        row
+        for row in range(window.navigation.count())
+        if window.navigation.item(row).text() == label
+    ]
+    assert len(matches) == 1
+    row = matches[0]
+    window.navigation.setCurrentRow(row)
+    assert window.navigation.currentItem().text() == label
+    assert window.pages.currentIndex() == row
+
+
 def _database_fingerprint(workspace) -> tuple[Any, ...]:
     """Capture every SQLite row, including migration metadata, before/after UI reads."""
     names = sorted(inspect(workspace.database.engine).get_table_names())
@@ -225,8 +239,8 @@ def test_decision_tab_renders_the_service_pack_without_touching_the_database(
     assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
     window = MainWindow(controller)
     try:
-        # The tab exists in the navigation, right after Overview.
-        assert window.navigation.item(1).text() == "Decision"
+        # Select by its visible label; other pages may be inserted without shifting this test.
+        _select_navigation_page(window, "Decision")
 
         payload = controller.decision(well_id)
         window.set_decision(payload)
@@ -285,9 +299,7 @@ def test_comparison_tab_renders_the_matrix_without_touching_the_database(qt_app,
     assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
     window = MainWindow(controller)
     try:
-        # The tab exists in the navigation, right after Decision.
-        assert window.navigation.item(1).text() == "Decision"
-        assert window.navigation.item(2).text() == "Comparison"
+        _select_navigation_page(window, "Comparison")
 
         payload = controller.compare([a3, b11])
         window.set_comparison(payload)
@@ -365,7 +377,7 @@ def test_report_export_uses_the_canonical_renderer_and_the_chart_does_not_query(
     assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
     window = MainWindow(controller)
     try:
-        assert window.navigation.item(3).text() == "Report"
+        _select_navigation_page(window, "Report")
         payload = controller.report(well_ids=[a3, b11])
         comparison = controller.compare([a3, b11])
         window.set_comparison(comparison)

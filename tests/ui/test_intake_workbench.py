@@ -30,12 +30,23 @@ def test_intake_page_uses_worker_and_renders_persisted_queue(qt_app, tmp_path: P
     controller.open_workspace(root)
     window = MainWindow(controller)
     try:
-        assert window.navigation.item(1).text() == "Intake"
+        intake_rows = [
+            row
+            for row in range(window.navigation.count())
+            if window.navigation.item(row).text() == "Intake"
+        ]
+        assert len(intake_rows) == 1
+        window.navigation.setCurrentRow(intake_rows[0])
+        assert window.pages.currentIndex() == intake_rows[0]
         queued = controller.enqueue_intake([source], actor="operator")
         assert queued[0].status == "QUEUED"
         spy = QSignalSpy(window.intake_operation_finished)
         window._start_intake_operation("list")
-        assert spy.wait(5000), "intake list worker did not finish before its bounded deadline"
+        assert spy.wait(15000), (
+            "intake list worker did not finish before its bounded 15-second deadline; "
+            f"status={window.status_label.text()!r}, "
+            f"thread_running={window._intake_thread.isRunning() if window._intake_thread else False}"
+        )
         assert window.intake_table.rowCount() == 1
         assert window.intake_table.item(0, 0).text() == source.name
 

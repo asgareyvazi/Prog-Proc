@@ -411,6 +411,12 @@ jobs:
           New-Item -ItemType Directory -Path $evidence -Force | Out-Null
           Start-Transcript -LiteralPath (Join-Path $evidence "powershell-5.1-transcript.txt") -Force
           try { & "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1" }
+          catch {
+            $message = (($_ | Out-String).Trim() -replace "`r?`n", " | ")
+            Write-Output "::error title=PowerShell 5.1 run-card behavior::$message"
+            "PowerShell 5.1 run-card failure: $message" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            throw
+          }
           finally { Stop-Transcript }
 
       - name: Behavioral run-card tests under PowerShell 7
@@ -420,6 +426,12 @@ jobs:
           New-Item -ItemType Directory -Path $evidence -Force | Out-Null
           Start-Transcript -LiteralPath (Join-Path $evidence "powershell-7-transcript.txt") -Force
           try { & "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1" }
+          catch {
+            $message = (($_ | Out-String).Trim() -replace "`r?`n", " | ")
+            Write-Output "::error title=PowerShell 7 run-card behavior::$message"
+            "PowerShell 7 run-card failure: $message" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            throw
+          }
           finally { Stop-Transcript }
 
       - name: Publish run-card behavioral evidence

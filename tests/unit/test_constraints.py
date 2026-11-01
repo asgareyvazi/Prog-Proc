@@ -42,7 +42,7 @@ def test_package_lines_drops_the_installer_and_the_project() -> None:
             "setuptools==84.2.0",
             "wheel==0.48.0",
             "-e git+https://example.invalid/pkg@abc#egg=drilling_intelligence",
-            "drilling-intelligence==0.0.1a0",
+            "drilling-intelligence==0.0.2a0",
             "ruff==0.17.1",
         ]
     )
