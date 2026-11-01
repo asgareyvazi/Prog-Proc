@@ -17,7 +17,12 @@ Assert-True (Test-Path -LiteralPath $card) "V10.3 run card exists"
 $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($card, [ref]$tokens, [ref]$parseErrors)
-Assert-True ($parseErrors.Count -eq 0) "PowerShell parser accepts the run card"
+$parseDetails = @($parseErrors | ForEach-Object {
+    "line $($_.Extent.StartLineNumber), column $($_.Extent.StartColumnNumber): $($_.Message) [$($_.Extent.Text)]"
+}) -join "; "
+$parseMessage = "PowerShell parser accepts the run card"
+if ($parseDetails) { $parseMessage += ": $parseDetails" }
+Assert-True ($parseErrors.Count -eq 0) $parseMessage
 
 # An exit statement in an Invoke-Step scriptblock can bypass result serialization.
 $exitNodes = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.ExitStatementAst] }, $true))
