@@ -1,5 +1,7 @@
 # Windows testing
 
+> **V10.3 status (2026-11-01):** Automated PowerShell 5.1/7 run-card behavior is being qualified by the `run-card-powershell` job on the exact branch SHA; a failure remains a failure, not a skip. The local run card is V10.3, uses isolated per-run environments and captures raw/sanitized logs. Current migration head is `0024`. Offscreen UI evidence does not constitute physical display acceptance; the owner checklist remains **NOT RUN**.
+
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the
 `windows-2022` workflow in `.github/workflows/ci-windows.yml`. That image is
@@ -56,9 +58,9 @@ python -m venv .venv
 
 The constraints pin the versions the CI proves. Drop them for a plain
 install; keep them when you want the machine to match the recorded run.
-`python -m mypy` checks one package boundary, `drilling_intelligence.core`.
+`python -m mypy` checks the declared boundaries in `pyproject.toml`: core, database, extraction, documents, and review.
 
-`alembic heads` must show one line containing `(head)`, currently `0019`.
+`alembic heads` must show exactly one line containing `(head)`, currently `0024`.
 UI tests skip when PySide6 is not installed. That skip is not a pass. The
 reason is `QtWidgets unavailable`.
 
@@ -70,6 +72,18 @@ $root = Join-Path $env:TEMP "drillintel venv"
 python -m venv $root
 & (Join-Path $root "Scripts\python.exe") -m pip install -e ".[dev]"
 ```
+
+## V10.3 isolated acceptance run card
+
+For a full Windows qualification run (including actual PySide6/Qt probing, pytest totals, offline SQL capture, wheel/sdist clean installs and explicit dependent `NOT RUN` states), use the run card from either PowerShell 5.1 or PowerShell 7:
+
+```powershell
+powershell -NoProfile -File docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1 -Python (Get-Command python).Source
+# or
+pwsh -NoProfile -File docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1 -Python (Get-Command python).Source
+```
+
+Each invocation gets `out/windows-acceptance/<run-id>/.venv`; do not reuse the repository `.venv`. The behavioral harness is `tests/powershell/test_run_card.ps1`. Generated raw and sanitized evidence stays under the ignored per-run output directory. A missing interpreter, failed prerequisite, timeout, or malformed result template remains a non-PASS result and is not rewritten as a skip.
 
 ## Shutdown stress on this workstation
 
@@ -408,11 +422,13 @@ happily print an error and carry on.
     application event log. Record the number of launches and the exit code
     of each one.
 
-14. **The review surface is read-only until an action is explicitly confirmed.**
+14. **Domain review is read-only until an action is explicitly confirmed.**
     In the workbench, open the review surface and browse without confirming any action. Then
     `drillintel.exe records list --workspace $ws2 --well "SAMPLE-1"` and
     compare with the same command before the window was opened.
     Pass: the rows are identical — passive review does not mutate. A confirmed action through `ReviewActionService` does mutate via its owning domain repository (it is not a silent promotion), reloads a fresh `DomainReview` on success, and leaves the display unchanged on failure. The prompt must derive its actions from `available_actions()`, require actor/reason/evidence according to the lifecycle, block concurrent submissions, and run outside the GUI thread — see `docs/HUMAN_REVIEW_ACTION_INVENTORY.md` and `src/drilling_intelligence/ui/worker.py` `ReviewActionWorker`.
+
+The V10.3 **Intake** page is separate from domain review: queueing writes only file metadata/hash plus an audit event; preview must not create a `Document` or domain row. Marking reviewed/rejected requires actor and reason. M2–M5 remain blocked.
 
 15. **Non-ASCII text survives the console.**
     `.\.venv\Scripts\drillintel.exe wells create --name "Ø-test" --workspace $ws2`

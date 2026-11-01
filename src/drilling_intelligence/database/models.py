@@ -227,6 +227,34 @@ class Workspace(Base, TimestampMixin):
     config: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
+class IntakeQueueItem(Base):
+    """Persistent operator intake queue; stores references and hashes, never document bytes."""
+
+    __tablename__ = "intake_queue_item"
+    __table_args__ = (
+        UniqueConstraint("sha256", name="uq_intake_queue_item_sha256"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'REVIEWED', 'REJECTED')", name="ck_intake_queue_status"
+        ),
+        Index("ix_intake_queue_status_enqueued", "status", "enqueued_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_path: Mapped[str] = mapped_column(String(4096), nullable=False)
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    extension: Mapped[str] = mapped_column(String(16), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="QUEUED", nullable=False)
+    enqueued_by: Mapped[str] = mapped_column(String(80), nullable=False)
+    enqueued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(80))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_reason: Mapped[str | None] = mapped_column(Text)
+
+
 class Document(Base, TimestampMixin):
     """Registry entry for one document slot (path identity) in a workspace."""
 

@@ -26,6 +26,7 @@ from ..review import (
     ReviewConflict,
     ReviewRecord,
 )
+from ..review.intake import IntakeItem, IntakePreview, IntakeQueueService
 from ..wells.repository import WellRepository
 from ..wells.workspace import Workspace
 
@@ -175,6 +176,20 @@ class ReviewController:
             limit=limit,
         )
         return DomainReviewService.for_workspace(workspace).review(request)
+
+    def intake_items(self, *, status: str = "") -> tuple[IntakeItem, ...]:
+        return IntakeQueueService(self._require_workspace().database).list_items(status=status)
+
+    def enqueue_intake(self, paths: list[str | Path], *, actor: str) -> tuple[IntakeItem, ...]:
+        return IntakeQueueService(self._require_workspace().database).enqueue(paths, actor=actor)
+
+    def preview_intake(self, item_id: str) -> IntakePreview:
+        return IntakeQueueService(self._require_workspace().database).preview(item_id)
+
+    def decide_intake(self, item_id: str, *, decision: str, actor: str, reason: str) -> IntakeItem:
+        return IntakeQueueService(self._require_workspace().database).decide(
+            item_id, decision=decision, actor=actor, reason=reason
+        )
 
     def decision(self, well_id: str) -> dict[str, Any]:
         """The decision pack for one well as plain values - a read, never a write.

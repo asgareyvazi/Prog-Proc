@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import pytest
@@ -27,35 +26,6 @@ def _database_fingerprint(workspace) -> tuple[Any, ...]:
             )
             for name in names
         )
-
-
-@pytest.fixture(scope="session")
-def qt_app():
-    """Use real Qt offscreen; skip with the dynamic-linker reason when the host lacks Qt libs."""
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    try:
-        from PySide6.QtWidgets import QApplication
-    except (ImportError, OSError) as exc:
-        pytest.skip(f"QtWidgets unavailable for UI tests: {exc}")
-    application = QApplication.instance() or QApplication(["pytest-review-workbench"])
-    yield application
-    # Same helper as drillintel-ui. A refused close must not be followed by quit().
-    from drilling_intelligence.ui.lifetime import fixture_teardown
-
-    fixture_teardown(application)
-    # A closed window is not a destroyed window.  The fixture releases the
-    # top-level widgets, and this says so: a widget that is still alive
-    # after the teardown is a defect that would otherwise surface later as
-    # a native abort in an unrelated test, with nothing to point at it.
-    import shiboken6
-    from PySide6.QtWidgets import QApplication as _Application
-
-    alive = [
-        widget
-        for widget in _Application.topLevelWidgets()
-        if shiboken6.isValid(widget) and widget is not application
-    ]
-    assert not alive, f"top-level widgets survived the fixture teardown: {alive}"
 
 
 def test_default_package_is_import_light() -> None:

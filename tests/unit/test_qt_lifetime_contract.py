@@ -69,7 +69,7 @@ def test_close_waits_for_every_worker_thread_attribute() -> None:
 
 def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     app = Path("src/drilling_intelligence/ui/app.py").read_text(encoding="utf-8")
-    fixture = Path("tests/ui/test_workbench.py").read_text(encoding="utf-8")
+    fixture = Path("tests/ui/conftest.py").read_text(encoding="utf-8")
     lifetime = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
     assert "application_shutdown" in app
     assert "create_application" in app

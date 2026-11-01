@@ -75,7 +75,8 @@ LATER_MIGRATION_COLUMNS = (
     "lesson_learned.code_key",  # 0022
     "lesson_learned.prior_status",  # 0023
 )
-LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015
+LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015, 0024
+    "intake_queue_item",
     "problem_definition",
     "mud_report",
     "mud_measurement",

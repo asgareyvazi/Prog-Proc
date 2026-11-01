@@ -20,6 +20,60 @@ from .controller import ReviewController
 from .errors import WorkerError
 
 
+class IntakeWorker(QObject):
+    """Run one bounded intake queue operation outside the GUI event loop."""
+
+    succeeded = Signal(str, object)
+    failed = Signal(str, object)
+
+    def __init__(
+        self, controller: ReviewController, operation: str, payload: dict[str, Any]
+    ) -> None:
+        super().__init__()
+        self._controller = controller
+        self._operation = operation
+        self._payload = payload
+
+    @Slot()
+    def run(self) -> None:
+        if QThread.currentThread().isInterruptionRequested():
+            self.failed.emit(
+                self._operation,
+                WorkerError("cancelled", "Intake operation cancelled before start."),
+            )
+            return
+        try:
+            if self._operation == "list":
+                result = self._controller.intake_items(status=self._payload.get("status", ""))
+            elif self._operation == "enqueue":
+                result = self._controller.enqueue_intake(
+                    self._payload["paths"], actor=self._payload["actor"]
+                )
+            elif self._operation == "preview":
+                result = self._controller.preview_intake(self._payload["item_id"])
+            elif self._operation == "decide":
+                result = self._controller.decide_intake(
+                    self._payload["item_id"],
+                    decision=self._payload["decision"],
+                    actor=self._payload["actor"],
+                    reason=self._payload["reason"],
+                )
+            else:
+                raise ValueError(f"unknown intake operation: {self._operation}")
+        except Exception as exc:  # noqa: BLE001 - thread boundary reports failures without hiding them
+            self.failed.emit(
+                self._operation,
+                WorkerError(
+                    "intake",
+                    str(exc),
+                    "Check the source and workspace; no result was accepted.",
+                    type(exc).__name__,
+                ),
+            )
+            return
+        self.succeeded.emit(self._operation, result)
+
+
 class ReviewWorker(QObject):
     """Run one read-only review outside the GUI event loop."""
 

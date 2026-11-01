@@ -266,7 +266,7 @@ function Invoke-PackageSmoke {
     if ($install.Status -ne "PASS") { return $install }
     $check = Invoke-NativeProcess -FilePath $cleanPython -ArgumentList @(
         "-c",
-        "import drilling_intelligence; from drilling_intelligence.database.migrations import METADATA_REVISION; assert METADATA_REVISION == '0023'; print(METADATA_REVISION)"
+        "import drilling_intelligence; from drilling_intelligence.database.migrations import METADATA_REVISION; assert METADATA_REVISION == '0024'; print(METADATA_REVISION)"
     ) -StepId "$($script:ActiveStepId)-$Label-import"
     if ($check.Status -ne "PASS") { return $check }
     $cli = Join-Path $cleanVenv "Scripts\drillintel.exe"
@@ -279,8 +279,8 @@ function Invoke-PackageSmoke {
     if ($doctor.Status -ne "PASS") { return $doctor }
     try {
         $payload = $doctor.Stdout | ConvertFrom-Json
-        if ($payload.schema.current -ne "0023" -or -not $payload.schema.up_to_date) {
-            throw "clean $Label package bootstrap/Doctor did not report 0023 current"
+        if ($payload.schema.current -ne "0024" -or -not $payload.schema.up_to_date) {
+            throw "clean $Label package bootstrap/Doctor did not report 0024 current"
         }
     } catch {
         return [pscustomobject]@{
@@ -305,7 +305,7 @@ function Invoke-PackageSmoke {
     return [pscustomobject]@{
         Status = "PASS"; ExitCode = 0; StartedAt = $doctor.StartedAt; EndedAt = Get-UtcNow
         Stdout = $doctor.Stdout; Stderr = $uiMissing.Stderr; Log = "$($doctor.Log); $($uiMissing.Log)"
-        Message = "$Label import, CLI, workspace bootstrap, Doctor 0023, and missing-UI behavior passed"; Ran = $true
+        Message = "$Label import, CLI, workspace bootstrap, Doctor 0024, and missing-UI behavior passed"; Ran = $true
     }
 }
 
@@ -408,7 +408,7 @@ try {
         $doctor = Invoke-NativeProcess -FilePath $cli -ArgumentList @("doctor", "--workspace", $migrationWorkspace, "--json") -StepId "$($script:ActiveStepId)-doctor"
         if ($doctor.Status -ne "PASS") { return $doctor }
         $payload = $doctor.Stdout | ConvertFrom-Json
-        if ($payload.schema.current -ne "0023" -or -not $payload.schema.up_to_date) { throw "Doctor did not report migration 0023 as current" }
+        if ($payload.schema.current -ne "0024" -or -not $payload.schema.up_to_date) { throw "Doctor did not report migration 0024 as current" }
         return $doctor
     } | Out-Null
 

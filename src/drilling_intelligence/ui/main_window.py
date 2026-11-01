@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt, QThread, QTimer, QUrl, Slot
+from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -72,6 +72,7 @@ from .worker import (
     CalculationWorker,
     ComparisonWorker,
     DecisionWorker,
+    IntakeWorker,
     ReportAuditWorker,
     ReportWorker,
     ReviewActionWorker,
@@ -81,6 +82,7 @@ from .worker import (
 
 _NAVIGATION = (
     "Overview",
+    "Intake",
     "Decision",
     "Comparison",
     "Report",
@@ -154,11 +156,14 @@ _WORKER_THREAD_ATTRS = (
     "_report_audit_thread",
     "_action_thread",
     "_calculation_thread",
+    "_intake_thread",
 )
 
 
 class MainWindow(QMainWindow):
     """The first read-only desktop consumer of the Domain Review contract."""
+
+    intake_operation_finished = Signal()
 
     def __init__(
         self,
@@ -191,6 +196,11 @@ class MainWindow(QMainWindow):
         self._action_worker: ReviewActionWorker | None = None
         self._calculation_thread: QThread | None = None
         self._calculation_worker: CalculationWorker | None = None
+        self._intake_thread: QThread | None = None
+        self._intake_worker = None
+        self._active_intake_operation = ""
+        self._pending_intake_refresh = False
+        self._selected_intake_id = ""
         self._selected_record: ReviewRecord | None = None
         self._record_actions: tuple[ReviewAction, ...] = ()
         self._selected_conflict: ReviewConflict | None = None
@@ -294,6 +304,7 @@ class MainWindow(QMainWindow):
 
     def _build_pages(self) -> None:
         self._build_overview_page()
+        self._build_intake_page()
         self._build_decision_page()
         self._build_comparison_page()
         self._build_report_page()
@@ -339,6 +350,59 @@ class MainWindow(QMainWindow):
             (TableColumn("key", "Observation", 260), TableColumn("value", "Value", 420))
         )
         layout.addWidget(self.observations_table, 1)
+        self.pages.addWidget(page)
+
+    def _build_intake_page(self) -> None:
+        """Persistent local file queue with a non-writing deterministic preview."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(
+            QLabel(
+                "Intake records file references and SHA-256 only. Preview uses local extractors and "
+                "static contracts; it does not register, promote, or write domain facts."
+            )
+        )
+        controls = QHBoxLayout()
+        self.intake_add_button = QPushButton("Add files…")
+        self.intake_add_button.clicked.connect(self._choose_intake_files)
+        controls.addWidget(self.intake_add_button)
+        self.intake_refresh_button = QPushButton("Refresh queue")
+        self.intake_refresh_button.clicked.connect(self._refresh_intake_queue)
+        controls.addWidget(self.intake_refresh_button)
+        controls.addWidget(QLabel("Reviewer"))
+        self.intake_actor_input = QLineEdit()
+        self.intake_actor_input.setPlaceholderText("Required actor")
+        controls.addWidget(self.intake_actor_input, 1)
+        controls.addWidget(QLabel("Reason"))
+        self.intake_reason_input = QLineEdit()
+        self.intake_reason_input.setPlaceholderText("Required disposition reason")
+        controls.addWidget(self.intake_reason_input, 2)
+        layout.addLayout(controls)
+        actions = QHBoxLayout()
+        self.intake_preview_button = QPushButton("Preview selected")
+        self.intake_preview_button.clicked.connect(self._preview_selected_intake)
+        actions.addWidget(self.intake_preview_button)
+        self.intake_review_button = QPushButton("Mark reviewed")
+        self.intake_review_button.clicked.connect(self._mark_intake_reviewed)
+        actions.addWidget(self.intake_review_button)
+        self.intake_reject_button = QPushButton("Reject")
+        self.intake_reject_button.clicked.connect(self._reject_selected_intake)
+        actions.addWidget(self.intake_reject_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        self.intake_table = QTableWidget(0, 6)
+        self.intake_table.setHorizontalHeaderLabels(
+            ["File", "Type", "Bytes", "SHA-256", "Status", "Queued by"]
+        )
+        self.intake_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.intake_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.intake_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.intake_table.horizontalHeader().setStretchLastSection(True)
+        self.intake_table.itemSelectionChanged.connect(self._intake_selection_changed)
+        layout.addWidget(self.intake_table, 2)
+        self.intake_preview_tree = QTreeWidget()
+        self.intake_preview_tree.setHeaderLabels(["Preview", "Value"])
+        layout.addWidget(self.intake_preview_tree, 2)
         self.pages.addWidget(page)
 
     def _build_decision_page(self) -> None:
@@ -807,6 +871,7 @@ class MainWindow(QMainWindow):
             return False
 
         self._well_choices = choices
+        self._start_intake_operation("list")
         self.workspace_label.setText(f"{info['name']}  ·  {info['root']}")
         self.workspace_label.setToolTip(
             f"Database: {info['database_path']}\nSchema: {_value_text(info.get('schema'))}"
@@ -1700,6 +1765,139 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         if thread is not None:
             thread.deleteLater()
+
+    # -- operator intake ---------------------------------------------------
+    def _choose_intake_files(self) -> None:
+        paths, _selected = QFileDialog.getOpenFileNames(
+            self,
+            "Select source documents",
+            "",
+            "Supported documents (*.pdf *.xlsx *.xlsm *.docx *.csv *.txt);;All files (*)",
+        )
+        if not paths:
+            return
+        self._start_intake_operation("enqueue", paths=paths, actor=self.intake_actor_input.text())
+
+    def _selected_intake_item(self) -> str:
+        row = self.intake_table.currentRow()
+        item = self.intake_table.item(row, 0) if row >= 0 else None
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item is not None else ""
+
+    def _intake_selection_changed(self) -> None:
+        self._selected_intake_id = self._selected_intake_item()
+        enabled = bool(self._selected_intake_id) and self.controller.workspace is not None
+        self.intake_preview_button.setEnabled(enabled)
+        self.intake_review_button.setEnabled(enabled)
+        self.intake_reject_button.setEnabled(enabled)
+
+    def _refresh_intake_queue(self) -> None:
+        self._start_intake_operation("list")
+
+    def _mark_intake_reviewed(self) -> None:
+        self._decide_selected_intake("REVIEWED")
+
+    def _reject_selected_intake(self) -> None:
+        self._decide_selected_intake("REJECTED")
+
+    def _preview_selected_intake(self) -> None:
+        item_id = self._selected_intake_item()
+        if item_id:
+            self._start_intake_operation("preview", item_id=item_id)
+
+    def _decide_selected_intake(self, decision: str) -> None:
+        item_id = self._selected_intake_item()
+        if not item_id:
+            return
+        self._start_intake_operation(
+            "decide",
+            item_id=item_id,
+            decision=decision,
+            actor=self.intake_actor_input.text(),
+            reason=self.intake_reason_input.text(),
+        )
+
+    def _start_intake_operation(self, operation: str, **payload: Any) -> None:
+        if self.controller.workspace is None:
+            self._set_status("Open a workspace before using the intake queue.", error=True)
+            return
+        if self._intake_thread is not None:
+            self._set_status("An intake operation is already running.", error=True)
+            return
+        self._active_intake_operation = operation
+        self.intake_add_button.setEnabled(False)
+        self.intake_refresh_button.setEnabled(False)
+        self.intake_preview_button.setEnabled(False)
+        self.intake_review_button.setEnabled(False)
+        self.intake_reject_button.setEnabled(False)
+        thread = QThread(self)
+        worker = IntakeWorker(self.controller, operation, payload)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._intake_succeeded)
+        worker.failed.connect(self._intake_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._intake_thread_finished)
+        self._intake_thread = thread
+        self._intake_worker = worker
+        thread.start()
+
+    @Slot(str, object)
+    def _intake_succeeded(self, operation: str, result: object) -> None:
+        from dataclasses import asdict
+
+        if operation == "list":
+            items = result
+            self.intake_table.setRowCount(0)
+            for row_index, item in enumerate(items):
+                self.intake_table.insertRow(row_index)
+                values = (
+                    item.filename,
+                    item.extension,
+                    str(item.size_bytes),
+                    item.sha256,
+                    item.status,
+                    item.enqueued_by,
+                )
+                for column, value in enumerate(values):
+                    cell = QTableWidgetItem(value)
+                    if column == 0:
+                        cell.setData(Qt.ItemDataRole.UserRole, item.id)
+                    self.intake_table.setItem(row_index, column, cell)
+            self._set_status(f"Intake queue contains {len(items)} item(s).")
+        elif operation == "enqueue":
+            self._set_status(f"Intake processed {len(result)} file selection(s).")
+            self._pending_intake_refresh = True
+        elif operation == "preview":
+            _fill_tree(self.intake_preview_tree, asdict(result))
+            self._set_status("Preview completed locally; no document or domain row was written.")
+        elif operation == "decide":
+            _fill_tree(self.intake_preview_tree, None)
+            self._set_status(f"Intake item disposition recorded as {result.status}.")
+            self._pending_intake_refresh = True
+
+    @Slot(str, object)
+    def _intake_failed(self, operation: str, error: object) -> None:
+        message = str(getattr(error, "message", error))
+        self._set_status(f"Intake {operation} failed: {message}", error=True)
+
+    @Slot()
+    def _intake_thread_finished(self) -> None:
+        thread = self._intake_thread
+        self._intake_thread = None
+        self._intake_worker = None
+        for widget_name in ("intake_add_button", "intake_refresh_button"):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.setEnabled(self.controller.workspace is not None)
+        self._intake_selection_changed()
+        if thread is not None:
+            thread.deleteLater()
+        self.intake_operation_finished.emit()
+        if self._pending_intake_refresh:
+            self._pending_intake_refresh = False
+            self._start_intake_operation("list")
 
     # -- selection/filter helpers -----------------------------------------
     @Slot(int)

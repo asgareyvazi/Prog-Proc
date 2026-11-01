@@ -85,19 +85,20 @@ to be found by somebody else.
 | `src/drilling_intelligence/search/index.py` | 1401 | `Exception` | reported | a malformed expression means "use the scan" |
 | `src/drilling_intelligence/search/service.py` | 615 | `Exception` | reported | a malformed record is reported, not fatal |
 | `src/drilling_intelligence/search/service.py` | 699 | `Exception` | reported | an unwritable data directory must not stop the app |
-| `src/drilling_intelligence/ui/controller.py` | 102 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/ui/controller.py` | 103 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
-| `src/drilling_intelligence/ui/main_window.py` | 805 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
-| `src/drilling_intelligence/ui/main_window.py` | 1390 | `Exception` | reported | export must not crash the window |
-| `src/drilling_intelligence/ui/main_window.py` | 1737 | `Exception` | reported | keep selection/read rendering usable |
-| `src/drilling_intelligence/ui/main_window.py` | 1914 | `Exception` | reported | preserve read-side selection on capability errors |
-| `src/drilling_intelligence/ui/worker.py` | 98 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |
-| `src/drilling_intelligence/ui/worker.py` | 161 | `Exception` | reported | the GUI boundary reports, it does not crash |
-| `src/drilling_intelligence/ui/worker.py` | 209 | `Exception` | reported | the GUI boundary reports, it does not crash |
-| `src/drilling_intelligence/ui/worker.py` | 269 | `Exception` | reported | the GUI boundary reports, it does not crash |
-| `src/drilling_intelligence/ui/worker.py` | 293 | `Exception` | reported | the GUI boundary reports, it does not crash |
-| `src/drilling_intelligence/ui/worker.py` | 360 | `Exception` | reported | preserve an explicit visible worker boundary |
-| `src/drilling_intelligence/ui/worker.py` | 439 | `Exception` | reported | preserve a visible worker boundary |
+| `src/drilling_intelligence/ui/main_window.py` | 869 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
+| `src/drilling_intelligence/ui/main_window.py` | 1455 | `Exception` | reported | export must not crash the window |
+| `src/drilling_intelligence/ui/main_window.py` | 1926 | `Exception` | reported | keep selection/read rendering usable |
+| `src/drilling_intelligence/ui/main_window.py` | 2103 | `Exception` | reported | preserve read-side selection on capability errors |
+| `src/drilling_intelligence/ui/worker.py` | 63 | `Exception` | reported | thread boundary reports failures without hiding them |
+| `src/drilling_intelligence/ui/worker.py` | 152 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |
+| `src/drilling_intelligence/ui/worker.py` | 215 | `Exception` | reported | the GUI boundary reports, it does not crash |
+| `src/drilling_intelligence/ui/worker.py` | 263 | `Exception` | reported | the GUI boundary reports, it does not crash |
+| `src/drilling_intelligence/ui/worker.py` | 323 | `Exception` | reported | the GUI boundary reports, it does not crash |
+| `src/drilling_intelligence/ui/worker.py` | 347 | `Exception` | reported | the GUI boundary reports, it does not crash |
+| `src/drilling_intelligence/ui/worker.py` | 414 | `Exception` | reported | preserve an explicit visible worker boundary |
+| `src/drilling_intelligence/ui/worker.py` | 493 | `Exception` | reported | preserve a visible worker boundary |
 | `src/drilling_intelligence/wells/workspace.py` | 290 | `Exception` | suppressed | dispose is best-effort during close |
 | `tools/coverage_report.py` | 348 | `Exception` | suppressed | noqa marker |
 | `tools/coverage_report.py` | 446 | `Exception` | suppressed | noqa marker |
@@ -117,5 +118,5 @@ to be found by somebody else.
 | kind | count |
 | --- | --- |
 | re-raised | 12 |
-| reported | 63 |
+| reported | 64 |
 | suppressed | 28 |
