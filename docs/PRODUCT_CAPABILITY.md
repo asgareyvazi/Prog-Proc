@@ -1,5 +1,7 @@
 # Product capability inventory
 
+> **V10.3 current status (2026-11-01):** The product remains local-first and single-user. SQLite is the only qualified database; PostgreSQL is **NOT QUALIFIED**. The 26-class taxonomy and existing writer set are unchanged. Migration `0024` adds only a hash-addressed operator-intake queue; its local preview does not write documents or domain facts. M2–M5 remain owner-gated. Physical Windows display acceptance remains **NOT RUN**; PowerShell 5.1/7 run-card qualification is pending exact-SHA Windows CI.
+
 **Status:** source-derived inventory and finite milestone list
 **As of:** 2026-10-31 (V9.0)
 **Authority for document classes:** [`DOCUMENT_DOMAIN_COVERAGE.md`](DOCUMENT_DOMAIN_COVERAGE.md)
@@ -27,6 +29,7 @@ test that exercises it, or says that the evidence is only a schema or a comment.
 | Capability | Class | Evidence |
 | --- | --- | --- |
 | Workspace create, marker, and settings load | Implemented and end-to-end tested | `wells/workspace.py`, `config/settings.py`, `tests/unit/test_cli.py` |
+| Operator intake queue and local preview | Implemented; exact-SHA Windows UI qualification pending | `review/intake.py`, migration `0024`, `tests/integration/test_intake_e2e.py`, `tests/ui/test_intake_workbench.py`, ADR 004. Path/hash metadata only; preview writes no document or domain row. |
 | Incremental scan and ingest | Implemented and end-to-end tested | `ingestion/pipeline.py` (`mode="incremental"`), `tests/integration/test_ingestion_pipeline.py` |
 | PDF, XLSX, DOCX, text, and CSV extraction | Implemented and end-to-end tested | `extraction/pdf_text.py`, `excel.py`, `docx.py`, `text.py`, generated-corpus tests |
 | MinerU for scans, with built-in fallback | Implemented with limited coverage | `extraction/registry.py` wires `MinerUExtractor`; `tests/integration/test_mineru_boundary.py`. A missing runtime stays a fallback. This checkout did not run MinerU. |

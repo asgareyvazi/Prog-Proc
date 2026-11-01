@@ -1,5 +1,7 @@
 # Document/domain coverage matrix (V7 authority)
 
+> **V10.3 update (2026-11-01):** The taxonomy remains 26 classes with 14 certified / 7 knowledge-supported / 5 extract-only classifications; no class or domain writer was added by the operator-intake queue. The workspace-local queue accepts PDF, XLSX/XLSM, DOCX, CSV, and TXT references, stores only measured metadata/hash, and previews through existing deterministic extractors and static contracts. Preview is not registration or promotion. See ADR 004 and `docs/mission-reports/V10.3_ACCEPTANCE_MATRIX.md`. Current migration head is `0024`; PostgreSQL is **NOT QUALIFIED** and physical Windows display acceptance is **NOT RUN**.
+
 > **Note on commit references.** This checkout is a shallow clone whose history was
 > collapsed to a single grafted commit, so the commits this document describes are not in
 > the local object database and their full hashes cannot be verified here. They are cited
@@ -177,3 +179,7 @@ for contract in contract_registry():
 The import-time registry guard fails if a new enum member is added without an explicit contract and
 matrix entry. This file is the human-readable forensic index; the registry and executable tests remain
 the machine authority.
+
+## V10.3 operator-intake boundary
+
+The intake queue is a cross-cutting review surface, not a 27th document classification. It records a canonical source path and a measured hash in the current workspace database. A preview verifies that hash, invokes only local built-in extractors and the deterministic classifier, displays provenance/classification evidence plus the existing static contract level, and persists none of the extracted content. The queue cannot create a `Document`, knowledge item, calculation, promotion, or operational record. A disposition requires an actor and reason and is append-audited. M2–M5 remain blocked pending owner decisions; no new provider or writer is introduced.

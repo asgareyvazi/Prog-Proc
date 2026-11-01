@@ -202,3 +202,7 @@ The register does not ask the owner anything. When a decision is taken, the
 answer belongs in this file as a new dated section, with the ADR that records
 it, and the fail-closed behavior it replaces keeps working until the code
 that implements it lands with its own acceptance evidence.
+
+## V10.3 workflow boundary (2026-11-01)
+
+The operator-intake queue delivered under ADR 004 is an approved local-first process surface, not a change to any M2–M5 product decision. The DDR/source workflow is explicitly: select file → measure/hash → local deterministic extraction/classification preview → inspect evidence and static contract → human disposition with actor/reason. No queue action itself registers, promotes, or publishes a domain row. The existing governed `DocumentRegistry`/promotion/`ReviewActionService` paths remain authoritative. M2–M5 stay blocked until the owner records their decisions.
