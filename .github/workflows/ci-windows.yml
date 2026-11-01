@@ -406,11 +406,21 @@ jobs:
       # Explicit shell selects inbox Windows PowerShell 5.1, not pwsh.
       - name: Behavioral run-card tests under Windows PowerShell 5.1
         shell: powershell
-        run: '& "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1"'
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE "out/windows-acceptance/behavioral-runs"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          Start-Transcript -LiteralPath (Join-Path $evidence "powershell-5.1-transcript.txt") -Force
+          try { & "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1" }
+          finally { Stop-Transcript }
 
       - name: Behavioral run-card tests under PowerShell 7
         shell: pwsh
-        run: '& "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1"'
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE "out/windows-acceptance/behavioral-runs"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          Start-Transcript -LiteralPath (Join-Path $evidence "powershell-7-transcript.txt") -Force
+          try { & "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1" }
+          finally { Stop-Transcript }
 
       - name: Publish run-card behavioral evidence
         if: always()
