@@ -58,6 +58,7 @@ LATER_MIGRATION_COLUMNS = (
     "lesson_learned.document_version_id",  # 0020
     "lesson_learned.identity_key",  # 0020
     "lesson_learned.code_key",  # 0022
+    "lesson_learned.prior_status",  # 0023
 )
 
 #: (subject_key, expected kind, expected id).  Each row is a real shape the platform can hold.
@@ -178,6 +179,7 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
                     # 0017/0018: the well-control and HSE domain tables.
                     "well_control_event",
                     "hse_incident",
+                    "intake_queue_item",
                     "bit_record",
                     "survey_run",
                     "survey_station",

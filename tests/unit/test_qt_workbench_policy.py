@@ -225,7 +225,8 @@ def test_the_workbench_tests_release_their_windows_and_not_only_close_them():
 
 
 def test_the_session_fixture_releases_and_then_asserts_that_nothing_survived():
-    source = _workbench_test_source()
+    fixture_path = Path(__file__).resolve().parents[2] / "tests" / "ui" / "conftest.py"
+    source = fixture_path.read_text(encoding="utf-8")
 
     assert '@pytest.fixture(scope="session")' in source
     assert "fixture_teardown(application)" in source
