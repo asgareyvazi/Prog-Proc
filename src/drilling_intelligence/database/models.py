@@ -1699,6 +1699,8 @@ class LessonLearned(Base, TimestampMixin):
     )
     #: ``LessonLifecycle``.
     status: Mapped[str] = mapped_column(String(24), default="DRAFT", nullable=False)
+    #: Exact lifecycle state before this row was superseded; UNKNOWN marks unrecoverable legacy history.
+    prior_status: Mapped[str | None] = mapped_column(String(24))
     title: Mapped[str] = mapped_column(String(400), nullable=False)
     #: The problem this lesson is about, as a token, so ``lessons_for_problem`` is one WHERE.
     problem_type: Mapped[str | None] = mapped_column(String(64))

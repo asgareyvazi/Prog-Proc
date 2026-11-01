@@ -73,6 +73,7 @@ LATER_MIGRATION_COLUMNS = (
     "lesson_learned.document_version_id",  # 0020
     "lesson_learned.identity_key",  # 0020
     "lesson_learned.code_key",  # 0022
+    "lesson_learned.prior_status",  # 0023
 )
 LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015
     "problem_definition",

@@ -26,6 +26,8 @@ def _hash(path: Path) -> str | None:
 
 
 def _run_offline(url: str, args: list[str]) -> subprocess.CompletedProcess:
+    if "--sql" in args:
+        raise ValueError("_run_offline appends --sql exactly once; do not pass it in args")
     env = dict(os.environ)
     env["DRILLINTEL_DATABASE__URL"] = url
     env["PYTHONPATH"] = str(ROOT / "src")
@@ -136,10 +138,6 @@ def test_offline_preserves_populated_pre0020(tmp_path: Path) -> None:
     db = tmp_path / "pre0020.db"
     _make_db(db, version="0019", with_data=True)
     before = _hash(db)
-    result = _run_offline(
-        f"sqlite:///{db}", ["upgrade", "0020", "--sql"]
-    )  # note double --sql handled by helper
-    # Our helper already adds --sql, so test with head
     result = _run_offline(f"sqlite:///{db}", ["upgrade", "head"])
     after = _hash(db)
     assert result.returncode == 0

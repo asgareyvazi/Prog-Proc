@@ -34,7 +34,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from ..core.enums import (
     CauseStatus,
@@ -453,6 +453,7 @@ class LessonRepository:
         revision look unbacked - which is precisely the shape that gets a good lesson ignored.
         """
         source = self.get_lesson(lesson_id)
+        self._validated_lesson_chain(str(source.id))
         if not source.is_current:
             raise ValidationError(
                 "only the current revision of a lesson can be superseded",
@@ -507,230 +508,474 @@ class LessonRepository:
             depth_to_unit=source.depth_to_unit,
             conditions=_prose(payload.get("conditions", source.conditions)),
             confidence=payload.get("confidence", source.confidence),
-            provenance=(
-                [dict(item) for item in payload["provenance"]]
-                if payload.get("provenance") is not None
-                else list(source.provenance or [])
-            ),
+            # Evidence is revision-specific; do not silently carry it to changed text.
+            provenance=[dict(item) for item in payload.get("provenance") or ()],
             origin=str(source.origin),
             attributes=dict(payload.get("attributes") or source.attributes or {}),
         )
+        source.prior_status = str(source.status)
         source.is_current = False
-        # Superseding is mechanical (see the note in the engineering repository): a lesson that was
-        # approved stays readable as approved-but-superseded, and a draft that was rewritten simply
-        # stops being current.
         source.status = str(LessonLifecycle.SUPERSEDED)
         self.session.add(row)
         self.session.flush()
-        self._move_evidence(source, row)
+        # Evidence edges remain on the source revision. Reviewers must explicitly
+        # attach evidence to the new revision if it supports its changed content.
         return row
 
-    def _move_evidence(self, source: LessonLearned, row: LessonLearned) -> int:
-        """Re-point every evidence and outcome edge from the superseded lesson to the new one."""
-        moved = 0
-        for edge in self.session.execute(
-            select(KnowledgeRelation).where(
-                KnowledgeRelation.source_type == "lesson",
-                KnowledgeRelation.source_id == source.id,
-            )
-        ).scalars():
-            edge.source_id = row.id
-            moved += 1
-        for edge in self.session.execute(
-            select(KnowledgeRelation).where(
-                KnowledgeRelation.target_type == "lesson",
-                KnowledgeRelation.target_id == source.id,
-            )
-        ).scalars():
-            edge.target_id = row.id
-            moved += 1
-        self.session.flush()
-        return moved
+    # -- chain validation and governed retention/deletion (V10.3 §2) -----------
+    @staticmethod
+    def _chain_error(kind: str, ids: Sequence[str]) -> ValidationError:
+        return ValidationError(
+            f"lesson revision chain is corrupt ({kind}); destructive action refused",
+            corruption=kind,
+            lesson_ids=sorted({str(value) for value in ids}),
+            hint="repair the chain through a separately governed and audited repair procedure",
+        )
 
-    # -- governed deletion (V10.1 §5) -----------------------------------------
-    def delete_lesson(self, lesson_id: str, *, by: str, reason: str) -> dict[str, Any]:
-        """Governed, chain-safe deletion of a single lesson revision.
+    def _validated_lesson_chain(self, lesson_id: str) -> tuple[list[LessonLearned], int]:
+        """Load and validate the entire connected supersedes graph containing ``lesson_id``.
 
-        The deletion is atomic and audited.  ``by`` and ``reason`` are required
-        and recorded to ``audit_event`` (``action=lesson.delete``).  The revision
-        chain is preserved:
-
-        * **only version** — removed, no successor to fix up.
-        * **earliest** — its successor's ``supersedes_id`` becomes ``NULL``.
-        * **middle** — successor's ``supersedes_id`` is re-pointed to the deleted
-          row's predecessor, preserving the chain around the gap.
-        * **latest (current)** — predecessor is restored to ``is_current=True`` and
-          its status re-derives from whether it was approved (``approved_by`` set)
-          otherwise ``DRAFT``; evidence edges on the deleted current are moved back
-          to the predecessor so proof is not lost.
-
-        Evidence edges where the deleted lesson is source or target are removed
-        unless re-pointed (latest case).  The method flushes but does not commit;
-        callers must commit the session.
+        The repository schema stores one predecessor pointer. Validation still checks both directions:
+        every pointer resolves, there is one root and one successor at most, the graph is acyclic,
+        revisions increase along edges, and lifecycle/current flags agree. A corrupt graph is never
+        truncated into a plausible chain for a destructive operation.
         """
+        target = self.get_lesson(lesson_id)
+        parent = aliased(LessonLearned)
+        dangling = self.session.execute(
+            select(LessonLearned.id, LessonLearned.supersedes_id)
+            .outerjoin(parent, LessonLearned.supersedes_id == parent.id)
+            .where(LessonLearned.supersedes_id.is_not(None), parent.id.is_(None))
+        ).all()
+        if dangling:
+            raise self._chain_error(
+                "dangling predecessor",
+                [value for row in dangling for value in (row[0], row[1]) if value],
+            )
+        nodes: dict[str, LessonLearned] = {}
+        children: dict[str, str] = {}
+        pending = [str(target.id)]
+        while pending:
+            current_id = pending.pop()
+            if current_id in nodes:
+                continue
+            row = self.session.get(LessonLearned, current_id)
+            if row is None:
+                raise self._chain_error("dangling predecessor", [current_id, lesson_id])
+            nodes[current_id] = row
+            parent_id = str(row.supersedes_id) if row.supersedes_id else ""
+            if parent_id:
+                pending.append(parent_id)
+            child_ids = [
+                str(value)
+                for value in self.session.execute(
+                    select(LessonLearned.id).where(LessonLearned.supersedes_id == current_id)
+                ).scalars()
+            ]
+            if len(child_ids) > 1:
+                raise self._chain_error("branching successors", [current_id, *child_ids])
+            if child_ids:
+                children[current_id] = child_ids[0]
+                pending.append(child_ids[0])
+
+        # Every stored predecessor must resolve inside the connected component.
+        for row_id, row in nodes.items():
+            if row.supersedes_id and str(row.supersedes_id) not in nodes:
+                raise self._chain_error("dangling predecessor", [row_id, str(row.supersedes_id)])
+
+        for start_id in nodes:
+            path: list[str] = []
+            positions: dict[str, int] = {}
+            cursor = start_id
+            while cursor in nodes and nodes[cursor].supersedes_id:
+                if cursor in positions:
+                    raise self._chain_error("cycle", [*path[positions[cursor] :], cursor])
+                positions[cursor] = len(path)
+                path.append(cursor)
+                cursor = str(nodes[cursor].supersedes_id)
+
+        roots = [row_id for row_id, row in nodes.items() if not row.supersedes_id]
+        if len(roots) != 1:
+            raise self._chain_error("expected exactly one root", list(nodes))
+
+        chain: list[LessonLearned] = []
+        visited: set[str] = set()
+        cursor = roots[0]
+        while cursor:
+            if cursor in visited:
+                raise self._chain_error("cycle", [*visited, cursor])
+            visited.add(cursor)
+            chain.append(nodes[cursor])
+            cursor = children.get(cursor, "")
+        if visited != set(nodes):
+            raise self._chain_error("disconnected revisions", list(set(nodes) - visited))
+
+        for index in range(len(chain) - 1):
+            parent, child = chain[index], chain[index + 1]
+            if int(child.revision or 0) <= int(parent.revision or 0):
+                raise self._chain_error("revision order is not increasing", [parent.id, child.id])
+
+        current_rows = [row for row in chain if bool(row.is_current)]
+        if len(current_rows) > 1:
+            raise self._chain_error("multiple current rows", [row.id for row in current_rows])
+        if not current_rows and any(
+            str(row.status) != str(LessonLifecycle.WITHDRAWN) for row in chain
+        ):
+            raise self._chain_error("chain has no current or withdrawn disposition", list(nodes))
+        for index, row in enumerate(chain):
+            status = str(row.status)
+            if row.is_current and status in {
+                str(LessonLifecycle.SUPERSEDED),
+                str(LessonLifecycle.WITHDRAWN),
+            }:
+                raise self._chain_error("current row has inactive lifecycle", [row.id])
+            if not row.is_current and status not in {
+                str(LessonLifecycle.SUPERSEDED),
+                str(LessonLifecycle.WITHDRAWN),
+            }:
+                raise self._chain_error("inactive row has active lifecycle", [row.id])
+            if status == str(LessonLifecycle.SUPERSEDED) and not row.prior_status:
+                raise self._chain_error("superseded row has no recorded prior status", [row.id])
+            if row.is_current and any(
+                str(descendant.status) != str(LessonLifecycle.WITHDRAWN)
+                for descendant in chain[index + 1 :]
+            ):
+                raise self._chain_error("current row has an active successor", [row.id])
+
+        target_index = next(
+            index for index, row in enumerate(chain) if str(row.id) == str(target.id)
+        )
+        return chain, target_index
+
+    @staticmethod
+    def _actor_reason(by: str, reason: str) -> tuple[str, str]:
         actor = str(by or "").strip()
         why = str(reason or "").strip()
         if not actor:
-            raise ValidationError("deleting a lesson needs an actor", hint="pass by=<who>")
+            raise ValidationError("a consequential lesson transition needs an actor")
         if not why:
-            raise ValidationError("deleting a lesson needs a reason", hint="explain why")
+            raise ValidationError("a consequential lesson transition needs a reason")
+        return actor, why
 
-        target = self.get_lesson(lesson_id)
-
-        # Build ordered chain via supersedes links.  Walk backwards to root.
-        chain: list[LessonLearned] = []
-        # backwards
-        cur: LessonLearned | None = target
-        seen: set[str] = set()
-        backward: list[LessonLearned] = []
-        while cur is not None and str(cur.id) not in seen:
-            seen.add(str(cur.id))
-            backward.append(cur)
-            if cur.supersedes_id:
-                cur = self.session.get(LessonLearned, str(cur.supersedes_id))
-            else:
-                cur = None
-        backward = list(reversed(backward))
-        # forwards from target
-        forward_cur = target
-        while True:
-            nxt = self.session.execute(
-                select(LessonLearned).where(LessonLearned.supersedes_id == str(forward_cur.id))
-            ).scalar_one_or_none()
-            if nxt is None or str(nxt.id) in seen:
-                break
-            seen.add(str(nxt.id))
-            backward.append(nxt)
-            forward_cur = nxt
-        chain = backward
-        try:
-            idx = next(i for i, r in enumerate(chain) if str(r.id) == str(target.id))
-        except StopIteration:
-            idx = -1  # shouldn't happen
-        predecessor = chain[idx - 1] if idx > 0 else None
-        successor = chain[idx + 1] if idx >= 0 and idx + 1 < len(chain) else None
-
-        # Preserve successor chain
-        if successor is not None:
-            successor.supersedes_id = str(predecessor.id) if predecessor else None
-
-        # If deleting the current, restore predecessor — avoid transient duplicate
-        # current code_key (both would be is_current=1 with same canonical).
-        if bool(target.is_current) and predecessor is not None:
-            # Clear target current first so predecessor can become current without
-            # violating the partial unique index on code_key.
-            target.is_current = False
-            # Flush the change before setting predecessor to avoid unique violation
-            # in the same flush.
-            try:
-                self.session.flush()
-            except Exception:  # noqa: BLE001 - transient unique violation is expected before predecessor restore
-                pass
-            predecessor.is_current = True
-            # target was current, so its status is the governing status; predecessor
-            # was marked SUPERSEDED on supersession and lost its original approval
-            # state.  Infer by whether it was ever approved (approved_by set).
-            if str(predecessor.status) == str(LessonLifecycle.SUPERSEDED):
-                if getattr(predecessor, "approved_by", None):
-                    predecessor.status = str(LessonLifecycle.APPROVED)
-                else:
-                    # REJECTED never becomes current via deletion; draft is the safe fallback
-                    predecessor.status = str(LessonLifecycle.DRAFT)
-            # Move evidence back from deleted current to predecessor so history keeps proof
-            for edge in self.session.execute(
+    def _evidence_edges(self, lesson_id: str) -> list[KnowledgeRelation]:
+        return list(
+            self.session.execute(
                 select(KnowledgeRelation).where(
-                    KnowledgeRelation.source_type == "lesson",
-                    KnowledgeRelation.source_id == str(target.id),
-                )
-            ).scalars():
-                edge.source_id = str(predecessor.id)
-            for edge in self.session.execute(
-                select(KnowledgeRelation).where(
-                    KnowledgeRelation.target_type == "lesson",
-                    KnowledgeRelation.target_id == str(target.id),
-                )
-            ).scalars():
-                edge.target_id = str(predecessor.id)
-        else:
-            # Non-current deletion: just drop edges where target is endpoint
-            for edge in list(
-                self.session.execute(
-                    select(KnowledgeRelation).where(
-                        (KnowledgeRelation.source_type == "lesson")
-                        & (KnowledgeRelation.source_id == str(target.id))
+                    or_(
+                        and_(
+                            KnowledgeRelation.source_type == "lesson",
+                            KnowledgeRelation.source_id == lesson_id,
+                        ),
+                        and_(
+                            KnowledgeRelation.target_type == "lesson",
+                            KnowledgeRelation.target_id == lesson_id,
+                        ),
                     )
-                ).scalars()
-            ):
-                self.session.delete(edge)
-            for edge in list(
-                self.session.execute(
-                    select(KnowledgeRelation).where(
-                        (KnowledgeRelation.target_type == "lesson")
-                        & (KnowledgeRelation.target_id == str(target.id))
-                    )
-                ).scalars()
-            ):
-                self.session.delete(edge)
+                )
+            ).scalars()
+        )
 
-        # Audit before hard delete so subject ids are still readable
-        from ..database.audit import AuditLog  # local to avoid cycle
+    @staticmethod
+    def _edge_snapshot(edge: KnowledgeRelation) -> dict[str, Any]:
+        return {
+            "id": str(edge.id),
+            "source_type": edge.source_type,
+            "source_id": edge.source_id,
+            "relation": edge.relation,
+            "target_type": edge.target_type,
+            "target_id": edge.target_id,
+            "note": edge.note,
+            "provenance": list(edge.provenance or []),
+            "created_at": edge.created_at.isoformat() if edge.created_at else None,
+        }
+
+    @staticmethod
+    def _lesson_snapshot(row: LessonLearned) -> dict[str, Any]:
+        """Recoverable JSON snapshot for the append-only disposition audit event."""
+        return {
+            "id": str(row.id),
+            "code": row.code,
+            "code_key": row.code_key,
+            "revision": int(row.revision or 0),
+            "revision_label": row.revision_label,
+            "lifecycle_status": str(row.status),
+            "prior_status": row.prior_status,
+            "status_note": row.status_note,
+            "is_current": bool(row.is_current),
+            "supersedes_id": row.supersedes_id,
+            "title": row.title,
+            "problem_type": row.problem_type,
+            "context": row.context,
+            "observation": row.observation,
+            "root_cause": row.root_cause,
+            "root_cause_status": row.root_cause_status,
+            "lesson": row.lesson,
+            "recommendation": row.recommendation,
+            "provenance": list(row.provenance or []),
+            "document_id": row.document_id,
+            "document_version_id": row.document_version_id,
+            "identity_key": row.identity_key,
+            "created_by": row.created_by,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "attributes": dict(row.attributes or {}),
+        }
+
+    def _restore_predecessor(
+        self, chain: list[LessonLearned], target_index: int, *, by: str, reason: str
+    ) -> LessonLearned | None:
+        """Restore the nearest eligible predecessor from its persisted exact prior state."""
+        candidates = reversed(chain[:target_index])
+        predecessor = next(
+            (row for row in candidates if str(row.status) != str(LessonLifecycle.WITHDRAWN)),
+            None,
+        )
+        if predecessor is None:
+            return None
+        if str(predecessor.status) == str(LessonLifecycle.SUPERSEDED):
+            prior = str(predecessor.prior_status or "")
+            allowed = {
+                str(state)
+                for state in (
+                    LessonLifecycle.DRAFT,
+                    LessonLifecycle.REVIEW,
+                    LessonLifecycle.APPROVED,
+                    LessonLifecycle.REJECTED,
+                )
+            }
+            if prior not in allowed:
+                raise ValidationError(
+                    "cannot restore predecessor: its exact prior lifecycle state is unavailable",
+                    predecessor_id=str(predecessor.id),
+                    prior_status=prior or None,
+                    hint="preserve the record and resolve legacy state explicitly",
+                )
+            predecessor.status = prior
+            predecessor.prior_status = None
+            if prior == str(LessonLifecycle.REJECTED):
+                predecessor.status_note = predecessor.status_note or reason
+        predecessor.is_current = True
+        return predecessor
+
+    def _record_lesson_disposition(
+        self,
+        *,
+        target: LessonLearned,
+        actor: str,
+        reason: str,
+        action: str,
+        disposition: str,
+        chain: list[LessonLearned],
+        position: int,
+        predecessor: LessonLearned | None,
+        successor: LessonLearned | None,
+        was_current: bool,
+        original_status: str,
+        edges: list[KnowledgeRelation],
+    ) -> None:
+        from ..database.audit import AuditLog
 
         AuditLog(self.session).record(
-            action="lesson.delete",
+            action=action,
             subject_type="lesson_learned",
             subject_id=str(target.id),
             actor=actor,
             detail={
-                "reason": why,
-                "code": getattr(target, "code", None),
-                "revision": getattr(target, "revision", None),
-                "was_current": bool(target.is_current),
+                "reason": reason,
+                "lesson_snapshot": self._lesson_snapshot(target),
+                "code_key": target.code_key,
+                "revision": int(target.revision or 0),
+                "original_lifecycle_state": original_status,
+                "original_current": was_current,
+                "chain_position": position,
                 "chain_length": len(chain),
-                "position": idx,
                 "predecessor_id": str(predecessor.id) if predecessor else None,
                 "successor_id": str(successor.id) if successor else None,
+                "evidence_count": len(edges),
+                "evidence_edges": [self._edge_snapshot(edge) for edge in edges],
+                "final_disposition": disposition,
             },
         )
-        self.session.delete(target)
+
+    def _withdraw_validated_lesson(
+        self,
+        target: LessonLearned,
+        chain: list[LessonLearned],
+        position: int,
+        *,
+        actor: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        predecessor = chain[position - 1] if position > 0 else None
+        successor = chain[position + 1] if position + 1 < len(chain) else None
+        was_current = bool(target.is_current)
+        original_status = str(target.status)
+        edges = self._evidence_edges(str(target.id))
+        if original_status == str(LessonLifecycle.WITHDRAWN):
+            return {
+                "lesson_id": str(target.id),
+                "disposition": "WITHDRAWN",
+                "already_withdrawn": True,
+                "predecessor_id": str(predecessor.id) if predecessor else None,
+                "successor_id": str(successor.id) if successor else None,
+            }
+        if was_current:
+            target.is_current = False
+            target.status = str(LessonLifecycle.WITHDRAWN)
+            target.status_note = reason
+            self.session.flush()  # release the partial unique current-code slot first
+            predecessor = self._restore_predecessor(chain, position, by=actor, reason=reason)
+        else:
+            target.status = str(LessonLifecycle.WITHDRAWN)
+            target.status_note = reason
+        self._record_lesson_disposition(
+            target=target,
+            actor=actor,
+            reason=reason,
+            action="lesson.withdraw",
+            disposition="WITHDRAWN",
+            chain=chain,
+            position=position,
+            predecessor=predecessor,
+            successor=successor,
+            was_current=was_current,
+            original_status=original_status,
+            edges=edges,
+        )
         self.session.flush()
+        remaining = next(
+            (row for row in chain if str(row.id) != str(target.id)),
+            None,
+        )
+        if remaining is not None:
+            self._validated_lesson_chain(str(remaining.id))
         return {
-            "deleted_id": str(lesson_id),
-            "chain_length": len(chain),
-            "position": idx,
-            "was_current": bool(target.is_current),
+            "lesson_id": str(target.id),
+            "disposition": "WITHDRAWN",
+            "already_withdrawn": False,
             "predecessor_id": str(predecessor.id) if predecessor else None,
             "successor_id": str(successor.id) if successor else None,
         }
 
+    def withdraw_lesson(self, lesson_id: str, *, by: str, reason: str) -> dict[str, Any]:
+        """Governedly withdraw a lesson without erasing its text, evidence, or provenance."""
+        actor, why = self._actor_reason(by, reason)
+        with self.session.begin_nested():
+            chain, position = self._validated_lesson_chain(str(lesson_id))
+            target = chain[position]
+            return self._withdraw_validated_lesson(target, chain, position, actor=actor, reason=why)
+
+    def _delete_validated_lesson(
+        self,
+        lesson_id: str,
+        *,
+        actor: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        chain, position = self._validated_lesson_chain(str(lesson_id))
+        target = chain[position]
+        original_status = str(target.status)
+        # An approved decision remains a recoverable engineering record. This includes
+        # approved rows superseded by later revisions (their prior_status is APPROVED).
+        if original_status == str(LessonLifecycle.APPROVED) or str(
+            target.prior_status or ""
+        ) == str(LessonLifecycle.APPROVED):
+            result = self._withdraw_validated_lesson(
+                target, chain, position, actor=actor, reason=reason
+            )
+            result["requested_disposition"] = "DELETE"
+            return result
+
+        predecessor = chain[position - 1] if position > 0 else None
+        successor = chain[position + 1] if position + 1 < len(chain) else None
+        was_current = bool(target.is_current)
+        edges = self._evidence_edges(str(target.id))
+        if successor is not None:
+            successor.supersedes_id = str(predecessor.id) if predecessor else None
+        if was_current:
+            target.is_current = False
+            self.session.flush()  # current slot is cleared before predecessor restoration
+            predecessor = self._restore_predecessor(chain, position, by=actor, reason=reason)
+
+        self._record_lesson_disposition(
+            target=target,
+            actor=actor,
+            reason=reason,
+            action="lesson.delete",
+            disposition="DELETED",
+            chain=chain,
+            position=position,
+            predecessor=predecessor,
+            successor=successor,
+            was_current=was_current,
+            original_status=original_status,
+            edges=edges,
+        )
+        # Evidence is revision-specific. Deleting an unapproved row removes only its
+        # own edges; no edge is silently transferred to different content.
+        for edge in edges:
+            self.session.delete(edge)
+        target_id = str(target.id)
+        self.session.delete(target)
+        self.session.flush()
+        remaining = next((row for row in chain if str(row.id) != target_id), None)
+        if remaining is not None:
+            self._validated_lesson_chain(str(remaining.id))
+        return {
+            "lesson_id": target_id,
+            "disposition": "DELETED",
+            "chain_length": len(chain),
+            "position": position,
+            "was_current": was_current,
+            "predecessor_id": str(predecessor.id) if predecessor else None,
+            "successor_id": str(successor.id) if successor else None,
+            "evidence_count": len(edges),
+        }
+
+    def delete_lesson(self, lesson_id: str, *, by: str, reason: str) -> dict[str, Any]:
+        """Delete an unapproved revision or withdraw an approved decision, atomically and audibly."""
+        actor, why = self._actor_reason(by, reason)
+        with self.session.begin_nested():
+            return self._delete_validated_lesson(str(lesson_id), actor=actor, reason=why)
+
     def delete_lessons(
         self, lesson_ids: Sequence[str], *, by: str, reason: str
     ) -> list[dict[str, Any]]:
-        """Atomically delete multiple lesson revisions (governed, chain-safe).
+        """Apply a graph-planned bulk disposition under one caller-owned savepoint.
 
-        Deletes are applied from newest to oldest (by chain order) so that
-        successors are fixed up before their predecessors are removed.  The
-        whole batch shares one flush/commit boundary; if any id is unknown the
-        call fails before mutating.
+        Requested duplicates are coalesced. All IDs and connected chains are validated before
+        mutation, then each chain is processed successor-first by its actual ``supersedes_id`` graph,
+        never by the numeric revision field. The caller's Session is never committed.
         """
-        actor = str(by or "").strip()
-        why = str(reason or "").strip()
-        if not actor or not why:
-            raise ValidationError("bulk delete needs actor and reason")
-        # Validate all exist upfront
-        rows = [self.get_lesson(str(lid)) for lid in lesson_ids]
-        # Order by discovery chain position: delete latest first.  Simplest is
-        # sort by revision descending (higher revision is newer) then by is_current.
-        rows.sort(
-            key=lambda r: (bool(r.is_current), int(getattr(r, "revision", 0) or 0)), reverse=True
-        )
-        results: list[dict[str, Any]] = []
-        for row in rows:
-            # Re-resolve after earlier deletions may have mutated chain; but
-            # get_lesson will still find remaining rows.
-            if self.session.get(LessonLearned, str(row.id)) is None:
-                continue
-            results.append(self.delete_lesson(str(row.id), by=actor, reason=why))
-        return results
+        actor, why = self._actor_reason(by, reason)
+        requested = list(dict.fromkeys(str(value) for value in lesson_ids))
+        if not requested:
+            return []
+        with self.session.begin_nested():
+            chains: dict[str, list[LessonLearned]] = {}
+            positions: dict[str, tuple[str, int]] = {}
+            for lesson_id in requested:
+                chain, position = self._validated_lesson_chain(lesson_id)
+                root_id = str(chain[0].id)
+                chains[root_id] = chain
+                positions[lesson_id] = (root_id, position)
+
+            planned: list[str] = []
+            for root_id in sorted(chains):
+                chain = chains[root_id]
+                selected = {
+                    lesson_id
+                    for lesson_id, (owner_root, _position) in positions.items()
+                    if owner_root == root_id
+                }
+                planned.extend(str(row.id) for row in reversed(chain) if str(row.id) in selected)
+
+            outcomes: dict[str, dict[str, Any]] = {}
+            for lesson_id in planned:
+                outcomes[lesson_id] = self._delete_validated_lesson(
+                    lesson_id, actor=actor, reason=why
+                )
+            return [outcomes[lesson_id] for lesson_id in planned]
 
     # -- evidence -------------------------------------------------------------
     def attach_evidence(
@@ -979,10 +1224,13 @@ class LessonRepository:
         status: str = "",
         approved_only: bool = False,
         include_superseded: bool = False,
+        include_withdrawn: bool = False,
         search: str = "",
         limit: int = 200,
     ) -> list[LessonLearned]:
         statement = select(LessonLearned)
+        if not include_withdrawn:
+            statement = statement.where(LessonLearned.status != str(LessonLifecycle.WITHDRAWN))
         if well_id or section_id:
             statement = statement.where(
                 LessonLearned.well_id == well_id
@@ -1007,7 +1255,13 @@ class LessonRepository:
         elif approved_only:
             statement = statement.where(LessonLearned.status == str(LessonLifecycle.APPROVED))
         if not include_superseded:
-            statement = statement.where(LessonLearned.is_current.is_(True))
+            current_projection = LessonLearned.is_current.is_(True)
+            if include_withdrawn:
+                current_projection = or_(
+                    current_projection,
+                    LessonLearned.status == str(LessonLifecycle.WITHDRAWN),
+                )
+            statement = statement.where(current_projection)
         if str(search or "").strip():
             pattern = f"%{str(search).strip().lower()}%"
             statement = statement.where(
@@ -1033,6 +1287,7 @@ class LessonRepository:
         *,
         approved_only: bool = True,
         include_superseded: bool = False,
+        include_withdrawn: bool = False,
         limit: int = 0,
     ) -> list[LessonLearned]:
         """Lessons written for this well, plus its field's, so a plan can be checked against both."""
@@ -1056,8 +1311,16 @@ class LessonRepository:
                 )
             )
         statement = select(LessonLearned).where(or_(*scopes))
+        if not include_withdrawn:
+            statement = statement.where(LessonLearned.status != str(LessonLifecycle.WITHDRAWN))
         if not include_superseded:
-            statement = statement.where(LessonLearned.is_current.is_(True))
+            current_projection = LessonLearned.is_current.is_(True)
+            if include_withdrawn:
+                current_projection = or_(
+                    current_projection,
+                    LessonLearned.status == str(LessonLifecycle.WITHDRAWN),
+                )
+            statement = statement.where(current_projection)
         if approved_only:
             statement = statement.where(LessonLearned.status == str(LessonLifecycle.APPROVED))
         return list(
@@ -1613,7 +1876,9 @@ class LessonRepository:
         The ``without_evidence`` count is the number a knowledge librarian has to look at: a lesson with
         no proof is a liability, not an asset, and "we have 40 lessons" hides that.
         """
-        statement = select(LessonLearned)
+        statement = select(LessonLearned).where(
+            LessonLearned.status != str(LessonLifecycle.WITHDRAWN)
+        )
         practice_statement = select(BestPractice)
         recommendation_statement = select(Recommendation)
         for label, value in (("field_id", field_id), ("project_id", project_id)):
