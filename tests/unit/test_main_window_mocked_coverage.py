@@ -53,6 +53,16 @@ def _mocked_main_window():
             mocked[mod].__dict__.setdefault(cls, MagicMock())
     # Patch sys.modules
     orig = {k: sys.modules.get(k) for k in mocked}
+    # Importing main_window under fake Qt also imports worker/model/chart modules. Keep those
+    # dependency objects from retaining fake Qt signals after this test restores sys.modules.
+    for name in (
+        "drilling_intelligence.ui.main_window",
+        "drilling_intelligence.ui.worker",
+        "drilling_intelligence.ui.models",
+        "drilling_intelligence.ui.chart",
+        "drilling_intelligence.ui.controller",
+    ):
+        orig.setdefault(name, sys.modules.get(name))
     for k, v in mocked.items():
         sys.modules[k] = v
     # Ensure drilling_intelligence.ui.main_window is reimported
