@@ -291,14 +291,18 @@ jobs:
           exit 1
 
   release-smoke:
-    name: clean install smoke
+    name: clean install smoke (cp${{ matrix.python-version }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install build tooling
         run: |
@@ -313,8 +317,12 @@ jobs:
         run: python tools/release_smoke.py
 
   workbench:
-    name: workbench (offscreen Qt)
+    name: workbench (offscreen Qt, cp${{ matrix.python-version }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -322,7 +330,7 @@ jobs:
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       # Real PySide6 under Xvfb. A missing library or a skipped UI test fails this job.
       # It is not a skip dressed up as a pass, and the headless test job above does not
@@ -369,6 +377,7 @@ jobs:
       # The coverage of the Qt layer, measured where Qt is real. The headless test job
       # above measures everything else. This is a required gate: 70% lines and 40% branches for qt/ui.
       - name: Measure the coverage of the Qt layer
+        if: matrix.python-version == '3.11'
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           QT_OPENGL: software
@@ -386,7 +395,7 @@ jobs:
           exit "$status"
 
       - name: Record the Qt layer coverage
-        if: always()
+        if: always() && matrix.python-version == '3.11'
         run: |
           if [ ! -f coverage-ui.xml ]; then
             echo "::error::coverage-ui.xml missing — required Qt/UI coverage was not produced"
@@ -449,14 +458,14 @@ jobs:
           fi
 
       - name: Qt/UI coverage gate (70% lines, 40% branches)
-        if: always()
+        if: always() && matrix.python-version == '3.11'
         run: |
           set -euo pipefail
           python tools/qt_coverage_gate.py --xml coverage-ui.xml --view coverage-ui-view.json --junit pytest-ui-junit.xml --expected-sha "${{ github.sha }}"
 
 
       - name: Publish the Qt layer coverage
-        if: always()
+        if: always() && matrix.python-version == '3.11'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-ui-cp3.11
@@ -515,7 +524,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qt-workbench-logs
+          name: qt-workbench-logs-cp${{ matrix.python-version }}
           path: qt-logs/
           if-no-files-found: error
 

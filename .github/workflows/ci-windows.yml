@@ -195,9 +195,13 @@ jobs:
           }
 
   release-smoke:
-    name: windows clean install smoke
+    name: windows clean install smoke (cp${{ matrix.python-version }})
     runs-on: windows-2022
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
@@ -210,7 +214,7 @@ jobs:
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install build tooling
         shell: pwsh
@@ -227,9 +231,13 @@ jobs:
         run: .\tools\windows_pilot.ps1 -Python python -RepoRoot (Get-Location).Path
 
   ui:
-    name: windows ui (offscreen Qt)
+    name: windows ui (offscreen Qt, cp${{ matrix.python-version }})
     runs-on: windows-2022
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
@@ -248,7 +256,7 @@ jobs:
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install (editable, with the ui extra)
         shell: pwsh
@@ -343,16 +351,20 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qt-windows-ui-logs
+          name: qt-windows-ui-logs-cp${{ matrix.python-version }}
           path: |
             qt-logs/
             pytest-totals.json
           if-no-files-found: error
 
   stability:
-    name: windows stability (repeated workbench)
+    name: windows stability (repeated workbench, cp${{ matrix.python-version }})
     runs-on: windows-2022
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
@@ -371,7 +383,7 @@ jobs:
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install (editable, with the ui extra)
         shell: pwsh
@@ -402,7 +414,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qt-windows-stability-logs
+          name: qt-windows-stability-logs-cp${{ matrix.python-version }}
           path: qt-logs/stability/
           if-no-files-found: error
 

@@ -94,6 +94,8 @@ def test_intake_page_uses_worker_and_renders_persisted_queue(qt_app, tmp_path: P
 
 def test_intake_window_close_joins_worker_without_late_ui_callback(qt_app, tmp_path: Path) -> None:
     """A worker can finish while close waits without racing QObject cleanup."""
+    from PySide6.QtTest import QSignalSpy
+
     from drilling_intelligence.cli.app import main
     from drilling_intelligence.ui.controller import ReviewController
     from drilling_intelligence.ui.main_window import MainWindow
@@ -122,6 +124,7 @@ def test_intake_window_close_joins_worker_without_late_ui_callback(qt_app, tmp_p
 
     window = ClosingWindow(controller)
     window.show()
+    finished = QSignalSpy(window.intake_operation_finished)
     window._start_intake_operation("list")
     assert operation_started.wait(5), "the intake worker did not enter its operation"
 
@@ -139,6 +142,7 @@ def test_intake_window_close_joins_worker_without_late_ui_callback(qt_app, tmp_p
         assert not window.owned_workers_running()
         assert window._intake_thread is None
         assert window._intake_worker is None
+        assert finished.count() == 0, "a stale worker callback updated the closed intake page"
     finally:
         release_operation.set()
         releaser.join(5)
@@ -240,3 +244,150 @@ def test_intake_and_ddr_workers_can_finish_concurrently(qt_app, tmp_path: Path) 
         release_top_level_widgets(qt_app)
         qt_app.processEvents()
         controller.close()
+
+
+def test_intake_review_registration_and_rejection_run_as_distinct_ui_transitions(
+    qt_app, tmp_path: Path
+) -> None:
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtTest import QSignalSpy
+
+    from drilling_intelligence.cli.app import main
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import MainWindow
+
+    root = tmp_path / "workspace"
+    assert main(["workspace", "create", str(root)]) == 0
+    accepted_source = tmp_path / "accepted.txt"
+    accepted_source.write_text("Daily operations handover", encoding="utf-8")
+    rejected_source = tmp_path / "rejected.txt"
+    rejected_source.write_text("Unrelated notes", encoding="utf-8")
+    controller = ReviewController()
+    controller.open_workspace(root)
+    window = MainWindow(controller)
+    window.intake_actor_input.setText("operator")
+    window.intake_reason_input.setText("reviewed against the source")
+    finished = QSignalSpy(window.intake_operation_finished)
+
+    def wait_for_count(target: int) -> bool:
+        if finished.count() >= target:
+            return True
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        window.intake_operation_finished.connect(loop.quit)
+        timer.timeout.connect(loop.quit)
+        timer.start(10000)
+        while finished.count() < target and timer.isActive():
+            loop.exec()
+        timer.stop()
+        window.intake_operation_finished.disconnect(loop.quit)
+        return finished.count() >= target
+
+    def row_for(filename: str) -> int:
+        for row in range(window.intake_table.rowCount()):
+            if window.intake_table.item(row, 0).text() == filename:
+                return row
+        return -1
+
+    try:
+        window._start_intake_operation("enqueue", paths=[accepted_source], actor="operator")
+        assert wait_for_count(2), "enqueue and its pending queue refresh did not both finish"
+        accepted_row = row_for(accepted_source.name)
+        assert accepted_row >= 0
+        window.intake_table.selectRow(accepted_row)
+        accepted_id = window._selected_intake_item()
+        assert accepted_id
+        assert window.intake_review_button.isEnabled()
+        assert not window.intake_register_button.isEnabled()
+
+        next_count = finished.count() + 1
+        window._preview_selected_intake()
+        assert wait_for_count(next_count), "preview did not finish"
+        assert window.intake_preview_tree.topLevelItemCount() > 0
+        assert "no document or domain row was written" in window.status_label.text()
+
+        next_count = finished.count() + 2
+        window._mark_intake_reviewed()
+        assert wait_for_count(next_count), "review disposition and pending refresh did not finish"
+        assert window._intake_status_by_id[accepted_id] == "REVIEWED"
+        accepted_row = row_for(accepted_source.name)
+        window.intake_table.selectRow(accepted_row)
+        assert window.intake_register_button.isEnabled()
+
+        next_count = finished.count() + 2
+        window._register_selected_intake()
+        assert wait_for_count(next_count), "registration and pending refresh did not finish"
+        assert window._intake_status_by_id[accepted_id] == "REGISTERED"
+        registered = controller.intake_items(status="REGISTERED")
+        assert len(registered) == 1
+        assert registered[0].id == accepted_id
+        assert registered[0].document_id
+        assert registered[0].document_version_id
+
+        next_count = finished.count() + 2
+        window._start_intake_operation("enqueue", paths=[rejected_source], actor="operator")
+        assert wait_for_count(next_count), "second enqueue and pending refresh did not finish"
+        rejected_row = row_for(rejected_source.name)
+        assert rejected_row >= 0
+        window.intake_table.selectRow(rejected_row)
+        rejected_id = window._selected_intake_item()
+        assert rejected_id and rejected_id != accepted_id
+        assert window.intake_reject_button.isEnabled()
+
+        next_count = finished.count() + 2
+        window._reject_selected_intake()
+        assert wait_for_count(next_count), "rejection and pending refresh did not finish"
+        assert window._intake_status_by_id[rejected_id] == "REJECTED"
+        rejected_row = row_for(rejected_source.name)
+        window.intake_table.selectRow(rejected_row)
+        assert not window.intake_register_button.isEnabled()
+        assert [item.id for item in controller.intake_items(status="REGISTERED")] == [accepted_id]
+    finally:
+        window.close()
+        qt_app.processEvents()
+        controller.close()
+
+
+def test_stale_worker_callbacks_and_new_requests_are_noops_after_close(qt_app) -> None:
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import _WORKER_THREAD_ATTRS, MainWindow
+
+    window = MainWindow(ReviewController())
+    assert window.close()
+    qt_app.processEvents()
+    before = window.status_label.text()
+    callbacks = (
+        (window._review_succeeded, (object(),)),
+        (window._review_failed, (object(),)),
+        (window._decision_succeeded, (object(),)),
+        (window._decision_failed, (object(),)),
+        (window._comparison_succeeded, (object(),)),
+        (window._comparison_failed, (object(),)),
+        (window._report_succeeded, (object(),)),
+        (window._report_failed, (object(),)),
+        (window._report_audit_succeeded, (object(), 0)),
+        (window._report_audit_failed, (object(), 0)),
+        (window._calculation_succeeded, (object(),)),
+        (window._calculation_failed, (object(),)),
+        (window._action_succeeded, (object(),)),
+        (window._action_failed, (object(),)),
+        (window._intake_succeeded, ("list", object())),
+        (window._intake_failed, ("list", object())),
+        (window._ddr_succeeded, ("list", object())),
+        (window._ddr_failed, ("list", object())),
+    )
+    for callback, args in callbacks:
+        callback(*args)
+    window.request_review(verify_citations=False)
+    window._request_decision("stale-well")
+    window._request_comparison(["well-a", "well-b"])
+    window._request_report()
+    window._request_report_audit()
+    window.run_calculation()
+    window._start_action_worker(object())
+    window._start_intake_operation("list")
+    window._start_ddr_operation("list", well_id="stale-well")
+    assert window.status_label.text() == before
+    assert all(getattr(window, name) is None for name in _WORKER_THREAD_ATTRS)
+    assert not window._worker_destroyed_events

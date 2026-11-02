@@ -1075,6 +1075,8 @@ class MainWindow(QMainWindow):
             self.request_review(verify_citations=False)
 
     def request_review(self, *, verify_citations: bool) -> None:
+        if self._closing:
+            return
         if self._review_thread is not None:
             return
         well_id = str(self.well_combo.currentData() or "")
@@ -1110,6 +1112,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _review_succeeded(self, review: DomainReview) -> None:
+        if self._closing:
+            return
         self.set_review(review)
         audit = "; citations audited" if review.citation_audit is not None else ""
         self._set_status(
@@ -1119,6 +1123,8 @@ class MainWindow(QMainWindow):
         self._preselect_comparison_well(str(review.request.get("well_id") or ""))
 
     def _request_decision(self, well_id: str) -> None:
+        if self._closing:
+            return
         """Fetch the pack for the same well, off the GUI thread, after every review load.
 
         A failure here is a status line and nothing else: the review already on screen stays, and
@@ -1144,10 +1150,14 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _decision_succeeded(self, payload: dict) -> None:
+        if self._closing:
+            return
         self.set_decision(payload)
 
     @Slot(object)
     def _decision_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"Decision pack {error.category}: {error.message}", error=True)
 
     @Slot()
@@ -1193,6 +1203,8 @@ class MainWindow(QMainWindow):
         self._request_comparison(well_ids)
 
     def _request_comparison(self, well_ids: Sequence[str]) -> None:
+        if self._closing:
+            return
         """Fetch the comparison pack off the GUI thread; failures change only the status.
 
         Every rule (two wells minimum, known ids, unit comparability) lives behind the
@@ -1224,10 +1236,14 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _comparison_succeeded(self, payload: dict) -> None:
+        if self._closing:
+            return
         self.set_comparison(payload)
 
     @Slot(object)
     def _comparison_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"Comparison pack {error.category}: {error.message}", error=True)
 
     @Slot()
@@ -1375,6 +1391,8 @@ class MainWindow(QMainWindow):
         anchor: str = "",
         offsets: Sequence[str] = (),
     ) -> None:
+        if self._closing:
+            return
         if self._report_thread is not None:
             return
         thread = QThread(self)
@@ -1400,10 +1418,14 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _report_succeeded(self, payload: dict) -> None:
+        if self._closing:
+            return
         self.set_report(payload)
 
     @Slot(object)
     def _report_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"Report {error.category}: {error.message}", error=True)
 
     @Slot()
@@ -1447,6 +1469,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _request_report_audit(self) -> None:
+        if self._closing:
+            return
         if not self._report_payload:
             self._set_status("Build a report before verifying citations.", error=True)
             return
@@ -1482,6 +1506,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _report_audit_succeeded(self, payload: dict, generation: int) -> None:
+        if self._closing:
+            return
         if generation != self._report_audit_generation or not self._report_payload:
             return
         if str(payload.get("report_identity") or "") != str(
@@ -1495,6 +1521,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _report_audit_failed(self, error: WorkerError, generation: int) -> None:
+        if self._closing:
+            return
         if generation != self._report_audit_generation:
             return
         self._set_status(f"Citation audit {error.category}: {error.message}", error=True)
@@ -1595,6 +1623,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _review_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"{error.category.title()} error: {error.message}", error=True)
         detail = error.message + (f"\n\nHint: {error.hint}" if error.hint else "")
         self.banner.setText(detail)
@@ -1817,6 +1847,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def run_calculation(self) -> None:
+        if self._closing:
+            return
         """Start the sole executable calculation only after an explicit UI confirmation."""
         if (
             self._calculation_thread is not None
@@ -1868,6 +1900,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _calculation_succeeded(self, result: NptRollupResult) -> None:
+        if self._closing:
+            return
         self.calculation_result_label.setText(
             f"Stored calculation {result.calculation_id} "
             f"({'new' if result.created else 'unchanged'}): "
@@ -1881,6 +1915,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _calculation_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"{error.category.title()} error: {error.message}", error=True)
         self.calculation_result_label.setText(
             error.message + (f" Hint: {error.hint}" if error.hint else "")
@@ -2059,10 +2095,20 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.setEnabled(self.controller.workspace is not None)
         self._intake_selection_changed()
+        pending_refresh = self._pending_intake_refresh
+        self._pending_intake_refresh = False
         self.intake_operation_finished.emit()
-        if self._pending_intake_refresh:
+        if pending_refresh:
+            QTimer.singleShot(0, self._start_pending_intake_refresh)
+
+    def _start_pending_intake_refresh(self) -> None:
+        if self._closing:
             self._pending_intake_refresh = False
-            self._start_intake_operation("list")
+            return
+        if self._intake_thread is not None:
+            self._pending_intake_refresh = True
+            return
+        self._start_intake_operation("list")
 
     # -- DDR authoring workspace ------------------------------------------
     def _refresh_ddr_reports(self) -> None:
@@ -2187,10 +2233,20 @@ class MainWindow(QMainWindow):
             self._pending_ddr_refresh = False
             return
         self._ddr_update_controls()
-        if self._pending_ddr_refresh:
-            self._pending_ddr_refresh = False
-            self._refresh_ddr_reports()
+        pending_refresh = self._pending_ddr_refresh
+        self._pending_ddr_refresh = False
         self.ddr_operation_finished.emit()
+        if pending_refresh:
+            QTimer.singleShot(0, self._start_pending_ddr_refresh)
+
+    def _start_pending_ddr_refresh(self) -> None:
+        if self._closing:
+            self._pending_ddr_refresh = False
+            return
+        if self._ddr_thread is not None:
+            self._pending_ddr_refresh = True
+            return
+        self._refresh_ddr_reports()
 
     def _ddr_selected_report_id(self) -> str:
         row = self.ddr_table.currentRow()
@@ -2529,6 +2585,8 @@ class MainWindow(QMainWindow):
         self._start_action_worker(request)
 
     def _start_action_worker(self, request: ReviewActionRequest) -> None:
+        if self._closing:
+            return
         thread = QThread(self)
         worker = ReviewActionWorker(self.controller, request, parent=None)
         worker.moveToThread(thread)
@@ -2548,6 +2606,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _action_succeeded(self, result: ReviewActionResult) -> None:
+        if self._closing:
+            return
         # Do not patch the displayed ReviewRecord with a client-side result.  A fresh read is the
         # only success rendering, so approval metadata, history, revision and evidence remain the
         # values the domain committed.
@@ -2560,6 +2620,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _action_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         # The existing DomainReview is deliberately left in place on failure, including its
         # selection and detail tree.  The error explains stale/ineligible actions without inventing
         # a local status.
