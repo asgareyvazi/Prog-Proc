@@ -73,9 +73,23 @@ def test_ddr_draft_submit_review_and_revision_are_explicit(
             reason="stale edit attempt",
         )
 
-    submitted = service.submit(
+    saved = service.save_draft(
         draft["report_id"],
         expected_updated_at=draft["updated_at"],
+        report_date="2026-10-31",
+        report_number="DDR-31",
+        shift="Day",
+        summary="Operator-entered daily summary, corrected before submission.",
+        activities=_activities(),
+        actor="author-1",
+        reason="Save revised draft content",
+    )
+    assert saved["summary"].endswith("corrected before submission.")
+    assert len(saved["activities"]) == 2
+
+    submitted = service.submit(
+        draft["report_id"],
+        expected_updated_at=saved["updated_at"],
         actor="author-1",
         reason="Submit for independent review",
     )
@@ -109,7 +123,11 @@ def test_ddr_draft_submit_review_and_revision_are_explicit(
     assert {row.origin for row in operations} == {"MANUAL"}
     assert all(row.is_current for row in operations)
     assert {item.operation_id for item in activities} == {row.id for row in operations}
-    assert {row.action for row in audit} == {"ddr.draft_created", "ddr.submitted"}
+    assert {row.action for row in audit} == {
+        "ddr.draft_created",
+        "ddr.draft_saved",
+        "ddr.submitted",
+    }
     assert all(row.detail["content_sha256"] for row in audit if "content_sha256" in row.detail)
 
     actions = action_service.available_actions(

@@ -584,8 +584,10 @@ def test_daily_ddr_workbench_creates_saves_and_submits_candidate_rows(
 
         window.ddr_summary_input.setPlainText("Operator wording updated before submission.")
         window.ddr_reason_input.setText("Corrected the draft wording")
+        assert window.ddr_save_button.isEnabled()
         window.ddr_save_button.click()
         assert wait_for_idle(), "DDR draft save/refresh exceeded its bounded deadline"
+        assert "failed" not in window.status_label.text().lower(), window.status_label.text()
         assert (
             service.get(report["report_id"])["summary"]
             == "Operator wording updated before submission."

@@ -461,6 +461,8 @@ class DdrAuthoringService:
             raise ValidationError("submitted DDR activities cannot be replaced")
         for activity in existing:
             session.delete(activity)
+        # The sequence key is unique per report; flush removals before reusing sequence 1..N.
+        session.flush()
         for sequence, value in enumerate(activities, start=1):
             session.add(
                 DdrActivity(
