@@ -224,9 +224,7 @@ def test_ddr_activity_replacement_failure_rolls_back_report_activities_and_audit
                 expected_updated_at=before["updated_at"],
                 report_date="2026-10-31",
                 summary="This update must roll back",
-                activities=[
-                    {"operation_type": "tripping", "label": "Reject replacement"}
-                ],
+                activities=[{"operation_type": "tripping", "label": "Reject replacement"}],
                 actor="author-2",
                 reason="Attempt replacement with injected failure",
             )
