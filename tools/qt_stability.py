@@ -140,6 +140,12 @@ def main(argv: list[str] | None = None) -> int:
         for ordinal in range(1, args.repeats + 1):
             log_path = node_dir / f"attempt-{ordinal:02d}.txt"
             started = time.monotonic()
+            started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            log_path.write_text(
+                f"ordinal={ordinal} node={node} state=RUNNING started_utc={started_utc}\n",
+                encoding="utf-8",
+            )
+            print(f"ATTEMPT {ordinal}/{args.repeats} START node={node}", flush=True)
             try:
                 code, output = workbench._run_node(node, log_path)
             except (OSError, RuntimeError, ValueError) as exc:

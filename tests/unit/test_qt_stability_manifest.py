@@ -76,3 +76,18 @@ def test_missing_qt_is_recorded_rather_than_invented() -> None:
     assert versions["qt"]
     assert "Traceback" not in versions["pyside"]
     assert "/" not in versions["pyside"]
+
+
+def test_child_output_is_flushed_to_log_and_runner_output(tmp_path: Path, capsys) -> None:
+    import sys
+
+    runner = qt_stability._workbench()
+    log = tmp_path / "child-attempt.txt"
+    script = "import sys; print('child output retained', flush=True); sys.exit(4)"
+
+    exit_code, output = runner._run_streamed([sys.executable, "-c", script], log)
+
+    assert exit_code == 4
+    assert output == "child output retained\n"
+    assert log.read_text(encoding="utf-8") == output
+    assert capsys.readouterr().out == output
