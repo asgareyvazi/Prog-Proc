@@ -12,10 +12,10 @@
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
-# Generated on 2026-10-31.
+# Generated on 2026-11-02.
 
 alembic==1.20.1
-anyio==4.15.1
+anyio==4.16.0
 certifi==2026.10.23
 et_xmlfile==2.0.0
 h11==0.16.0

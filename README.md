@@ -12,7 +12,9 @@ part of this repository serves that sentence.
 
 ## Status
 
-Phase 0, the knowledge layer, and the engineering domain core. What exists and runs today:
+> **Post-V10.3 context (2026-11-02):** The implementation remains **Pre-Alpha**, local-first, and single-user. SQLite is the only qualified database (PostgreSQL **NOT QUALIFIED**). The 26-class document taxonomy is unchanged. Intake now includes explicit reviewed registration through the existing Document Registry (without promotion), and the desktop workbench has a manual Daily DDR authoring lifecycle. These changes are not accepted on the basis of this README; see [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and the Linux/Windows CI runs attached to the final commit SHA.
+
+The following inventory is a product overview; its capability labels do not substitute for current test or CI evidence:
 
 | area | state |
 | --- | --- |
@@ -36,8 +38,8 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Comparison pack: two or more wells side by side on the same recorded basis - per-metric values with `COMPARABLE`/`INCOMPARABLE`/`MISSING`/`UNRESOLVED` states, unit and risk-scale identity gates, offset-candidate discovery, forensic evidence, limitations (`fields compare`) | **implemented, tested, query-count scale-certified at 6 + 39 SELECTs per subject** (`docs/DECISIONS.md` ADR-36) |
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
 | Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
-| Domain CLI: `records`, `records rollup`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
-| Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented** — PySide6-Essentials is optional; it consumes `DomainReviewService` for a read-only authoritative review and `ReviewActionService` as the separate, governed mutation boundary. The workbench derives its permitted actions from current domain state, submits an immutable request with expected preconditions, and executes it outside the GUI thread via `ReviewActionWorker`. Supported surfaces include current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model. A close refused by a running worker does not quit the process or destroy that window |
+| Domain CLI: `intake` add/list/preview/decide/register plus `records`, `records rollup`, `records review`, `timeline`, `fields`, `patterns`, `lessons`, `evidence`, and `doctor` | **implemented** — Intake registration creates registry evidence only after human review; it does not promote domain facts. |
+| Optional Desktop Workbench (`drillintel-ui`) | **implemented in code; qualification tied to green CI on the exact final SHA** — PySide6-Essentials is optional. It includes governed `DomainReviewService`/`ReviewActionService` review, an Intake queue with transient preview and explicit registration, and a Daily DDR draft/save/submit/revision workspace. DDR submit leaves candidate operational rows for independent review. Mutating work runs outside the GUI thread. Local Qt tests that cannot load host libraries are **SKIPPED**, not PASS. |
 | Ollama provider adapter: `drillintel ai status` probes `/api/tags`; completion and embedding calls return non-authoritative text or vectors | **implemented, not on the engineering path** — an embedding is accepted only when it is finite, one vector per input, and names the requested model; a path, query, or credential in the endpoint sends no request; `doctor` does not probe; `openai-compatible` has no adapter (`docs/DECISIONS.md` ADR-51, ADR-52) |
 | Skills and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
@@ -63,6 +65,18 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/ruff format --check src tests migrations
 .venv/bin/python -m compileall -q src tests migrations
 ```
+
+For a local, human-governed intake pass, add a source reference, inspect its transient preview, record a disposition, and explicitly register only reviewed bytes:
+
+```bash
+drillintel intake add /path/to/handover.txt --workspace /path/to/workspace --by operator
+drillintel intake list --workspace /path/to/workspace --status QUEUED --json
+drillintel intake preview ITEM_ID --workspace /path/to/workspace
+drillintel intake decide ITEM_ID --workspace /path/to/workspace --decision REVIEWED --by reviewer --reason "source inspected"
+drillintel intake register ITEM_ID --workspace /path/to/workspace --by registrar --reason "register reviewed source" --well WELL_ID
+```
+
+Registration links the source through the existing Document Registry and does not promote domain records. The optional desktop workbench also exposes **Intake** and **Daily DDR** navigation pages. Daily DDR submission creates candidate operations; confirmation/rejection is a separate review action. See `docs/PROJECT_CONTEXT.md` and the relevant ADRs for the lifecycle contract.
 
 The same gates run in CI on both supported runtimes - the CPython 3.11 floor and the 3.14 product
 target named in `docs/DECISIONS.md` ADR-0002 - see `.github/workflows/ci.yml`. Required jobs pin

@@ -196,7 +196,8 @@ def _row_revision(row: Any) -> int | None:
 
 
 def _row_current(row: Any) -> bool:
-    if hasattr(row, "is_current") and not bool(row.is_current):
+    value = getattr(row, "is_current", True)
+    if value is not None and not bool(value):
         return False
     return _row_status(row) not in {"SUPERSEDED", "RETIRED"}
 
@@ -245,6 +246,8 @@ def _capabilities(
     record_type = _canonical_record_type(record_type)
     status = _canonical_status(status)
     data = data or {}
+    if record_type == "ddr_report" and str(data.get("authoring_state") or "") != "SUBMITTED":
+        return ()
     if not current:
         return ()
     if record_type == "field_pattern" and data.get("stale_at"):
@@ -755,6 +758,8 @@ class ReviewActionService:
             repository = LessonRepository(session)
             has_evidence = repository.evidence_count(str(row.id)) > 0
             data = {"rationale": ""}
+        elif record_type == "ddr_report":
+            data = {"authoring_state": str(getattr(row, "authoring_state", ""))}
         elif record_type == "best_practice":
             data = {"rationale": str(getattr(row, "rationale", "") or "")}
         elif record_type == "field_pattern" and getattr(row, "stale_at", None) is not None:

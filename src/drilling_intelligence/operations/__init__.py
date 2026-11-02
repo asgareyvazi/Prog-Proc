@@ -22,6 +22,7 @@ from .contracts import (
     contract_registry,
     promotion_contract,
 )
+from .ddr import DdrActivityInput, DdrAuthoringService, DdrWorkspaceRecord
 from .program import (
     PROGRAM_CLASSIFICATIONS,
     ProgramPlan,
@@ -39,6 +40,9 @@ __all__ = [
     "REPORT_CLASSIFICATIONS",
     "AssetRepository",
     "CoverageLevel",
+    "DdrActivityInput",
+    "DdrAuthoringService",
+    "DdrWorkspaceRecord",
     "OperationalService",
     "OperationsRepository",
     "ProgramPlan",

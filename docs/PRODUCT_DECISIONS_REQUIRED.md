@@ -1,7 +1,7 @@
 # Product decisions required before the next capabilities
 
 **Status:** decision register, not an implementation plan
-**As of:** 2026-10-31 (V9.0: M6 delivered, M2–M5 remain blocked; decisions unchanged)
+**As of:** 2026-11-02 (M6 delivered; M2–M5 remain owner-gated; post-V10.3 Intake/DDR work does not change those decisions)
 **Companion:** [`PRODUCT_CAPABILITY.md`](PRODUCT_CAPABILITY.md)
 **V9.0 note:** `M6` (`LESSON_LEARNED` tally → `lesson_learned`) was delivered in this milestone with contract `v8`, migration `0020` and 12 corpus tests (`tests/integration/test_lesson_promotion.py`). The remaining four milestones `M2`–`M5` are still open and fail-closed as described below; none is implemented by a setting, table or protocol.
 
@@ -206,3 +206,14 @@ that implements it lands with its own acceptance evidence.
 ## V10.3 workflow boundary (2026-11-01)
 
 The operator-intake queue delivered under ADR 004 is an approved local-first process surface, not a change to any M2–M5 product decision. The DDR/source workflow is explicitly: select file → measure/hash → local deterministic extraction/classification preview → inspect evidence and static contract → human disposition with actor/reason. No queue action itself registers, promotes, or publishes a domain row. The existing governed `DocumentRegistry`/promotion/`ReviewActionService` paths remain authoritative. M2–M5 stay blocked until the owner records their decisions.
+
+
+## Post-V10.3 implementation boundary (2026-11-02)
+
+The follow-on Intake and Daily DDR work does not change any owner-gated decision M2–M5, add a document class, or introduce a new calculation method. It refines the V10.3 workflow boundary as follows:
+
+- Intake may proceed from a human `REVIEWED` disposition to explicit `REGISTERED` only after re-measuring the same source bytes and delegating to the existing `DocumentRegistry`. This creates document/version evidence and an audit link; it does **not** promote domain facts. The V10.3 sentence “No queue action itself registers” is historical and is superseded only for this explicit reviewed registration path.
+- Daily DDR is manual authoring, not ingestion or a parser writer. A current `DRAFT` can be submitted; submission leaves the report and operations `CANDIDATE`. Independent review is a separate action and a revision is not approval. No engineering values are inferred from narrative.
+- M2–M5, additional engineering calculations, broader document writers, AI/provider/vector capabilities, Skills runtime, and multi-user/authentication remain owner-gated or excluded as already recorded above. SQLite remains the only qualified database; PostgreSQL has no service-backed qualification evidence.
+
+Implementation contracts are recorded in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), ADR 004/005, and migrations `0025`/`0026`. Their implementation status is established by source, integration tests, packaging checks, and exact-SHA CI—not by this decision register.

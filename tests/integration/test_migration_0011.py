@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import MetaData, Table, create_engine, func, inspect, select, text
 from sqlalchemy.engine import Engine
 
 from drilling_intelligence.database.migrations import (
@@ -37,11 +37,19 @@ LATER_MIGRATION_COLUMNS = (
     "lesson_learned.identity_key",  # 0020
     "lesson_learned.code_key",  # 0022
     "lesson_learned.prior_status",  # 0023
+    "ddr_report.authoring_state",  # 0026
+    "ddr_report.revision_group_id",  # 0026
+    "ddr_report.revision_number",  # 0026
+    "ddr_report.supersedes_report_id",  # 0026
+    "ddr_report.is_current",  # 0026
+    "well_operation.is_current",  # 0026
 )
 #: Tables migrations after this one create.  Listed rather than tolerated, so a parity test still
 #: detects a table that went missing rather than one that merely arrived late.
 LATER_MIGRATION_TABLES = (
     "intake_queue_item",  # 0024
+    "intake_registration",  # 0025
+    "ddr_activity",  # 0026
     "casing_run",  # 0014
     "cement_job",  # 0015
     "well_control_event",  # 0017
@@ -61,6 +69,12 @@ def table_set(engine: Engine) -> set[str]:
     return set(inspect(engine).get_table_names())
 
 
+def row_count(engine: Engine, relation: str) -> int:
+    table = Table(relation, MetaData(), autoload_with=engine)
+    with engine.connect() as connection:
+        return int(connection.execute(select(func.count()).select_from(table)).scalar_one())
+
+
 def columns(engine: Engine, table: str) -> set[str]:
     return {column["name"] for column in inspect(engine).get_columns(table)}
 
@@ -78,18 +92,37 @@ def unique_names(engine: Engine, table: str) -> set[str]:
 #: Tables a rollback past this revision legitimately drops: the ones it creates, plus the ones later
 #: revisions create.  Everything else is exactly what a rollback must leave untouched.
 SNAPSHOT_EXCLUDED = frozenset(NEW_TABLES) | frozenset(LATER_MIGRATION_TABLES) | {"alembic_version"}
+SNAPSHOT_EXCLUDED_COLUMNS = {
+    # Columns added by 0026 are deliberately outside this 0011 migration's preservation contract.
+    "ddr_report": frozenset(
+        {
+            "authoring_state",
+            "revision_group_id",
+            "revision_number",
+            "supersedes_report_id",
+            "is_current",
+        }
+    ),
+    "well_operation": frozenset({"is_current"}),
+}
 
 
 def snapshot(engine: Engine) -> dict[str, list[tuple]]:
-    """Every row of every table the migration must not disturb, in a stable order."""
+    """Rows in unaffected columns; later-revision columns are outside this migration's contract."""
+    inspector = inspect(engine)
     with engine.connect() as connection:
-        return {
-            table: connection.execute(
-                text(f'select rowid, * from "{table}" order by rowid')  # noqa: S608
+        result = {}
+        for table in sorted(table_set(engine) - SNAPSHOT_EXCLUDED):
+            columns = [
+                column["name"]
+                for column in inspector.get_columns(table)
+                if column["name"] not in SNAPSHOT_EXCLUDED_COLUMNS.get(table, frozenset())
+            ]
+            selected = ", ".join(f'"{name}"' for name in columns)
+            result[table] = connection.execute(
+                text(f'SELECT rowid, {selected} FROM "{table}" ORDER BY rowid')  # noqa: S608
             ).fetchall()
-            for table in sorted(table_set(engine))
-            if table not in SNAPSHOT_EXCLUDED
-        }
+        return result
 
 
 def test_the_revision_is_a_real_revision_of_a_single_headed_chain() -> None:
@@ -101,6 +134,37 @@ def test_the_revision_is_a_real_revision_of_a_single_headed_chain() -> None:
     assert heads() == [METADATA_REVISION], heads()
     assert METADATA_REVISION > "0011", METADATA_REVISION
     assert len(list((ROOT / "migrations" / "versions").glob("*_0011_*.py"))) == 1
+
+
+def test_0011_adds_hardware_tables_without_mutating_existing_rows(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-with-audit.db'}")
+    try:
+        build_legacy_database(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO audit_event (id, actor, action, subject_type, subject_id, detail, at) "
+                    "VALUES ('audit-pre-0011', 'operator', 'baseline', 'workspace', 'ws-1', "
+                    "'{\"migration\":\"0010\"}', '2026-01-01 00:00:00')"
+                )
+            )
+        before = snapshot(engine)
+        status = upgrade(engine, "0011")
+        assert status.mode == "migrated" and status.current == "0011", status.to_dict()
+        assert snapshot(engine) == before, (
+            "0011 must not rewrite any row from the pre-existing schema"
+        )
+        for table in NEW_TABLES:
+            assert row_count(engine, table) == 0
+        assert upgrade(engine, heads()[0]).current == heads()[0]
+        assert schema_diff(engine) == {
+            "missing_tables": [],
+            "extra_tables": [],
+            "missing_columns": [],
+            "extra_columns": [],
+        }
+    finally:
+        engine.dispose()
 
 
 def test_the_upgrade_creates_the_five_tables_with_the_columns_the_models_declare(tmp_path) -> None:
@@ -194,48 +258,42 @@ def test_the_migrated_indexes_match_the_models_column_for_column(tmp_path) -> No
         engine.dispose()
 
 
-def test_a_promoted_corpus_survives_the_upgrade_with_every_row_and_value_intact(workspace) -> None:
-    """The case that matters in production: real promoted engineering data, then a new migration."""
+def test_a_promoted_corpus_survives_a_current_head_schema_check(workspace) -> None:
+    """Real promoted engineering data remains stable when an already-current workspace is reopened.
+
+    Historical 0011 creation is tested above using a true 0010 schema. Runtime code must only operate
+    after the workspace is migrated to the current model head, so this test does not downgrade a live
+    workspace and then use current ORM mappings against a deliberately older schema.
+    """
     from tests.fixtures.fieldops import fetch, ingest, promote
 
     from drilling_intelligence.database.models import MudMeasurement, MudReport, NptRecord
 
-    status = upgrade(workspace.database.engine, PREVIOUS_HEAD, allow_downgrade=True)
-    assert status.mode == "downgraded" and status.current == PREVIOUS_HEAD, status.to_dict()
-
+    assert upgrade(workspace.database.engine, heads()[0]).up_to_date
     ingest(workspace)
     summary = promote(workspace)
     assert summary["outcomes"]["error"] == 0, summary["outcomes"]
     mud_before = fetch(workspace, MudMeasurement)
-    assert mud_before, "the pre-upgrade workspace must hold real promoted engineering rows"
+    assert mud_before, "the workspace must hold real promoted engineering rows"
     npt_before = len(fetch(workspace, NptRecord))
-    assert not set(NEW_TABLES) & table_set(workspace.database.engine)
 
     before = snapshot(workspace.database.engine)
-    status = upgrade(workspace.database.engine, "0011")
-    assert status.mode == "migrated" and status.current == "0011", status.to_dict()
-    assert snapshot(workspace.database.engine) == before, "the upgrade must not touch existing data"
+    status = upgrade(workspace.database.engine, heads()[0])
+    assert status.up_to_date and status.current == heads()[0], status.to_dict()
+    assert snapshot(workspace.database.engine) == before, (
+        "the schema check must not touch existing data"
+    )
 
     mud_after = fetch(workspace, MudMeasurement)
     assert [(row.identity_key, row.value) for row in mud_after] == [
         (row.identity_key, row.value) for row in mud_before
-    ], "a promoted mud report must be identical across the migration"
+    ], "promoted mud rows must remain identical across a current-head schema check"
     assert len(fetch(workspace, NptRecord)) == npt_before
     with workspace.database.read_only() as session:
         assert len(list(session.scalars(MudReport.__table__.select()))) == 1
-
-    # The integrity checker is written against the models at head, so it has to run against a
-    # schema at head: it selects every column the model declares, and a column a later revision
-    # added - ``cost_item.is_current`` from 0013, for instance - does not exist in an 0011 schema.
-    # Running it here would report the schema being behind as though it were corrupt data.
-    assert upgrade(workspace.database.engine, heads()[0]).current == heads()[0]
-    with workspace.database.read_only() as session:
         from drilling_intelligence.database.integrity import check_operational_integrity
 
         assert check_operational_integrity(session) == []
-    assert [(row.identity_key, row.value) for row in fetch(workspace, MudMeasurement)] == [
-        (row.identity_key, row.value) for row in mud_before
-    ], "carrying the corpus the rest of the way to head must not change a promoted value either"
 
 
 def test_the_downgrade_removes_exactly_the_new_tables_and_keeps_every_other_row(workspace) -> None:

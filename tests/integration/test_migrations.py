@@ -12,7 +12,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from sqlalchemy import inspect
+import pytest
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from drilling_intelligence.database.migrations import (
     METADATA_REVISION,
@@ -76,6 +78,39 @@ def test_a_wheel_without_migrations_stamps_a_revision_alembic_can_read(
             tables = set(inspect(database.engine).get_table_names())
             assert tables >= REQUIRED_TABLES
             assert "well_section" in tables
+            with database.engine.connect() as connection:
+                triggers = set(
+                    connection.execute(
+                        text("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+                    ).scalars()
+                )
+            assert {
+                "trg_ddr_supersedes_insert",
+                "trg_ddr_supersedes_update",
+                "trg_ddr_supersedes_delete",
+                "trg_ddr_authoring_state_insert",
+                "trg_ddr_authoring_state_update",
+            } <= triggers
+            with (
+                database.engine.begin() as connection,
+                pytest.raises(IntegrityError, match="invalid DDR authoring state"),
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO ddr_report (id, authoring_state, supersedes_report_id) "
+                        "VALUES ('wheel-invalid-state', 'INVALID', NULL)"
+                    )
+                )
+            with (
+                database.engine.begin() as connection,
+                pytest.raises(IntegrityError, match="superseded DDR report does not exist"),
+            ):
+                connection.execute(
+                    text(
+                        "INSERT INTO ddr_report (id, authoring_state, supersedes_report_id) "
+                        "VALUES ('wheel-invalid-parent', 'SUBMITTED', 'missing-parent')"
+                    )
+                )
         finally:
             database.dispose()
 
@@ -137,6 +172,34 @@ def test_a_workspace_is_migrated_when_it_is_opened(workspace) -> None:
     assert current_revision(workspace.database.engine) == heads()[0]
     tables = set(inspect(workspace.database.engine).get_table_names())
     assert {"document", "document_version", "extraction"} <= tables
+
+
+def test_ddr_migration_enforces_authoring_state_and_revision_references(tmp_path) -> None:
+    database = Database.from_url(f"sqlite:///{tmp_path / 'ddr-integrity.db'}")
+    try:
+        upgrade(database.engine)
+        with (
+            database.engine.begin() as connection,
+            pytest.raises(IntegrityError, match="invalid DDR authoring state"),
+        ):
+            connection.execute(
+                text(
+                    "INSERT INTO ddr_report (id, authoring_state, supersedes_report_id) "
+                    "VALUES ('invalid-state', 'INVALID', NULL)"
+                )
+            )
+        with (
+            database.engine.begin() as connection,
+            pytest.raises(IntegrityError, match="superseded DDR report does not exist"),
+        ):
+            connection.execute(
+                text(
+                    "INSERT INTO ddr_report (id, authoring_state, supersedes_report_id) "
+                    "VALUES ('invalid-parent', 'SUBMITTED', 'missing-parent')"
+                )
+            )
+    finally:
+        database.dispose()
 
 
 def test_offline_sql_generation_still_works(tmp_path) -> None:

@@ -1,6 +1,6 @@
 # Windows testing
 
-> **V10.3 status (2026-11-01):** Automated PowerShell 5.1/7 run-card behavior is being qualified by the `run-card-powershell` job on the exact branch SHA; a failure remains a failure, not a skip. The local run card is V10.3, uses isolated per-run environments and captures raw/sanitized logs. Current migration head is `0024`. Offscreen UI evidence does not constitute physical display acceptance; the owner checklist remains **NOT RUN**.
+> **Post-V10.3 status (2026-11-02):** The run-card evidence below is historical V10.3 evidence, not a result for later code SHAs. Qualification must use Linux/Windows CI runs attached to the exact final commit. Current migration head is `0026`. Local Qt UI tests in this sandbox are **SKIPPED** when host Qt libraries (including `libGL.so.1`) are absent; this is not a pass. Offscreen UI evidence does not constitute physical display acceptance; the owner checklist remains **NOT RUN**.
 
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the
@@ -60,7 +60,7 @@ The constraints pin the versions the CI proves. Drop them for a plain
 install; keep them when you want the machine to match the recorded run.
 `python -m mypy` checks the declared boundaries in `pyproject.toml`: core, database, extraction, documents, and review.
 
-`alembic heads` must show exactly one line containing `(head)`, currently `0024`.
+`alembic heads` must show exactly one line containing `(head)`, currently `0026` for the post-V10.3 implementation. Verify this command against the checkout being qualified.
 UI tests skip when PySide6 is not installed. That skip is not a pass. The
 reason is `QtWidgets unavailable`.
 

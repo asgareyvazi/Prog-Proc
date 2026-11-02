@@ -241,13 +241,15 @@ def _current_for(
     if table == "program_target":
         return str(getattr(row, "program_id", "")) in current_programs
     if table == "document_version":
-        return bool(getattr(row, "is_current", False))
+        value = getattr(row, "is_current", False)
+        return bool(value) if value is not None else True
     if table == "calculation":
         return str(getattr(row, "id", "")) not in superseded_calculations and status != "SUPERSEDED"
     if table == "knowledge_item":
         return status not in {KnowledgeStatus.SUPERSEDED.value, KnowledgeStatus.RETIRED.value}
     if table in _OPERATIONAL_TABLES:
-        return status != "REJECTED"
+        value = getattr(row, "is_current", True)
+        return status != "REJECTED" and (value is None or bool(value))
     if table in {"risk_record", "recommendation"}:
         return status != "SUPERSEDED"
     if hasattr(row, "is_current"):

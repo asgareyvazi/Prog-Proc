@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from ..config.settings import Settings
+from ..core.enums import KNOWN_OPERATION_TYPES
 from ..core.errors import ValidationError, WorkspaceError
 from ..engineering.service import EngineeringService
+from ..operations.ddr import DdrAuthoringService
 from ..review import (
     DomainReview,
     DomainReviewRequest,
@@ -26,7 +28,7 @@ from ..review import (
     ReviewConflict,
     ReviewRecord,
 )
-from ..review.intake import IntakeItem, IntakePreview, IntakeQueueService
+from ..review.intake import IntakeItem, IntakePreview, IntakeQueueService, IntakeRegistration
 from ..wells.repository import WellRepository
 from ..wells.workspace import Workspace
 
@@ -177,18 +179,59 @@ class ReviewController:
         )
         return DomainReviewService.for_workspace(workspace).review(request)
 
+    def _intake_service(self) -> IntakeQueueService:
+        workspace = self._require_workspace()
+        return IntakeQueueService(
+            workspace.database,
+            workspace_root=workspace.root,
+            settings=self._settings,
+        )
+
     def intake_items(self, *, status: str = "") -> tuple[IntakeItem, ...]:
-        return IntakeQueueService(self._require_workspace().database).list_items(status=status)
+        return self._intake_service().list_items(status=status)
 
     def enqueue_intake(self, paths: list[str | Path], *, actor: str) -> tuple[IntakeItem, ...]:
-        return IntakeQueueService(self._require_workspace().database).enqueue(paths, actor=actor)
+        return self._intake_service().enqueue(paths, actor=actor)
 
     def preview_intake(self, item_id: str) -> IntakePreview:
-        return IntakeQueueService(self._require_workspace().database).preview(item_id)
+        return self._intake_service().preview(item_id)
 
     def decide_intake(self, item_id: str, *, decision: str, actor: str, reason: str) -> IntakeItem:
-        return IntakeQueueService(self._require_workspace().database).decide(
-            item_id, decision=decision, actor=actor, reason=reason
+        return self._intake_service().decide(item_id, decision=decision, actor=actor, reason=reason)
+
+    def register_intake(
+        self, item_id: str, *, actor: str, reason: str, well_id: str = ""
+    ) -> IntakeRegistration:
+        return self._intake_service().register(item_id, actor=actor, reason=reason, well_id=well_id)
+
+    @staticmethod
+    def ddr_operation_types() -> tuple[str, ...]:
+        return tuple(sorted(KNOWN_OPERATION_TYPES))
+
+    def ddr_reports(
+        self, well_id: str, *, include_history: bool = True
+    ) -> tuple[dict[str, Any], ...]:
+        return DdrAuthoringService(self._require_workspace().database).list_reports(
+            well_id, include_history=include_history
+        )
+
+    def ddr_report(self, report_id: str) -> dict[str, Any]:
+        return DdrAuthoringService(self._require_workspace().database).get(report_id)
+
+    def ddr_create_draft(self, **payload: Any) -> dict[str, Any]:
+        return DdrAuthoringService(self._require_workspace().database).create_draft(**payload)
+
+    def ddr_save_draft(self, report_id: str, **payload: Any) -> dict[str, Any]:
+        return DdrAuthoringService(self._require_workspace().database).save_draft(
+            report_id, **payload
+        )
+
+    def ddr_submit(self, report_id: str, **payload: Any) -> dict[str, Any]:
+        return DdrAuthoringService(self._require_workspace().database).submit(report_id, **payload)
+
+    def ddr_create_revision(self, report_id: str, **payload: Any) -> dict[str, Any]:
+        return DdrAuthoringService(self._require_workspace().database).create_revision(
+            report_id, **payload
         )
 
     def decision(self, well_id: str) -> dict[str, Any]:

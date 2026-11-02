@@ -560,6 +560,65 @@ def command_ingest(args: argparse.Namespace) -> int:
         workspace.close()
 
 
+def command_intake(args: argparse.Namespace) -> int:
+    """Queue, inspect, disposition, and explicitly register one locally selected source."""
+    from dataclasses import asdict
+
+    from ..review.intake import IntakeQueueService
+
+    workspace = _open_workspace(args)
+    try:
+        service = IntakeQueueService(
+            workspace.database,
+            workspace_root=workspace.root,
+            settings=workspace.settings,
+        )
+        if args.action == "add":
+            result = service.enqueue(args.paths, actor=args.by)
+            payload: Any = {"count": len(result), "items": [asdict(item) for item in result]}
+            lines = [
+                f"queued or matched {len(result)} file reference(s); source bytes were not copied"
+            ]
+        elif args.action == "list":
+            result = service.list_items(status=args.status or "")
+            payload = {"count": len(result), "items": [asdict(item) for item in result]}
+            lines = [
+                f"{item.status}: {item.filename} · {item.sha256[:12]} · {item.id}"
+                for item in result
+            ] or ["intake queue is empty"]
+        elif args.action == "preview":
+            result = service.preview(args.item)
+            payload = asdict(result)
+            lines = [
+                f"{result.item.filename}: {result.classification} · {result.contract_level}",
+                f"extractor: {result.extractor}; preview is transient and writes no registry or domain rows",
+                result.text_excerpt[:240],
+            ]
+        elif args.action == "decide":
+            result = service.decide(
+                args.item, decision=args.decision, actor=args.by, reason=args.reason
+            )
+            payload = asdict(result)
+            lines = [
+                f"intake disposition recorded: {result.status}; registration is still explicit"
+            ]
+        elif args.action == "register":
+            well_id = _resolve_well_id(workspace, args.well) if args.well else ""
+            result = service.register(args.item, actor=args.by, reason=args.reason, well_id=well_id)
+            payload = result.to_dict()
+            lines = [
+                f"registered {result.item.filename}: document {result.item.document_id}, "
+                f"version {result.item.document_version_id}, classification {result.classification}",
+                "no promotion was run; use `drillintel records promote` as a separate action",
+            ]
+        else:
+            raise DrillingIntelligenceError(f"unsupported intake action: {args.action}")
+        _emit(payload, as_json=args.json, lines=lines)
+        return 0
+    finally:
+        workspace.close()
+
+
 def command_search(args: argparse.Namespace) -> int:
     workspace = _open_workspace(args)
     try:
@@ -2977,6 +3036,52 @@ def _add_ingest_command(sub: Any, common: list[argparse.ArgumentParser]) -> None
     ingest.set_defaults(handler=command_ingest)
 
 
+def _add_intake_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the local intake queue and explicit registration boundary."""
+    intake = sub.add_parser(
+        "intake",
+        help="queue, preview, disposition, and explicitly register local source files",
+        parents=[common],
+    )
+    actions = intake.add_subparsers(dest="action", required=True)
+    add = actions.add_parser(
+        "add", help="queue file references and measure their SHA-256", parents=[common]
+    )
+    add.add_argument("paths", nargs="+", help="supported PDF/XLSX/XLSM/DOCX/CSV/TXT sources")
+    add.add_argument("--by", required=True, help="actor recorded for the enqueue action")
+    add.set_defaults(handler=command_intake)
+    listing = actions.add_parser(
+        "list", help="list queued, reviewed, rejected, or registered items", parents=[common]
+    )
+    listing.add_argument(
+        "--status", choices=("QUEUED", "REVIEWED", "REJECTED", "REGISTERED"), default=""
+    )
+    listing.set_defaults(handler=command_intake)
+    preview = actions.add_parser(
+        "preview", help="preview local extraction and static eligibility", parents=[common]
+    )
+    preview.add_argument("item", help="intake item id")
+    preview.set_defaults(handler=command_intake)
+    decide = actions.add_parser(
+        "decide", help="record a human REVIEWED or REJECTED disposition", parents=[common]
+    )
+    decide.add_argument("item", help="intake item id")
+    decide.add_argument("--decision", required=True, choices=("REVIEWED", "REJECTED"))
+    decide.add_argument("--by", required=True, help="reviewer identity")
+    decide.add_argument("--reason", required=True, help="required disposition reason")
+    decide.set_defaults(handler=command_intake)
+    register = actions.add_parser(
+        "register",
+        help="register reviewed bytes with DocumentRegistry; never auto-promotes",
+        parents=[common],
+    )
+    register.add_argument("item", help="reviewed intake item id")
+    register.add_argument("--by", required=True, help="actor identity")
+    register.add_argument("--reason", required=True, help="why this source is being registered")
+    register.add_argument("--well", default="", help="registered well id or exact name (optional)")
+    register.set_defaults(handler=command_intake)
+
+
 def _add_search_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
     """Register the "search" command and its options."""
     search = sub.add_parser(
@@ -3671,6 +3776,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_workspace_command(sub, common)
     _add_wells_command(sub, common)
     _add_ingest_command(sub, common)
+    _add_intake_command(sub, common)
     _add_search_command(sub, common)
     _add_evidence_command(sub, common)
     _add_index_command(sub, common)

@@ -1,9 +1,9 @@
 # Product capability inventory
 
-> **V10.3 current status (2026-11-01):** The product remains local-first and single-user. SQLite is the only qualified database; PostgreSQL is **NOT QUALIFIED**. The 26-class taxonomy and existing writer set are unchanged. Migration `0024` adds only a hash-addressed operator-intake queue; its local preview does not write documents or domain facts. M2–M5 remain owner-gated. Physical Windows display acceptance remains **NOT RUN**; PowerShell 5.1/7 run-card qualification is pending exact-SHA Windows CI.
+> **Post-V10.3 mission context (2026-11-02):** The product remains local-first and single-user. SQLite is the only qualified database; PostgreSQL is **NOT QUALIFIED**. The 26-class taxonomy and document-promotion writer set are unchanged. Migrations `0025`/`0026` add the registration link and manual DDR authoring/activity lifecycle; registration is not promotion, and DDR submit remains `CANDIDATE` pending independent review. See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md). Qualification is tied to Linux/Windows CI runs on the exact final commit SHA; local Qt tests blocked by missing host libraries remain **SKIPPED**, not PASS. M2–M5 remain owner-gated, and physical Windows display acceptance remains **NOT RUN**.
 
 **Status:** source-derived inventory and finite milestone list
-**As of:** 2026-10-31 (V9.0)
+**As of:** 2026-11-02 (post-V10.3 mission)
 **Authority for document classes:** [`DOCUMENT_DOMAIN_COVERAGE.md`](DOCUMENT_DOMAIN_COVERAGE.md)
 
 This file is not a second domain matrix and not a progress percentage. Document
@@ -29,7 +29,8 @@ test that exercises it, or says that the evidence is only a schema or a comment.
 | Capability | Class | Evidence |
 | --- | --- | --- |
 | Workspace create, marker, and settings load | Implemented and end-to-end tested | `wells/workspace.py`, `config/settings.py`, `tests/unit/test_cli.py` |
-| Operator intake queue and local preview | Implemented; exact-SHA Windows UI qualification pending | `review/intake.py`, migration `0024`, `tests/integration/test_intake_e2e.py`, `tests/ui/test_intake_workbench.py`, ADR 004. Path/hash metadata only; preview writes no document or domain row. |
+| Operator intake, preview, governed disposition, and registry registration | Implemented in services/CLI/UI; service/migration tests run locally, Qt UI locally **SKIPPED** when `libGL.so.1` is missing; acceptance requires a green exact-SHA CI run | `review/intake.py`, `documents/registry.py`, migrations `0024`/`0025`, `tests/integration/test_intake_registration.py`, `tests/integration/test_intake_e2e.py`, `tests/ui/test_intake_workbench.py`, ADR 004. Preview writes no registry/domain row; registration creates document evidence only and does not promote. |
+| Daily DDR manual authoring workspace | Implemented as draft/save/submit/revision with activity provenance and review gating; service/migration tests run locally, Qt UI locally **SKIPPED** when Qt host libraries are absent; acceptance requires a green exact-SHA CI run | `operations/ddr.py`, migrations `0026`, `review/actions.py`, `ui/main_window.py`, `tests/integration/test_ddr_authoring.py`. Submit keeps report/operations CANDIDATE; independent review is separate; revisions keep previous versions historical. |
 | Incremental scan and ingest | Implemented and end-to-end tested | `ingestion/pipeline.py` (`mode="incremental"`), `tests/integration/test_ingestion_pipeline.py` |
 | PDF, XLSX, DOCX, text, and CSV extraction | Implemented and end-to-end tested | `extraction/pdf_text.py`, `excel.py`, `docx.py`, `text.py`, generated-corpus tests |
 | MinerU for scans, with built-in fallback | Implemented with limited coverage | `extraction/registry.py` wires `MinerUExtractor`; `tests/integration/test_mineru_boundary.py`. A missing runtime stays a fallback. This checkout did not run MinerU. |
@@ -46,7 +47,7 @@ test that exercises it, or says that the evidence is only a schema or a comment.
 | Analyst question catalog | Implemented and end-to-end tested | `intelligence/analyst.py`. Fixed question ids. No natural-language parser and no model. |
 | Engineering report and source lineage | Implemented and end-to-end tested | `reporting/service.py`, `lineage.py`, report tests. Renderers issue no SQL. |
 | Desktop Review Workbench | Implemented and end-to-end tested (governed) | `ui/main_window.py` reads via `DomainReviewService` (read-only) and mutates via `ReviewActionService` (`review/actions.py`) with `ReviewActionWorker` outside the GUI thread. `available_actions()` drives the UI. Tests cover enabled/disabled, reason/actor, independent-actor, conflict selection, confirmation, success reload and stale failure. Headless pytest skips the UI tests when PySide6 is absent. |
-| SQLite lifecycle and migrations | Implemented and end-to-end tested | Alembic head `0020` (lesson promotion linkage). `database/engine.py` binds datetimes on the SQLite engine only. |
+| SQLite lifecycle and migrations | SQLite is the qualified target; head is `0026` in the post-V10.3 implementation, with acceptance requires a green exact-SHA CI run | Alembic migrations `0025`/`0026`, `database/migrations.py`, migration and integrity tests. PostgreSQL remains **NOT QUALIFIED**. |
 | Package, CLI, and release smoke | Implemented and end-to-end tested | `pyproject.toml` scripts `drillintel` and `drillintel-ui`, `tools/release_smoke.py`, clean-install CI job |
 | Ollama probe, completion, and embedding | Implemented with limited coverage | `integrations/ai/ollama.py`, `tests/unit/test_ai_provider.py`. Success requires a finite vector per input and an exact model name. Not called by extraction, promotion, search, or citation. A live Ollama is opt-in via `DRILLINTEL_AI_LIVE=1` and is not a CI pass. |
 | OpenAI-compatible provider | Architecture or interface only | `AiSettings.provider` accepts the name. No adapter sends a request. |
@@ -58,9 +59,10 @@ test that exercises it, or says that the evidence is only a schema or a comment.
 | CPython 3.14 on Ubuntu 26.04 | Unknown as a certified runtime | The Ubuntu 26.04 CI lane is CPython 3.11. No job has certified 3.14 on that image. |
 | Windows install and offscreen UI | Implemented with limited coverage | `tools/venv_executables.py`, `tools/windows_pilot.ps1`, `.github/workflows/ci-windows.yml` on `windows-2022`, `docs/WINDOWS_TESTING.md`. Exact-SHA results are in the mission reports. A green offscreen job and the disposable pilot are not manual desktop acceptance. |
 
-## This milestone
+## Historical milestone note — V9.0
 
-V9.0 delivers one source-grounded product capability (M6) and proves the
+The following section records historical V9.0 scope; it is not a current acceptance claim.
+V9.0 delivered one source-grounded product capability (M6) and proved the
 entire operator workflow. LESSON_LEARNED moves from `KNOWLEDGE_SUPPORTED` to
 `END_TO_END_CERTIFIED` via `lesson_learned` handler (contract `v8`), with
 migration `0020` adding promotion linkage to `lesson_learned`. The tally

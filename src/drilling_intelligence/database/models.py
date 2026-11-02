@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
+    DDL,
     JSON,
     Boolean,
     CheckConstraint,
@@ -42,6 +43,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -253,6 +255,32 @@ class IntakeQueueItem(Base):
     reviewed_by: Mapped[str | None] = mapped_column(String(80))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     review_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class IntakeRegistrationRecord(Base):
+    """Durable, FK-protected link from a reviewed queue item to registry evidence."""
+
+    __tablename__ = "intake_registration"
+    __table_args__ = (
+        Index("ix_intake_registration_document", "document_id", "document_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    intake_item_id: Mapped[str] = mapped_column(
+        ForeignKey("intake_queue_item.id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("document.id", ondelete="RESTRICT"), nullable=False
+    )
+    document_version_id: Mapped[str] = mapped_column(
+        ForeignKey("document_version.id", ondelete="RESTRICT"), nullable=False
+    )
+    registered_well_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well.id", ondelete="SET NULL")
+    )
+    registered_by: Mapped[str] = mapped_column(String(80), nullable=False)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    registration_reason: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class Document(Base, TimestampMixin):
@@ -891,6 +919,15 @@ class DdrReport(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("document_version_id", "well_id", name="uq_ddr_report_version_well"),
         Index("ix_ddr_report_well_date", "well_id", "report_date"),
+        Index("ix_ddr_report_revision_parent", "supersedes_report_id"),
+        Index("uq_ddr_report_revision_number", "revision_group_id", "revision_number", unique=True),
+        Index(
+            "uq_ddr_report_revision_current",
+            "revision_group_id",
+            unique=True,
+            sqlite_where=text("revision_group_id IS NOT NULL AND is_current = 1"),
+            postgresql_where=text("revision_group_id IS NOT NULL AND is_current"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -914,11 +951,72 @@ class DdrReport(Base, TimestampMixin):
     #: The document's approval status as registered (DRAFT/APPROVED/...), copied, never guessed.
     document_status: Mapped[str | None] = mapped_column(String(32))
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: Authoring readiness is separate from the independent record-confirmation lifecycle in
+    #: ``status``. Imported reports are already submitted for inspection; manual drafts remain
+    #: CANDIDATE until a reviewer takes an explicit action.
+    authoring_state: Mapped[str] = mapped_column(String(16), default="SUBMITTED", nullable=False)
+    revision_group_id: Mapped[str | None] = mapped_column(String(36))
+    revision_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    supersedes_report_id: Mapped[str | None] = mapped_column(String(36))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     #: Where each field above came from, in the shape the knowledge layer uses.
     provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
+
+
+# SQLite cannot add a self-referential FK to the historical ddr_report table without a table-copy
+# migration. Install equivalent reference/state guards for metadata-created (wheel/bootstrap) schemas;
+# migration 0026 installs the same guards for upgraded workspaces.
+for _ddl in (
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_supersedes_insert BEFORE INSERT ON ddr_report "
+    "WHEN NEW.supersedes_report_id IS NOT NULL AND NOT EXISTS "
+    "(SELECT 1 FROM ddr_report WHERE id = NEW.supersedes_report_id) "
+    "BEGIN SELECT RAISE(ABORT, 'superseded DDR report does not exist'); END",
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_supersedes_update BEFORE UPDATE OF supersedes_report_id "
+    "ON ddr_report WHEN NEW.supersedes_report_id IS NOT NULL AND NOT EXISTS "
+    "(SELECT 1 FROM ddr_report WHERE id = NEW.supersedes_report_id) "
+    "BEGIN SELECT RAISE(ABORT, 'superseded DDR report does not exist'); END",
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_supersedes_delete AFTER DELETE ON ddr_report "
+    "BEGIN UPDATE ddr_report SET supersedes_report_id = NULL WHERE supersedes_report_id = OLD.id; END",
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_authoring_state_insert BEFORE INSERT ON ddr_report "
+    "WHEN NEW.authoring_state NOT IN ('DRAFT', 'SUBMITTED') "
+    "BEGIN SELECT RAISE(ABORT, 'invalid DDR authoring state'); END",
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_authoring_state_update BEFORE UPDATE OF authoring_state "
+    "ON ddr_report WHEN NEW.authoring_state NOT IN ('DRAFT', 'SUBMITTED') "
+    "BEGIN SELECT RAISE(ABORT, 'invalid DDR authoring state'); END",
+):
+    event.listen(
+        DdrReport.__table__,
+        "after_create",
+        DDL(_ddl).execute_if(dialect="sqlite"),
+    )
+
+
+class DdrActivity(Base, TimestampMixin):
+    """An explicitly authored daily activity linked to its resulting operational row."""
+
+    __tablename__ = "ddr_activity"
+    __table_args__ = (
+        UniqueConstraint("ddr_report_id", "sequence", name="uq_ddr_activity_sequence"),
+        CheckConstraint("sequence > 0", name="ck_ddr_activity_sequence_positive"),
+        Index("ix_ddr_activity_operation", "operation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    ddr_report_id: Mapped[str] = mapped_column(
+        ForeignKey("ddr_report.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    period_text: Mapped[str | None] = mapped_column(String(200))
+    operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_operation.id", ondelete="SET NULL")
+    )
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
 
 
 class MudReport(Base, TimestampMixin):
@@ -1417,6 +1515,9 @@ class WellOperation(Base, TimestampMixin):
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
+    #: Manual DDR revisions stand down their linked operations without rewriting their confirmation
+    #: state; historical rows remain readable in review history.
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 

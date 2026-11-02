@@ -357,6 +357,8 @@ def test_an_existing_workspace_is_left_alone_by_the_new_tables(tmp_path) -> None
             assert count(engine, relation) == 0, (
                 f"{relation} was backfilled, and nothing in this migration is allowed to invent a record"
             )
+        # Current ORM repositories are exercised only after the current schema head is applied.
+        upgrade(engine, heads()[0])
     finally:
         engine.dispose()
 
@@ -549,8 +551,11 @@ def test_the_downgrade_removes_the_domain_and_keeps_the_workspace(tmp_path) -> N
                 # 0017/0018: the well-control and HSE domain tables.
                 "well_control_event",
                 "hse_incident",
-                # 0024: cross-cutting operator intake metadata.
+                # 0024/0025: cross-cutting operator intake and registration metadata.
                 "intake_queue_item",
+                "intake_registration",
+                # 0026: authoring activity is a separate durable table.
+                "ddr_activity",
             )
         ), diff
 
@@ -653,6 +658,7 @@ def test_the_record_paths_work_on_a_migrated_workspace(tmp_path) -> None:
     try:
         build_legacy_database(engine)
         upgrade(engine, "0004")
+        upgrade(engine, heads()[0])
     finally:
         engine.dispose()
 

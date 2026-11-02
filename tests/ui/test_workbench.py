@@ -504,3 +504,108 @@ def test_report_audit_does_not_recompose_and_a_late_result_cannot_replace_a_newe
         qt_app.processEvents()
         controller.close()
     assert before == _database_fingerprint(workspace)
+
+
+def test_daily_ddr_workbench_creates_saves_and_submits_candidate_rows(
+    qt_app, workspace, committed_well_id
+) -> None:
+    """The desktop exposes a writable draft composer, not just a DDR history table."""
+    import time
+
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtTest import QSignalSpy
+
+    from drilling_intelligence.database.models import WellOperation
+    from drilling_intelligence.operations.ddr import DdrAuthoringService
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import MainWindow
+
+    controller = ReviewController()
+    assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
+    window = MainWindow(controller)
+    window.well_combo.blockSignals(True)
+    window.well_combo.addItem("A-3", committed_well_id)
+    window.well_combo.setCurrentIndex(0)
+    window.well_combo.blockSignals(False)
+    spy = QSignalSpy(window.ddr_operation_finished)
+
+    def wait_for_idle(timeout_ms: int = 15_000) -> bool:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while window._ddr_thread is not None:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                return False
+            loop = QEventLoop()
+            timer = QTimer()
+            timer.setSingleShot(True)
+            window.ddr_operation_finished.connect(loop.quit)
+            timer.timeout.connect(loop.quit)
+            timer.start(remaining_ms)
+            loop.exec()
+            timer.stop()
+            window.ddr_operation_finished.disconnect(loop.quit)
+        return True
+
+    try:
+        _select_navigation_page(window, "Daily DDR")
+        assert wait_for_idle(), "initial DDR list did not finish before its bounded deadline"
+        assert window.ddr_new_button.isEnabled()
+        assert not window.ddr_create_button.isEnabled()
+
+        window.ddr_new_button.click()
+        assert window._ddr_new_draft_mode
+        assert not window.ddr_date_input.isReadOnly()
+        assert not window.ddr_summary_input.isReadOnly()
+        assert window.ddr_add_activity_button.isEnabled()
+        window.ddr_date_input.setText("2026-11-01")
+        window.ddr_summary_input.setPlainText("Drilling continued as recorded by the operator.")
+        window.ddr_actor_input.setText("operator-1")
+        window.ddr_reason_input.setText("Manual daily report entry")
+        window.ddr_add_activity_button.click()
+        operation_type = window.ddr_activities_table.cellWidget(0, 0)
+        assert operation_type is not None
+        operation_type.setCurrentText(controller.ddr_operation_types()[0])
+        window.ddr_activities_table.item(0, 1).setText("Drilling continued")
+        window.ddr_activities_table.item(0, 2).setText("Operator-entered activity")
+        window.ddr_activities_table.item(0, 3).setText("Night shift")
+        assert window.ddr_create_button.isEnabled()
+        window.ddr_create_button.click()
+        assert wait_for_idle(), "DDR draft creation/save refresh exceeded its bounded deadline"
+
+        service = DdrAuthoringService(controller.workspace.database)
+        rows = service.list_reports(committed_well_id)
+        assert len(rows) == 1
+        report = rows[0]
+        assert report["authoring_state"] == "DRAFT"
+        assert report["status"] == "CANDIDATE"
+        assert report["summary"] == "Drilling continued as recorded by the operator."
+        assert report["activities"][0]["label"] == "Drilling continued"
+        assert not window._ddr_new_draft_mode
+
+        window.ddr_summary_input.setPlainText("Operator wording updated before submission.")
+        window.ddr_reason_input.setText("Corrected the draft wording")
+        window.ddr_save_button.click()
+        assert wait_for_idle(), "DDR draft save/refresh exceeded its bounded deadline"
+        assert (
+            service.get(report["report_id"])["summary"]
+            == "Operator wording updated before submission."
+        )
+
+        window.ddr_reason_input.setText("Ready for independent review")
+        window.ddr_submit_button.click()
+        assert wait_for_idle(), "DDR submit/refresh exceeded its bounded deadline"
+        submitted = service.get(report["report_id"])
+        assert submitted["authoring_state"] == "SUBMITTED"
+        assert submitted["status"] == "CANDIDATE"
+        with controller.workspace.database.read_only() as session:
+            operations = list(session.query(WellOperation).filter_by(report_id=report["report_id"]))
+        assert len(operations) == 1
+        assert operations[0].status == "CANDIDATE"
+        assert operations[0].provenance[0]["source_kind"] == "manual_authoring"
+        assert spy.count() >= 4
+    finally:
+        from drilling_intelligence.ui.lifetime import release_top_level_widgets
+
+        release_top_level_widgets(qt_app)
+        qt_app.processEvents()
+        controller.close()

@@ -1,4 +1,6 @@
-# Project Closure Plan — PROG-PROC V9.0
+# Project Closure Plan — PROG-PROC V9.0 (Historical Snapshot)
+
+> **Historical only:** this document records the V9.0 closure state and is not the current project context. V10.3 and the post-V10.3 mission supersede its migration head, capabilities, and branch-closure statements. Consult [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and the latest mission report for current status; never treat this snapshot as evidence for a later SHA.
 
 As of 2026-10-31. Branch `arena/5957b76d-prog-proc`. Head `332f8fc` + V9.0 delta (lesson writer).  
 Closes PR `arena/01a0c936-prog-proc` track; next merge target `main` is `85122e1` (owner merges).

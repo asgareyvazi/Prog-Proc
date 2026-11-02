@@ -59,6 +59,12 @@ LATER_MIGRATION_COLUMNS = (
     "lesson_learned.identity_key",  # 0020
     "lesson_learned.code_key",  # 0022
     "lesson_learned.prior_status",  # 0023
+    "ddr_report.authoring_state",  # 0026
+    "ddr_report.revision_group_id",  # 0026
+    "ddr_report.revision_number",  # 0026
+    "ddr_report.supersedes_report_id",  # 0026
+    "ddr_report.is_current",  # 0026
+    "well_operation.is_current",  # 0026
 )
 
 #: (subject_key, expected kind, expected id).  Each row is a real shape the platform can hold.
@@ -180,6 +186,8 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
                     "well_control_event",
                     "hse_incident",
                     "intake_queue_item",
+                    "intake_registration",
+                    "ddr_activity",
                     "bit_record",
                     "survey_run",
                     "survey_station",

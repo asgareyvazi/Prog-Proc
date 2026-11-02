@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QTableView,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -71,6 +72,7 @@ from .models import (
 from .worker import (
     CalculationWorker,
     ComparisonWorker,
+    DdrWorker,
     DecisionWorker,
     IntakeWorker,
     ReportAuditWorker,
@@ -83,6 +85,7 @@ from .worker import (
 _NAVIGATION = (
     "Overview",
     "Intake",
+    "Daily DDR",
     "Decision",
     "Comparison",
     "Report",
@@ -157,6 +160,7 @@ _WORKER_THREAD_ATTRS = (
     "_action_thread",
     "_calculation_thread",
     "_intake_thread",
+    "_ddr_thread",
 )
 
 
@@ -164,6 +168,7 @@ class MainWindow(QMainWindow):
     """The first read-only desktop consumer of the Domain Review contract."""
 
     intake_operation_finished = Signal()
+    ddr_operation_finished = Signal()
 
     def __init__(
         self,
@@ -201,6 +206,16 @@ class MainWindow(QMainWindow):
         self._active_intake_operation = ""
         self._pending_intake_refresh = False
         self._selected_intake_id = ""
+        self._intake_status_by_id: dict[str, str] = {}
+        self._ddr_thread: QThread | None = None
+        self._ddr_new_draft_mode = False
+        self._ddr_worker: DdrWorker | None = None
+        self._active_ddr_operation = ""
+        self._pending_ddr_refresh = False
+        self._selected_ddr_id = ""
+        self._global_busy = False
+        self._selected_ddr_record: dict[str, Any] | None = None
+        self._ddr_records_by_id: dict[str, dict[str, Any]] = {}
         self._selected_record: ReviewRecord | None = None
         self._record_actions: tuple[ReviewAction, ...] = ()
         self._selected_conflict: ReviewConflict | None = None
@@ -305,6 +320,7 @@ class MainWindow(QMainWindow):
     def _build_pages(self) -> None:
         self._build_overview_page()
         self._build_intake_page()
+        self._build_ddr_page()
         self._build_decision_page()
         self._build_comparison_page()
         self._build_report_page()
@@ -358,8 +374,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.addWidget(
             QLabel(
-                "Intake records file references and SHA-256 only. Preview uses local extractors and "
-                "static contracts; it does not register, promote, or write domain facts."
+                "Intake stores file references and SHA-256 only. Preview is transient. Registration is "
+                "a separate reviewed, actor/reason-attributed DocumentRegistry action; it never promotes facts."
             )
         )
         controls = QHBoxLayout()
@@ -388,6 +404,9 @@ class MainWindow(QMainWindow):
         self.intake_reject_button = QPushButton("Reject")
         self.intake_reject_button.clicked.connect(self._reject_selected_intake)
         actions.addWidget(self.intake_reject_button)
+        self.intake_register_button = QPushButton("Register reviewed source")
+        self.intake_register_button.clicked.connect(self._register_selected_intake)
+        actions.addWidget(self.intake_register_button)
         actions.addStretch(1)
         layout.addLayout(actions)
         self.intake_table = QTableWidget(0, 6)
@@ -403,6 +422,105 @@ class MainWindow(QMainWindow):
         self.intake_preview_tree = QTreeWidget()
         self.intake_preview_tree.setHeaderLabels(["Preview", "Value"])
         layout.addWidget(self.intake_preview_tree, 2)
+        self.pages.addWidget(page)
+
+    def _build_ddr_page(self) -> None:
+        """Manual daily-report authoring linked to candidate operational activities."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        intro = QLabel(
+            "Author a dated daily report for the selected well. Draft edits are audited and "
+            "optimistically version-checked. Submission creates CANDIDATE operations only; "
+            "confirmation remains a separate human review action. Source-derived reports are read-only here."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        identity = QHBoxLayout()
+        identity.addWidget(QLabel("Author / reviewer"))
+        self.ddr_actor_input = QLineEdit()
+        self.ddr_actor_input.setPlaceholderText("Required actor")
+        identity.addWidget(self.ddr_actor_input, 1)
+        identity.addWidget(QLabel("Reason"))
+        self.ddr_reason_input = QLineEdit()
+        self.ddr_reason_input.setPlaceholderText("Required audit reason")
+        identity.addWidget(self.ddr_reason_input, 2)
+        layout.addLayout(identity)
+
+        content = QSplitter(Qt.Orientation.Horizontal)
+        self.ddr_table = QTableWidget(0, 6)
+        self.ddr_table.setHorizontalHeaderLabels(
+            ["Date", "Report #", "Shift", "Revision", "Review", "Authoring"]
+        )
+        self.ddr_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.ddr_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.ddr_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.ddr_table.horizontalHeader().setStretchLastSection(True)
+        self.ddr_table.itemSelectionChanged.connect(self._ddr_selection_changed)
+        content.addWidget(self.ddr_table)
+
+        editor = QWidget()
+        editor_layout = QVBoxLayout(editor)
+        form = QFormLayout()
+        self.ddr_date_input = QLineEdit()
+        self.ddr_date_input.setPlaceholderText("YYYY-MM-DD; report day, not file time")
+        form.addRow("Report date", self.ddr_date_input)
+        self.ddr_number_input = QLineEdit()
+        form.addRow("Report number", self.ddr_number_input)
+        self.ddr_shift_input = QLineEdit()
+        form.addRow("Shift", self.ddr_shift_input)
+        editor_layout.addLayout(form)
+        editor_layout.addWidget(QLabel("Daily summary (source wording)"))
+        self.ddr_summary_input = QTextEdit()
+        self.ddr_summary_input.setMaximumHeight(110)
+        editor_layout.addWidget(self.ddr_summary_input)
+
+        activities = QGroupBox("Activities — each submitted row becomes a candidate WellOperation")
+        activity_layout = QVBoxLayout(activities)
+        activity_actions = QHBoxLayout()
+        self.ddr_add_activity_button = QPushButton("Add activity")
+        self.ddr_add_activity_button.clicked.connect(self._ddr_add_activity_row)
+        activity_actions.addWidget(self.ddr_add_activity_button)
+        self.ddr_remove_activity_button = QPushButton("Remove selected")
+        self.ddr_remove_activity_button.clicked.connect(self._ddr_remove_activity_row)
+        activity_actions.addWidget(self.ddr_remove_activity_button)
+        activity_actions.addStretch(1)
+        activity_layout.addLayout(activity_actions)
+        self.ddr_activities_table = QTableWidget(0, 4)
+        self.ddr_activities_table.setHorizontalHeaderLabels(
+            ["Registered operation type", "Activity label", "Description", "Period as written"]
+        )
+        self.ddr_activities_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.ddr_activities_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.ddr_activities_table.horizontalHeader().setStretchLastSection(True)
+        activity_layout.addWidget(self.ddr_activities_table)
+        editor_layout.addWidget(activities, 1)
+
+        buttons = QHBoxLayout()
+        self.ddr_new_button = QPushButton("New draft")
+        self.ddr_new_button.clicked.connect(self._ddr_toggle_new_draft)
+        buttons.addWidget(self.ddr_new_button)
+        self.ddr_create_button = QPushButton("Create draft")
+        self.ddr_create_button.clicked.connect(self._ddr_create_draft)
+        buttons.addWidget(self.ddr_create_button)
+        self.ddr_save_button = QPushButton("Save draft")
+        self.ddr_save_button.clicked.connect(self._ddr_save_draft)
+        buttons.addWidget(self.ddr_save_button)
+        self.ddr_submit_button = QPushButton("Submit for review")
+        self.ddr_submit_button.clicked.connect(self._ddr_submit)
+        buttons.addWidget(self.ddr_submit_button)
+        self.ddr_revision_button = QPushButton("Start new revision")
+        self.ddr_revision_button.clicked.connect(self._ddr_create_revision)
+        buttons.addWidget(self.ddr_revision_button)
+        self.ddr_refresh_button = QPushButton("Refresh")
+        self.ddr_refresh_button.clicked.connect(self._refresh_ddr_reports)
+        buttons.addWidget(self.ddr_refresh_button)
+        editor_layout.addLayout(buttons)
+        content.addWidget(editor)
+        content.setStretchFactor(1, 2)
+        layout.addWidget(content, 1)
         self.pages.addWidget(page)
 
     def _build_decision_page(self) -> None:
@@ -909,12 +1027,16 @@ class MainWindow(QMainWindow):
         self.well_combo.blockSignals(False)
         if not choices:
             self._review = None
+            self._ddr_records_by_id = {}
+            self.ddr_table.setRowCount(0)
+            self._ddr_set_record(None)
             self._set_status("Workspace opened, but no registered wells are available.")
             self._set_busy(False)
             return True
         if selected >= 0:
             self.well_combo.setCurrentIndex(selected)
             self.request_review(verify_citations=False)
+            self._refresh_ddr_reports()
         return True
 
     def _select_well(self, reference: str = "") -> int:
@@ -932,6 +1054,7 @@ class MainWindow(QMainWindow):
     def _well_changed(self, _index: int) -> None:
         if self.well_combo.currentData() and self.controller.workspace is not None:
             self.request_review(verify_citations=False)
+            self._refresh_ddr_reports()
 
     @Slot(int)
     def _lifecycle_changed(self, _index: int) -> None:
@@ -1785,10 +1908,12 @@ class MainWindow(QMainWindow):
 
     def _intake_selection_changed(self) -> None:
         self._selected_intake_id = self._selected_intake_item()
+        status = self._intake_status_by_id.get(self._selected_intake_id, "")
         enabled = bool(self._selected_intake_id) and self.controller.workspace is not None
         self.intake_preview_button.setEnabled(enabled)
-        self.intake_review_button.setEnabled(enabled)
-        self.intake_reject_button.setEnabled(enabled)
+        self.intake_review_button.setEnabled(enabled and status == "QUEUED")
+        self.intake_reject_button.setEnabled(enabled and status == "QUEUED")
+        self.intake_register_button.setEnabled(enabled and status == "REVIEWED")
 
     def _refresh_intake_queue(self) -> None:
         self._start_intake_operation("list")
@@ -1803,6 +1928,18 @@ class MainWindow(QMainWindow):
         item_id = self._selected_intake_item()
         if item_id:
             self._start_intake_operation("preview", item_id=item_id)
+
+    def _register_selected_intake(self) -> None:
+        item_id = self._selected_intake_item()
+        if not item_id:
+            return
+        self._start_intake_operation(
+            "register",
+            item_id=item_id,
+            actor=self.intake_actor_input.text(),
+            reason=self.intake_reason_input.text(),
+            well_id=str(self.well_combo.currentData() or ""),
+        )
 
     def _decide_selected_intake(self, decision: str) -> None:
         item_id = self._selected_intake_item()
@@ -1829,6 +1966,7 @@ class MainWindow(QMainWindow):
         self.intake_preview_button.setEnabled(False)
         self.intake_review_button.setEnabled(False)
         self.intake_reject_button.setEnabled(False)
+        self.intake_register_button.setEnabled(False)
         thread = QThread(self)
         worker = IntakeWorker(self.controller, operation, payload)
         worker.moveToThread(thread)
@@ -1850,6 +1988,7 @@ class MainWindow(QMainWindow):
         if operation == "list":
             items = result
             self.intake_table.setRowCount(0)
+            self._intake_status_by_id = {item.id: item.status for item in items}
             for row_index, item in enumerate(items):
                 self.intake_table.insertRow(row_index)
                 values = (
@@ -1876,6 +2015,11 @@ class MainWindow(QMainWindow):
             _fill_tree(self.intake_preview_tree, None)
             self._set_status(f"Intake item disposition recorded as {result.status}.")
             self._pending_intake_refresh = True
+        elif operation == "register":
+            _fill_tree(self.intake_preview_tree, result.to_dict())
+            self._set_status(f"Registered as {result.classification}; promotion was not run.")
+            self._pending_intake_refresh = True
+            QTimer.singleShot(0, self._load_current_review)
 
     @Slot(str, object)
     def _intake_failed(self, operation: str, error: object) -> None:
@@ -1887,7 +2031,11 @@ class MainWindow(QMainWindow):
         thread = self._intake_thread
         self._intake_thread = None
         self._intake_worker = None
-        for widget_name in ("intake_add_button", "intake_refresh_button"):
+        for widget_name in (
+            "intake_add_button",
+            "intake_refresh_button",
+            "intake_register_button",
+        ):
             widget = getattr(self, widget_name, None)
             if widget is not None:
                 widget.setEnabled(self.controller.workspace is not None)
@@ -1899,11 +2047,330 @@ class MainWindow(QMainWindow):
             self._pending_intake_refresh = False
             self._start_intake_operation("list")
 
+    # -- DDR authoring workspace ------------------------------------------
+    def _refresh_ddr_reports(self) -> None:
+        well_id = str(self.well_combo.currentData() or "")
+        if self.controller.workspace is None or not well_id:
+            self.ddr_table.setRowCount(0)
+            self._ddr_records_by_id = {}
+            self._ddr_set_record(None)
+            return
+        self._start_ddr_operation("list", well_id=well_id, include_history=True)
+
+    def _start_ddr_operation(self, operation: str, **payload: Any) -> None:
+        if self.controller.workspace is None:
+            self._set_status("Open a workspace before using Daily DDR.", error=True)
+            return
+        if self._ddr_thread is not None:
+            self._set_status("A DDR authoring action is already running.", error=True)
+            return
+        self._active_ddr_operation = operation
+        for name in (
+            "ddr_new_button",
+            "ddr_create_button",
+            "ddr_save_button",
+            "ddr_submit_button",
+            "ddr_revision_button",
+            "ddr_refresh_button",
+            "ddr_add_activity_button",
+            "ddr_remove_activity_button",
+        ):
+            getattr(self, name).setEnabled(False)
+        thread = QThread(self)
+        worker = DdrWorker(self.controller, operation, payload)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._ddr_succeeded)
+        worker.failed.connect(self._ddr_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._ddr_thread_finished)
+        self._ddr_thread = thread
+        self._ddr_worker = worker
+        self._ddr_update_controls()
+        thread.start()
+
+    @Slot(str, object)
+    def _ddr_succeeded(self, operation: str, result: object) -> None:
+        if operation == "list":
+            records = tuple(result)
+            self._ddr_records_by_id = {str(item["report_id"]): dict(item) for item in records}
+            self.ddr_table.setRowCount(0)
+            for row_index, record in enumerate(records):
+                self.ddr_table.insertRow(row_index)
+                values = (
+                    record.get("report_date_text") or record.get("report_date") or "—",
+                    record.get("report_number") or "—",
+                    record.get("shift") or "—",
+                    f"{record.get('revision_number', 1)}",
+                    record.get("status") or "—",
+                    record.get("authoring_state") or "—",
+                )
+                for column, value in enumerate(values):
+                    cell = QTableWidgetItem(str(value))
+                    if column == 0:
+                        cell.setData(Qt.ItemDataRole.UserRole, str(record["report_id"]))
+                    self.ddr_table.setItem(row_index, column, cell)
+            selected = self._selected_ddr_id
+            target_row = next(
+                (
+                    row
+                    for row in range(self.ddr_table.rowCount())
+                    if str(self.ddr_table.item(row, 0).data(Qt.ItemDataRole.UserRole) or "")
+                    == selected
+                ),
+                0 if self.ddr_table.rowCount() else -1,
+            )
+            if target_row >= 0:
+                self.ddr_table.setCurrentCell(target_row, 0)
+                self._ddr_selection_changed()
+            else:
+                self._ddr_set_record(None)
+            self._set_status(f"Daily DDR workspace loaded {len(records)} report revision(s).")
+            return
+        if operation in {"create", "save", "submit", "revision"}:
+            if operation == "create":
+                self._ddr_new_draft_mode = False
+                self._set_busy(self._global_busy)
+            self._ddr_set_record(dict(result))
+            self._selected_ddr_id = str(result["report_id"])
+            self._pending_ddr_refresh = True
+            if operation == "submit":
+                self._set_status(
+                    "DDR submitted. Candidate operations are linked; no row was auto-confirmed."
+                )
+                QTimer.singleShot(0, self._load_current_review)
+            elif operation == "revision":
+                self._set_status(
+                    f"Revision {result['revision_number']} created as a draft; the prior revision remains historical."
+                )
+            else:
+                self._set_status(
+                    f"DDR draft {result['report_id']} saved (revision {result['revision_number']})."
+                )
+
+    @Slot(str, object)
+    def _ddr_failed(self, operation: str, error: object) -> None:
+        message = str(getattr(error, "message", error))
+        self._set_status(f"Daily DDR {operation} failed: {message}", error=True)
+
+    @Slot()
+    def _ddr_thread_finished(self) -> None:
+        thread = self._ddr_thread
+        self._ddr_thread = None
+        self._ddr_worker = None
+        if thread is not None:
+            thread.deleteLater()
+        self._ddr_update_controls()
+        if self._pending_ddr_refresh:
+            self._pending_ddr_refresh = False
+            self._refresh_ddr_reports()
+        self.ddr_operation_finished.emit()
+
+    def _ddr_selected_report_id(self) -> str:
+        row = self.ddr_table.currentRow()
+        cell = self.ddr_table.item(row, 0) if row >= 0 else None
+        return str(cell.data(Qt.ItemDataRole.UserRole) or "") if cell else ""
+
+    def _ddr_selection_changed(self) -> None:
+        report_id = self._ddr_selected_report_id()
+        self._selected_ddr_id = report_id
+        record = self._ddr_records_by_id.get(report_id)
+        self._ddr_set_record(record)
+
+    def _ddr_set_record(self, record: dict[str, Any] | None) -> None:
+        self._selected_ddr_record = dict(record) if record else None
+        if record is None:
+            self.ddr_date_input.clear()
+            self.ddr_number_input.clear()
+            self.ddr_shift_input.clear()
+            self.ddr_summary_input.clear()
+            self.ddr_activities_table.setRowCount(0)
+            self._ddr_update_controls()
+            return
+        self.ddr_date_input.setText(
+            str(record.get("report_date_text") or record.get("report_date") or "")
+        )
+        self.ddr_number_input.setText(str(record.get("report_number") or ""))
+        self.ddr_shift_input.setText(str(record.get("shift") or ""))
+        self.ddr_summary_input.setPlainText(str(record.get("summary") or ""))
+        self.ddr_activities_table.setRowCount(0)
+        for activity in record.get("activities") or ():
+            row = self.ddr_activities_table.rowCount()
+            self.ddr_activities_table.insertRow(row)
+            selector = QComboBox(self.ddr_activities_table)
+            selector.addItems(self.controller.ddr_operation_types())
+            selector.setCurrentText(str(activity.get("operation_type") or ""))
+            self.ddr_activities_table.setCellWidget(row, 0, selector)
+            for column, key in ((1, "label"), (2, "description"), (3, "period_text")):
+                self.ddr_activities_table.setItem(
+                    row, column, QTableWidgetItem(str(activity.get(key) or ""))
+                )
+        self._ddr_update_controls()
+
+    def _ddr_update_controls(self) -> None:
+        available = self.controller.workspace is not None and bool(self.well_combo.currentData())
+        busy = self._ddr_thread is not None
+        record = self._selected_ddr_record or {}
+        draft = bool(
+            record.get("is_current")
+            and record.get("authoring_state") == "DRAFT"
+            and record.get("status") == "CANDIDATE"
+            and not record.get("document_version_id")
+        )
+        revisable = bool(
+            record.get("is_current")
+            and record.get("origin") == "MANUAL"
+            and not record.get("document_version_id")
+            and record.get("authoring_state") == "SUBMITTED"
+        )
+        editing = draft or self._ddr_new_draft_mode
+        self.ddr_new_button.setText("Cancel new draft" if self._ddr_new_draft_mode else "New draft")
+        self.ddr_new_button.setEnabled(available and not busy and not self._global_busy)
+        self.ddr_create_button.setEnabled(
+            available and not busy and not self._global_busy and self._ddr_new_draft_mode
+        )
+        self.ddr_save_button.setEnabled(available and not busy and draft)
+        self.ddr_submit_button.setEnabled(available and not busy and draft)
+        self.ddr_revision_button.setEnabled(available and not busy and revisable)
+        self.ddr_refresh_button.setEnabled(available and not busy and not self._ddr_new_draft_mode)
+        self.ddr_add_activity_button.setEnabled(editing and not busy and not self._global_busy)
+        self.ddr_remove_activity_button.setEnabled(editing and not busy and not self._global_busy)
+        for widget in (self.ddr_date_input, self.ddr_number_input, self.ddr_shift_input):
+            widget.setReadOnly(not editing or busy or self._global_busy)
+        self.ddr_summary_input.setReadOnly(not editing or busy or self._global_busy)
+        self.ddr_activities_table.setEnabled(editing and not busy and not self._global_busy)
+        self.ddr_table.setEnabled(available and not busy and not self._ddr_new_draft_mode)
+
+    def _ddr_add_activity_row(self) -> None:
+        row = self.ddr_activities_table.rowCount()
+        self.ddr_activities_table.insertRow(row)
+        selector = QComboBox(self.ddr_activities_table)
+        selector.addItems(self.controller.ddr_operation_types())
+        self.ddr_activities_table.setCellWidget(row, 0, selector)
+        for column in range(1, 4):
+            self.ddr_activities_table.setItem(row, column, QTableWidgetItem(""))
+
+    def _ddr_remove_activity_row(self) -> None:
+        row = self.ddr_activities_table.currentRow()
+        if row >= 0:
+            self.ddr_activities_table.removeRow(row)
+
+    def _ddr_collect_activities(self) -> list[dict[str, str]]:
+        activities: list[dict[str, str]] = []
+        for row in range(self.ddr_activities_table.rowCount()):
+            selector = self.ddr_activities_table.cellWidget(row, 0)
+            values = [
+                self.ddr_activities_table.item(row, column).text()
+                if self.ddr_activities_table.item(row, column) is not None
+                else ""
+                for column in (1, 2, 3)
+            ]
+            if not any(value.strip() for value in values):
+                continue
+            activities.append(
+                {
+                    "operation_type": selector.currentText()
+                    if isinstance(selector, QComboBox)
+                    else "",
+                    "label": values[0],
+                    "description": values[1],
+                    "period_text": values[2],
+                }
+            )
+        return activities
+
+    def _ddr_values(self) -> dict[str, Any]:
+        return {
+            "report_date": self.ddr_date_input.text(),
+            "report_number": self.ddr_number_input.text(),
+            "shift": self.ddr_shift_input.text(),
+            "summary": self.ddr_summary_input.toPlainText(),
+            "activities": self._ddr_collect_activities(),
+            "actor": self.ddr_actor_input.text(),
+            "reason": self.ddr_reason_input.text(),
+        }
+
+    def _ddr_toggle_new_draft(self) -> None:
+        if self._ddr_new_draft_mode:
+            self._ddr_new_draft_mode = False
+            self._ddr_set_record(None)
+            self._set_busy(self._global_busy)
+            self._set_status("New DDR draft cancelled; no data was written.")
+            return
+        record = self._selected_ddr_record or {}
+        if record.get("authoring_state") == "DRAFT":
+            answer = QMessageBox.question(
+                self,
+                "Start a new DDR draft?",
+                "Unsaved edits in the current draft will be discarded. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._ddr_new_draft_mode = True
+        self._selected_ddr_id = ""
+        self.ddr_table.clearSelection()
+        self.ddr_table.setCurrentCell(-1, -1)
+        self._ddr_set_record(None)
+        self._set_busy(self._global_busy)
+        self._set_status("Enter the report date and authored content, then create the draft.")
+
+    def _ddr_create_draft(self) -> None:
+        if not self._ddr_new_draft_mode:
+            self._set_status("Select New draft before entering a new DDR.", error=True)
+            return
+        well_id = str(self.well_combo.currentData() or "")
+        if not well_id:
+            self._set_status("Select a well before creating a DDR draft.", error=True)
+            return
+        self._start_ddr_operation("create", well_id=well_id, **self._ddr_values())
+
+    def _ddr_save_draft(self) -> None:
+        record = self._selected_ddr_record
+        if not record:
+            return
+        values = self._ddr_values()
+        values["expected_updated_at"] = str(record.get("updated_at") or "")
+        self._start_ddr_operation("save", report_id=str(record["report_id"]), values=values)
+
+    def _ddr_submit(self) -> None:
+        record = self._selected_ddr_record
+        if not record:
+            return
+        self._start_ddr_operation(
+            "submit",
+            report_id=str(record["report_id"]),
+            values={
+                "expected_updated_at": str(record.get("updated_at") or ""),
+                "actor": self.ddr_actor_input.text(),
+                "reason": self.ddr_reason_input.text(),
+            },
+        )
+
+    def _ddr_create_revision(self) -> None:
+        record = self._selected_ddr_record
+        if not record:
+            return
+        self._start_ddr_operation(
+            "revision",
+            report_id=str(record["report_id"]),
+            values={
+                "expected_updated_at": str(record.get("updated_at") or ""),
+                "actor": self.ddr_actor_input.text(),
+                "reason": self.ddr_reason_input.text(),
+            },
+        )
+
     # -- selection/filter helpers -----------------------------------------
     @Slot(int)
     def _navigation_changed(self, index: int) -> None:
         if 0 <= index < self.pages.count():
             self.pages.setCurrentIndex(index)
+            if _NAVIGATION[index] == "Daily DDR" and not self._ddr_new_draft_mode:
+                self._refresh_ddr_reports()
 
     @Slot()
     def _record_filters_changed(self) -> None:
@@ -2201,8 +2668,11 @@ class MainWindow(QMainWindow):
 
     # -- state and shutdown -----------------------------------------------
     def _set_busy(self, busy: bool) -> None:
+        self._global_busy = busy
         self.open_button.setEnabled(not busy)
-        self.well_combo.setEnabled(not busy and self.well_combo.count() > 0)
+        self.well_combo.setEnabled(
+            not busy and self.well_combo.count() > 0 and not self._ddr_new_draft_mode
+        )
         self.lifecycle_combo.setEnabled(not busy and self.well_combo.count() > 0)
         self.load_button.setEnabled(not busy and self.well_combo.count() > 0)
         self.verify_button.setEnabled(not busy and self.well_combo.count() > 0)

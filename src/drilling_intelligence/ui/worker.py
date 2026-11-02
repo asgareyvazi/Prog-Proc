@@ -58,6 +58,13 @@ class IntakeWorker(QObject):
                     actor=self._payload["actor"],
                     reason=self._payload["reason"],
                 )
+            elif self._operation == "register":
+                result = self._controller.register_intake(
+                    self._payload["item_id"],
+                    actor=self._payload["actor"],
+                    reason=self._payload["reason"],
+                    well_id=self._payload.get("well_id", ""),
+                )
             else:
                 raise ValueError(f"unknown intake operation: {self._operation}")
         except Exception as exc:  # noqa: BLE001 - thread boundary reports failures without hiding them
@@ -67,6 +74,66 @@ class IntakeWorker(QObject):
                     "intake",
                     str(exc),
                     "Check the source and workspace; no result was accepted.",
+                    type(exc).__name__,
+                ),
+            )
+            return
+        self.succeeded.emit(self._operation, result)
+
+
+class DdrWorker(QObject):
+    """Run one DDR authoring command in a worker, returning plain domain values."""
+
+    succeeded = Signal(str, object)
+    failed = Signal(str, object)
+
+    def __init__(
+        self, controller: ReviewController, operation: str, payload: dict[str, Any]
+    ) -> None:
+        super().__init__()
+        self._controller = controller
+        self._operation = operation
+        self._payload = payload
+
+    @Slot()
+    def run(self) -> None:
+        if QThread.currentThread().isInterruptionRequested():
+            self.failed.emit(
+                self._operation,
+                WorkerError("cancelled", "DDR operation cancelled before start."),
+            )
+            return
+        try:
+            if self._operation == "list":
+                result = self._controller.ddr_reports(
+                    self._payload["well_id"],
+                    include_history=self._payload.get("include_history", True),
+                )
+            elif self._operation == "get":
+                result = self._controller.ddr_report(self._payload["report_id"])
+            elif self._operation == "create":
+                result = self._controller.ddr_create_draft(**self._payload)
+            elif self._operation == "save":
+                result = self._controller.ddr_save_draft(
+                    self._payload["report_id"], **self._payload["values"]
+                )
+            elif self._operation == "submit":
+                result = self._controller.ddr_submit(
+                    self._payload["report_id"], **self._payload["values"]
+                )
+            elif self._operation == "revision":
+                result = self._controller.ddr_create_revision(
+                    self._payload["report_id"], **self._payload["values"]
+                )
+            else:
+                raise ValueError(f"unknown DDR operation: {self._operation}")
+        except Exception as exc:  # noqa: BLE001 - report unexpected worker failures to the UI
+            self.failed.emit(
+                self._operation,
+                WorkerError(
+                    "ddr",
+                    str(exc),
+                    "Check the selected report and workspace; no action was accepted.",
                     type(exc).__name__,
                 ),
             )

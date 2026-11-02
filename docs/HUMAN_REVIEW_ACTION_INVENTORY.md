@@ -2,8 +2,10 @@
 
 This is the V1 forensic inventory of human mutation paths reachable from the authoritative domain. It is
 kept next to the action boundary so adding a new domain decision cannot be mistaken for adding a button.
-The `DomainReviewService` remains read-only. The only V1 write boundary is `review/actions.py`, which
-re-reads the exact row and delegates to the owning repository/service listed below.
+The `DomainReviewService` remains read-only. `review/actions.py` is the V1 governed human-review
+mutation boundary: it re-reads the exact row and delegates to the owning repository/service listed
+below. Manual Daily DDR authoring is a separate write lifecycle in `operations/ddr.py`, not a review
+or approval action; its candidate-state boundary is described separately below.
 
 ## Governed action inventory
 
@@ -21,6 +23,10 @@ re-reads the exact row and delegates to the owning repository/service listed bel
 | `field_pattern` / `set_pattern_status` via `IntelligenceService.confirm_pattern` | Same confirmation machine as operational records | Required for real transitions | Optional reason in `attributes.status_history` | N/A | Structured status history; pattern evidence/query remains on the pattern | Existing repeated same-state confirmation remains a no-op. V1 refuses actions against `stale_at` snapshots until the authoritative pattern is refreshed | Confirm, reject, return to candidate |
 | `cost_item` / `CostRepository.set_status` | Same confirmation machine | Required for real transitions | Optional reason in structured status history; no currency calculation is performed | N/A | Structured status history | Same-state confirmation is a no-op; exact row/status/scope/update stamp is checked before routing | Confirm, reject, return to candidate |
 | `knowledge_conflict` / `KnowledgeExtractionService.resolve` → `resolve_conflict` | `OPEN -> RESOLVED_MANUALLY` (the selected fact becomes `ACTIVE`, other candidates `RETIRED`) | Must be explicit; there is no implicit `operator` identity | Candidate id is mandatory; note is retained and is the human explanation | N/A | `KnowledgeConflict.resolution` plus the existing append-only `knowledge.conflict_resolved` audit event | Repeating an already-resolved conflict with the same winner is read-only; replacing a settled winner is rejected. Candidate, actor and audit writes are one transaction | Resolve conflict |
+
+## Daily DDR authoring is not a review action
+
+`DdrAuthoringService` owns draft edits, submission, and revision creation. The workbench writes an attributed draft and its activities, then submission creates candidate operational rows without confirming them. The existing `ReviewActionService` exposes review only for a current `SUBMITTED` report; a draft cannot be confirmed, and a revision does not inherit approval. Historical reports and their `WellOperation` rows remain read-only/current=false after a revision. The authoring lifecycle is covered separately from the review-action table in `tests/integration/test_ddr_authoring.py`.
 
 ## Paths intentionally not exposed as V1 review actions
 
