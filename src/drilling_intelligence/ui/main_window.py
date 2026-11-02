@@ -9,11 +9,21 @@ loop.
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    QModelIndex,
+    QSignalBlocker,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -190,6 +200,8 @@ class MainWindow(QMainWindow):
         self._comparison_worker: ComparisonWorker | None = None
         self._report_thread: QThread | None = None
         self._report_audit_thread: QThread | None = None
+        self._report_audit_worker: ReportAuditWorker | None = None
+        self._worker_destroyed_events: dict[str, threading.Event] = {}
         self._report_audit: dict | None = None
         self._report_audit_generation = 0
         self._report_audit_identity = ""
@@ -214,6 +226,7 @@ class MainWindow(QMainWindow):
         self._pending_ddr_refresh = False
         self._selected_ddr_id = ""
         self._global_busy = False
+        self._closing = False
         self._selected_ddr_record: dict[str, Any] | None = None
         self._ddr_records_by_id: dict[str, dict[str, Any]] = {}
         self._selected_record: ReviewRecord | None = None
@@ -1088,11 +1101,11 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._review_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._review_thread_finished)
         self._review_thread = thread
         self._review_worker = worker
+        self._track_worker_lifecycle(
+            "_review_thread", "_review_worker", thread, worker, self._review_thread_finished
+        )
         thread.start()
 
     @Slot(object)
@@ -1122,11 +1135,11 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._decision_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._decision_thread_finished)
         self._decision_thread = thread
         self._decision_worker = worker
+        self._track_worker_lifecycle(
+            "_decision_thread", "_decision_worker", thread, worker, self._decision_thread_finished
+        )
         thread.start()
 
     @Slot(object)
@@ -1139,11 +1152,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _decision_thread_finished(self) -> None:
-        thread = self._decision_thread
-        self._decision_thread = None
-        self._decision_worker = None
-        if thread is not None:
-            thread.deleteLater()
+        self._complete_worker_lifecycle("_decision_thread", "_decision_worker")
 
     def set_decision(self, payload: dict) -> None:
         """Render a complete DecisionPack payload: label, tree, nothing reinterpreted."""
@@ -1202,11 +1211,15 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._comparison_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._comparison_thread_finished)
         self._comparison_thread = thread
         self._comparison_worker = worker
+        self._track_worker_lifecycle(
+            "_comparison_thread",
+            "_comparison_worker",
+            thread,
+            worker,
+            self._comparison_thread_finished,
+        )
         thread.start()
 
     @Slot(object)
@@ -1219,11 +1232,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _comparison_thread_finished(self) -> None:
-        thread = self._comparison_thread
-        self._comparison_thread = None
-        self._comparison_worker = None
-        if thread is not None:
-            thread.deleteLater()
+        self._complete_worker_lifecycle("_comparison_thread", "_comparison_worker")
 
     def set_comparison(self, payload: dict) -> None:
         """Render a complete ComparisonPack payload as the matrix it is.
@@ -1382,11 +1391,11 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._report_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._report_thread_finished)
         self._report_thread = thread
         self._report_worker = worker
+        self._track_worker_lifecycle(
+            "_report_thread", "_report_worker", thread, worker, self._report_thread_finished
+        )
         thread.start()
 
     @Slot(object)
@@ -1399,11 +1408,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _report_thread_finished(self) -> None:
-        thread = self._report_thread
-        self._report_thread = None
-        self._report_worker = None
-        if thread is not None:
-            thread.deleteLater()
+        self._complete_worker_lifecycle("_report_thread", "_report_worker")
 
     def _show_report_lineage(self, payload: dict, audit: dict | None) -> None:
         from ..reporting.lineage import traceability_manifest
@@ -1463,10 +1468,15 @@ class MainWindow(QMainWindow):
         )
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._report_audit_thread_finished)
         self._report_audit_thread = thread
+        self._report_audit_worker = worker
+        self._track_worker_lifecycle(
+            "_report_audit_thread",
+            "_report_audit_worker",
+            thread,
+            worker,
+            self._report_audit_thread_finished,
+        )
         thread.start()
         self._set_status("Verifying citations…")
 
@@ -1491,12 +1501,10 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _report_audit_thread_finished(self) -> None:
-        thread = self._report_audit_thread
-        self._report_audit_thread = None
-        if hasattr(self, "report_verify_button"):
+        if not self._complete_worker_lifecycle("_report_audit_thread", "_report_audit_worker"):
+            return
+        if not self._closing and hasattr(self, "report_verify_button"):
             self.report_verify_button.setEnabled(True)
-        if thread is not None:
-            thread.deleteLater()
 
     def set_report(self, payload: dict) -> None:
         """Render a ReportPack. Export writes this payload, not a second composition."""
@@ -1595,12 +1603,11 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _review_thread_finished(self) -> None:
-        thread = self._review_thread
-        self._review_thread = None
-        self._review_worker = None
-        self._set_busy(False)
-        if thread is not None:
-            thread.deleteLater()
+        if (
+            self._complete_worker_lifecycle("_review_thread", "_review_worker")
+            and not self._closing
+        ):
+            self._set_busy(False)
 
     # -- rendering --------------------------------------------------------
     def set_review(self, review: DomainReview) -> None:
@@ -1846,11 +1853,15 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._calculation_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._calculation_thread_finished)
         self._calculation_thread = thread
         self._calculation_worker = worker
+        self._track_worker_lifecycle(
+            "_calculation_thread",
+            "_calculation_worker",
+            thread,
+            worker,
+            self._calculation_thread_finished,
+        )
         self._set_busy(True)
         self._set_status(f"Executing NPT roll-up for {self.well_combo.currentText()}…")
         thread.start()
@@ -1882,12 +1893,11 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _calculation_thread_finished(self) -> None:
-        thread = self._calculation_thread
-        self._calculation_thread = None
-        self._calculation_worker = None
-        self._set_busy(False)
-        if thread is not None:
-            thread.deleteLater()
+        if (
+            self._complete_worker_lifecycle("_calculation_thread", "_calculation_worker")
+            and not self._closing
+        ):
+            self._set_busy(False)
 
     # -- operator intake ---------------------------------------------------
     def _choose_intake_files(self) -> None:
@@ -1954,6 +1964,8 @@ class MainWindow(QMainWindow):
         )
 
     def _start_intake_operation(self, operation: str, **payload: Any) -> None:
+        if self._closing:
+            return
         if self.controller.workspace is None:
             self._set_status("Open a workspace before using the intake queue.", error=True)
             return
@@ -1975,14 +1987,17 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._intake_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(self._intake_thread_finished)
         self._intake_thread = thread
         self._intake_worker = worker
+        self._track_worker_lifecycle(
+            "_intake_thread", "_intake_worker", thread, worker, self._intake_thread_finished
+        )
         thread.start()
 
     @Slot(str, object)
     def _intake_succeeded(self, operation: str, result: object) -> None:
+        if self._closing:
+            return
         from dataclasses import asdict
 
         if operation == "list":
@@ -2023,14 +2038,18 @@ class MainWindow(QMainWindow):
 
     @Slot(str, object)
     def _intake_failed(self, operation: str, error: object) -> None:
+        if self._closing:
+            return
         message = str(getattr(error, "message", error))
         self._set_status(f"Intake {operation} failed: {message}", error=True)
 
     @Slot()
     def _intake_thread_finished(self) -> None:
-        thread = self._intake_thread
-        self._intake_thread = None
-        self._intake_worker = None
+        if not self._complete_worker_lifecycle("_intake_thread", "_intake_worker"):
+            return
+        if self._closing:
+            self._pending_intake_refresh = False
+            return
         for widget_name in (
             "intake_add_button",
             "intake_refresh_button",
@@ -2040,8 +2059,6 @@ class MainWindow(QMainWindow):
             if widget is not None:
                 widget.setEnabled(self.controller.workspace is not None)
         self._intake_selection_changed()
-        if thread is not None:
-            thread.deleteLater()
         self.intake_operation_finished.emit()
         if self._pending_intake_refresh:
             self._pending_intake_refresh = False
@@ -2058,6 +2075,8 @@ class MainWindow(QMainWindow):
         self._start_ddr_operation("list", well_id=well_id, include_history=True)
 
     def _start_ddr_operation(self, operation: str, **payload: Any) -> None:
+        if self._closing:
+            return
         if self.controller.workspace is None:
             self._set_status("Open a workspace before using Daily DDR.", error=True)
             return
@@ -2084,15 +2103,18 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._ddr_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(self._ddr_thread_finished)
         self._ddr_thread = thread
         self._ddr_worker = worker
+        self._track_worker_lifecycle(
+            "_ddr_thread", "_ddr_worker", thread, worker, self._ddr_thread_finished
+        )
         self._ddr_update_controls()
         thread.start()
 
     @Slot(str, object)
     def _ddr_succeeded(self, operation: str, result: object) -> None:
+        if self._closing:
+            return
         if operation == "list":
             records = tuple(result)
             self._ddr_records_by_id = {str(item["report_id"]): dict(item) for item in records}
@@ -2152,16 +2174,18 @@ class MainWindow(QMainWindow):
 
     @Slot(str, object)
     def _ddr_failed(self, operation: str, error: object) -> None:
+        if self._closing:
+            return
         message = str(getattr(error, "message", error))
         self._set_status(f"Daily DDR {operation} failed: {message}", error=True)
 
     @Slot()
     def _ddr_thread_finished(self) -> None:
-        thread = self._ddr_thread
-        self._ddr_thread = None
-        self._ddr_worker = None
-        if thread is not None:
-            thread.deleteLater()
+        if not self._complete_worker_lifecycle("_ddr_thread", "_ddr_worker"):
+            return
+        if self._closing:
+            self._pending_ddr_refresh = False
+            return
         self._ddr_update_controls()
         if self._pending_ddr_refresh:
             self._pending_ddr_refresh = False
@@ -2513,11 +2537,11 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._action_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._action_thread_finished)
         self._action_thread = thread
         self._action_worker = worker
+        self._track_worker_lifecycle(
+            "_action_thread", "_action_worker", thread, worker, self._action_thread_finished
+        )
         self._set_busy(True)
         self._set_status(f"Executing {request.action.replace('_', ' ')} for {request.record_id}…")
         thread.start()
@@ -2546,12 +2570,11 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _action_thread_finished(self) -> None:
-        thread = self._action_thread
-        self._action_thread = None
-        self._action_worker = None
-        self._set_busy(False)
-        if thread is not None:
-            thread.deleteLater()
+        if (
+            self._complete_worker_lifecycle("_action_thread", "_action_worker")
+            and not self._closing
+        ):
+            self._set_busy(False)
 
     @Slot(QModelIndex, QModelIndex)
     def _conflict_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
@@ -2725,6 +2748,45 @@ class MainWindow(QMainWindow):
     def _verify_citations_from_button(self) -> None:
         self.request_review(verify_citations=True)
 
+    def _track_worker_lifecycle(
+        self,
+        thread_name: str,
+        worker_name: str,
+        thread: QThread,
+        worker: Any,
+        finished_slot: Any,
+    ) -> None:
+        """Keep worker ownership until deferred QObject deletion and QThread exit."""
+        destroyed = threading.Event()
+        self._worker_destroyed_events[thread_name] = destroyed
+        worker.destroyed.connect(
+            lambda *_args: destroyed.set(),
+            Qt.ConnectionType.DirectConnection,
+        )
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(finished_slot)
+
+    def _complete_worker_lifecycle(self, thread_name: str, worker_name: str) -> bool:
+        """Release Python handles only after worker destruction and thread exit are proven."""
+        thread = getattr(self, thread_name)
+        destroyed = self._worker_destroyed_events.get(thread_name)
+        if thread is None or destroyed is None:
+            self._set_status(f"Worker lifecycle evidence is missing for {thread_name}.", error=True)
+            return False
+        if not thread.wait(self._worker_join_timeout_ms):
+            self._set_status(f"QThread {thread_name} did not fully exit.", error=True)
+            return False
+        if not destroyed.is_set():
+            self._set_status(
+                f"Worker object for {thread_name} did not reach destruction.", error=True
+            )
+            return False
+        thread.deleteLater()
+        setattr(self, thread_name, None)
+        setattr(self, worker_name, None)
+        self._worker_destroyed_events.pop(thread_name, None)
+        return True
+
     def owned_workers_running(self) -> bool:
         """True when a close would have to join a live worker.
 
@@ -2732,11 +2794,13 @@ class MainWindow(QMainWindow):
         ``thread.wait()`` after quit. On the CI host that wait does not return
         while the worker is still alive, which would defeat the shutdown budget.
         """
-        return any(
+        if any(
             thread.isRunning()
             for name in _WORKER_THREAD_ATTRS
             if (thread := getattr(self, name, None)) is not None
-        )
+        ):
+            return True
+        return any(not event.is_set() for event in self._worker_destroyed_events.values())
 
     def closeEvent(self, event: QCloseEvent) -> None:
         threads = [
@@ -2759,6 +2823,19 @@ class MainWindow(QMainWindow):
                     self._set_status("Waiting for a review worker to finish.", error=True)
                     event.ignore()
                     return
+        for thread_name, worker_destroyed in tuple(self._worker_destroyed_events.items()):
+            thread = getattr(self, thread_name)
+            if thread is not None and thread.isRunning():
+                self._set_status("Waiting for a worker thread to exit.", error=True)
+                event.ignore()
+                return
+            if not worker_destroyed.is_set():
+                self._set_status("Waiting for a worker object to be destroyed.", error=True)
+                event.ignore()
+                return
+        self._closing = True
+        self._pending_intake_refresh = False
+        self._pending_ddr_refresh = False
         self.controller.close()
         event.accept()
 

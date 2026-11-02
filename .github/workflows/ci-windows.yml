@@ -114,7 +114,9 @@ jobs:
 
       - name: Test suite
         shell: pwsh
-        run: python tools/ci_pytest.py -- --junitxml=pytest-junit.xml
+        run: |
+          'NOT RUN — pytest step has not started' | Set-Content -Encoding utf8 pytest-run-state.txt
+          python tools/ci_pytest.py --state-file pytest-run-state.txt -- --junitxml=pytest-junit.xml
 
       - name: Count datetime adapter warnings
         if: always()
@@ -143,23 +145,18 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          if (-not (Test-Path pytest-junit.xml) -or -not (Test-Path pytest-exit.txt) -or -not (Test-Path pytest-output.txt)) {
-            Write-Output "::notice::pytest-totals: NOT RUN — prerequisite failed (pytest never ran)"
-            Write-Output "::notice::pytest-junit: NOT RUN"
-            Write-Output "::notice::pytest-exit: NOT RUN"
-            Write-Output "::notice::SKIPPED — prerequisite failed" >> $env:GITHUB_STEP_SUMMARY
-            if (-not (Test-Path pytest-totals.json)) {
-              '{"collected":0,"passed":0,"failed":0,"errors":0,"skipped":0,"xfailed":0,"xpassed":0,"exit":null,"runtime":0}' | Out-File -Encoding utf8 pytest-totals.json
+          $state = if (Test-Path pytest-run-state.txt) { (Get-Content pytest-run-state.txt -Raw).Trim() } else { "" }
+          if (-not $state -or $state.StartsWith("NOT RUN")) {
+            if (-not $state) {
+              [IO.File]::WriteAllText("pytest-run-state.txt", "NOT RUN — pytest prerequisite did not start`n", [Text.UTF8Encoding]::new($false))
             }
-            if (-not (Test-Path pytest-junit.xml)) {
-              '<?xml version="1.0" encoding="utf-8"?><testsuites></testsuites>' | Out-File -Encoding utf8 pytest-junit.xml
-            }
-            if (-not (Test-Path pytest-output.txt)) {
-              'NOT RUN — prerequisite failed' | Out-File -Encoding utf8 pytest-output.txt
-            }
+            Write-Output "::notice::pytest_result: NOT RUN — pytest prerequisite did not start"
+            Write-Output "::notice::pytest-junit: NOT PRODUCED"
+            Write-Output "::notice::pytest-totals: NOT PRODUCED"
+            "### Pytest totals — NOT RUN" >> $env:GITHUB_STEP_SUMMARY
             exit 0
           }
-          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt
+          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt --output pytest-output.txt --state-file pytest-run-state.txt
 
       - name: Publish pytest results
         if: always()
@@ -171,6 +168,7 @@ jobs:
             pytest-junit.xml
             pytest-totals.json
             pytest-exit.txt
+            pytest-run-state.txt
             dependency-audit.json
           if-no-files-found: warn
 
@@ -270,7 +268,9 @@ jobs:
 
       - name: Offscreen UI tests
         shell: pwsh
-        run: python tools/ci_pytest.py --output qt-logs/pytest-output.txt --exit-file qt-logs/pytest-exit.txt -- tests/ui --junitxml=qt-logs/pytest-junit.xml
+        run: |
+          [IO.File]::WriteAllText("qt-logs/pytest-run-state.txt", "NOT RUN — pytest step has not started`n", [Text.UTF8Encoding]::new($false))
+          python tools/ci_pytest.py --output qt-logs/pytest-output.txt --exit-file qt-logs/pytest-exit.txt --state-file qt-logs/pytest-run-state.txt -- tests/ui --junitxml=qt-logs/pytest-junit.xml
 
       # The fail-closed shutdown is the one path that has faulted natively on
       # Windows. This experiment repeats it and reports every attempt: a later
@@ -318,12 +318,25 @@ jobs:
       - name: Record UI totals
         if: always()
         shell: pwsh
-        run: python tools/pytest_totals.py --stats pytest-totals.json --junit qt-logs/pytest-junit.xml --exit-file qt-logs/pytest-exit.txt
+        run: |
+          $state = if (Test-Path qt-logs/pytest-run-state.txt) { (Get-Content qt-logs/pytest-run-state.txt -Raw).Trim() } else { "" }
+          if (-not $state -or $state.StartsWith("NOT RUN")) {
+            Write-Output "::notice::pytest_result: NOT RUN — pytest prerequisite did not start"
+            Write-Output "::notice::pytest-junit: NOT PRODUCED"
+            Write-Output "::notice::pytest-totals: NOT PRODUCED"
+            "### Qt UI pytest totals — NOT RUN" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          python tools/pytest_totals.py --stats pytest-totals.json --junit qt-logs/pytest-junit.xml --exit-file qt-logs/pytest-exit.txt --output qt-logs/pytest-output.txt --state-file qt-logs/pytest-run-state.txt
 
       - name: Qt-enabled skip audit (fail-closed — no Qt-unavailable skips when Qt present)
         if: always()
         shell: pwsh
         run: |
+          if (-not (Test-Path qt-logs/pytest-junit.xml)) {
+            Write-Output "::notice::qt-skip-audit: NOT RUN — pytest JUnit report NOT PRODUCED"
+            exit 0
+          }
           python -c "import sys; from pathlib import Path; from tools.pytest_totals import unexpected_skips_qt_enabled; bad=unexpected_skips_qt_enabled(Path('qt-logs/pytest-junit.xml')); print(f'unexpected Qt skips (Qt-enabled audit): {bad}'); sys.exit(1 if bad else 0)"
 
       - name: Publish Windows UI logs

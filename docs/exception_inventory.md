@@ -87,10 +87,10 @@ to be found by somebody else.
 | `src/drilling_intelligence/search/service.py` | 699 | `Exception` | reported | an unwritable data directory must not stop the app |
 | `src/drilling_intelligence/ui/controller.py` | 105 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
-| `src/drilling_intelligence/ui/main_window.py` | 987 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
-| `src/drilling_intelligence/ui/main_window.py` | 1578 | `Exception` | reported | export must not crash the window |
-| `src/drilling_intelligence/ui/main_window.py` | 2402 | `Exception` | reported | keep selection/read rendering usable |
-| `src/drilling_intelligence/ui/main_window.py` | 2579 | `Exception` | reported | preserve read-side selection on capability errors |
+| `src/drilling_intelligence/ui/main_window.py` | 1000 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
+| `src/drilling_intelligence/ui/main_window.py` | 1586 | `Exception` | reported | export must not crash the window |
+| `src/drilling_intelligence/ui/main_window.py` | 2426 | `Exception` | reported | keep selection/read rendering usable |
+| `src/drilling_intelligence/ui/main_window.py` | 2602 | `Exception` | reported | preserve read-side selection on capability errors |
 | `src/drilling_intelligence/ui/worker.py` | 70 | `Exception` | reported | thread boundary reports failures without hiding them |
 | `src/drilling_intelligence/ui/worker.py` | 130 | `Exception` | reported | report unexpected worker failures to the UI |
 | `src/drilling_intelligence/ui/worker.py` | 219 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |
@@ -107,12 +107,12 @@ to be found by somebody else.
 | `tools/qt_coverage_gate.py` | 618 | `Exception` | reported | any parsing error is a validation error |
 | `tools/qt_coverage_gate.py` | 794 | `Exception` | suppressed | noqa marker |
 | `tools/qt_coverage_gate.py` | 675 | `Exception` | reported | noqa marker |
-| `tools/qt_stability_evidence.py` | 66 | `Exception` | suppressed | noqa marker |
-| `tools/qt_stability_evidence.py` | 92 | `Exception` | reported | noqa marker |
-| `tools/qt_stability_evidence.py` | 143 | `Exception` | reported | noqa marker |
-| `tools/qt_stability_evidence.py` | 166 | `Exception` | suppressed | noqa marker |
-| `tools/qt_stability_evidence.py` | 340 | `Exception` | reported | noqa marker |
-| `tools/qt_stability_evidence.py` | 284 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 67 | `Exception` | suppressed | noqa marker |
+| `tools/qt_stability_evidence.py` | 93 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 144 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 167 | `Exception` | suppressed | noqa marker |
+| `tools/qt_stability_evidence.py` | 341 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 285 | `Exception` | reported | noqa marker |
 
 ## Totals
 

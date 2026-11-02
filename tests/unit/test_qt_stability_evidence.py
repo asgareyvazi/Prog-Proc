@@ -10,7 +10,7 @@ from pathlib import Path
 def _make_valid_stability(tmp_path: Path, repeats=2):
     """Create a minimal valid stability directory for testing.
 
-    Uses the same layout as tools/qt_stability.py: two historic nodes, each with repeats attempts.
+    Uses the same layout as tools/qt_stability.py: every historic node has repeats attempts.
     """
     import importlib.util
 

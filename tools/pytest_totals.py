@@ -362,6 +362,9 @@ _NOTICE_PREFIXES = (
     "runtime:",
     "stats:",
     "junit:",
+    "pytest_result:",
+    "output:",
+    "run_state:",
 )
 
 
@@ -430,11 +433,56 @@ def _load_stats(path: Path) -> dict[str, int | float]:
     return totals
 
 
+def _read_run_state(state_path: Path | None) -> str:
+    if state_path is None or not state_path.is_file():
+        return "NOT RECORDED"
+    try:
+        return state_path.read_text(encoding="utf-8", errors="replace").strip() or "EMPTY"
+    except OSError:
+        return "UNREADABLE"
+
+
+def _process_result(
+    exit_code: int | None,
+    output_path: Path | None,
+    state_path: Path | None = None,
+) -> str:
+    """Classify process-level evidence without treating absent reports as a test result."""
+    run_state = _read_run_state(state_path)
+    output = ""
+    if output_path is not None and output_path.is_file():
+        try:
+            output = output_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return "OUTPUT UNREADABLE"
+    elif run_state == "RUNNING":
+        return "PROCESS INTERRUPTED BEFORE EXIT RECORD"
+    else:
+        return "OUTPUT NOT PRODUCED"
+    if re.search(
+        r"Fatal Python error:\s*(?:Aborted|Segmentation fault|Windows fatal exception)",
+        output,
+        re.I,
+    ):
+        return "NATIVE PYTHON ABORT"
+    if "INTERNALERROR>" in output or "INTERNALERROR:" in output:
+        return "PYTEST INTERNAL ERROR"
+    if run_state == "RUNNING":
+        return "PROCESS INTERRUPTED BEFORE EXIT RECORD"
+    if exit_code == 3:
+        return "PROCESS EXIT 3 (PYTEST INTERNAL OR ABNORMAL PROCESS EXIT)"
+    if exit_code not in (None, 0):
+        return f"PROCESS EXIT {exit_code}"
+    return "PROCESS EXIT 0"
+
+
 def publish(
     stats_path: Path,
     junit_path: Path,
     exit_file: Path | None,
     summary_path: Path | None,
+    output_path: Path | None = None,
+    state_path: Path | None = None,
 ) -> int:
     """Print totals and fail unless the required records exist, agree, and passed.
 
@@ -452,8 +500,11 @@ def publish(
         text = "\n".join(
             [
                 "pytest totals",
-                f"stats: {'present' if stats_path.is_file() else 'missing'}",
-                f"junit: {'present' if junit_path.is_file() else 'missing'}",
+                f"stats: {'present' if stats_path.is_file() else 'missing (NOT PRODUCED)'}",
+                f"junit: {'present' if junit_path.is_file() else 'missing (NOT PRODUCED)'}",
+                f"output: {'present' if output_path is not None and output_path.is_file() else 'NOT PRODUCED'}",
+                f"run_state: {_read_run_state(state_path)}",
+                f"pytest_result: {_process_result(shell_exit, output_path, state_path)}",
                 f"shell_exit: {exit_problem or shell_exit if exit_file is not None else 'not-requested'}",
             ]
         )
@@ -477,6 +528,10 @@ def publish(
         problems.append(f"exit: shell {shell_exit} != session {session_exit}")
     if _int(recorded.get("xpassed")):
         problems.append(f"xpassed: {recorded.get('xpassed')} unexpected pass is not a release pass")
+    if _int(recorded.get("collected")) > 0 and _int(recorded.get("skipped")) == _int(
+        recorded.get("collected")
+    ):
+        problems.append("all tests skipped: no test executed")
     if skips:
         problems.append("unexpected skip:\n" + "\n".join(skips))
     recorded = dict(recorded)
@@ -485,6 +540,9 @@ def publish(
     recorded["exit"] = shell_exit if shell_exit is not None else session_exit
     text = format_totals(recorded)
     text += f"\nshell_exit: {recorded['shell_exit']}\nsession_exit: {session_exit}"
+    text += f"\noutput: {'present' if output_path is not None and output_path.is_file() else 'NOT PRODUCED'}"
+    text += f"\nrun_state: {_read_run_state(state_path)}"
+    text += f"\npytest_result: {_process_result(shell_exit, output_path, state_path)}"
     if problems:
         text += "\ndisagreement:\n" + "\n".join(problems)
     _write_summary(summary_path, text)
@@ -533,13 +591,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stats", type=Path, required=True)
     parser.add_argument("--junit", type=Path, required=True)
     parser.add_argument("--exit-file", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--state-file", type=Path, default=None)
     parser.add_argument("--summary", type=Path, default=None)
     args = parser.parse_args(argv)
     summary = args.summary
     if summary is None and os.environ.get("GITHUB_STEP_SUMMARY"):
         summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
     try:
-        return publish(args.stats, args.junit, args.exit_file, summary)
+        return publish(
+            args.stats, args.junit, args.exit_file, summary, args.output, args.state_file
+        )
     except (
         ET.ParseError,
         ValueError,

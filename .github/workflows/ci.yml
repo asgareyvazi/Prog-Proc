@@ -122,16 +122,11 @@ jobs:
       - name: Test suite
         # The desktop UI tests skip themselves when Qt cannot load, which is the intended headless
         # behaviour - this job does not install the optional `ui` extra, and a skip is reported as
-        # a skip rather than being dressed up as a pass. One quiet level comes from pytest addopts;
-        # a second -q would hide the summary line. The session-stats file and JUnit are the
-        # durable totals if that line is lost; both are required after the process exits.
-        run: |
-          set -o pipefail
-          set +e
-          pytest ${{ matrix.coverage-flags }} --junitxml=pytest-junit.xml 2>&1 | tee pytest-output.txt
-          status=${PIPESTATUS[0]}
-          echo "$status" > pytest-exit.txt
-          exit "$status"
+        # a skip rather than being dressed up as a pass. The runner streams output to disk so an
+        # abnormal pytest exit leaves its partial transcript and exact child exit code.
+        run: >-
+          python tools/ci_pytest.py --output pytest-output.txt --exit-file pytest-exit.txt
+          --state-file pytest-run-state.txt -- ${{ matrix.coverage-flags }} --junitxml=pytest-junit.xml
 
       # The artifact host is not a substitute for this check. The step reads the
       # pytest output the job just wrote and fails if the deprecated adapter remains.
@@ -163,23 +158,18 @@ jobs:
       - name: Record test totals
         if: always()
         run: |
-          if [ ! -f pytest-junit.xml ] || [ ! -f pytest-exit.txt ] || [ ! -f pytest-output.txt ]; then
-            echo "::notice::pytest-totals: NOT RUN — prerequisite failed (pytest never ran)"
-            echo "::notice::pytest-junit: NOT RUN"
-            echo "::notice::pytest-exit: NOT RUN"
-            echo "::notice::SKIPPED — prerequisite failed" >> "$GITHUB_STEP_SUMMARY"
-            if [ ! -f pytest-totals.json ]; then
-              echo '{"collected":0,"passed":0,"failed":0,"errors":0,"skipped":0,"xfailed":0,"xpassed":0,"exit":null,"runtime":0}' > pytest-totals.json
+          if [ ! -f pytest-run-state.txt ] || grep -q '^NOT RUN' pytest-run-state.txt; then
+            if [ ! -f pytest-run-state.txt ]; then
+              echo "NOT RUN — pytest prerequisite did not start" > pytest-run-state.txt
             fi
-            if [ ! -f pytest-junit.xml ]; then
-              echo '<?xml version="1.0" encoding="utf-8"?><testsuites></testsuites>' > pytest-junit.xml
-            fi
-            if [ ! -f pytest-output.txt ]; then
-              echo "NOT RUN — prerequisite failed" > pytest-output.txt
-            fi
+            echo "::notice::pytest_result: NOT RUN — pytest prerequisite did not start"
+            echo "::notice::pytest-junit: NOT PRODUCED"
+            echo "::notice::pytest-totals: NOT PRODUCED"
+            echo "### Pytest totals — NOT RUN" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt
+          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml \
+            --exit-file pytest-exit.txt --output pytest-output.txt --state-file pytest-run-state.txt
 
       # The coverage baseline is a recorded number, not a gate.  It is published as a notice
       # so it can be read from the run page and from the API without downloading the
@@ -277,6 +267,7 @@ jobs:
             pytest-junit.xml
             pytest-totals.json
             pytest-exit.txt
+            pytest-run-state.txt
             dependency-audit.json
           if-no-files-found: warn
 

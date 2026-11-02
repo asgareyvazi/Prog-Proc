@@ -92,8 +92,81 @@ def test_a_missing_record_fails_even_if_the_other_file_exists(tmp_path: Path) ->
     code = publish(tmp_path / "missing.json", junit, None, summary)
     assert code == 1
     text = summary.read_text(encoding="utf-8")
-    assert "stats: missing" in text
+    assert "stats: missing (NOT PRODUCED)" in text
     assert "junit: present" in text
+
+
+def test_native_abort_is_distinct_from_a_normal_pytest_failure(tmp_path: Path) -> None:
+    output = tmp_path / "pytest-output.txt"
+    output.write_text("Fatal Python error: Aborted\nCurrent thread ...\n", encoding="utf-8")
+    exit_file = tmp_path / "pytest-exit.txt"
+    exit_file.write_text("3\n", encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    assert (
+        publish(
+            tmp_path / "absent-stats.json",
+            tmp_path / "absent-junit.xml",
+            exit_file,
+            summary,
+            output,
+        )
+        == 1
+    )
+    text = summary.read_text(encoding="utf-8")
+    assert "pytest_result: NATIVE PYTHON ABORT" in text
+    assert "shell_exit: 3" in text
+    assert "stats: missing (NOT PRODUCED)" in text
+    assert "junit: missing (NOT PRODUCED)" in text
+    assert "passed:" not in text
+
+
+def test_exit_three_without_fatal_marker_is_not_invented_as_native_abort(tmp_path: Path) -> None:
+    output = tmp_path / "pytest-output.txt"
+    output.write_text("pytest internal diagnostic unavailable\n", encoding="utf-8")
+    exit_file = tmp_path / "pytest-exit.txt"
+    exit_file.write_text("3\n", encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    assert (
+        publish(
+            tmp_path / "absent-stats.json",
+            tmp_path / "absent-junit.xml",
+            exit_file,
+            summary,
+            output,
+        )
+        == 1
+    )
+    assert "PROCESS EXIT 3 (PYTEST INTERNAL OR ABNORMAL PROCESS EXIT)" in summary.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_all_tests_skipped_is_not_a_passing_suite(tmp_path: Path) -> None:
+    stats = tmp_path / "pytest-totals.json"
+    junit = tmp_path / "pytest-junit.xml"
+    exit_file = tmp_path / "pytest-exit.txt"
+    summary = tmp_path / "summary.md"
+    _stats_file(
+        stats,
+        collected=1,
+        passed=0,
+        failed=0,
+        errors=0,
+        skipped=1,
+        xfailed=0,
+        xpassed=0,
+        exit=0,
+    )
+    junit.write_text(
+        '<testsuite name="pytest" errors="0" failures="0" skipped="1" tests="1" time="0.1">'
+        '<testcase classname="tests.integration.test_phase1_finalization" '
+        'name="test_postgresql_claim_is_qualified_or_withdrawn"><skipped message="PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; no disposable PostgreSQL service job exists."/></testcase>'
+        "</testsuite>",
+        encoding="utf-8",
+    )
+    exit_file.write_text("0\n", encoding="utf-8")
+    assert publish(stats, junit, exit_file, summary) == 1
+    assert "all tests skipped: no test executed" in summary.read_text(encoding="utf-8")
 
 
 def _clean_junit(tests: int = 2, failed: int = 0, skipped: int = 0) -> str:

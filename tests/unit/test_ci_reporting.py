@@ -15,18 +15,25 @@ def test_ci_reports_not_run_when_prerequisite_failed():
     # Count adapter warnings must handle missing file as NOT RUN
     assert "pytest-output: NOT RUN — prerequisite failed" in ci
     assert "datetime-adapter-warnings: NOT RUN" in ci
-    # Record totals must handle missing JUnit/exit as NOT RUN
-    assert "pytest-totals: NOT RUN — prerequisite failed" in ci
-    # Publish must not error when files absent
+    # Record totals must preserve missing evidence as NOT PRODUCED, never empty fixtures.
+    assert "pytest-junit: NOT PRODUCED" in ci
+    assert "pytest-totals: NOT PRODUCED" in ci
+    assert "pytest-run-state.txt" in ci
+    assert "<testsuites></testsuites>" not in ci
+    assert '"collected":0,"passed":0' not in ci
+    # Publish must warn about absent artifacts rather than manufacturing test reports.
     assert "if-no-files-found: warn" in ci
-    # Must not have the old fabricated failure
-    assert "test -f pytest-output.txt" not in ci or "if [ ! -f pytest-output.txt ]" in ci
 
 
 def test_ci_windows_reports_not_run_when_prerequisite_failed():
     ciw = Path(".github/workflows/ci-windows.yml").read_text(encoding="utf-8")
     assert "pytest-output: NOT RUN — prerequisite failed" in ciw
-    assert "pytest-totals: NOT RUN — prerequisite failed" in ciw
+    assert "pytest-junit: NOT PRODUCED" in ciw
+    assert "pytest-totals: NOT PRODUCED" in ciw
+    assert "pytest-run-state.txt" in ciw
+    assert "<testsuites></testsuites>" not in ciw
+    assert '"collected":0,"passed":0' not in ciw
+    assert "qt-skip-audit: NOT RUN — pytest JUnit report NOT PRODUCED" in ciw
     assert "if-no-files-found: warn" in ciw
     # Old code used Write-Error for missing output
     assert 'Write-Error "pytest-output.txt is missing"' not in ciw

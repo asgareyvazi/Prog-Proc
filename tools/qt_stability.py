@@ -22,6 +22,7 @@ from pathlib import Path
 HISTORIC_NODES = (
     "tests/ui/test_workbench.py::test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail",
     "tests/ui/test_workbench.py::test_presentation_filter_conflict_detail_and_explicit_error_states",
+    "tests/ui/test_intake_workbench.py::test_intake_page_uses_worker_and_renders_persisted_queue",
 )
 
 

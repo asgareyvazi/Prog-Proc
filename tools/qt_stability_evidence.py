@@ -11,7 +11,7 @@ verifier on ``qt-logs/stability`` is a path-contract mismatch: it expects
 Checks (non-exhaustive, see mission §2.3):
 - manifest.json / manifest.sha256 existence and hash agreement
 - runtime versions present and consistent
-- exactly two historic nodes, no extras, no missing
+- exactly the declared historic nodes, no extras, no missing
 - each node has exactly ``repeats`` records (default 15), ordinals 1..repeats in order, no duplicates
 - each log exists, non-empty header, matches recorded bytes/sha256, header fields agree
 - summary.txt reconciles to manifest and logs
@@ -31,6 +31,7 @@ from pathlib import Path
 HISTORIC_NODES = (
     "tests/ui/test_workbench.py::test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail",
     "tests/ui/test_workbench.py::test_presentation_filter_conflict_detail_and_explicit_error_states",
+    "tests/ui/test_intake_workbench.py::test_intake_page_uses_worker_and_renders_persisted_queue",
 )
 
 _HEADER = re.compile(r"ordinal=(\d+) node=(\S+) exit=(-?\d+) duration_s=(\S+) reason=(.*)$")
@@ -341,7 +342,7 @@ def verify_stability_dir(root: Path, *, repeats: int = 15) -> list[str]:
             summary = ""
             problems.append("summary.txt cannot be read")
         if summary:
-            # must contain both historic nodes
+            # must contain every declared historic node
             for node in HISTORIC_NODES:
                 if node not in summary:
                     problems.append(f"summary.txt missing node {node}")
