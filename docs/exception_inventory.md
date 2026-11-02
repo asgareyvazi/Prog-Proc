@@ -107,12 +107,12 @@ to be found by somebody else.
 | `tools/qt_coverage_gate.py` | 618 | `Exception` | reported | any parsing error is a validation error |
 | `tools/qt_coverage_gate.py` | 794 | `Exception` | suppressed | noqa marker |
 | `tools/qt_coverage_gate.py` | 675 | `Exception` | reported | noqa marker |
-| `tools/qt_stability_evidence.py` | 67 | `Exception` | suppressed | noqa marker |
-| `tools/qt_stability_evidence.py` | 93 | `Exception` | reported | noqa marker |
-| `tools/qt_stability_evidence.py` | 144 | `Exception` | reported | noqa marker |
-| `tools/qt_stability_evidence.py` | 167 | `Exception` | suppressed | noqa marker |
-| `tools/qt_stability_evidence.py` | 341 | `Exception` | reported | noqa marker |
-| `tools/qt_stability_evidence.py` | 285 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 69 | `Exception` | suppressed | noqa marker |
+| `tools/qt_stability_evidence.py` | 108 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 159 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 182 | `Exception` | suppressed | noqa marker |
+| `tools/qt_stability_evidence.py` | 356 | `Exception` | reported | noqa marker |
+| `tools/qt_stability_evidence.py` | 300 | `Exception` | reported | noqa marker |
 
 ## Totals
 
