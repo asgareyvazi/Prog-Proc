@@ -2,10 +2,12 @@
 """Standalone verifier for the Windows/Linux repeated-workbench stability evidence.
 
 This tool validates the ``qt-logs/stability`` directory produced by
-``tools/qt_stability.py --repeats 15``.  It is intentionally separate from
-``tools/qt_evidence.py``, which validates the full release archive (collection,
-versions, shutdown, workbench summary, etc.).  Invoking the full-archive
-verifier on ``qt-logs/stability`` is a path-contract mismatch: it expects
+``tools/qt_stability.py --repeats 15``. By default it requires all historic
+nodes; ``--node`` narrows the exact expected node for independently scheduled
+matrix jobs without weakening per-attempt checks. It is intentionally separate
+from ``tools/qt_evidence.py``, which validates the full release archive
+(collection, versions, shutdown, workbench summary, etc.). Invoking the full-
+archive verifier on ``qt-logs/stability`` is a path-contract mismatch: it expects
 ``collection.txt`` at the root and a nested ``stability/`` directory.
 
 Checks (non-exhaustive, see mission §2.3):
@@ -68,8 +70,21 @@ def _parse_header(text: str):
         return None
 
 
-def verify_stability_dir(root: Path, *, repeats: int = 15) -> list[str]:
+def verify_stability_dir(
+    root: Path,
+    *,
+    repeats: int = 15,
+    expected_nodes: tuple[str, ...] | None = None,
+) -> list[str]:
     problems: list[str] = []
+    expected_nodes = HISTORIC_NODES if expected_nodes is None else expected_nodes
+    if not expected_nodes:
+        return ["no expected stability nodes were configured"]
+    if len(expected_nodes) != len(set(expected_nodes)):
+        return ["expected stability nodes contain duplicates"]
+    unknown_nodes = set(expected_nodes) - set(HISTORIC_NODES)
+    if unknown_nodes:
+        return [f"unexpected expected stability nodes: {sorted(unknown_nodes)}"]
     root = root.resolve()
     if not root.is_dir():
         return [f"stability root is not a directory: {root}"]
@@ -162,7 +177,7 @@ def verify_stability_dir(root: Path, *, repeats: int = 15) -> list[str]:
     if not claimed_pass and nodes:
         try:
             total_failed = sum(int(n.get("failed", 1)) for n in nodes if isinstance(n, dict))
-            if total_failed == 0 and len(nodes) == len(HISTORIC_NODES):
+            if total_failed == 0 and len(nodes) == len(expected_nodes):
                 claimed_pass = True
         except Exception:  # noqa: BLE001
             pass
@@ -174,7 +189,7 @@ def verify_stability_dir(root: Path, *, repeats: int = 15) -> list[str]:
                 problems.append(f"successful run missing {key} version (got {val!r})")
 
     # attempts count
-    expected_attempts = repeats * len(HISTORIC_NODES)
+    expected_attempts = repeats * len(expected_nodes)
     if attempts != expected_attempts:
         problems.append(f"manifest attempts {attempts} != expected {expected_attempts}")
 
@@ -192,12 +207,12 @@ def verify_stability_dir(root: Path, *, repeats: int = 15) -> list[str]:
             problems.append(f"duplicate node in manifest: {name}")
             continue
         seen_nodes.add(name)
-        if name not in HISTORIC_NODES:
+        if name not in expected_nodes:
             problems.append(f"unexpected node in manifest: {name}")
 
-    if seen_nodes != set(HISTORIC_NODES):
-        missing = set(HISTORIC_NODES) - seen_nodes
-        extra = seen_nodes - set(HISTORIC_NODES)
+    if seen_nodes != set(expected_nodes):
+        missing = set(expected_nodes) - seen_nodes
+        extra = seen_nodes - set(expected_nodes)
         if missing:
             problems.append(f"manifest missing historic nodes: {sorted(missing)}")
         if extra:
@@ -209,7 +224,7 @@ def verify_stability_dir(root: Path, *, repeats: int = 15) -> list[str]:
         if not isinstance(node_obj, dict):
             continue
         name = node_obj.get("node")
-        if not isinstance(name, str) or name not in HISTORIC_NODES:
+        if not isinstance(name, str) or name not in expected_nodes:
             continue
         count = node_obj.get("attempts")
         failed = node_obj.get("failed")
@@ -343,12 +358,12 @@ def verify_stability_dir(root: Path, *, repeats: int = 15) -> list[str]:
             problems.append("summary.txt cannot be read")
         if summary:
             # must contain every declared historic node
-            for node in HISTORIC_NODES:
+            for node in expected_nodes:
                 if node not in summary:
                     problems.append(f"summary.txt missing node {node}")
             # must contain stability nodes counts
-            if f"stability nodes: {len(HISTORIC_NODES)}" not in summary:
-                problems.append(f"summary missing 'stability nodes: {len(HISTORIC_NODES)}'")
+            if f"stability nodes: {len(expected_nodes)}" not in summary:
+                problems.append(f"summary missing 'stability nodes: {len(expected_nodes)}'")
             if "stability result:" not in summary:
                 problems.append("summary missing 'stability result:'")
             # check that failed counts match manifest
@@ -427,9 +442,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path, nargs="?", default=Path("qt-logs/stability"))
     parser.add_argument("--repeats", type=int, default=15)
+    parser.add_argument(
+        "--node",
+        action="append",
+        choices=HISTORIC_NODES,
+        help="verify only the named historic node (repeatable; defaults to all nodes)",
+    )
     parser.add_argument("--json", action="store_true", help="emit json problems")
     args = parser.parse_args(argv)
-    problems = verify_stability_dir(args.root, repeats=args.repeats)
+    expected_nodes = tuple(args.node) if args.node else None
+    problems = verify_stability_dir(
+        args.root,
+        repeats=args.repeats,
+        expected_nodes=expected_nodes,
+    )
     if problems:
         print("qt stability evidence: FAIL")
         for p in problems:
@@ -440,7 +466,8 @@ def main(argv: list[str] | None = None) -> int:
     print("qt stability evidence: PASS")
     print(f"  root: {args.root}")
     print(f"  repeats: {args.repeats}")
-    print(f"  nodes: {len(HISTORIC_NODES)} x {args.repeats} = {len(HISTORIC_NODES) * args.repeats}")
+    node_count = len(expected_nodes) if expected_nodes is not None else len(HISTORIC_NODES)
+    print(f"  nodes: {node_count} x {args.repeats} = {node_count * args.repeats}")
     if args.json:
         print(json.dumps({"ok": True, "problems": []}, indent=2))
     return 0
