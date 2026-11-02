@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 
 from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.database.models import AuditEvent, DdrActivity, DdrReport, WellOperation
@@ -189,6 +190,64 @@ def test_ddr_draft_submit_review_and_revision_are_explicit(
 
     with pytest.raises(RuntimeError, match="cannot downgrade 0026 while authored DDR revisions"):
         upgrade(db.engine, "0025", allow_downgrade=True)
+
+
+def test_ddr_activity_replacement_failure_rolls_back_report_activities_and_audit(
+    db, committed_well_id
+) -> None:
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-10-31",
+        summary="Original summary",
+        activities=[{"operation_type": "drilling", "label": "Original activity"}],
+        actor="author-1",
+        reason="Create original draft",
+    )
+    before = service.get(draft["report_id"])
+
+    # Force a database failure after the old activities have been deleted and flushed.
+    # The service unit-of-work must restore both those rows and any preceding report edits.
+    with db.engine.begin() as connection:
+        connection.execute(
+            text(
+                """CREATE TRIGGER reject_ddr_activity_replacement
+                BEFORE INSERT ON ddr_activity
+                WHEN NEW.label = 'Reject replacement'
+                BEGIN SELECT RAISE(ABORT, 'injected DDR activity failure'); END"""
+            )
+        )
+    try:
+        with pytest.raises(IntegrityError, match="injected DDR activity failure"):
+            service.save_draft(
+                draft["report_id"],
+                expected_updated_at=before["updated_at"],
+                report_date="2026-10-31",
+                summary="This update must roll back",
+                activities=[
+                    {"operation_type": "tripping", "label": "Reject replacement"}
+                ],
+                actor="author-2",
+                reason="Attempt replacement with injected failure",
+            )
+    finally:
+        with db.engine.begin() as connection:
+            connection.execute(text("DROP TRIGGER reject_ddr_activity_replacement"))
+
+    after = service.get(draft["report_id"])
+    assert after["summary"] == before["summary"]
+    assert after["updated_at"] == before["updated_at"]
+    assert after["activities"] == before["activities"]
+    with db.read_only() as session:
+        audit = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.subject_type == "ddr_report",
+                    AuditEvent.subject_id == draft["report_id"],
+                )
+            )
+        )
+    assert [event.action for event in audit] == ["ddr.draft_created"]
 
 
 def test_ddr_rejects_unknown_operation_type_and_ambiguous_date(db, committed_well_id) -> None:
