@@ -8,8 +8,8 @@ to be found by somebody else.
 
 | file | line | catches | kind | reason |
 | --- | --- | --- | --- | --- |
-| `src/drilling_intelligence/cli/app.py` | 3846 | `Exception` | reported |  |
-| `src/drilling_intelligence/cli/app.py` | 3823 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 3953 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 3930 | `Exception` | reported |  |
 | `src/drilling_intelligence/core/provenance.py` | 397 | `Exception` | reported | pragma: no cover; defensive, third-party readers |
 | `src/drilling_intelligence/core/provenance.py` | 429 | `Exception` | suppressed | tolerate legacy/corrupt rows rather than fail a whole listing |
 | `src/drilling_intelligence/core/redact.py` | 220 | `Exception` | reported | a diagnostic may not raise, by definition |
