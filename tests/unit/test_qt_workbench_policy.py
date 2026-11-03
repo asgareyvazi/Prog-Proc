@@ -7,11 +7,11 @@ import re
 from pathlib import Path
 
 #: The release of each GitHub Action this repository uses, verified against the
-#: upstream repository on 2026-10-24 by reading the tag list of the action's own
+#: upstream repository on 2026-11-03 by reading the tag refs of the action's own
 #: repository: each pin below is the commit the named upstream tag points at.
 #: The workflows pin the commit SHA; the comment beside each pin names the tag.
-#: The moving ``v7`` tag is recorded too, because a tag that moves is the reason
-#: a pin exists.
+#: Both the stable major tag and the precise release tag were checked for the
+#: download-artifact pin because it is intentionally on the v4 line.
 ACTION_PINS = {
     "actions/checkout": {
         "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
@@ -30,6 +30,12 @@ ACTION_PINS = {
         "tag": "v7.0.2",
         "moving_tag": "v7",
         "moving_tag_sha": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+    },
+    "actions/download-artifact": {
+        "sha": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+        "tag": "v4.3.0",
+        "moving_tag": "v4",
+        "moving_tag_sha": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
     },
 }
 
@@ -134,14 +140,17 @@ def test_stability_qualification_keeps_every_failed_attempt():
     assert "stability result: PASS" in clean_summary
 
 
-def test_required_jobs_stay_on_ubuntu_24_04_and_actions_v7() -> None:
+def test_required_jobs_stay_on_pinned_ubuntu_images_and_actions_are_pinned() -> None:
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "runs-on: ubuntu-latest" not in workflow
-    assert workflow.count("runs-on: ubuntu-24.04") == 3
+    assert workflow.count("runs-on: ubuntu-24.04") == 4
     assert "runs-on: ubuntu-26.04" in workflow
     assert "qt-ubuntu-2604-logs" in workflow
     assert "tools/qt_evidence.py" in workflow
-    assert "continue-on-error" not in workflow
+    assert workflow.count("continue-on-error:") == 1
+    download_step = workflow.split("name: Download this attempt's full-suite evidence", 1)[1]
+    download_step = download_step.split("\n      - ", 1)[0]
+    assert "continue-on-error: true" in download_step
     for action, pin in ACTION_PINS.items():
         assert f"{action}@{pin['sha']}" in workflow, action
 

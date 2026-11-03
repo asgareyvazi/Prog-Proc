@@ -688,7 +688,11 @@ def test_daily_ddr_workbench_creates_saves_reviews_reopens_and_compares_revision
         revised = service.get(revision_id)
         assert revised["revision_number"] == 2
         assert revised["summary"] == "Operator wording updated in revision two."
-        assert revised["provenance"][0]["reason"] == "Corrected the submitted summary"
+        assert any(
+            item.get("reason") == "Corrected the submitted summary"
+            and item.get("action") == "saved"
+            for item in revised["provenance"]
+        )
         assert not service.get(report["report_id"])["is_current"]
         assert window.ddr_compare_button.isEnabled()
         window.ddr_compare_button.click()

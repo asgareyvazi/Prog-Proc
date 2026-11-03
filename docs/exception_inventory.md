@@ -8,8 +8,8 @@ to be found by somebody else.
 
 | file | line | catches | kind | reason |
 | --- | --- | --- | --- | --- |
-| `src/drilling_intelligence/cli/app.py` | 3953 | `Exception` | reported |  |
-| `src/drilling_intelligence/cli/app.py` | 3930 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 3959 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 3936 | `Exception` | reported |  |
 | `src/drilling_intelligence/core/provenance.py` | 397 | `Exception` | reported | pragma: no cover; defensive, third-party readers |
 | `src/drilling_intelligence/core/provenance.py` | 429 | `Exception` | suppressed | tolerate legacy/corrupt rows rather than fail a whole listing |
 | `src/drilling_intelligence/core/redact.py` | 220 | `Exception` | reported | a diagnostic may not raise, by definition |
@@ -87,10 +87,10 @@ to be found by somebody else.
 | `src/drilling_intelligence/search/service.py` | 699 | `Exception` | reported | an unwritable data directory must not stop the app |
 | `src/drilling_intelligence/ui/controller.py` | 105 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
-| `src/drilling_intelligence/ui/main_window.py` | 1000 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
-| `src/drilling_intelligence/ui/main_window.py` | 1614 | `Exception` | reported | export must not crash the window |
-| `src/drilling_intelligence/ui/main_window.py` | 2482 | `Exception` | reported | keep selection/read rendering usable |
-| `src/drilling_intelligence/ui/main_window.py` | 2664 | `Exception` | reported | preserve read-side selection on capability errors |
+| `src/drilling_intelligence/ui/main_window.py` | 1008 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
+| `src/drilling_intelligence/ui/main_window.py` | 1622 | `Exception` | reported | export must not crash the window |
+| `src/drilling_intelligence/ui/main_window.py` | 2573 | `Exception` | reported | keep selection/read rendering usable |
+| `src/drilling_intelligence/ui/main_window.py` | 2766 | `Exception` | reported | preserve read-side selection on capability errors |
 | `src/drilling_intelligence/ui/worker.py` | 70 | `Exception` | reported | thread boundary reports failures without hiding them |
 | `src/drilling_intelligence/ui/worker.py` | 130 | `Exception` | reported | report unexpected worker failures to the UI |
 | `src/drilling_intelligence/ui/worker.py` | 219 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |
