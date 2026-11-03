@@ -116,6 +116,40 @@ drillintel records summary --well A-3 --workspace /tmp/well-a3
 drillintel doctor --workspace /tmp/well-a3                # what is healthy, and what to run next
 ```
 
+### Workspace backup and restore
+
+The SQLite system-of-record database can be snapshotted without opening it through Alembic. The
+backup uses SQLite's online backup API, records SHA-256 hashes and the migration revision, and
+runs SQLite integrity and foreign-key checks against the snapshot. The destination must be new;
+existing files are never overwritten. Archives are **not encrypted** and contain sensitive data:
+store them accordingly.
+
+```bash
+mkdir -p /secure/backups
+drillintel workspace backup --workspace /tmp/well-a3 \
+    --output /secure/backups/well-a3-2026-11-03.dibak
+```
+
+Restore is deliberately non-destructive: the target directory must not exist, and when the
+registry has a workspace identity row the target must be the exact original workspace path.
+Re-homing is refused because changing that identity would break workspace scoping and provenance.
+Only the SQLite database and `workspace.toml` are archived; source corpus files and the disposable
+search index are not. The restore verifies archive members, hashes, SQLite page integrity,
+foreign keys, Alembic revision, and workspace identity before it creates the target. A backup with
+failed health checks is still preserved for investigation, but it cannot be restored as a usable
+workspace. Custom data-directory layouts are not qualified for this workflow.
+
+```bash
+# Run only after the original workspace path is absent; no existing directory is replaced.
+drillintel workspace restore /secure/backups/well-a3-2026-11-03.dibak /tmp/well-a3
+# Then restore the source corpus separately and inspect the workspace.
+drillintel doctor --workspace /tmp/well-a3
+```
+
+`doctor` first runs SQLite's read-only integrity and foreign-key checks on an existing database;
+if they fail, it does not run Alembic or domain queries against the damaged file. Domain-level
+invariants and disposable-index drift are checked after storage passes.
+
 ### Desktop Review Workbench (optional)
 
 The desktop consumer is an operator review surface with a governed action boundary. Install it only where a Qt

@@ -1,10 +1,10 @@
 # مرجع زمینهٔ پروژه — Prog-Proc
 
 - **وضعیت سند:** مرجع زمینهٔ اجرایی؛ نه گواهی پذیرش یا جایگزین شواهد CI
-- **تاریخ بازبینی:** 2026-11-02 (Asia/Tehran)
-- **مأموریت:** ادامهٔ مستقل پس از V10.3
+- **تاریخ بازبینی:** 2026-11-03 (Asia/Tehran)
+- **مأموریت:** تکمیل مستقل قابلیت‌های محصول و qualification نهایی پس از V10.3
 - **شاخهٔ مجاز:** `arena/5957b76d-prog-proc`
-- **baseline این مأموریت:** `e79fe20edb69b69aecead7a750d439713cc9c078`
+- **baseline زندهٔ مأموریت:** `445cd893f0a89ab6c5c38ec70a35ac9ac4644043`؛ پس از fetch و تطبیق tree با remote branch
 - **baseline محافظت‌شدهٔ `main`:** `85122e1a98087db4495b820a9a0ffae9009b7819`
 - **migration head در کد این مأموریت:** `0026`؛ باید با Alembic و schema-diff آزموده شود.
 
@@ -69,13 +69,16 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 - `schema_diff()` فقط table/column presence را می‌سنجد؛ برای FKها، unique/partial indexها، triggers و رفتار deletion باید آزمون/introspection اختصاصی وجود داشته باشد.
 - wheel/sdist clean-install و schema bootstrap از metadata مسیر واقعی محصول‌اند؛ وجود migration در source checkout به‌تنهایی clean install را ثابت نمی‌کند.
 - package version فعلی `0.0.2a0` است؛ این شماره و `Development Status :: 2 - Pre-Alpha` تضمین انتشار یا آمادگی عملیاتی نیست.
+- `doctor` قبل از Alembic روی SQLite موجود، `integrity_check` و `foreign_key_check` فقط‌خواندنی اجرا می‌کند. خرابی storage مانع migration و domain query می‌شود؛ بررسی‌های cross-row و drift شاخص پس از سلامت storage انجام می‌شوند.
+- `workspace backup` از SQLite online backup API و manifest شامل SHA-256، UTC، schema revision و storage health استفاده می‌کند؛ مقصد باید جدید باشد. Snapshot ناسالم برای بررسی حفظ می‌شود، اما restore آن رد می‌شود.
+- `workspace restore` فقط در مسیر جدید و برای workspace دارای identity row فقط در همان absolute root ذخیره‌شده مجاز است؛ re-home، overwrite، migration پنهان و overwrite DB فعال وجود ندارد. Archive unencrypted است و corpus/index را شامل نمی‌شود. فقط data dir پیش‌فرض `.drillintel` qualify شده است.
 
 ## 6. Workbench، CLI و آزمون‌پذیری
 
 - UI باید authoring واقعی DDR، Intake queue، selection، preview، lifecycle controls، provenance و read-only/busy state را ارائه کند؛ جدول import/report یا لیست صرف جایگزین authoring نیست.
 - عملیات blocking از طریق controller/worker خارج از GUI thread انجام شود. Qt event waits باید bounded/event-driven باشند؛ از sleep تصادفی، retry پنهان، termination اجباری یا `os._exit` برای سبزکردن تست استفاده نشود.
 - مالکیت هر worker تا دریافت `QObject.destroyed` و خروج کامل `QThread.wait()` نگه داشته می‌شود؛ handlerهای نتیجه هنگام close بی‌اثرند و refreshهای معوق پس از خروج signal اجرا می‌شوند تا re-entrancy باعث ساخت worker هم‌زمان یا callback دیررس نشود.
-- CLI parser snapshot بخشی از قرارداد عمومی است؛ تغییر عمدی Intake باید `tests/snapshots/cli_surface.txt` را با آزمون به‌روز کند.
+- CLI parser snapshot بخشی از قرارداد عمومی است؛ تغییر عمدی Intake و دستورهای `workspace backup/restore` باید `tests/snapshots/cli_surface.txt` را با آزمون به‌روز کند.
 - در این sandbox آزمون Qt محلی ممکن است به‌علت dependencyهای host مانند `libGL.so.1` بارگذاری نشود. چنین موردی **SKIPPED/BLOCKED** است و **PASS** نیست؛ فقط runner با Qt واقعاً اجراشده می‌تواند شواهد offscreen فراهم کند. Offscreen نیز معادل display فیزیکی Windows نیست.
 
 ## 7. مرجع اسناد و ترتیب تقدم

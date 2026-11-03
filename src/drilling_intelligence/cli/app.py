@@ -35,6 +35,7 @@ from .. import __version__
 from ..config.settings import Settings
 from ..core.enums import WellLifecycleStatus
 from ..core.errors import DrillingIntelligenceError
+from ..database.backup import BackupError, create_workspace_backup, restore_workspace_backup
 from ..database.integrity import (
     check_current_version_invariants,
     check_extraction_cache,
@@ -43,6 +44,7 @@ from ..database.integrity import (
     check_workspace_identity,
 )
 from ..database.models import Document, DocumentVersion
+from ..database.sqlite_health import inspect_sqlite_database
 from ..documents.repository import DocumentRepository
 from ..engineering.repository import PLAN_ACTUAL_METRICS
 from ..ingestion.pipeline import IngestionPipeline
@@ -471,6 +473,54 @@ def command_workspace_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_workspace_backup(args: argparse.Namespace) -> int:
+    """Snapshot a workspace's system-of-record database without migrating it."""
+    workspace = _open_workspace(args)
+    try:
+        result = create_workspace_backup(workspace, args.output)
+        payload = result.to_dict() | {"ok": result.storage_health.get("status") == "healthy"}
+        lines = [
+            f"workspace backup {'verified' if payload['ok'] else 'preserved but NOT VERIFIED'}: {result.path}",
+            f"  workspace: {result.workspace_name}",
+            f"  database:  {result.database_bytes} bytes, SHA-256 {result.database_sha256}",
+            f"  archive:   SHA-256 {result.archive_sha256}",
+            f"  schema:    {result.schema_revision}",
+            f"  storage:   {result.storage_health.get('status')}",
+            "  included:  workspace.toml and SQLite snapshot",
+            "  omitted:   corpus files and rebuildable search index",
+            "  security:  unencrypted archive; protect it as sensitive data",
+        ]
+        _emit(payload, as_json=args.json, lines=lines)
+        return 0 if payload["ok"] else 1
+    finally:
+        workspace.close()
+
+
+def command_workspace_restore(args: argparse.Namespace) -> int:
+    """Restore a verified snapshot into a new workspace directory."""
+    settings = _settings_for(args)
+    configured_data_dir = settings.app.data_dir or ".drillintel"
+    if Path(configured_data_dir).as_posix() != ".drillintel":
+        raise BackupError(
+            "restore requires the default relative workspace data directory",
+            data_directory=configured_data_dir,
+        )
+    result = restore_workspace_backup(args.archive, args.destination)
+    payload = result.to_dict() | {"ok": result.storage_health.get("status") == "healthy"}
+    _emit(
+        payload,
+        as_json=args.json,
+        lines=[
+            f"workspace restored and verified at {result.path}",
+            f"  workspace: {result.workspace_name}",
+            f"  database:  {result.database_bytes} bytes, SHA-256 {result.database_sha256}",
+            f"  schema:    {result.schema_revision}",
+            "  corpus files and the rebuildable search index were not included",
+        ],
+    )
+    return 0 if payload["ok"] else 1
+
+
 def command_ingest(args: argparse.Namespace) -> int:
     workspace = _open_workspace(args)
     try:
@@ -872,7 +922,7 @@ def command_index(args: argparse.Namespace) -> int:
 
 
 def command_doctor(args: argparse.Namespace) -> int:
-    """One command that reads every structure and says whether they agree.
+    """One command that checks SQLite storage before its cross-row structures.
 
     It is the recovery path after a crash, a hand-edited database or a move between machines:
     the registry's invariants, the cache's uniqueness promise, the knowledge edges and the
@@ -880,6 +930,36 @@ def command_doctor(args: argparse.Namespace) -> int:
     """
     workspace = _open_workspace(args)
     try:
+        # Check an existing file before Workspace.database can invoke Alembic. A damaged SQLite
+        # file is evidence to preserve, not a migration target; fail closed without creating,
+        # repairing, or rewriting it. A not-yet-created database keeps the historical bootstrap
+        # behavior and is checked immediately after its first open below.
+        storage_health = inspect_sqlite_database(workspace.database_path)
+        if storage_health.status == "failed":
+            finding = (
+                "SQLite storage integrity/foreign-key check failed; domain checks were not run"
+            )
+            payload = {
+                "version": __version__,
+                "python": sys.version.split()[0],
+                "workspace": workspace.summary(),
+                "storage": storage_health.to_dict(),
+                "integrity_problems": [],
+                "findings": [finding],
+                "checks_not_run": ["schema migrations", "domain integrity", "search index"],
+            }
+            _emit(
+                payload,
+                as_json=args.json,
+                lines=[
+                    f"workspace {workspace.root}",
+                    "storage  FAILED",
+                    f"  {storage_health.detail or '; '.join(storage_health.integrity_messages)}",
+                    "  schema, domain, and index checks were not run to preserve the damaged file",
+                ],
+            )
+            return 1
+
         with workspace.database.session() as session:
             repository = DocumentRepository(session)
             counts = repository.counts()
@@ -903,9 +983,16 @@ def command_doctor(args: argparse.Namespace) -> int:
             open_conflicts = len(KnowledgeRepository(session).conflicts())
         service = SearchService.for_workspace(workspace)
         stats = service.stats()
+        if storage_health.status == "not_run":
+            storage_health = inspect_sqlite_database(workspace.database_path)
         findings: list[str] = [
             f"{item['problem']} on {item['table']}({item['row_id']})" for item in problems
         ]
+        if storage_health.status != "healthy":
+            findings.append(
+                "SQLite storage health could not be qualified: "
+                + (storage_health.detail or "; ".join(storage_health.integrity_messages))
+            )
         # What the operational tables hold, as its own line.  Deliberately not a *finding*: findings
         # change the exit code, which is how a script decides whether to trust this workspace, and "the
         # field has 5 NPT records" is context rather than something to fix.  "5,000 documents and no
@@ -984,6 +1071,7 @@ def command_doctor(args: argparse.Namespace) -> int:
                 "by_status": knowledge.get("by_status", {}),
             },
             "schema": migration.to_dict() if migration is not None else None,
+            "storage": storage_health.to_dict(),
             "index": stats,
             "integrity_problems": problems,
             "operational": records,
@@ -995,6 +1083,8 @@ def command_doctor(args: argparse.Namespace) -> int:
             f"workspace {workspace.root}",
             f"  registry {workspace.database_path}",
             f"  index    {workspace.index_database_path}",
+            f"storage  {storage_health.status} - SQLite integrity check, "
+            f"{storage_health.foreign_key_violation_count} foreign-key violation(s)",
             f"schema {migration.current or '(none)'} at head {migration.head or '(unknown)'} - {migration.mode if migration else 'not opened'}",
             f"config  {workspace.settings.summary()['source_path']}",
             # Configuration is not availability.  ``doctor`` does not probe.  The note says so,
@@ -2975,6 +3065,23 @@ def _add_workspace_command(sub: Any, common: list[argparse.ArgumentParser]) -> N
     )
     create.set_defaults(handler=command_workspace_create)
 
+    backup = workspace_sub.add_parser(
+        "backup",
+        help="write an integrity-checked SQLite snapshot without overwriting an existing file",
+        parents=[common],
+    )
+    backup.add_argument("--output", required=True, help="new backup archive path (must not exist)")
+    backup.set_defaults(handler=command_workspace_backup)
+
+    restore = workspace_sub.add_parser(
+        "restore",
+        help="restore a verified archive into a new workspace directory (never in place)",
+        parents=[common],
+    )
+    restore.add_argument("archive", help="workspace backup archive")
+    restore.add_argument("destination", help="new workspace directory (must not exist)")
+    restore.set_defaults(handler=command_workspace_restore)
+
 
 def _add_wells_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
     """Register the "wells" command and its options."""
@@ -3246,7 +3353,7 @@ def _add_doctor_command(sub: Any, common: list[argparse.ArgumentParser]) -> None
     """Register the "doctor" command and its options."""
     doctor = sub.add_parser(
         "doctor",
-        help="check the workspace, schema, registry invariants and index together",
+        help="check SQLite storage before the workspace schema, registry invariants and index",
         parents=[common],
     )
     doctor.set_defaults(handler=command_doctor)

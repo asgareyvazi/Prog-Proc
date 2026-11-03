@@ -38,6 +38,27 @@ command  workspace create
     arg (path) dest=path type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg --name dest=name type=- nargs=None default='' required=False choices=- action=_StoreAction
     arg --corpus-dir dest=corpus_dir type=- nargs=None default=None required=False choices=- action=_AppendAction
+command  workspace backup
+  prog drillintel workspace backup
+  description -
+  handler command_workspace_backup
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --output dest=output type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  workspace restore
+  prog drillintel workspace restore
+  description -
+  handler command_workspace_restore
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (archive) dest=archive type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg (destination) dest=destination type=- nargs=None default=None required=True choices=- action=_StoreAction
 command  wells
   prog drillintel wells
   description -
