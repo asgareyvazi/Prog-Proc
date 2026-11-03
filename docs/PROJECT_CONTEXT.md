@@ -57,7 +57,7 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 - هر activity دستی، provenance با actor/reason/sequence/revision می‌گیرد؛ در submit به `WellOperation` متناظر وصل می‌شود. نبود ORM relationship برای ترتیب flush مجوز کنارگذاشتن FK یا transaction نیست.
 - Revision نسخهٔ قبلی را تاریخی (`is_current=False`) می‌کند، عملیات آن نسخه را نیز historical می‌کند و revision تازه را draft نگه می‌دارد. Review روی draft در دسترس نیست؛ superseding revision خود به معنی approval نیست.
 - Review actionهای `confirm`/`reject` فقط برای گزارش `SUBMITTED` و current در دسترس‌اند، با re-read و preconditionهای status/current/scope/updated_at؛ reason اجباری است و actor اعلام‌شده باید با `created_by` فرق کند. این مقایسهٔ شناسهٔ ورودی، احراز هویت یا اثبات استقلال شخصی نیست؛ authentication در دامنهٔ این محصول نیست.
-- UI ابزار مقایسهٔ revisionهای صریحاً linked را با مقادیر قبلی/جاری و provenance ثبت‌شده نشان می‌دهد؛ این مقایسه متنی است و هیچ مقدار مهندسی مشتق نمی‌کند. اجرای محلی UI در این sandbox به‌دلیل فقدان `libGL.so.1` **SKIPPED** است و CI exact-final-SHA هنوز باید آن را اجرا کند.
+- UI ابزار مقایسهٔ revisionهای صریحاً linked را با مقادیر قبلی/جاری و provenance ثبت‌شده نشان می‌دهد؛ این مقایسه متنی است و هیچ مقدار مهندسی مشتق نمی‌کند. اجرای محلی UI در این sandbox به‌دلیل فقدان `libGL.so.1` **SKIPPED** است؛ Qt-enabled CI در Linux و Windows روی کد SHA `be5d76fb` موفق شد (runهای `41641205203` / `41641205205`). تغییرات مستند closure به CI جداگانه روی exact SHA خودشان نیاز دارند.
 - migration `0026`، جدول activity و ستون‌های authoring/revision/currentness را اضافه می‌کند. SQLite self-reference و authoring-state invariant در migration به‌وسیلهٔ trigger محافظت می‌شوند، زیرا SQLite نمی‌تواند self-FK را با `ALTER TABLE ADD CONSTRAINT` ساده اضافه کند. metadata/bootstrap نیز باید همین guardها را ایجاد کند. رفتار PostgreSQL از این کد استنباط یا qualify نمی‌شود.
 
 مسیرهای اصلی: `operations/ddr.py`, `review/actions.py`, `review/service.py`, UI در `ui/main_window.py`, migration `0026`, `tests/integration/test_ddr_authoring.py` و migration tests.
@@ -92,6 +92,7 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 | `docs/PRODUCT_CAPABILITY.md` | inventory قابلیت‌ها با وضعیت و شواهد |
 | `docs/HUMAN_REVIEW_ACTION_INVENTORY.md` | lifecycle actionهای انسانی و مرز UI |
 | `docs/mission-reports/V10.3_*` | گزارش تاریخی V10.3، معتبر برای SHA/runهای درج‌شده؛ نه وضعیت مأموریت فعلی |
+| `docs/mission-reports/AUTONOMOUS_PRODUCT_CLOSURE_2026-11-03_FA.md` | گزارش نهایی فارسی این مأموریت، شامل تصمیم qualification، exact-SHA evidence و open items |
 | `docs/PROJECT_CLOSURE_PLAN.md` | snapshot تاریخی V9.0؛ برای وضعیت جاری باید به این سند/گزارش مأموریت جدید ارجاع شود |
 | `docs/WINDOWS_TESTING.md` | run-card و پذیرش Windows؛ automated offscreen و physical display جدا هستند |
 

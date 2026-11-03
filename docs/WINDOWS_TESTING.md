@@ -1,16 +1,16 @@
 # Windows testing
 
-> **Current status (2026-11-03):** The run-card evidence below is historical V10.3 evidence, not a result for later code SHAs. This mission has not yet produced exact-final-SHA Windows CI evidence. Current migration head is `0026`. Local Qt UI tests in this sandbox are **SKIPPED** because `libGL.so.1` is absent; this is not a pass. Offscreen UI evidence does not constitute physical display acceptance; the owner checklist remains **NOT RUN**.
+> **Current status (2026-11-03):** Current-code Windows CPython 3.11 and 3.14 full suites, pytest evidence attribution, clean-install smoke, offscreen Qt UI, repeated stability cases, and PowerShell 5.1/7 run-card tests passed on code SHA `be5d76fb93172613d66d6b3be7707e919461b2d9` in run [`41641205205`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41641205205). Migration head is `0026`. Local Qt UI tests in this sandbox are **SKIPPED** because `libGL.so.1` is absent; CI's Qt-enabled tests are the positive evidence. Offscreen evidence does not constitute physical display acceptance; the human workstation checklist remains **NOT RUN**. The closure-document commit is separately checked by its own exact-SHA CI.
 
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the
 `windows-2022` workflow in `.github/workflows/ci-windows.yml`. That image is
 not this workstation. The workflow runs CPython 3.11 and 3.14 for the core
-suite, and CPython 3.11 for clean-install smoke, the disposable pilot, and
-the offscreen UI job. Exact totals for a SHA are in
-`docs/mission-reports/V8.13_FINAL_REPORT.md` and
-`docs/mission-reports/V8.14_FINAL_REPORT.md`. A green offscreen job is not
-the same as opening the workbench on this machine.
+suite, clean-install smoke, and offscreen UI jobs; the disposable pilot and
+PowerShell run-card behavior have separate Windows jobs. Exact current-code
+pytest totals and matrix identity reports are artifacts attached to run
+`41641205205`; older V8.13/V8.14 reports remain historical. A green offscreen
+job is not the same as opening the workbench on this machine.
 
 Commands below are PowerShell. Do not paste the Bash examples from the
 README. Keep the repository line endings as LF (`git config core.autocrlf

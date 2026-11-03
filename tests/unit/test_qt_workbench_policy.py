@@ -158,8 +158,8 @@ def test_required_jobs_stay_on_pinned_ubuntu_images_and_actions_are_pinned() -> 
 def test_every_action_in_every_workflow_is_pinned_to_a_commit_sha() -> None:
     """A tag is a name that can move. A commit SHA cannot.
 
-    The v7 release of each action is recorded here so the pin and the tag it
-    came from can be compared by reading this file, without a network call.
+    The precise release and checked upstream tag refs are recorded here so the
+    pin and its source can be audited without a network call.
     """
     for name in ("ci.yml", "ci-windows.yml"):
         workflow = Path(".github/workflows") / name
