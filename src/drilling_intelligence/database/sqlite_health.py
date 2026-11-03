@@ -8,7 +8,9 @@ file.  It never repairs, creates, migrates, or writes to the database.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -24,6 +26,8 @@ class SQLiteHealth:
     integrity_messages: tuple[str, ...] = ()
     integrity_issue_count: int = 0
     integrity_messages_truncated: bool = False
+    database_bytes: int | None = None
+    sidecars: tuple[dict[str, Any], ...] = ()
     foreign_key_violations: tuple[dict[str, Any], ...] = ()
     foreign_key_violation_count: int = 0
     foreign_key_violations_truncated: bool = False
@@ -36,6 +40,8 @@ class SQLiteHealth:
             "integrity_messages": list(self.integrity_messages),
             "integrity_issue_count": self.integrity_issue_count,
             "integrity_messages_truncated": self.integrity_messages_truncated,
+            "database_bytes": self.database_bytes,
+            "sidecars": [dict(item) for item in self.sidecars],
             "foreign_key_violation_count": self.foreign_key_violation_count,
             "foreign_key_violations": [dict(row) for row in self.foreign_key_violations],
             "foreign_key_violations_truncated": self.foreign_key_violations_truncated,
@@ -46,6 +52,26 @@ class SQLiteHealth:
 def _readonly_uri(path: Path) -> str:
     """Build a platform-safe SQLite URI without opening the file for writing."""
     return f"{path.resolve().as_uri()}?mode=ro"
+
+
+def _sidecar_state(path: Path, suffix: str) -> dict[str, Any]:
+    """Describe SQLite's WAL/SHM files without following links or opening them."""
+    result: dict[str, Any] = {"name": suffix, "present": False, "state": "absent", "bytes": 0}
+    if not os.path.lexists(path):
+        return result
+    result["present"] = True
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        result.update(state="unreadable", detail=str(exc))
+        return result
+    if stat.S_ISLNK(info.st_mode):
+        result.update(state="symlink", bytes=info.st_size)
+    elif stat.S_ISREG(info.st_mode):
+        result.update(state="regular", bytes=info.st_size)
+    else:
+        result.update(state="not_regular", bytes=info.st_size)
+    return result
 
 
 def inspect_sqlite_database(path: Path | str, *, detail_limit: int = 100) -> SQLiteHealth:
@@ -59,10 +85,42 @@ def inspect_sqlite_database(path: Path | str, *, detail_limit: int = 100) -> SQL
     database_path = Path(path).expanduser()
     if detail_limit < 0:
         raise ValueError("detail_limit must not be negative")
-    if not database_path.exists():
-        return SQLiteHealth(status="not_run", detail="database file does not exist yet")
-    if not database_path.is_file():
-        return SQLiteHealth(status="failed", detail="database path is not a regular file")
+    sidecars = tuple(
+        _sidecar_state(Path(f"{database_path}{suffix}"), suffix) for suffix in ("-wal", "-shm")
+    )
+    try:
+        database_info = database_path.lstat()
+    except FileNotFoundError:
+        return SQLiteHealth(
+            status="not_run", sidecars=sidecars, detail="database file does not exist yet"
+        )
+    except OSError as exc:
+        return SQLiteHealth(
+            status="failed", sidecars=sidecars, detail=f"database path cannot be inspected: {exc}"
+        )
+    if stat.S_ISLNK(database_info.st_mode):
+        return SQLiteHealth(
+            status="failed",
+            database_bytes=database_info.st_size,
+            sidecars=sidecars,
+            detail="database path is a symbolic link; storage preflight refuses linked databases",
+        )
+    if not stat.S_ISREG(database_info.st_mode):
+        return SQLiteHealth(
+            status="failed",
+            database_bytes=database_info.st_size,
+            sidecars=sidecars,
+            detail="database path is not a regular file",
+        )
+    unsafe_sidecars = [item for item in sidecars if item["state"] not in {"absent", "regular"}]
+    if unsafe_sidecars:
+        labels = ", ".join(f"{item['name']}={item['state']}" for item in unsafe_sidecars)
+        return SQLiteHealth(
+            status="failed",
+            database_bytes=database_info.st_size,
+            sidecars=sidecars,
+            detail=f"SQLite sidecar path is not a regular file: {labels}",
+        )
 
     connection: sqlite3.Connection | None = None
     try:
@@ -98,7 +156,12 @@ def inspect_sqlite_database(path: Path | str, *, detail_limit: int = 100) -> SQL
         finally:
             cursor.close()
     except sqlite3.Error as exc:
-        return SQLiteHealth(status="failed", detail=f"SQLite could not check the database: {exc}")
+        return SQLiteHealth(
+            status="failed",
+            database_bytes=database_info.st_size,
+            sidecars=sidecars,
+            detail=f"SQLite could not check the database (permissions, lock, or integrity preflight): {exc}",
+        )
     finally:
         if connection is not None:
             connection.close()
@@ -118,6 +181,8 @@ def inspect_sqlite_database(path: Path | str, *, detail_limit: int = 100) -> SQL
         status="healthy" if physical_ok and foreign_keys_ok else "failed",
         integrity_messages=integrity_messages,
         integrity_issue_count=integrity_issue_count,
+        database_bytes=database_info.st_size,
+        sidecars=sidecars,
         integrity_messages_truncated=integrity_issue_count
         > len([message for message in integrity_messages if message != "ok"]),
         foreign_key_violations=tuple(foreign_key_rows),

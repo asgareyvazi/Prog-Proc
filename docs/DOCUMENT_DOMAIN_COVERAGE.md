@@ -1,12 +1,8 @@
 # Document/domain coverage matrix (V7 authority)
 
-> **Post-V10.3 context (2026-11-02):** The taxonomy remains 26 classes with the V10.3 code-evidenced baseline of 14 certified / 7 knowledge-supported / 5 extract-only; this mission adds no class and no document-promotion handler. Intake now has a separate explicit registration path through the existing Document Registry, but registration does not promote domain facts. Manual DDR authoring is a separate operator workflow, not a parser handler. See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), ADR 004, and Linux/Windows CI attached to the exact final commit for qualification evidence. Migration head in the current implementation is `0026`; SQLite alone is qualified; PostgreSQL is **NOT QUALIFIED**; physical Windows display acceptance is **NOT RUN**.
+> **Current context (2026-11-03):** The taxonomy remains 26 classes with the V10.3 code-evidenced baseline of 14 certified / 7 knowledge-supported / 5 extract-only; this mission adds no class and no document-promotion handler. Intake registration remains separate from promotion, and manual DDR authoring remains an operator workflow, not a parser handler. The current SQLite/DDR/backup changes do not alter the taxonomy. Exact-final-SHA Linux/Windows qualification for this mission is still pending; SQLite alone is qualified, PostgreSQL is **NOT QUALIFIED**, and physical Windows display acceptance is **NOT RUN**. See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md).
 
-> **Note on commit references.** This checkout is a shallow clone whose history was
-> collapsed to a single grafted commit, so the commits this document describes are not in
-> the local object database and their full hashes cannot be verified here. They are cited
-> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
-> that a report never names a full hash the repository cannot produce.
+> The `Inspected HEAD` and short commit references in the historical V7 matrix below are records from that earlier review, not current mission evidence. This checkout is not shallow; current-mission baseline and final qualification evidence belong in `PROJECT_CONTEXT.md` and the mission closure report.
 
 **Status:** authoritative source-derived registry and certification index
 **As of:** 2026-10-05 (Asia/Tehran)

@@ -70,34 +70,35 @@ def _column_exists(bind, table: str, column: str) -> bool:
 
 
 def _index_exists(bind, name: str) -> bool:
-    dialect = _dialect_name()
+    """Look up an index by its catalog name without reflecting its definition.
+
+    SQLAlchemy intentionally skips expression-based indexes during SQLite reflection and emits an
+    ``SAWarning``.  Existence is a catalog question, not a request to interpret every index in the
+    table; the catalog also lets the subsequent definition verifier reject an index with the right
+    name but the wrong uniqueness, expression, or predicate.  Catalog errors are allowed to fail the
+    migration rather than being converted into a false "index absent" result.
+    """
+    dialect = str(getattr(getattr(bind, "dialect", None), "name", "") or _dialect_name()).lower()
     if dialect == "postgresql":
-        try:
-            row = bind.execute(
-                text("SELECT 1 FROM pg_indexes WHERE indexname = :n"), {"n": name}
-            ).fetchone()
-            if row:
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-    else:
-        try:
-            row = bind.execute(
-                text("SELECT 1 FROM sqlite_master WHERE type='index' AND name=:n"),
-                {"n": name},
-            ).fetchone()
-            if row:
-                return True
-        except Exception:  # noqa: BLE001
-            pass
-    try:
-        insp = inspect(bind)
-        for idx in insp.get_indexes("lesson_learned"):
-            if idx.get("name") == name:
-                return True
-    except Exception:  # noqa: BLE001
-        pass
-    return False
+        row = bind.execute(
+            text(
+                "SELECT 1 FROM pg_indexes "
+                "WHERE schemaname = current_schema() "
+                "AND tablename = 'lesson_learned' AND indexname = :n"
+            ),
+            {"n": name},
+        ).fetchone()
+        return row is not None
+    if dialect == "sqlite":
+        row = bind.execute(
+            text(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'index' AND tbl_name = 'lesson_learned' AND name = :n"
+            ),
+            {"n": name},
+        ).fetchone()
+        return row is not None
+    return any(index.get("name") == name for index in inspect(bind).get_indexes("lesson_learned"))
 
 
 def _index_definition_correct(bind, name: str) -> bool:

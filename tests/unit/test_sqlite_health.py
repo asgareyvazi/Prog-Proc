@@ -35,6 +35,54 @@ def test_sqlite_health_checks_pages_and_foreign_keys_without_writing(tmp_path: P
     assert database.read_bytes() == before
 
 
+def test_sqlite_health_reports_file_and_wal_sidecar_state(tmp_path: Path) -> None:
+    database = tmp_path / "registry.sqlite"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY)")
+    connection.close()
+
+    report = inspect_sqlite_database(database)
+
+    assert report.status == "healthy"
+    payload = report.to_dict()
+    assert payload["database_bytes"] > 0
+    assert payload["sidecars"] == [
+        {"name": "-wal", "present": False, "state": "absent", "bytes": 0},
+        {"name": "-shm", "present": False, "state": "absent", "bytes": 0},
+    ]
+
+
+def test_sqlite_health_refuses_symlinked_database_and_wal_sidecar(tmp_path: Path) -> None:
+    database = tmp_path / "registry.sqlite"
+    sqlite3.connect(database).close()
+    linked_database = tmp_path / "linked.sqlite"
+    try:
+        linked_database.symlink_to(database)
+    except OSError as exc:
+        import pytest
+
+        pytest.skip(f"this platform cannot create test symlinks: {exc}")
+
+    database_report = inspect_sqlite_database(linked_database)
+    assert database_report.status == "failed"
+    assert "symbolic link" in database_report.detail
+    linked_database.unlink()
+
+    wal_target = tmp_path / "wal-target"
+    wal_target.write_bytes(b"not a WAL database")
+    wal_path = Path(f"{database}-wal")
+    try:
+        wal_path.symlink_to(wal_target)
+    except OSError as exc:
+        import pytest
+
+        pytest.skip(f"this platform cannot create test symlinks: {exc}")
+    sidecar_report = inspect_sqlite_database(database)
+    assert sidecar_report.status == "failed"
+    assert "-wal=symlink" in sidecar_report.detail
+    assert sidecar_report.to_dict()["sidecars"][0]["state"] == "symlink"
+
+
 def test_sqlite_health_reports_foreign_key_violation_instead_of_repairing(tmp_path: Path) -> None:
     database = tmp_path / "registry.sqlite"
     connection = sqlite3.connect(database)
@@ -85,6 +133,21 @@ def test_sqlite_health_caps_details_without_hiding_the_violation_count(tmp_path:
     assert payload["integrity_issue_count"] == 0
     assert payload["integrity_messages_truncated"] is False
     assert payload["foreign_key_violations_truncated"] is True
+
+
+def test_sqlite_health_reports_a_bounded_lock_failure(tmp_path: Path) -> None:
+    database = tmp_path / "locked.sqlite"
+    sqlite3.connect(database).close()
+    blocker = sqlite3.connect(database, timeout=0.0)
+    try:
+        blocker.execute("BEGIN EXCLUSIVE")
+        report = inspect_sqlite_database(database)
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    assert report.status == "failed"
+    assert "locked" in report.detail.lower() or "busy" in report.detail.lower()
 
 
 def test_sqlite_health_refuses_malformed_database_as_not_qualified(tmp_path: Path) -> None:

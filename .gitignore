@@ -17,6 +17,12 @@ pytest-totals.json.partial
 pytest-run-state.txt
 pytest-output.txt
 pytest-exit.txt
+pytest-matrix-evidence.json
+pytest-matrix-report-*.json
+pytest-matrix-report-*.md
+pytest-jobs.json
+pytest-artifacts-api.json
+pytest-artifacts/
 dependency-audit.json
 coverage.xml
 coverage-ui.xml

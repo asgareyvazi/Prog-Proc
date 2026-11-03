@@ -480,14 +480,15 @@ def command_workspace_backup(args: argparse.Namespace) -> int:
         result = create_workspace_backup(workspace, args.output)
         payload = result.to_dict() | {"ok": result.storage_health.get("status") == "healthy"}
         lines = [
-            f"workspace backup {'verified' if payload['ok'] else 'preserved but NOT VERIFIED'}: {result.path}",
+            f"database snapshot {'verified' if payload['ok'] else 'preserved but NOT VERIFIED'}: {result.path}",
+            "  scope:     database-only; this is NOT a full workspace/source backup",
             f"  workspace: {result.workspace_name}",
             f"  database:  {result.database_bytes} bytes, SHA-256 {result.database_sha256}",
             f"  archive:   SHA-256 {result.archive_sha256}",
             f"  schema:    {result.schema_revision}",
             f"  storage:   {result.storage_health.get('status')}",
             "  included:  workspace.toml and SQLite snapshot",
-            "  omitted:   corpus files and rebuildable search index",
+            "  omitted:   configured corpus/source files and rebuildable search index",
             "  security:  unencrypted archive; protect it as sensitive data",
         ]
         _emit(payload, as_json=args.json, lines=lines)
@@ -511,11 +512,12 @@ def command_workspace_restore(args: argparse.Namespace) -> int:
         payload,
         as_json=args.json,
         lines=[
-            f"workspace restored and verified at {result.path}",
+            f"database snapshot restored and verified at {result.path}",
+            "  scope:     database-only; source files were not restored",
             f"  workspace: {result.workspace_name}",
             f"  database:  {result.database_bytes} bytes, SHA-256 {result.database_sha256}",
             f"  schema:    {result.schema_revision}",
-            "  corpus files and the rebuildable search index were not included",
+            "  configured corpus/source files and the rebuildable search index were not included",
         ],
     )
     return 0 if payload["ok"] else 1
@@ -935,7 +937,13 @@ def command_doctor(args: argparse.Namespace) -> int:
         # repairing, or rewriting it. A not-yet-created database keeps the historical bootstrap
         # behavior and is checked immediately after its first open below.
         storage_health = inspect_sqlite_database(workspace.database_path)
-        if storage_health.status == "failed":
+        if storage_health.status == "not_run":
+            # First-open bootstrap is allowed for a genuinely absent database, but it is a
+            # separate step from claiming integrity. Materialise the database, then run the
+            # physical/FK preflight before any domain or search-index query.
+            _ = workspace.database
+            storage_health = inspect_sqlite_database(workspace.database_path)
+        if storage_health.status != "healthy":
             finding = (
                 "SQLite storage integrity/foreign-key check failed; domain checks were not run"
             )
@@ -983,8 +991,6 @@ def command_doctor(args: argparse.Namespace) -> int:
             open_conflicts = len(KnowledgeRepository(session).conflicts())
         service = SearchService.for_workspace(workspace)
         stats = service.stats()
-        if storage_health.status == "not_run":
-            storage_health = inspect_sqlite_database(workspace.database_path)
         findings: list[str] = [
             f"{item['problem']} on {item['table']}({item['row_id']})" for item in problems
         ]

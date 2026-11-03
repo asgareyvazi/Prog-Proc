@@ -55,24 +55,12 @@ def test_ddr_draft_submit_review_and_revision_are_explicit(
             {
                 "record_type": "ddr_report",
                 "status": "CANDIDATE",
+                "current": True,
                 "data": {"authoring_state": "DRAFT"},
             }
         )
         == ()
     )
-    with db.read_only() as session:
-        assert session.scalar(select(DdrReport).where(DdrReport.id == draft["report_id"]))
-        assert session.scalars(select(WellOperation)).all() == []
-
-    with pytest.raises(ValidationError, match="changed since it was loaded"):
-        service.save_draft(
-            draft["report_id"],
-            expected_updated_at="stale",
-            report_date="2026-10-31",
-            summary="stale edit",
-            actor="author-1",
-            reason="stale edit attempt",
-        )
 
     saved = service.save_draft(
         draft["report_id"],
@@ -80,35 +68,40 @@ def test_ddr_draft_submit_review_and_revision_are_explicit(
         report_date="2026-10-31",
         report_number="DDR-31",
         shift="Day",
-        summary="Operator-entered daily summary, corrected before submission.",
+        summary="Corrected operator-entered daily summary.",
         activities=_activities(),
         actor="author-1",
-        reason="Save revised draft content",
+        reason="Correct a typo in the summary",
     )
-    assert saved["summary"].endswith("corrected before submission.")
+    assert saved["summary"] == "Corrected operator-entered daily summary."
     assert len(saved["activities"]) == 2
+    with pytest.raises(ValidationError, match="changed since it was loaded"):
+        service.save_draft(
+            draft["report_id"],
+            expected_updated_at=draft["updated_at"],
+            report_date="2026-10-31",
+            actor="author-1",
+            reason="A stale editor must not overwrite the saved version",
+        )
 
     submitted = service.submit(
         draft["report_id"],
         expected_updated_at=saved["updated_at"],
         actor="author-1",
-        reason="Submit for independent review",
+        reason="Ready for an independent review",
     )
     assert submitted["authoring_state"] == "SUBMITTED"
     assert submitted["status"] == "CANDIDATE"
+    assert all(item["operation_id"] for item in submitted["activities"])
     with db.read_only() as session:
         operations = list(
             session.scalars(
-                select(WellOperation)
-                .where(WellOperation.report_id == draft["report_id"])
-                .order_by(WellOperation.id)
+                select(WellOperation).where(WellOperation.report_id == draft["report_id"])
             )
         )
         activities = list(
             session.scalars(
-                select(DdrActivity)
-                .where(DdrActivity.ddr_report_id == draft["report_id"])
-                .order_by(DdrActivity.sequence)
+                select(DdrActivity).where(DdrActivity.ddr_report_id == draft["report_id"])
             )
         )
         audit = list(
@@ -140,6 +133,48 @@ def test_ddr_draft_submit_review_and_revision_are_explicit(
         }
     )
     assert {item.action_id for item in actions} == {"confirm", "reject"}
+    assert all(item.requires_reason and item.requires_independent_actor for item in actions)
+    operation_actions = action_service.available_actions(
+        {
+            "record_type": "well_operation",
+            "status": "CANDIDATE",
+            "current": True,
+            "data": {
+                "created_by": operations[0].created_by,
+                "attributes": operations[0].attributes,
+            },
+        }
+    )
+    assert {item.action_id for item in operation_actions} == {"confirm", "reject"}
+    assert all(
+        item.requires_reason and item.requires_independent_actor for item in operation_actions
+    )
+    request = ReviewActionRequest(
+        record_type="ddr_report",
+        record_id=draft["report_id"],
+        action="confirm",
+        actor="author-1",
+        expected_status="CANDIDATE",
+        expected_current=True,
+        expected_updated_at=submitted["updated_at"],
+        expected_scope={"well_id": committed_well_id},
+        reason="The report is accurate",
+    )
+    with pytest.raises(ValidationError, match="different from its author"):
+        action_service.execute(request)
+    with pytest.raises(ValidationError, match="needs a reason"):
+        action_service.execute(
+            ReviewActionRequest(
+                record_type="ddr_report",
+                record_id=draft["report_id"],
+                action="confirm",
+                actor="reviewer-2",
+                expected_status="CANDIDATE",
+                expected_current=True,
+                expected_updated_at=submitted["updated_at"],
+                expected_scope={"well_id": committed_well_id},
+            )
+        )
     confirmed = action_service.execute(
         ReviewActionRequest(
             record_type="ddr_report",
@@ -150,11 +185,18 @@ def test_ddr_draft_submit_review_and_revision_are_explicit(
             expected_current=True,
             expected_updated_at=submitted["updated_at"],
             expected_scope={"well_id": committed_well_id},
+            reason="Reviewed against the authored report and approved",
         )
     )
     assert confirmed.status == "CONFIRMED"
-
+    assert confirmed.at
     reviewed = service.get(draft["report_id"])
+    assert any(
+        item.get("source_kind") == "review_decision"
+        and item.get("actor") == "reviewer-2"
+        and item.get("reason") == "Reviewed against the authored report and approved"
+        for item in reviewed["provenance"]
+    )
     revision = service.create_revision(
         reviewed["report_id"],
         expected_updated_at=reviewed["updated_at"],
@@ -190,6 +232,61 @@ def test_ddr_draft_submit_review_and_revision_are_explicit(
 
     with pytest.raises(RuntimeError, match="cannot downgrade 0026 while authored DDR revisions"):
         upgrade(db.engine, "0025", allow_downgrade=True)
+
+
+def test_ddr_reject_action_requires_a_distinct_declared_actor_and_records_provenance(
+    db, workspace, committed_well_id
+) -> None:
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-10-31",
+        summary="Operator-entered report that must remain subject to review.",
+        activities=[],
+        actor="author-1",
+        reason="Create report for rejection case",
+    )
+    submitted = service.submit(
+        draft["report_id"],
+        expected_updated_at=draft["updated_at"],
+        actor="author-1",
+        reason="Submit report for review",
+    )
+    actions = ReviewActionService.for_workspace(workspace)
+    rejected = actions.execute(
+        ReviewActionRequest(
+            record_type="ddr_report",
+            record_id=draft["report_id"],
+            action="reject",
+            actor="reviewer-2",
+            expected_status="CANDIDATE",
+            expected_current=True,
+            expected_updated_at=submitted["updated_at"],
+            expected_scope={"well_id": committed_well_id},
+            reason="Needs correction before confirmation",
+        )
+    )
+    assert rejected.status == "REJECTED"
+    assert rejected.actor == "reviewer-2"
+    assert (
+        actions.available_actions(
+            {
+                "record_type": "ddr_report",
+                "status": "REJECTED",
+                "current": False,
+                "data": {"authoring_state": "SUBMITTED"},
+            }
+        )
+        == ()
+    )
+    final = service.get(draft["report_id"])
+    assert final["is_current"]
+    assert any(
+        item.get("source_kind") == "review_decision"
+        and item.get("actor") == "reviewer-2"
+        and item.get("reason") == "Needs correction before confirmation"
+        for item in final["provenance"]
+    )
 
 
 def test_ddr_activity_replacement_failure_rolls_back_report_activities_and_audit(

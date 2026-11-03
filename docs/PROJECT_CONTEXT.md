@@ -4,7 +4,7 @@
 - **تاریخ بازبینی:** 2026-11-03 (Asia/Tehran)
 - **مأموریت:** تکمیل مستقل قابلیت‌های محصول و qualification نهایی پس از V10.3
 - **شاخهٔ مجاز:** `arena/5957b76d-prog-proc`
-- **baseline زندهٔ مأموریت:** `445cd893f0a89ab6c5c38ec70a35ac9ac4644043`؛ پس از fetch و تطبیق tree با remote branch
+- **baseline زندهٔ مأموریت:** `e7a1f074f387f0e6636f065466e1594e083bce0d`؛ HEAD محلی و remote branch هنگام شروع برابر بودند.
 - **baseline محافظت‌شدهٔ `main`:** `85122e1a98087db4495b820a9a0ffae9009b7819`
 - **migration head در کد این مأموریت:** `0026`؛ باید با Alembic و schema-diff آزموده شود.
 
@@ -56,7 +56,8 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 - Submit گزارش را خودکار تأیید نمی‌کند. `DdrReport.status` و `WellOperation.status` روی `CANDIDATE` می‌مانند تا review مستقل و action قانونی انجام شود.
 - هر activity دستی، provenance با actor/reason/sequence/revision می‌گیرد؛ در submit به `WellOperation` متناظر وصل می‌شود. نبود ORM relationship برای ترتیب flush مجوز کنارگذاشتن FK یا transaction نیست.
 - Revision نسخهٔ قبلی را تاریخی (`is_current=False`) می‌کند، عملیات آن نسخه را نیز historical می‌کند و revision تازه را draft نگه می‌دارد. Review روی draft در دسترس نیست؛ superseding revision خود به معنی approval نیست.
-- Review actionهای `confirm`/`reject` فقط برای گزارش `SUBMITTED` و current در دسترس‌اند، با re-read و preconditionهای status/current/scope/updated_at.
+- Review actionهای `confirm`/`reject` فقط برای گزارش `SUBMITTED` و current در دسترس‌اند، با re-read و preconditionهای status/current/scope/updated_at؛ reason اجباری است و actor اعلام‌شده باید با `created_by` فرق کند. این مقایسهٔ شناسهٔ ورودی، احراز هویت یا اثبات استقلال شخصی نیست؛ authentication در دامنهٔ این محصول نیست.
+- UI ابزار مقایسهٔ revisionهای صریحاً linked را با مقادیر قبلی/جاری و provenance ثبت‌شده نشان می‌دهد؛ این مقایسه متنی است و هیچ مقدار مهندسی مشتق نمی‌کند. اجرای محلی UI در این sandbox به‌دلیل فقدان `libGL.so.1` **SKIPPED** است و CI exact-final-SHA هنوز باید آن را اجرا کند.
 - migration `0026`، جدول activity و ستون‌های authoring/revision/currentness را اضافه می‌کند. SQLite self-reference و authoring-state invariant در migration به‌وسیلهٔ trigger محافظت می‌شوند، زیرا SQLite نمی‌تواند self-FK را با `ALTER TABLE ADD CONSTRAINT` ساده اضافه کند. metadata/bootstrap نیز باید همین guardها را ایجاد کند. رفتار PostgreSQL از این کد استنباط یا qualify نمی‌شود.
 
 مسیرهای اصلی: `operations/ddr.py`, `review/actions.py`, `review/service.py`, UI در `ui/main_window.py`, migration `0026`, `tests/integration/test_ddr_authoring.py` و migration tests.
@@ -69,9 +70,9 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 - `schema_diff()` فقط table/column presence را می‌سنجد؛ برای FKها، unique/partial indexها، triggers و رفتار deletion باید آزمون/introspection اختصاصی وجود داشته باشد.
 - wheel/sdist clean-install و schema bootstrap از metadata مسیر واقعی محصول‌اند؛ وجود migration در source checkout به‌تنهایی clean install را ثابت نمی‌کند.
 - package version فعلی `0.0.2a0` است؛ این شماره و `Development Status :: 2 - Pre-Alpha` تضمین انتشار یا آمادگی عملیاتی نیست.
-- `doctor` قبل از Alembic روی SQLite موجود، `integrity_check` و `foreign_key_check` فقط‌خواندنی اجرا می‌کند. خرابی storage مانع migration و domain query می‌شود؛ بررسی‌های cross-row و drift شاخص پس از سلامت storage انجام می‌شوند.
-- `workspace backup` از SQLite online backup API و manifest شامل SHA-256، UTC، schema revision و storage health استفاده می‌کند؛ مقصد باید جدید باشد. Snapshot ناسالم برای بررسی حفظ می‌شود، اما restore آن رد می‌شود.
-- `workspace restore` فقط در مسیر جدید و برای workspace دارای identity row فقط در همان absolute root ذخیره‌شده مجاز است؛ re-home، overwrite، migration پنهان و overwrite DB فعال وجود ندارد. Archive unencrypted است و corpus/index را شامل نمی‌شود. فقط data dir پیش‌فرض `.drillintel` qualify شده است.
+- `doctor` پیش از migration روی SQLite موجود و دوباره پس از bootstrap/upgrade، `integrity_check`, `foreign_key_check` و storage preflight فقط‌خواندنی انجام می‌دهد؛ خطای storage مانع ادعای سلامت domain و مانع domain/search query می‌شود. بررسی‌های cross-row و drift شاخص فقط پس از preflight موفق انجام می‌شوند؛ repair خودکار نداریم.
+- `workspace backup` از SQLite online backup API و manifest شامل SHA-256، UTC، schema revision و storage health استفاده می‌کند؛ مقصد باید تازه باشد. این **database snapshot** است، نه full workspace/source backup: فقط `workspace.toml` و snapshot پایگاه‌داده را دارد؛ corpus/source و search index خارج‌اند و باید جداگانه، با سیاست مجاز اپراتور، حفاظت شوند. archive رمزگذاری نشده است.
+- Restore فقط در مسیر تازه و برای workspace دارای identity row فقط در همان absolute root ذخیره‌شده مجاز است؛ re-home، overwrite، migration پنهان و overwrite DB فعال وجود ندارد. بررسی path/member/hash/health و محدودیت منابع پیش از انتشار انجام می‌شود؛ سقف snapshot پایگاه‌داده 8 GiB، overhead آرشیو 16 MiB، metadata یک MiB و تعداد عضو دقیقاً سه است. فقط data dir پیش‌فرض `.drillintel` qualify شده است. هیچ encryption/key-management یا بازیابی source در این قابلیت ادعا نمی‌شود.
 
 ## 6. Workbench، CLI و آزمون‌پذیری
 

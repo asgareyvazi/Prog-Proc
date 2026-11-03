@@ -10,7 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
+import stat
+import struct
 import tempfile
 import tomllib
 import zipfile
@@ -42,6 +45,9 @@ _DATA_DIRECTORY = ".drillintel"
 _DEFAULT_DATABASE_PATH = "database/drilling_intelligence.db"
 _DEFAULT_INDEX_PATH = "index/search_index.db"
 _MAX_METADATA_BYTES = 1024 * 1024
+_MAX_DATABASE_BYTES = 8 * 1024 * 1024 * 1024
+_MAX_ARCHIVE_BYTES = _MAX_DATABASE_BYTES + 16 * 1024 * 1024
+_MAX_ARCHIVE_ENTRIES = 3
 _COPY_CHUNK_BYTES = 1024 * 1024
 
 
@@ -67,6 +73,7 @@ class WorkspaceBackupResult:
     database_bytes: int
     schema_revision: str
     storage_health: dict[str, Any]
+    backup_scope: str = "database_snapshot_only"
     corpus_included: bool = False
     search_index_included: bool = False
 
@@ -80,6 +87,7 @@ class WorkspaceBackupResult:
             "database_bytes": self.database_bytes,
             "schema_revision": self.schema_revision,
             "storage_health": dict(self.storage_health),
+            "backup_scope": self.backup_scope,
             "corpus_included": self.corpus_included,
             "search_index_included": self.search_index_included,
         }
@@ -197,9 +205,12 @@ def _workspace_files(workspace: Workspace) -> tuple[Path, bytes, str, str]:
     if marker_path.is_symlink() or not marker_path.is_file():
         raise BackupError("workspace.toml must be a regular file", path=str(marker_path))
     try:
-        marker = marker_path.read_bytes()
+        with marker_path.open("rb") as handle:
+            marker = handle.read(_MAX_METADATA_BYTES + 1)
     except OSError as exc:
         raise BackupError(f"cannot read workspace marker: {exc}", path=str(marker_path)) from exc
+    if len(marker) > _MAX_METADATA_BYTES:
+        raise BackupError("workspace marker exceeds the allowed one MiB metadata size")
     database_relative, _index_relative = _database_path_from_marker(marker)
     database_path = Path(workspace.database_path)
     expected_path = data_root.joinpath(*PurePosixPath(database_relative).parts)
@@ -283,6 +294,16 @@ def create_workspace_backup(workspace: Workspace, destination: Path | str) -> Wo
     source_database, marker, database_relative, revision = _workspace_files(workspace)
     if output.resolve(strict=False) == source_database.resolve():
         raise BackupError("backup destination must not be the workspace database", path=str(output))
+    try:
+        source_bytes = source_database.stat().st_size
+    except OSError as exc:
+        raise BackupError(f"cannot inspect workspace database size: {exc}") from exc
+    if source_bytes > _MAX_DATABASE_BYTES:
+        raise BackupError(
+            "workspace database exceeds the configured 8 GiB snapshot limit",
+            database_bytes=source_bytes,
+            limit_bytes=_MAX_DATABASE_BYTES,
+        )
 
     with tempfile.TemporaryDirectory(prefix=".drillintel-backup-", dir=output.parent) as temporary:
         staging = Path(temporary)
@@ -290,6 +311,13 @@ def create_workspace_backup(workspace: Workspace, destination: Path | str) -> Wo
         database_snapshot.touch(mode=0o600)
         _read_database_backup(source_database, database_snapshot)
         database_snapshot.chmod(0o600)
+        snapshot_bytes = database_snapshot.stat().st_size
+        if snapshot_bytes > _MAX_DATABASE_BYTES:
+            raise BackupError(
+                "consistent database snapshot exceeds the configured 8 GiB limit",
+                database_bytes=snapshot_bytes,
+                limit_bytes=_MAX_DATABASE_BYTES,
+            )
         health = _health(database_snapshot)
         snapshot_revision = _schema_revision(database_snapshot)
         if snapshot_revision != revision:
@@ -304,6 +332,7 @@ def create_workspace_backup(workspace: Workspace, destination: Path | str) -> Wo
             "created_at": datetime.now(UTC).isoformat(),
             "application_version": __version__,
             "workspace_name": workspace.config.name,
+            "backup_scope": "database_snapshot_only",
             "database_member": _DATABASE_MEMBER,
             "database_path": database_relative,
             "database_bytes": database_snapshot.stat().st_size,
@@ -312,10 +341,17 @@ def create_workspace_backup(workspace: Workspace, destination: Path | str) -> Wo
             "schema_revision": revision,
             "storage_health": health.to_dict(),
             "included": [_MARKER_MEMBER, _DATABASE_MEMBER],
-            "omitted": ["corpus files", "rebuildable search index"],
+            "omitted": ["configured corpus/source files", "rebuildable search index"],
         }
         temporary_archive = staging / "snapshot.zip"
         _write_zip(temporary_archive, database_snapshot, marker, manifest)
+        archive_size = temporary_archive.stat().st_size
+        if archive_size > _MAX_ARCHIVE_BYTES:
+            raise BackupError(
+                "created database snapshot archive exceeds the configured size limit",
+                archive_bytes=archive_size,
+                limit_bytes=_MAX_ARCHIVE_BYTES,
+            )
         with temporary_archive.open("rb+") as handle:
             handle.flush()
             os.fsync(handle.fileno())
@@ -333,7 +369,6 @@ def create_workspace_backup(workspace: Workspace, destination: Path | str) -> Wo
             raise BackupError(
                 f"cannot safely publish backup without overwrite: {exc}", path=str(output)
             ) from exc
-        output.chmod(0o600)
         archive_digest = _sha256(output)
         return WorkspaceBackupResult(
             action="backup",
@@ -347,23 +382,74 @@ def create_workspace_backup(workspace: Workspace, destination: Path | str) -> Wo
         )
 
 
+def _preflight_archive_directory(path: Path, archive_bytes: int) -> None:
+    """Bound ZIP central-directory parsing before ``ZipFile`` materializes all members."""
+    tail_size = min(archive_bytes, 22 + zipfile.ZIP_MAX_COMMENT)
+    try:
+        with path.open("rb") as handle:
+            handle.seek(archive_bytes - tail_size)
+            tail = handle.read(tail_size)
+    except OSError as exc:
+        raise BackupError(f"cannot inspect backup archive directory: {exc}") from exc
+    signature = bytes((80, 75, 5, 6))
+    position = tail.rfind(signature)
+    if position < 0 or len(tail) - position < 22:
+        raise BackupError("backup archive has no valid end-of-central-directory record")
+    try:
+        (
+            _signature,
+            disk_number,
+            central_disk,
+            disk_entries,
+            total_entries,
+            central_size,
+            central_offset,
+            comment_length,
+        ) = struct.unpack_from("<4s4H2LH", tail, position)
+    except struct.error as exc:
+        raise BackupError("backup archive directory record is malformed") from exc
+    if position + 22 + comment_length != len(tail):
+        raise BackupError("backup archive has trailing or truncated directory data")
+    if disk_number != 0 or central_disk != 0 or disk_entries != total_entries:
+        raise BackupError("multi-disk backup archives are not supported")
+    if total_entries > _MAX_ARCHIVE_ENTRIES or total_entries == 0xFFFF:
+        raise BackupError("backup archive exceeds the allowed three-member entry limit")
+    absolute_directory = archive_bytes - tail_size + position
+    if central_offset + central_size > absolute_directory:
+        raise BackupError("backup archive directory points outside the archive")
+
+
 def _manifest_from_archive(
     archive: zipfile.ZipFile,
 ) -> tuple[dict[str, Any], bytes, zipfile.ZipInfo]:
     infos = archive.infolist()
+    if len(infos) > _MAX_ARCHIVE_ENTRIES:
+        raise BackupError("backup archive exceeds the allowed three-member entry limit")
     names = [info.filename for info in infos]
     expected = {_MANIFEST_MEMBER, _MARKER_MEMBER, _DATABASE_MEMBER}
     if len(names) != len(set(names)) or set(names) != expected:
         raise BackupError(
             "backup archive must contain exactly one manifest, workspace marker, and database"
         )
-    if any(info.is_dir() or info.flag_bits & 0x1 for info in infos):
-        raise BackupError("backup archive contains a directory or encrypted member")
+    for info in infos:
+        mode = (info.external_attr >> 16) & 0xFFFF
+        file_type = stat.S_IFMT(mode)
+        if info.is_dir() or info.flag_bits & 0x1:
+            raise BackupError("backup archive contains a directory or encrypted member")
+        if file_type not in {0, stat.S_IFREG}:
+            raise BackupError("backup archive contains a non-regular member")
+        if info.file_size < 0 or info.compress_size < 0:
+            raise BackupError("backup archive contains an invalid member size")
     by_name = {info.filename: info for info in infos}
     if by_name[_MANIFEST_MEMBER].file_size > _MAX_METADATA_BYTES:
         raise BackupError("backup manifest exceeds the allowed metadata size")
     if by_name[_MARKER_MEMBER].file_size > _MAX_METADATA_BYTES:
         raise BackupError("workspace marker exceeds the allowed metadata size")
+    database_info = by_name[_DATABASE_MEMBER]
+    if database_info.file_size > _MAX_DATABASE_BYTES:
+        raise BackupError("database member exceeds the configured 8 GiB restore limit")
+    if sum(info.file_size for info in infos) > _MAX_ARCHIVE_BYTES:
+        raise BackupError("backup archive exceeds the configured uncompressed-size limit")
     try:
         manifest = json.loads(archive.read(_MANIFEST_MEMBER))
         marker = archive.read(_MARKER_MEMBER)
@@ -375,6 +461,25 @@ def _manifest_from_archive(
         raise BackupError("unsupported workspace backup format")
     if manifest.get("database_member") != _DATABASE_MEMBER:
         raise BackupError("backup manifest names an unsupported database member")
+    if manifest.get("backup_scope", "database_snapshot_only") != "database_snapshot_only":
+        raise BackupError("unsupported backup scope; only database snapshots are accepted")
+    included = manifest.get("included")
+    if (
+        not isinstance(included, list)
+        or len(included) != 2
+        or set(included) != {_MARKER_MEMBER, _DATABASE_MEMBER}
+    ):
+        raise BackupError("manifest must identify only the workspace marker and database snapshot")
+    omitted = manifest.get("omitted")
+    if (
+        not isinstance(omitted, list)
+        or not all(isinstance(item, str) for item in omitted)
+        or not ({"corpus files", "configured corpus/source files"} & set(omitted))
+        or "rebuildable search index" not in omitted
+    ):
+        raise BackupError(
+            "manifest must disclose omitted source files and rebuildable search index"
+        )
     if manifest.get("workspace_sha256") != _digest_bytes(marker):
         raise BackupError("workspace marker hash does not match the backup manifest")
     marker_config = _marker_config(marker)
@@ -386,13 +491,15 @@ def _manifest_from_archive(
     database_info = by_name[_DATABASE_MEMBER]
     database_bytes = manifest.get("database_bytes")
     if (
-        not isinstance(database_bytes, int)
+        isinstance(database_bytes, bool)
+        or not isinstance(database_bytes, int)
         or database_bytes < 1
+        or database_bytes > _MAX_DATABASE_BYTES
         or database_info.file_size != database_bytes
     ):
         raise BackupError("database size does not match the backup manifest")
     digest = manifest.get("database_sha256")
-    if not isinstance(digest, str) or len(digest) != 64:
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise BackupError("backup manifest has no valid database SHA-256")
     health = manifest.get("storage_health")
     if not isinstance(health, dict) or health.get("status") != "healthy":
@@ -423,6 +530,17 @@ def restore_workspace_backup(
         raise BackupError(
             "restore destination already exists; refusing to modify it", path=str(target)
         )
+    try:
+        archive_bytes = archive_source.stat().st_size
+    except OSError as exc:
+        raise BackupError(f"cannot inspect backup archive size: {exc}") from exc
+    if archive_bytes > _MAX_ARCHIVE_BYTES:
+        raise BackupError(
+            "backup archive exceeds the configured size limit",
+            archive_bytes=archive_bytes,
+            limit_bytes=_MAX_ARCHIVE_BYTES,
+        )
+    _preflight_archive_directory(archive_source, archive_bytes)
 
     try:
         with zipfile.ZipFile(archive_source, mode="r") as archive:
@@ -443,6 +561,10 @@ def restore_workspace_backup(
                 ):
                     database_stage.chmod(0o600)
                     while chunk := source.read(_COPY_CHUNK_BYTES):
+                        if copied_bytes + len(chunk) > _MAX_DATABASE_BYTES:
+                            raise BackupError(
+                                "database member exceeds the configured 8 GiB restore limit"
+                            )
                         output.write(chunk)
                         digest.update(chunk)
                         copied_bytes += len(chunk)
@@ -468,23 +590,32 @@ def restore_workspace_backup(
                         actual=revision,
                     )
                 marker_stage = staging / _MARKER_MEMBER
-                marker_stage.write_bytes(marker)
+                with marker_stage.open("xb") as marker_file:
+                    marker_file.write(marker)
+                    marker_file.flush()
+                    os.fsync(marker_file.fileno())
                 marker_stage.chmod(0o600)
                 data_stage.chmod(0o700)
                 try:
-                    # Reserve the user-requested directory exclusively. An existing empty
-                    # directory is still user data and is never replaced.
+                    # Reserve each path exclusively. Hard-link publication cannot replace a
+                    # path another process creates, and the workspace marker is linked last.
                     target.mkdir(mode=0o700)
+                    target_data = target / _DATA_DIRECTORY
+                    target_data.mkdir(mode=0o700)
+                    destination_parent = target_data
+                    for part in PurePosixPath(database_relative).parts[:-1]:
+                        destination_parent = destination_parent / part
+                        destination_parent.mkdir(mode=0o700)
+                    os.link(
+                        database_stage, destination_parent / PurePosixPath(database_relative).name
+                    )
+                    os.link(marker_stage, target / _MARKER_MEMBER)
                 except FileExistsError as exc:
                     raise BackupError(
-                        "restore destination appeared during validation; refusing to overwrite",
+                        "restore destination or one of its paths appeared during publication; "
+                        "refusing to overwrite existing data",
                         path=str(target),
                     ) from exc
-                try:
-                    data_stage.replace(target / _DATA_DIRECTORY)
-                    # The marker is moved last: until then, an interrupted restore is not a
-                    # discoverable Drilling Intelligence workspace.
-                    marker_stage.replace(target / _MARKER_MEMBER)
                 except OSError as exc:
                     raise BackupError(
                         f"restore was interrupted; the incomplete directory is preserved at {target}: {exc}",

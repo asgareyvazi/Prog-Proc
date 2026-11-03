@@ -22,6 +22,43 @@ def test_doctor_reports_healthy_sqlite_storage(tmp_path: Path, capsys) -> None:
     assert payload["storage"]["foreign_key_violation_count"] == 0
 
 
+def test_doctor_rechecks_new_database_before_domain_integrity(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    import drilling_intelligence.cli.app as cli_app
+    from drilling_intelligence.database.sqlite_health import SQLiteHealth
+
+    root = tmp_path / "first-open"
+    workspace = Workspace.create(root)
+    database_path = workspace.database_path
+    workspace.close()
+    assert not database_path.exists()
+    calls = 0
+
+    def preflight(_path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SQLiteHealth(status="not_run", detail="database file does not exist yet")
+        return SQLiteHealth(status="failed", detail="injected post-bootstrap storage failure")
+
+    def domain_check_must_not_run(_session):
+        raise AssertionError("domain integrity must not run after failed storage preflight")
+
+    monkeypatch.setattr(cli_app, "inspect_sqlite_database", preflight)
+    monkeypatch.setattr(cli_app, "check_current_version_invariants", domain_check_must_not_run)
+
+    code = main(["doctor", "--workspace", str(root), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert calls == 2
+    assert code == 1
+    assert payload["storage"]["status"] == "failed"
+    assert "injected post-bootstrap storage failure" in payload["storage"]["detail"]
+    assert payload["checks_not_run"] == ["schema migrations", "domain integrity", "search index"]
+    assert "registry" not in payload
+
+
 def test_doctor_fails_closed_before_migration_on_malformed_database(tmp_path: Path, capsys) -> None:
     root = tmp_path / "damaged"
     workspace = Workspace.create(root)

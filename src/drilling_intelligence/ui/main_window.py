@@ -527,10 +527,18 @@ class MainWindow(QMainWindow):
         self.ddr_revision_button = QPushButton("Start new revision")
         self.ddr_revision_button.clicked.connect(self._ddr_create_revision)
         buttons.addWidget(self.ddr_revision_button)
+        self.ddr_compare_button = QPushButton("Compare with prior revision")
+        self.ddr_compare_button.clicked.connect(self._ddr_compare_selected_revision)
+        buttons.addWidget(self.ddr_compare_button)
         self.ddr_refresh_button = QPushButton("Refresh")
         self.ddr_refresh_button.clicked.connect(self._refresh_ddr_reports)
         buttons.addWidget(self.ddr_refresh_button)
         editor_layout.addLayout(buttons)
+        editor_layout.addWidget(QLabel("Revision comparison and authored provenance"))
+        self.ddr_compare_tree = QTreeWidget()
+        self.ddr_compare_tree.setHeaderLabels(["Field / provenance", "Recorded value"])
+        self.ddr_compare_tree.setMaximumHeight(190)
+        editor_layout.addWidget(self.ddr_compare_tree)
         content.addWidget(editor)
         content.setStretchFactor(1, 2)
         layout.addWidget(content, 1)
@@ -2261,6 +2269,7 @@ class MainWindow(QMainWindow):
 
     def _ddr_set_record(self, record: dict[str, Any] | None) -> None:
         self._selected_ddr_record = dict(record) if record else None
+        self.ddr_compare_tree.clear()
         if record is None:
             self.ddr_date_input.clear()
             self.ddr_number_input.clear()
@@ -2289,6 +2298,83 @@ class MainWindow(QMainWindow):
                 )
         self._ddr_update_controls()
 
+    def _ddr_compare_selected_revision(self) -> None:
+        """Show exact authored field differences and provenance against the named parent revision."""
+        current = self._selected_ddr_record or {}
+        parent_id = str(current.get("supersedes_report_id") or "")
+        previous = self._ddr_records_by_id.get(parent_id)
+        self.ddr_compare_tree.clear()
+        if not parent_id or previous is None:
+            self._set_status(
+                "The selected DDR has no loaded superseded revision to compare.", error=True
+            )
+            return
+        root = QTreeWidgetItem(
+            self.ddr_compare_tree,
+            [
+                "Revision lineage",
+                f"{previous.get('report_id')} → {current.get('report_id')}",
+            ],
+        )
+        fields = (
+            "report_date",
+            "report_date_text",
+            "report_number",
+            "shift",
+            "summary",
+            "activities",
+        )
+        for key in fields:
+            before = previous.get(key)
+            after = current.get(key)
+            if key == "activities":
+                activity_fields = (
+                    "sequence",
+                    "operation_type",
+                    "label",
+                    "description",
+                    "period_text",
+                )
+                before = [
+                    {field: activity.get(field) for field in activity_fields}
+                    for activity in previous.get("activities") or ()
+                ]
+                after = [
+                    {field: activity.get(field) for field in activity_fields}
+                    for activity in current.get("activities") or ()
+                ]
+            state = "CHANGED" if before != after else "unchanged"
+            field_item = QTreeWidgetItem(root, [key, state])
+            QTreeWidgetItem(field_item, ["previous", _value_text(before)])
+            QTreeWidgetItem(field_item, ["current", _value_text(after)])
+        provenance = QTreeWidgetItem(root, ["Authored provenance", ""])
+        for label, record in (("previous", previous), ("current", current)):
+            revision_provenance = QTreeWidgetItem(provenance, [label, ""])
+            for entry in record.get("provenance") or ():
+                if isinstance(entry, Mapping):
+                    _add_tree_value(revision_provenance, "event", entry)
+            for activity in record.get("activities") or ():
+                if not isinstance(activity, Mapping):
+                    continue
+                activity_item = QTreeWidgetItem(
+                    revision_provenance,
+                    [f"activity {activity.get('sequence', '')}", ""],
+                )
+                QTreeWidgetItem(
+                    activity_item, ["created_at", str(activity.get("created_at") or "")]
+                )
+                QTreeWidgetItem(
+                    activity_item, ["updated_at", str(activity.get("updated_at") or "")]
+                )
+                for entry in activity.get("provenance") or ():
+                    if isinstance(entry, Mapping):
+                        _add_tree_value(activity_item, "event", entry)
+        self.ddr_compare_tree.expandToDepth(2)
+        self._set_status(
+            f"Compared revision {current.get('revision_number')} with its recorded predecessor; "
+            "no derived engineering values were calculated."
+        )
+
     def _ddr_update_controls(self) -> None:
         available = self.controller.workspace is not None and bool(self.well_combo.currentData())
         busy = self._ddr_thread is not None
@@ -2314,6 +2400,11 @@ class MainWindow(QMainWindow):
         self.ddr_save_button.setEnabled(available and not busy and draft)
         self.ddr_submit_button.setEnabled(available and not busy and draft)
         self.ddr_revision_button.setEnabled(available and not busy and revisable)
+        has_parent = bool(
+            record.get("supersedes_report_id")
+            and str(record.get("supersedes_report_id")) in self._ddr_records_by_id
+        )
+        self.ddr_compare_button.setEnabled(available and not busy and has_parent)
         self.ddr_refresh_button.setEnabled(available and not busy and not self._ddr_new_draft_mode)
         self.ddr_add_activity_button.setEnabled(editing and not busy and not self._global_busy)
         self.ddr_remove_activity_button.setEnabled(editing and not busy and not self._global_busy)
@@ -2510,6 +2601,8 @@ class MainWindow(QMainWindow):
             requirements.append("reason")
         if action.requires_evidence:
             requirements.append("recorded evidence")
+        if action.requires_independent_actor:
+            requirements.append("a declared reviewer ID different from the record author")
         self.record_action_hint.setText(
             f"{action.label} moves the authoritative status to {action.target_status}. "
             f"Explicit {', '.join(requirements)} required; the record will be re-read after success."
@@ -2545,6 +2638,15 @@ class MainWindow(QMainWindow):
             self.record_reason_input.setFocus()
             return
         data = record.data
+        author = str(data.get("created_by") or "").strip()
+        if action.requires_independent_actor and author and actor.casefold() == author.casefold():
+            self._set_status(
+                "This decision requires a declared reviewer ID different from the record author; "
+                "the ID is not identity-verified.",
+                error=True,
+            )
+            self.record_actor_input.setFocus()
+            return
         expected_revision = data.get("revision")
         if expected_revision is not None:
             try:

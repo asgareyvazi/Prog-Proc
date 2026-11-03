@@ -1,6 +1,6 @@
 # Windows testing
 
-> **Post-V10.3 status (2026-11-02):** The run-card evidence below is historical V10.3 evidence, not a result for later code SHAs. Qualification must use Linux/Windows CI runs attached to the exact final commit. Current migration head is `0026`. Local Qt UI tests in this sandbox are **SKIPPED** when host Qt libraries (including `libGL.so.1`) are absent; this is not a pass. Offscreen UI evidence does not constitute physical display acceptance; the owner checklist remains **NOT RUN**.
+> **Current status (2026-11-03):** The run-card evidence below is historical V10.3 evidence, not a result for later code SHAs. This mission has not yet produced exact-final-SHA Windows CI evidence. Current migration head is `0026`. Local Qt UI tests in this sandbox are **SKIPPED** because `libGL.so.1` is absent; this is not a pass. Offscreen UI evidence does not constitute physical display acceptance; the owner checklist remains **NOT RUN**.
 
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the

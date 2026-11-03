@@ -506,8 +506,8 @@ def test_report_audit_does_not_recompose_and_a_late_result_cannot_replace_a_newe
     assert before == _database_fingerprint(workspace)
 
 
-def test_daily_ddr_workbench_creates_saves_and_submits_candidate_rows(
-    qt_app, workspace, committed_well_id
+def test_daily_ddr_workbench_creates_saves_reviews_reopens_and_compares_revisions(
+    qt_app, workspace, committed_well_id, monkeypatch
 ) -> None:
     """The desktop exposes a writable draft composer, not just a DDR history table."""
     import time
@@ -531,20 +531,79 @@ def test_daily_ddr_workbench_creates_saves_and_submits_candidate_rows(
 
     def wait_for_idle(timeout_ms: int = 15_000) -> bool:
         deadline = time.monotonic() + timeout_ms / 1000
-        while window._ddr_thread is not None:
+        while True:
+            qt_app.processEvents()
+            if window._ddr_thread is None:
+                qt_app.processEvents()
+                if window._ddr_thread is None and not window._pending_ddr_refresh:
+                    return True
             remaining_ms = int((deadline - time.monotonic()) * 1000)
             if remaining_ms <= 0:
                 return False
             loop = QEventLoop()
             timer = QTimer()
             timer.setSingleShot(True)
+            thread = window._ddr_thread
+            if thread is not None:
+                thread.finished.connect(loop.quit)
             window.ddr_operation_finished.connect(loop.quit)
             timer.timeout.connect(loop.quit)
             timer.start(remaining_ms)
             loop.exec()
             timer.stop()
             window.ddr_operation_finished.disconnect(loop.quit)
+
+    def wait_for_review_idle(timeout_ms: int = 15_000) -> bool:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while window._review_thread is not None:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                return False
+            thread = window._review_thread
+            loop = QEventLoop()
+            timer = QTimer()
+            timer.setSingleShot(True)
+            thread.finished.connect(loop.quit)
+            timer.timeout.connect(loop.quit)
+            timer.start(remaining_ms)
+            loop.exec()
+            timer.stop()
         return True
+
+    def wait_for_action_review_idle(timeout_ms: int = 15_000) -> bool:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while window._action_thread is not None or window._review_thread is not None:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                return False
+            thread = window._action_thread or window._review_thread
+            assert thread is not None
+            loop = QEventLoop()
+            timer = QTimer()
+            timer.setSingleShot(True)
+            thread.finished.connect(loop.quit)
+            timer.timeout.connect(loop.quit)
+            timer.start(remaining_ms)
+            loop.exec()
+            timer.stop()
+        return True
+
+    def select_ddr_review_record(record_id: str) -> None:
+        window.record_type_filter.setCurrentText("ddr_report")
+        qt_app.processEvents()
+        selected = None
+        for row in range(window.records_proxy.rowCount()):
+            index = window.records_proxy.index(row, 0)
+            source = window.records_proxy.mapToSource(index)
+            candidate = window.records_model.record_at(source.row())
+            if candidate is not None and candidate.record_id == record_id:
+                selected = index
+                break
+        assert selected is not None, f"DDR report {record_id} is absent from the reloaded review"
+        window.records_table.setCurrentIndex(selected)
+        qt_app.processEvents()
+        assert window._selected_record is not None
+        assert window._selected_record.record_id == record_id
 
     try:
         _select_navigation_page(window, "Daily DDR")
@@ -596,6 +655,7 @@ def test_daily_ddr_workbench_creates_saves_and_submits_candidate_rows(
         window.ddr_reason_input.setText("Ready for independent review")
         window.ddr_submit_button.click()
         assert wait_for_idle(), "DDR submit/refresh exceeded its bounded deadline"
+        assert wait_for_review_idle(), "DDR submission review reload exceeded its bounded deadline"
         submitted = service.get(report["report_id"])
         assert submitted["authoring_state"] == "SUBMITTED"
         assert submitted["status"] == "CANDIDATE"
@@ -604,7 +664,131 @@ def test_daily_ddr_workbench_creates_saves_and_submits_candidate_rows(
         assert len(operations) == 1
         assert operations[0].status == "CANDIDATE"
         assert operations[0].provenance[0]["source_kind"] == "manual_authoring"
-        assert spy.count() >= 4
+        assert submitted["provenance"]
+        assert submitted["provenance"][0]["actor"] == "operator-1"
+
+        # Revisions are distinct persisted rows. The UI exposes the parent comparison and keeps
+        # authored actor/reason/time beside exact field values instead of deriving engineering data.
+        assert window.ddr_revision_button.isEnabled()
+        window.ddr_reason_input.setText("Open a corrected revision after review")
+        window.ddr_revision_button.click()
+        assert wait_for_idle(), "DDR revision creation/list refresh exceeded its bounded deadline"
+        assert window._selected_ddr_record is not None
+        revision_id = window._selected_ddr_record["report_id"]
+        assert revision_id != report["report_id"]
+        assert window._selected_ddr_record["supersedes_report_id"] == report["report_id"]
+        window.ddr_summary_input.setPlainText("Operator wording updated in revision two.")
+        window.ddr_reason_input.setText("Corrected the submitted summary")
+        window.ddr_save_button.click()
+        assert wait_for_idle(), "DDR revision save/list refresh exceeded its bounded deadline"
+        window.ddr_reason_input.setText("Corrected the submitted summary")
+        window.ddr_submit_button.click()
+        assert wait_for_idle(), "DDR revision submission/list refresh exceeded its bounded deadline"
+        assert wait_for_review_idle(), "DDR revision review reload exceeded its bounded deadline"
+        revised = service.get(revision_id)
+        assert revised["revision_number"] == 2
+        assert revised["summary"] == "Operator wording updated in revision two."
+        assert revised["provenance"][0]["reason"] == "Corrected the submitted summary"
+        assert not service.get(report["report_id"])["is_current"]
+        assert window.ddr_compare_button.isEnabled()
+        window.ddr_compare_button.click()
+        assert window.ddr_compare_tree.topLevelItemCount() == 1
+        compared = window.ddr_compare_tree.topLevelItem(0)
+        labels = []
+        pending = [compared]
+        while pending:
+            item = pending.pop()
+            labels.extend((item.text(0), item.text(1)))
+            pending.extend(item.child(i) for i in range(item.childCount()))
+        assert "summary" in labels and "CHANGED" in labels
+        assert "report_date_text" in labels
+        assert "Authored provenance" in labels
+        assert "Corrected the submitted summary" in labels
+
+        # The review UI enforces reason and a distinct declared actor before confirmation. The
+        # affirmative action is still only a declared actor string, not an authenticated identity.
+        _select_navigation_page(window, "Records")
+        select_ddr_review_record(revision_id)
+        assert window._current_record_action() is not None
+        assert window._current_record_action().action_id == "confirm"
+        window.record_actor_input.setText("operator-1")
+        window.record_reason_input.setText("This is not an independent review")
+        window.confirm_record_action()
+        assert "different from the record author" in window.status_label.text()
+        assert window._action_thread is None
+        window.record_actor_input.setText("reviewer-2")
+        window.record_reason_input.clear()
+        window.confirm_record_action()
+        assert "needs a reason" in window.status_label.text()
+        assert window._action_thread is None
+
+        from PySide6.QtWidgets import QMessageBox
+
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+        )
+        window.record_reason_input.setText("Reviewed the submitted values against the report")
+        window.confirm_record_action()
+        assert wait_for_action_review_idle(), "DDR confirmation/review reload exceeded its deadline"
+        assert service.get(revision_id)["status"] == "CONFIRMED"
+        assert any(
+            item.get("actor") == "reviewer-2"
+            and item.get("reason") == "Reviewed the submitted values against the report"
+            for item in service.get(revision_id)["provenance"]
+        )
+
+        _select_navigation_page(window, "Daily DDR")
+        assert wait_for_idle(), "DDR list did not refresh after confirmation"
+        window.ddr_compare_button.click()
+        provenance_labels = []
+        pending = [window.ddr_compare_tree.topLevelItem(0)]
+        while pending:
+            item = pending.pop()
+            if item is not None:
+                provenance_labels.extend((item.text(0), item.text(1)))
+                pending.extend(item.child(i) for i in range(item.childCount()))
+        assert "reviewer-2" in provenance_labels
+        assert "Reviewed the submitted values against the report" in provenance_labels
+        window.ddr_reason_input.setText("Create a new draft for the rejected revision case")
+        assert window.ddr_revision_button.isEnabled()
+        window.ddr_revision_button.click()
+        assert wait_for_idle(), "third DDR revision creation exceeded its deadline"
+        assert window._selected_ddr_record is not None
+        rejected_revision_id = window._selected_ddr_record["report_id"]
+        assert window._selected_ddr_record["revision_number"] == 3
+        window.ddr_summary_input.setPlainText("Revision three with a documented correction.")
+        window.ddr_reason_input.setText("Record a correction for review")
+        window.ddr_save_button.click()
+        assert wait_for_idle(), "third DDR revision save exceeded its deadline"
+        window.ddr_reason_input.setText("Submit the third revision for review")
+        window.ddr_submit_button.click()
+        assert wait_for_idle(), "third DDR revision submission exceeded its deadline"
+        assert wait_for_review_idle(), "third DDR review reload exceeded its deadline"
+
+        _select_navigation_page(window, "Records")
+        select_ddr_review_record(rejected_revision_id)
+        reject_index = window.record_action_combo.findData("reject")
+        assert reject_index >= 0
+        window.record_action_combo.setCurrentIndex(reject_index)
+        window.record_actor_input.setText("reviewer-3")
+        window.record_reason_input.setText("Rejected because the correction needs another review")
+        window.confirm_record_action()
+        assert wait_for_action_review_idle(), "DDR rejection/review reload exceeded its deadline"
+        rejected = service.get(rejected_revision_id)
+        assert rejected["status"] == "REJECTED"
+        assert any(
+            item.get("actor") == "reviewer-3"
+            and item.get("reason") == "Rejected because the correction needs another review"
+            for item in rejected["provenance"]
+        )
+
+        _select_navigation_page(window, "Overview")
+        _select_navigation_page(window, "Daily DDR")
+        assert wait_for_idle(), "DDR persisted list did not reopen within its bounded deadline"
+        assert len(service.list_reports(committed_well_id)) == 3
+        assert spy.count() >= 11
     finally:
         from drilling_intelligence.ui.lifetime import release_top_level_widgets
 

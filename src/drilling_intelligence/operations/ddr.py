@@ -74,8 +74,10 @@ class DdrWorkspaceRecord:
     created_by: str
     origin: str
     document_version_id: str
+    created_at: str
     updated_at: str
-    activities: tuple[dict[str, str | int], ...]
+    provenance: tuple[dict[str, Any], ...]
+    activities: tuple[dict[str, Any], ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -95,7 +97,9 @@ class DdrWorkspaceRecord:
             "created_by": self.created_by,
             "origin": self.origin,
             "document_version_id": self.document_version_id,
+            "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "provenance": [dict(item) for item in self.provenance],
             "activities": [dict(item) for item in self.activities],
         }
 
@@ -491,6 +495,21 @@ class DdrAuthoringService:
             .where(DdrActivity.ddr_report_id == report.id)
             .order_by(DdrActivity.sequence, DdrActivity.id)
         )
+        provenance = [dict(item) for item in report.provenance or () if isinstance(item, Mapping)]
+        attributes = report.attributes if isinstance(report.attributes, Mapping) else {}
+        status_history = attributes.get("status_history")
+        if isinstance(status_history, Sequence) and not isinstance(status_history, str | bytes):
+            provenance.extend(
+                {
+                    "source_kind": "review_decision",
+                    "action": f"{item.get('from', '')}->{item.get('to', '')}",
+                    "actor": str(item.get("by") or ""),
+                    "reason": str(item.get("reason") or ""),
+                    "at": str(item.get("at") or ""),
+                }
+                for item in status_history
+                if isinstance(item, Mapping)
+            )
         return DdrWorkspaceRecord(
             report_id=str(report.id),
             well_id=str(report.well_id),
@@ -508,16 +527,25 @@ class DdrAuthoringService:
             created_by=str(report.created_by or ""),
             origin=str(report.origin or ""),
             document_version_id=str(report.document_version_id or ""),
+            created_at=_stamp(report.created_at),
             updated_at=_stamp(report.updated_at),
+            provenance=tuple(provenance),
             activities=tuple(
                 {
                     "id": str(activity.id),
                     "sequence": int(activity.sequence),
+                    "created_at": _stamp(activity.created_at),
+                    "updated_at": _stamp(activity.updated_at),
                     "operation_type": str(activity.operation_type),
                     "label": str(activity.label),
                     "description": str(activity.description or ""),
                     "period_text": str(activity.period_text or ""),
                     "operation_id": str(activity.operation_id or ""),
+                    "provenance": [
+                        dict(item)
+                        for item in activity.provenance or ()
+                        if isinstance(item, Mapping)
+                    ],
                 }
                 for activity in activities
             ),

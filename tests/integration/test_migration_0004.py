@@ -19,6 +19,7 @@ insists on is the properties only *this* migration can break:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -185,11 +186,10 @@ def seed_legacy_data(url: str) -> None:
 def snapshot(engine: Engine) -> dict[str, list[tuple]]:
     """Every row the legacy workspace holds, across the tables 0003 already had.
 
-    Written against reflected tables rather than SQL strings: the comparison is only worth making if it
-    cannot itself be the thing that breaks when a column is renamed.
+    Query only the fixed table/column contract below. Avoid broad SQLAlchemy reflection here: the
+    database includes an unrelated SQLite expression index that older SQLAlchemy warns it cannot
+    reflect, and snapshot collection does not need index reflection at all.
     """
-    metadata = MetaData()
-    metadata.reflect(bind=engine)
     wanted = {
         "project": ("name", "code", "status"),
         "field": ("name", "basin", "project_id"),
@@ -198,33 +198,63 @@ def snapshot(engine: Engine) -> dict[str, list[tuple]]:
         "knowledge_item": ("id", "predicate", "value", "unit", "status", "origin"),
         "knowledge_relation": ("id", "source_type", "relation", "target_type"),
     }
+    available = set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         result = {}
         for name, columns in wanted.items():
-            if name not in metadata.tables:
+            if name not in available:
                 continue
-            relation = metadata.tables[name]
-            statement = select(*(relation.columns[c] for c in columns)).order_by(
-                relation.columns[0]
+            relation = sqltable(name, *(column(column_name) for column_name in columns))
+            statement = select(*(relation.c[column_name] for column_name in columns)).order_by(
+                relation.c[columns[0]]
             )
             result[name] = list(connection.execute(statement).all())
         return result
 
 
 def names(engine: Engine, method: str, relation: str) -> set[str]:
+    if method in {"get_indexes", "get_unique_constraints"}:
+        # SQLite catalog inspection avoids SQLAlchemy's unsupported expression-index reflection.
+        quoted = '"' + relation.replace('"', '""') + '"'
+        with engine.connect() as connection:
+            rows = connection.exec_driver_sql(f"PRAGMA index_list({quoted})").all()
+            if method == "get_indexes":
+                return {str(row[1]) for row in rows if str(row[3]) == "c"}
+            ddl = connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (relation,),
+            ).scalar_one_or_none()
+            if not ddl:
+                return set()
+            constraint_pattern = re.compile(
+                r"""\bCONSTRAINT\s+(?:"([^"]+)"|`([^`]+)`|\[([^]]+)\]|"""
+                r"""([A-Za-z_][A-Za-z0-9_]*))\s+UNIQUE\s*\(([^)]*)\)""",
+                re.IGNORECASE,
+            )
+            unique_indexes: set[tuple[str, ...]] = set()
+            for row in rows:
+                if str(row[3]) != "u" or not bool(row[2]):
+                    continue
+                index_name = '"' + str(row[1]).replace('"', '""') + '"'
+                index_columns = connection.exec_driver_sql(f"PRAGMA index_info({index_name})").all()
+                unique_indexes.add(tuple(str(column[2]) for column in index_columns))
+            declared = set()
+            for match in constraint_pattern.finditer(str(ddl)):
+                name = next(group for group in match.groups()[:4] if group is not None)
+                columns = tuple(part.strip().strip('"`[]') for part in match.group(5).split(","))
+                if columns in unique_indexes:
+                    declared.add(name)
+            return declared
     getter = getattr(inspect(engine), method)
     return {item["name"] for item in getter(relation) if item.get("name")}
 
 
 def table(engine: Engine, name: str):
-    """The reflected table, so a read can name a column and fail loudly if it has been renamed.
+    """Return the declared table shape without reflecting unrelated expression indexes."""
+    from drilling_intelligence.database.models import Base
 
-    ``sqltable("well")`` carries no columns unless they are spelled out, which turns a typo into an
-    ``AttributeError`` in the test rather than a passing test that selected nothing.
-    """
-    metadata = MetaData()
-    metadata.reflect(bind=engine)
-    return metadata.tables[name]
+    assert name in Base.metadata.tables
+    return Base.metadata.tables[name]
 
 
 def count(engine: Engine, relation: str) -> int:

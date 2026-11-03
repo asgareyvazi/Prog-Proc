@@ -323,10 +323,33 @@ def _capabilities(
         if "SUPERSEDED" in targets:
             actions.append(_action("supersede", "Supersede", "SUPERSEDED"))
     elif record_type in {"field_pattern", "cost_item", *_OPERATIONAL_MODELS}:
+        attributes = data.get("attributes")
+        authoring_channel = data.get("authoring_channel") or (
+            attributes.get("authoring_channel") if isinstance(attributes, Mapping) else ""
+        )
+        governed_ddr = record_type == "ddr_report" or (
+            record_type == "well_operation" and authoring_channel == "DDR_WORKSPACE"
+        )
         if "CONFIRMED" in targets:
-            actions.append(_action("confirm", "Confirm", "CONFIRMED"))
+            actions.append(
+                _action(
+                    "confirm",
+                    "Confirm",
+                    "CONFIRMED",
+                    reason=governed_ddr,
+                    independent=governed_ddr,
+                )
+            )
         if "REJECTED" in targets:
-            actions.append(_action("reject", "Reject", "REJECTED"))
+            actions.append(
+                _action(
+                    "reject",
+                    "Reject",
+                    "REJECTED",
+                    reason=governed_ddr,
+                    independent=governed_ddr,
+                )
+            )
         if "CANDIDATE" in targets:
             actions.append(_action("reopen", "Return to candidate", "CANDIDATE"))
     return tuple(actions)
@@ -536,6 +559,16 @@ class ReviewActionService:
             before = _row_status(row)
             capability = self._find_capability(session, row, req)
             self._validate_input(req, capability)
+            if capability.requires_independent_actor:
+                author = str(getattr(row, "created_by", "") or "").strip()
+                if not author or req.actor.casefold() == author.casefold():
+                    raise ReviewActionError(
+                        "this DDR decision requires a declared reviewer ID different from its author",
+                        hint=(
+                            "use a distinct reviewer ID and preserve the decision reason; "
+                            "the application does not authenticate actor identity"
+                        ),
+                    )
             detail: dict[str, Any] = {}
             self._route(session, row, req, capability)
             session.flush()
@@ -760,6 +793,15 @@ class ReviewActionService:
             data = {"rationale": ""}
         elif record_type == "ddr_report":
             data = {"authoring_state": str(getattr(row, "authoring_state", ""))}
+        elif record_type == "well_operation":
+            attributes = getattr(row, "attributes", None)
+            data = {
+                "authoring_channel": str(
+                    attributes.get("authoring_channel", "")
+                    if isinstance(attributes, Mapping)
+                    else ""
+                )
+            }
         elif record_type == "best_practice":
             data = {"rationale": str(getattr(row, "rationale", "") or "")}
         elif record_type == "field_pattern" and getattr(row, "stale_at", None) is not None:

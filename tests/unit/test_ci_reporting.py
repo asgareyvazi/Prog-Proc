@@ -7,6 +7,7 @@ failure. The fix reports NOT RUN and does not create secondary errors.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -39,6 +40,24 @@ def test_ci_windows_reports_not_run_when_prerequisite_failed():
     assert 'Write-Error "pytest-output.txt is missing"' not in ciw
 
 
+def test_full_suite_artifacts_are_bound_to_matrix_job_and_exact_sha():
+    linux = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    windows = Path(".github/workflows/ci-windows.yml").read_text(encoding="utf-8")
+    for text, platform, prefix in (
+        (linux, "Linux", "pytest-cp"),
+        (windows, "Windows", "pytest-windows-cp"),
+    ):
+        assert "tools/pytest_matrix.py record" in text
+        assert f"--platform {platform}" in text
+        assert "--totals-step" in text
+        assert "pytest-matrix-evidence.json" in text
+        assert "name: " + prefix + "${{ matrix.python-version }}-a${{ github.run_attempt }}" in text
+        assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in text
+        assert "pytest-matrix-report" in text
+        assert "--expected-sha" in text
+        assert "--jobs-json" in text and "--artifacts-json" in text
+
+
 def test_pytest_totals_distinguishes_zero_and_interrupted():
     # The parser must distinguish zero tests, interrupted, etc. — this is the
     # contract of tools/pytest_totals.py, not just the CI file.
@@ -60,3 +79,343 @@ def test_pytest_totals_publish_fails_on_missing_files(tmp_path):
     # publish with missing files must return 1, not crash, and report missing
     rc = publish(stats, junit, None, None)
     assert rc == 1
+
+
+def _pytest_matrix_lane(
+    root: Path,
+    *,
+    platform: str,
+    version: str,
+    monkeypatch,
+    sha: str = "a" * 40,
+    totals: dict[str, int] | None = None,
+    omit_totals: bool = False,
+) -> tuple[Path, str]:
+    import json
+
+    from tools.pytest_matrix import _expected_artifact_name, record_evidence
+
+    attempt = "1"
+    repository = "asgareyvazi/Prog-Proc"
+    workflow = "CI" if platform == "Linux" else "CI Windows"
+    job_prefix = "test" if platform == "Linux" else "windows test"
+    artifact_name = _expected_artifact_name(platform, version, attempt)
+    directory = root / artifact_name
+    directory.mkdir(parents=True, exist_ok=True)
+    counts = totals or {
+        "collected": 5,
+        "passed": 4,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 1,
+        "xfailed": 0,
+        "xpassed": 0,
+    }
+    stats = dict(counts, exit=0, runtime=1.25)
+    if not omit_totals:
+        (directory / "pytest-totals.json").write_text(json.dumps(stats), encoding="utf-8")
+    skipped_cases = (
+        "<testcase><skipped message='platform skip'/></testcase>" if counts["skipped"] else ""
+    )
+    passed_cases = "".join("<testcase/>" for _ in range(counts["passed"]))
+    junit = (
+        f"<testsuites><testsuite tests='{counts['collected']}' failures='{counts['failed']}' "
+        f"errors='{counts['errors']}' skipped='{counts['skipped']}' time='1.25'>"
+        f"{passed_cases}{skipped_cases}</testsuite></testsuites>"
+    )
+    (directory / "pytest-junit.xml").write_text(junit, encoding="utf-8")
+    (directory / "pytest-exit.txt").write_text("0\n", encoding="utf-8")
+    (directory / "pytest-run-state.txt").write_text("COMPLETED exit=0\n", encoding="utf-8")
+    (directory / "pytest-output.txt").write_text("pytest completed\n", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_REPOSITORY", repository)
+    monkeypatch.setenv("GITHUB_WORKFLOW", workflow)
+    monkeypatch.setenv("GITHUB_RUN_ID", "41593362382")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", attempt)
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/arena/5957b76d-prog-proc")
+    monkeypatch.setenv("GITHUB_SHA", sha)
+    monkeypatch.setenv("GITHUB_JOB", "test")
+    monkeypatch.setenv("PYTEST_MATRIX_JOB_NAME", f"{job_prefix} (cp{version})")
+    monkeypatch.chdir(directory)
+    record_evidence(
+        platform=platform,
+        python_version=version,
+        artifact_name=artifact_name,
+        output=Path("pytest-matrix-evidence.json"),
+        totals_step="success",
+    )
+    monkeypatch.chdir(root)
+    return directory, artifact_name
+
+
+def _pytest_matrix_api(platform: str, versions: tuple[str, ...] = ("3.11", "3.14")):
+    from tools.pytest_matrix import _expected_artifact_name
+
+    job_prefix = "test" if platform == "Linux" else "windows test"
+    return (
+        {
+            "jobs": [
+                {
+                    "id": 1000 + index,
+                    "name": f"{job_prefix} (cp{version})",
+                    "status": "completed",
+                    "conclusion": "success",
+                }
+                for index, version in enumerate(versions)
+            ]
+        },
+        {
+            "artifacts": [
+                {
+                    "id": 2000 + index,
+                    "name": _expected_artifact_name(platform, version, "1"),
+                    "digest": f"sha256:{index:064x}",
+                    "expired": False,
+                }
+                for index, version in enumerate(versions)
+            ]
+        },
+    )
+
+
+def _build_pytest_matrix(root: Path, *, platform: str, jobs, artifacts, sha: str = "a" * 40):
+    from tools.pytest_matrix import build_report
+
+    return build_report(
+        artifact_root=root,
+        platform=platform,
+        expected_sha=sha,
+        run_id="41593362382",
+        run_attempt="1",
+        repository="asgareyvazi/Prog-Proc",
+        workflow="CI" if platform == "Linux" else "CI Windows",
+        jobs=jobs,
+        artifacts=artifacts,
+    )
+
+
+def test_pytest_matrix_assigns_each_lane_by_explicit_identity_and_preserves_skips(
+    tmp_path: Path, monkeypatch
+):
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch)
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.14", monkeypatch=monkeypatch)
+    jobs, artifacts = _pytest_matrix_api("Linux")
+
+    report = _build_pytest_matrix(tmp_path, platform="Linux", jobs=jobs, artifacts=artifacts)
+
+    assert report["result"] == "PASS"
+    assert [
+        (row["python_version"], row["job_id"], row["artifact_id"]) for row in report["rows"]
+    ] == [
+        ("3.11", 1000, 2000),
+        ("3.14", 1001, 2001),
+    ]
+    assert all(row["passed"] == 4 and row["skipped"] == 1 for row in report["rows"])
+
+
+def test_pytest_matrix_never_assigns_linux_artifacts_to_windows_lanes(tmp_path: Path, monkeypatch):
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch)
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.14", monkeypatch=monkeypatch)
+    jobs, artifacts = _pytest_matrix_api("Windows")
+
+    report = _build_pytest_matrix(tmp_path, platform="Windows", jobs=jobs, artifacts=artifacts)
+
+    assert report["result"] == "FAIL"
+    assert all(row["platform"] == "Windows" for row in report["rows"])
+    assert all(row["passed"] is None and row["result"] == "INVALID" for row in report["rows"])
+    assert any("unexpected artifact directory" in issue for issue in report["issues"])
+
+
+def test_pytest_matrix_rejects_a_sidecar_from_another_head_sha(tmp_path: Path, monkeypatch):
+    _pytest_matrix_lane(
+        tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch, sha="b" * 40
+    )
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.14", monkeypatch=monkeypatch)
+    jobs, artifacts = _pytest_matrix_api("Linux")
+
+    report = _build_pytest_matrix(tmp_path, platform="Linux", jobs=jobs, artifacts=artifacts)
+
+    assert report["rows"][0]["result"] == "INVALID"
+    assert report["rows"][0]["head_sha"] == "b" * 40
+    assert "head_sha" in report["rows"][0]["detail"]
+
+
+def test_pytest_matrix_missing_totals_are_not_produced_not_pass(tmp_path: Path, monkeypatch):
+    _pytest_matrix_lane(
+        tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch, omit_totals=True
+    )
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.14", monkeypatch=monkeypatch)
+    jobs, artifacts = _pytest_matrix_api("Linux")
+
+    report = _build_pytest_matrix(tmp_path, platform="Linux", jobs=jobs, artifacts=artifacts)
+
+    assert report["rows"][0]["result"] == "NOT PRODUCED"
+    assert report["rows"][0]["passed"] is None
+    assert report["result"] == "FAIL"
+
+
+def test_pytest_matrix_duplicate_sidecars_are_ambiguous_not_first_match_wins(
+    tmp_path: Path, monkeypatch
+):
+    import shutil
+
+    directory, _ = _pytest_matrix_lane(
+        tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch
+    )
+    duplicate = tmp_path / "duplicate-copy"
+    shutil.copytree(directory, duplicate)
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.14", monkeypatch=monkeypatch)
+    jobs, artifacts = _pytest_matrix_api("Linux")
+
+    report = _build_pytest_matrix(tmp_path, platform="Linux", jobs=jobs, artifacts=artifacts)
+
+    assert report["rows"][0]["result"] == "AMBIGUOUS"
+    assert report["rows"][0]["passed"] is None
+    assert report["result"] == "FAIL"
+
+
+def test_pytest_matrix_duplicate_artifact_or_job_api_entries_are_ambiguous(
+    tmp_path: Path, monkeypatch
+):
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch)
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.14", monkeypatch=monkeypatch)
+    jobs, artifacts = _pytest_matrix_api("Linux")
+    artifacts["artifacts"].append(dict(artifacts["artifacts"][0], id=9999))
+    jobs["jobs"].append(dict(jobs["jobs"][0], id=9998))
+
+    report = _build_pytest_matrix(tmp_path, platform="Linux", jobs=jobs, artifacts=artifacts)
+
+    assert report["rows"][0]["result"] == "AMBIGUOUS"
+    assert "GitHub artifacts" in report["rows"][0]["detail"]
+    assert report["rows"][1]["result"] == "PASS"
+
+
+def test_pytest_matrix_all_skipped_lane_is_failure_not_pass(tmp_path: Path, monkeypatch):
+    lane, _artifact = _pytest_matrix_lane(
+        tmp_path,
+        platform="Linux",
+        version="3.11",
+        monkeypatch=monkeypatch,
+        totals={
+            "collected": 3,
+            "passed": 0,
+            "failed": 0,
+            "errors": 0,
+            "skipped": 3,
+            "xfailed": 0,
+            "xpassed": 0,
+        },
+    )
+    from tools.pytest_matrix import record_evidence
+
+    monkeypatch.chdir(lane)
+    result = record_evidence(
+        platform="Linux",
+        python_version="3.11",
+        artifact_name="pytest-cp3.11-a1",
+        output=Path("pytest-matrix-evidence.json"),
+        totals_step="success",
+    )
+    evidence = json.loads((lane / "pytest-matrix-evidence.json").read_text(encoding="utf-8"))
+    assert result == evidence["result"] == "FAIL"
+    assert evidence["totals"]["skipped"] == 3
+    assert "all collected tests were skipped or xfailed" in evidence["reason"]
+
+
+def test_pytest_matrix_malformed_or_zero_totals_never_pass(tmp_path: Path, monkeypatch):
+    lane, _artifact = _pytest_matrix_lane(
+        tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch
+    )
+    from tools.pytest_matrix import record_evidence
+
+    totals_path = lane / "pytest-totals.json"
+    totals_path.write_text("{not-json", encoding="utf-8")
+    monkeypatch.chdir(lane)
+    result = record_evidence(
+        platform="Linux",
+        python_version="3.11",
+        artifact_name="pytest-cp3.11-a1",
+        output=Path("pytest-matrix-evidence.json"),
+        totals_step="success",
+    )
+    assert result == "INVALID"
+
+    totals_path.write_text(
+        json.dumps(
+            {
+                "collected": 0,
+                "passed": 0,
+                "failed": 0,
+                "errors": 0,
+                "skipped": 0,
+                "xfailed": 0,
+                "xpassed": 0,
+                "exit": 0,
+                "runtime": 0.01,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = record_evidence(
+        platform="Linux",
+        python_version="3.11",
+        artifact_name="pytest-cp3.11-a1",
+        output=Path("pytest-matrix-evidence.json"),
+        totals_step="success",
+    )
+    evidence = json.loads((lane / "pytest-matrix-evidence.json").read_text(encoding="utf-8"))
+    assert result == evidence["result"] == "INVALID"
+    assert "collected no tests" in evidence["reason"]
+
+
+def test_pytest_matrix_malformed_run_state_is_invalid(tmp_path: Path, monkeypatch):
+    lane, _artifact = _pytest_matrix_lane(
+        tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch
+    )
+    from tools.pytest_matrix import record_evidence
+
+    (lane / "pytest-run-state.txt").write_text("COMPLETED maybe\n", encoding="utf-8")
+    monkeypatch.chdir(lane)
+    result = record_evidence(
+        platform="Linux",
+        python_version="3.11",
+        artifact_name="pytest-cp3.11-a1",
+        output=Path("pytest-matrix-evidence.json"),
+        totals_step="success",
+    )
+    evidence = json.loads((lane / "pytest-matrix-evidence.json").read_text(encoding="utf-8"))
+    assert result == evidence["result"] == "INVALID"
+    assert "run-state file is malformed" in evidence["reason"]
+
+
+def test_pytest_matrix_interrupted_state_is_not_run(tmp_path: Path, monkeypatch):
+    lane, _artifact = _pytest_matrix_lane(
+        tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch
+    )
+    from tools.pytest_matrix import record_evidence
+
+    (lane / "pytest-run-state.txt").write_text("RUNNING\n", encoding="utf-8")
+    monkeypatch.chdir(lane)
+    result = record_evidence(
+        platform="Linux",
+        python_version="3.11",
+        artifact_name="pytest-cp3.11-a1",
+        output=Path("pytest-matrix-evidence.json"),
+        totals_step="success",
+    )
+    evidence = json.loads((lane / "pytest-matrix-evidence.json").read_text(encoding="utf-8"))
+    assert result == evidence["result"] == "NOT RUN"
+    assert evidence["totals"] is None
+
+
+def test_pytest_matrix_sha_tamper_in_downloaded_totals_invalidates_lane(
+    tmp_path: Path, monkeypatch
+):
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch)
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.14", monkeypatch=monkeypatch)
+    (tmp_path / "pytest-cp3.11-a1" / "pytest-totals.json").write_text("{}\n", encoding="utf-8")
+    jobs, artifacts = _pytest_matrix_api("Linux")
+
+    report = _build_pytest_matrix(tmp_path, platform="Linux", jobs=jobs, artifacts=artifacts)
+
+    assert report["rows"][0]["result"] == "INVALID"
+    assert "SHA-256" in report["rows"][0]["detail"]

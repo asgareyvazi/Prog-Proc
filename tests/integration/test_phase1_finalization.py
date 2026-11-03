@@ -15,9 +15,13 @@ import re
 import sqlite3
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
+from sqlalchemy import column, select
+from sqlalchemy import table as sqltable
+from sqlalchemy.exc import SAWarning
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src"
@@ -60,6 +64,39 @@ def test_0022_has_no_bare_except_pass_masking():
         pytest.fail(
             f"upgrade still contains bare except pass masking at: {upgrade_text[max(0, m.start() - 40) : m.end() + 40]!r}"
         )
+
+
+def test_0022_index_existence_uses_catalog_for_legacy_expression_indexes():
+    """An unrelated legacy expression index must not trigger SQLAlchemy reflection warnings."""
+    import importlib.util
+
+    from sqlalchemy import create_engine
+
+    migration_path = ROOT / "migrations/versions/20261101_0022_lesson_code_key_canonical.py"
+    spec = importlib.util.spec_from_file_location("migration_0022_catalog_test", migration_path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    engine = create_engine("sqlite://")
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE lesson_learned "
+                "(id TEXT PRIMARY KEY, code TEXT, is_current INTEGER, code_key TEXT)"
+            )
+            connection.exec_driver_sql(
+                "CREATE UNIQUE INDEX uq_lesson_code_current_ci "
+                "ON lesson_learned (lower(code)) "
+                "WHERE is_current = 1 AND code IS NOT NULL"
+            )
+            with warnings.catch_warnings(record=True) as observed:
+                warnings.simplefilter("always", SAWarning)
+                assert migration._index_exists(connection, "uq_lesson_code_current_ci")
+                assert not migration._index_exists(connection, "uq_lesson_code_key_current")
+            assert not [warning for warning in observed if issubclass(warning.category, SAWarning)]
+    finally:
+        engine.dispose()
 
 
 def test_0022_filename_is_valid_date_and_revision_preserved():
@@ -474,87 +511,102 @@ def test_windows_paths_offline_not_mutating(tmp_path: Path):
 
 
 def _strict_sqlite_snapshot(path: Path) -> dict[str, object]:
-    """Capture complete SQLite schema and row state for offline/online comparison."""
-    from sqlalchemy import MetaData, Table, create_engine, inspect
+    """Capture SQLite schema and rows with catalog/PRAGMA reads, never index reflection."""
+    from sqlalchemy import create_engine, inspect
 
+    connection = sqlite3.connect(path)
     engine = create_engine(f"sqlite:///{path}")
     try:
-        inspector = inspect(engine)
-        schema: dict[str, object] = {}
-        data: dict[str, object] = {}
-        with engine.connect() as conn:
-            catalog = conn.execute(
-                __import__("sqlalchemy").text(
-                    "SELECT type, name, tbl_name, sql "
-                    "FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' "
-                    "ORDER BY name"
-                )
-            ).fetchall()
-            schema["catalog"] = tuple(
-                (kind, name, table, re.sub(r"\s+", " ", sql or "").strip().lower())
-                for kind, name, table, sql in catalog
+        table_names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
-            for table in sorted(inspector.get_table_names()):
-                schema[table] = {
-                    "columns": tuple(
+        ]
+        catalog_rows = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        schema: dict[str, object] = {
+            "catalog": tuple(
+                (kind, name, table, re.sub(r"\s+", " ", sql or "").strip().lower())
+                for kind, name, table, sql in catalog_rows
+            )
+        }
+        inspector = inspect(engine)
+        data: dict[str, object] = {}
+        for table in sorted(table_names):
+            quoted = '"' + table.replace('"', '""') + '"'
+            columns = connection.execute(f"PRAGMA table_info({quoted})").fetchall()
+            foreign_key_groups: dict[int, list[object]] = {}
+            for row in connection.execute(f"PRAGMA foreign_key_list({quoted})").fetchall():
+                group = foreign_key_groups.setdefault(
+                    int(row[0]), [str(row[2]), [], str(row[5]), str(row[6]), str(row[7])]
+                )
+                group[1].append((int(row[1]), str(row[3]), str(row[4])))
+            foreign_keys = tuple(
+                sorted(
+                    (
+                        table_name,
+                        tuple((source, target) for _seq, source, target in sorted(columns)),
+                        on_update,
+                        on_delete,
+                        match,
+                    )
+                    for table_name, columns, on_update, on_delete, match in foreign_key_groups.values()
+                )
+            )
+            unique_constraints = []
+            indexes = []
+            for index in connection.execute(f"PRAGMA index_list({quoted})").fetchall():
+                index_name, is_unique, origin = str(index[1]), bool(index[2]), str(index[3])
+                index_quoted = '"' + index_name.replace('"', '""') + '"'
+                index_columns = tuple(
+                    row[2]
+                    for row in connection.execute(f"PRAGMA index_xinfo({index_quoted})").fetchall()
+                    if row[5] and row[2] is not None
+                )
+                if origin == "u":
+                    unique_constraints.append(index_columns)
+                if origin == "c":
+                    sql_row = connection.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+                        (index_name,),
+                    ).fetchone()
+                    indexes.append(
                         (
-                            column["name"],
-                            str(column["type"]),
-                            column["nullable"],
-                            column["default"],
-                            column["primary_key"],
+                            index_name,
+                            index_columns,
+                            is_unique,
+                            re.sub(r"\s+", " ", (sql_row[0] if sql_row else "") or "")
+                            .strip()
+                            .lower(),
                         )
-                        for column in inspector.get_columns(table)
-                    ),
-                    "foreign_keys": tuple(
-                        sorted(
-                            (
-                                fk.get("name"),
-                                tuple(fk.get("constrained_columns") or ()),
-                                fk.get("referred_schema"),
-                                fk.get("referred_table"),
-                                tuple(fk.get("referred_columns") or ()),
-                                tuple(sorted((fk.get("options") or {}).items())),
-                            )
-                            for fk in inspector.get_foreign_keys(table)
-                        )
-                    ),
-                    "unique_constraints": tuple(
-                        sorted(
-                            (
-                                constraint.get("name"),
-                                tuple(constraint.get("column_names") or ()),
-                            )
-                            for constraint in inspector.get_unique_constraints(table)
-                        )
-                    ),
-                    "check_constraints": tuple(
-                        sorted(
-                            (constraint.get("name"), constraint.get("sqltext"))
-                            for constraint in inspector.get_check_constraints(table)
-                        )
-                    ),
-                    "indexes": tuple(
-                        sorted(
-                            (
-                                index.get("name"),
-                                tuple(index.get("column_names") or ()),
-                                bool(index.get("unique")),
-                                str((index.get("dialect_options") or {}).get("sqlite_where"))
-                                if (index.get("dialect_options") or {}).get("sqlite_where")
-                                is not None
-                                else "",
-                            )
-                            for index in inspector.get_indexes(table)
-                        )
-                    ),
-                }
-                reflected = Table(table, MetaData(), autoload_with=engine)
-                rows = conn.execute(reflected.select()).fetchall()
-                data[table] = tuple(sorted((tuple(row) for row in rows), key=repr))
+                    )
+            schema[table] = {
+                "columns": tuple(
+                    (name, kind, notnull, default, primary_key)
+                    for _cid, name, kind, notnull, default, primary_key in columns
+                ),
+                "foreign_keys": foreign_keys,
+                "unique_constraints": tuple(sorted(unique_constraints)),
+                "check_constraints": tuple(
+                    sorted(
+                        (constraint.get("name"), constraint.get("sqltext"))
+                        for constraint in inspector.get_check_constraints(table)
+                    )
+                ),
+                "indexes": tuple(sorted(indexes)),
+            }
+            relation = sqltable(table, *(column(str(row[1])) for row in columns))
+            with engine.connect() as query_connection:
+                rows = query_connection.execute(select(relation)).fetchall()
+            data[table] = tuple(sorted((tuple(row) for row in rows), key=repr))
         return {"schema": schema, "data": data}
     finally:
         engine.dispose()
+        connection.close()
 
 
 def _seed_historical_lesson_rows(engine, *, collision: bool = False) -> None:

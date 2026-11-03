@@ -25,8 +25,8 @@ from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-from sqlalchemy import MetaData, Table, event, select
-from sqlalchemy import inspect as sa_inspect
+from sqlalchemy import column, event, select
+from sqlalchemy import table as sqltable
 
 from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.database.models import (
@@ -261,15 +261,26 @@ def workspace_session(service: Any):
 
 
 def db_fingerprint(database) -> str:
-    """The row content of every table, hashed: the strictest 'nothing changed' statement available."""
+    """Hash every SQLite table's rows without reflecting unrelated index expressions."""
     digest = hashlib.sha256()
-    metadata = MetaData()
     with database.engine.connect() as connection:
-        for name in sorted(sa_inspect(database.engine).get_table_names()):
-            table = Table(name, metadata, autoload_with=database.engine)
-            rows = [tuple(row) for row in connection.execute(select(table))]
-            digest.update(name.encode())
-            digest.update(json.dumps(rows, sort_keys=True, default=str).encode())
+        names = (
+            connection.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+            .scalars()
+            .all()
+        )
+        for name in names:
+            quoted = '"' + str(name).replace('"', '""') + '"'
+            columns = connection.exec_driver_sql(f"PRAGMA table_info({quoted})").fetchall()
+            relation = sqltable(str(name), *(column(str(row[1])) for row in columns))
+            rows = connection.execute(select(relation)).fetchall()
+            digest.update(str(name).encode())
+            digest.update(
+                json.dumps([tuple(row) for row in rows], sort_keys=True, default=str).encode()
+            )
     return digest.hexdigest()
 
 

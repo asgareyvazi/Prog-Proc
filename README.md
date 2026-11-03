@@ -12,7 +12,7 @@ part of this repository serves that sentence.
 
 ## Status
 
-> **Post-V10.3 context (2026-11-02):** The implementation remains **Pre-Alpha**, local-first, and single-user. SQLite is the only qualified database (PostgreSQL **NOT QUALIFIED**). The 26-class document taxonomy is unchanged. Intake now includes explicit reviewed registration through the existing Document Registry (without promotion), and the desktop workbench has a manual Daily DDR authoring lifecycle. These changes are not accepted on the basis of this README; see [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and the Linux/Windows CI runs attached to the final commit SHA.
+> **Current context (2026-11-03):** The implementation remains **Pre-Alpha**, local-first, and single-user. SQLite is the only qualified database (PostgreSQL **NOT QUALIFIED**). The 26-class document taxonomy is unchanged. Intake supports reviewed registration without promotion; the desktop workbench supports manual Daily DDR drafts, revisions, provenance comparison, and a governed review boundary. Workspace archive/restore is a **database snapshot only**, not a full workspace/source backup. These changes are not accepted on the basis of this README; qualification requires tests and Linux/Windows CI attached to the exact final commit SHA. See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
 
 The following inventory is a product overview; its capability labels do not substitute for current test or CI evidence:
 
@@ -39,7 +39,7 @@ The following inventory is a product overview; its capability labels do not subs
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
 | Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
 | Domain CLI: `intake` add/list/preview/decide/register plus `records`, `records rollup`, `records review`, `timeline`, `fields`, `patterns`, `lessons`, `evidence`, and `doctor` | **implemented** — Intake registration creates registry evidence only after human review; it does not promote domain facts. |
-| Optional Desktop Workbench (`drillintel-ui`) | **implemented in code; qualification tied to green CI on the exact final SHA** — PySide6-Essentials is optional. It includes governed `DomainReviewService`/`ReviewActionService` review, an Intake queue with transient preview and explicit registration, and a Daily DDR draft/save/submit/revision workspace. DDR submit leaves candidate operational rows for independent review. Mutating work runs outside the GUI thread. Local Qt tests that cannot load host libraries are **SKIPPED**, not PASS. |
+| Optional Desktop Workbench (`drillintel-ui`) | **implemented in code; qualification tied to green CI on the exact final SHA** — PySide6-Essentials is optional. It includes governed `DomainReviewService`/`ReviewActionService` review, an Intake queue with transient preview and explicit registration, and a Daily DDR draft/save/submit/revision workspace with exact-field comparison and recorded provenance. DDR submit leaves candidate rows; confirm/reject require a reason and a declared actor ID different from `created_by` (the ID is not authenticated). Mutating work runs outside the GUI thread. Local Qt tests blocked by host libraries are **SKIPPED**, not PASS. |
 | Ollama provider adapter: `drillintel ai status` probes `/api/tags`; completion and embedding calls return non-authoritative text or vectors | **implemented, not on the engineering path** — an embedding is accepted only when it is finite, one vector per input, and names the requested model; a path, query, or credential in the endpoint sends no request; `doctor` does not probe; `openai-compatible` has no adapter (`docs/DECISIONS.md` ADR-51, ADR-52) |
 | Skills and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
@@ -118,11 +118,13 @@ drillintel doctor --workspace /tmp/well-a3                # what is healthy, and
 
 ### Workspace backup and restore
 
-The SQLite system-of-record database can be snapshotted without opening it through Alembic. The
-backup uses SQLite's online backup API, records SHA-256 hashes and the migration revision, and
-runs SQLite integrity and foreign-key checks against the snapshot. The destination must be new;
-existing files are never overwritten. Archives are **not encrypted** and contain sensitive data:
-store them accordingly.
+This command creates a **database snapshot only**, not a full workspace or source backup. It
+snapshots the SQLite system-of-record database with SQLite's online backup API, records SHA-256
+hashes and the migration revision, and runs SQLite integrity and foreign-key checks against the
+snapshot. The destination must be new; existing files are never overwritten. Archives are **not
+encrypted** and contain sensitive data: store them accordingly. The database limit is 8 GiB, the
+archive overhead limit is 16 MiB, metadata is limited to 1 MiB, and an archive must contain exactly
+three regular members.
 
 ```bash
 mkdir -p /secure/backups
@@ -134,10 +136,12 @@ Restore is deliberately non-destructive: the target directory must not exist, an
 registry has a workspace identity row the target must be the exact original workspace path.
 Re-homing is refused because changing that identity would break workspace scoping and provenance.
 Only the SQLite database and `workspace.toml` are archived; source corpus files and the disposable
-search index are not. The restore verifies archive members, hashes, SQLite page integrity,
-foreign keys, Alembic revision, and workspace identity before it creates the target. A backup with
-failed health checks is still preserved for investigation, but it cannot be restored as a usable
-workspace. Custom data-directory layouts are not qualified for this workflow.
+search index are not. This is **not a complete workspace recovery**: separately protect only the
+source assets you are authorized to retain, using an independently approved process; this restore
+will not recover them. Restore verifies archive members, hashes, SQLite page integrity, foreign
+keys, Alembic revision, and workspace identity before it creates the target. A snapshot with failed
+health checks is preserved for investigation but cannot be restored as a usable workspace. Custom
+data-directory layouts are not qualified for this workflow.
 
 ```bash
 # Run only after the original workspace path is absent; no existing directory is replaced.
@@ -146,9 +150,10 @@ drillintel workspace restore /secure/backups/well-a3-2026-11-03.dibak /tmp/well-
 drillintel doctor --workspace /tmp/well-a3
 ```
 
-`doctor` first runs SQLite's read-only integrity and foreign-key checks on an existing database;
-if they fail, it does not run Alembic or domain queries against the damaged file. Domain-level
-invariants and disposable-index drift are checked after storage passes.
+`doctor` runs read-only SQLite integrity, foreign-key, and storage preflight checks on an existing
+database and repeats the preflight after creating or upgrading a database. On failure it stops before
+claiming domain health or running domain/search checks; it does not silently repair storage.
+Domain-level invariants and disposable-index drift are checked only after storage passes.
 
 ### Desktop Review Workbench (optional)
 
