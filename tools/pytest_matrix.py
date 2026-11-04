@@ -29,8 +29,13 @@ _REQUIRED_FILES = {
     "output": "pytest-output.txt",
 }
 _PLATFORMS = {
-    "Linux": ("test", "pytest-cp{python}-a{attempt}"),
-    "Windows": ("windows test", "pytest-windows-cp{python}-a{attempt}"),
+    "Linux": ("test", "pytest-cp{python}-a{attempt}", "test"),
+    "Windows": ("windows test", "pytest-windows-cp{python}-a{attempt}", "test"),
+    "Ubuntu 26.04": (
+        "test Ubuntu 26.04",
+        "pytest-ubuntu-2604-cp{python}-a{attempt}",
+        "ubuntu-2604-cp314",
+    ),
 }
 
 
@@ -324,7 +329,7 @@ def _api_match(items: list[dict[str, Any]], key: str, value: str) -> list[dict[s
 
 
 def _expected_artifact_name(platform: str, python_version: str, attempt: str) -> str:
-    _job_prefix, template = _PLATFORMS[platform]
+    _job_prefix, template, _job_key = _PLATFORMS[platform]
     return template.format(python=python_version, attempt=attempt)
 
 
@@ -478,7 +483,7 @@ def build_report(
             "run_attempt": run_attempt,
             "head_sha": expected_sha,
             "job_name": row["job_name"],
-            "job_key": "test",
+            "job_key": _PLATFORMS[platform][2],
             "platform": platform,
             "python_version": version,
             "artifact_name": artifact_name,
@@ -498,6 +503,12 @@ def build_report(
             row["result"] = "INVALID"
             row["detail"] = "GitHub job identity was not uniquely resolved"
             issues.append(f"{platform} CPython {version}: job id missing or ambiguous")
+            rows.append(row)
+            continue
+        if row["job_conclusion"] != "success":
+            row["result"] = "INVALID"
+            row["detail"] = f"GitHub job conclusion is {row['job_conclusion']}, not success"
+            issues.append(f"{platform} CPython {version}: job conclusion is not success")
             rows.append(row)
             continue
         if row["artifact_id"] is None:
@@ -598,6 +609,7 @@ def _report_command(args: argparse.Namespace) -> int:
             workflow=args.workflow,
             jobs=jobs,
             artifacts=artifacts,
+            versions=tuple(args.versions),
         )
     except EvidenceError as exc:
         print(f"pytest matrix report: INVALID — {exc}", file=sys.stderr)
@@ -638,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
     report.add_argument("--workflow", required=True)
     report.add_argument("--jobs-json", type=Path, required=True)
     report.add_argument("--artifacts-json", type=Path, required=True)
+    report.add_argument("--versions", nargs="+", default=("3.11", "3.14"))
     report.add_argument("--output-json", type=Path, required=True)
     report.add_argument("--output-markdown", type=Path, required=True)
     report.set_defaults(handler=_report_command)

@@ -675,6 +675,12 @@ class MainWindow(QMainWindow):
     def _build_sections_page(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.addWidget(
+            QLabel(
+                "Sections are read-only here. Select a row to inspect its complete stored values "
+                "and provenance; planned targets remain separate from as-drilled actuals."
+            )
+        )
         self.sections_table, self.sections_model = self._new_table(
             tuple(
                 TableColumn(key, title, width)
@@ -692,7 +698,14 @@ class MainWindow(QMainWindow):
                 )
             )
         )
-        layout.addWidget(self.sections_table)
+        self.sections_table.selectionModel().currentChanged.connect(self._section_selection_changed)
+        self.sections_detail = self._new_detail_tree()
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self.sections_table)
+        splitter.addWidget(self.sections_detail)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter)
         self.pages.addWidget(page)
 
     def _build_plan_page(self) -> None:
@@ -2554,6 +2567,12 @@ class MainWindow(QMainWindow):
         self.records_proxy.set_text(self.record_text_filter.text())
 
     @Slot(QModelIndex, QModelIndex)
+    def _section_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
+        """Show the selected section DTO verbatim, including source provenance."""
+        payload = self.sections_model.row_payload(current.row()) if current.isValid() else None
+        _fill_tree(self.sections_detail, payload)
+
+    @Slot(QModelIndex, QModelIndex)
     def _record_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
         if not current.isValid():
             self._selected_record = None
@@ -2849,6 +2868,7 @@ class MainWindow(QMainWindow):
         self._selected_conflict = None
         self._set_record_actions(())
         self._set_conflict_actions(())
+        _fill_tree(self.sections_detail, None)
         _fill_tree(self.record_detail, None)
         _fill_tree(self.conflict_detail, None)
         self._set_source_navigation(None)

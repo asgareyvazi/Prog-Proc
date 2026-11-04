@@ -89,6 +89,27 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
         assert window.conflicts_model.rowCount() == len(current.conflicts)
         assert "CURRENT" in window.overview_counts.text()
 
+        source_section = next(
+            (index, row)
+            for index in range(window.sections_model.row_count)
+            if (row := window.sections_model.row_payload(index)) and row.get("provenance")
+        )
+        section_index, section_payload = source_section
+        window.sections_table.selectRow(section_index)
+        qt_app.processEvents()
+        section_detail_keys = {
+            window.sections_detail.topLevelItem(index).text(0)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert {"id", "origin", "provenance", "planned_duration_days"}.issubset(section_detail_keys)
+        provenance_item = next(
+            window.sections_detail.topLevelItem(index)
+            for index in range(window.sections_detail.topLevelItemCount())
+            if window.sections_detail.topLevelItem(index).text(0) == "provenance"
+        )
+        assert provenance_item.childCount() > 0
+        assert section_payload["provenance"], "the selected source section retains provenance"
+
         if window.records_model.rowCount():
             window.records_table.selectRow(0)
             qt_app.processEvents()

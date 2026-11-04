@@ -306,10 +306,116 @@ jobs:
           fi
           exit 1
 
+  ubuntu-2604-cp314:
+    name: test Ubuntu 26.04 (cp3.14)
+    runs-on: ubuntu-26.04
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_OPENGL: software
+      QT_QPA_PLATFORM: offscreen
+      QT_X11_NO_MITSHM: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1 libegl1 libglib2.0-0 libdbus-1-3 libfontconfig1 libx11-6 \
+            libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-shm0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+            libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxtst6 libnss3 libsm6 libice6
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+
+      - name: Install (editable, Qt-enabled)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
+
+      - name: Ruff lint and format
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Type-check the configured boundary
+        run: python -m mypy
+
+      - name: Byte-compile source, tests, and migrations
+        run: python -m compileall -q src tests migrations
+
+      - name: Alembic has exactly one head
+        run: |
+          alembic heads
+          test "$(alembic heads | grep -c '(head)')" -eq 1
+
+      - name: Full suite (Qt-enabled, offscreen)
+        run: >-
+          xvfb-run -a -s "-screen 0 1280x1024x24" python tools/ci_pytest.py
+          --output pytest-output.txt --exit-file pytest-exit.txt
+          --state-file pytest-run-state.txt -- --junitxml=pytest-junit.xml
+
+      - name: Record test totals
+        id: record_totals
+        if: always()
+        run: |
+          if [ ! -f pytest-run-state.txt ] || grep -q '^NOT RUN' pytest-run-state.txt; then
+            if [ ! -f pytest-run-state.txt ]; then
+              echo "NOT RUN — pytest prerequisite did not start" > pytest-run-state.txt
+            fi
+            echo "::notice::pytest_result: NOT RUN — pytest prerequisite did not start"
+            echo "::notice::pytest-junit: NOT PRODUCED"
+            echo "::notice::pytest-totals: NOT PRODUCED"
+            echo "### Pytest totals — NOT RUN" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml \
+            --exit-file pytest-exit.txt --output pytest-output.txt --state-file pytest-run-state.txt
+
+      - name: Bind pytest totals to Ubuntu 26.04 / CPython 3.14 identity
+        if: always()
+        run: |
+          python tools/pytest_matrix.py record \
+            --platform "Ubuntu 26.04" \
+            --python-version "3.14" \
+            --artifact-name "pytest-ubuntu-2604-cp3.14-a${{ github.run_attempt }}" \
+            --job-name "test Ubuntu 26.04 (cp3.14)" \
+            --totals-step "${{ steps.record_totals.outcome }}" \
+            --output pytest-matrix-evidence.json
+
+      - name: Offscreen workbench tests
+        run: python tools/qt_workbench.py
+
+      - name: Clean-install smoke
+        run: python tools/release_smoke.py
+
+      - name: Publish Ubuntu 26.04 / CPython 3.14 test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430a030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-ubuntu-2604-cp3.14-a${{ github.run_attempt }}
+          path: |
+            pytest-matrix-evidence.json
+            pytest-output.txt
+            pytest-junit.xml
+            pytest-totals.json
+            pytest-exit.txt
+            pytest-run-state.txt
+          if-no-files-found: warn
+
   pytest-matrix-report:
-    name: Linux full-suite attribution report
+    name: Linux and Ubuntu 26.04 full-suite attribution reports
     if: always()
-    needs: test
+    needs: [test, ubuntu-2604-cp314]
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -325,6 +431,13 @@ jobs:
         with:
           pattern: pytest-cp*-a${{ github.run_attempt }}
           path: pytest-artifacts
+          merge-multiple: false
+      - name: Download Ubuntu 26.04 / CPython 3.14 evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: pytest-ubuntu-2604-cp3.14-a${{ github.run_attempt }}
+          path: pytest-ubuntu-2604-artifacts
           merge-multiple: false
       - name: Resolve GitHub job and artifact IDs
         env:
@@ -347,6 +460,22 @@ jobs:
             --artifacts-json pytest-artifacts-api.json \
             --output-json pytest-matrix-report-linux.json \
             --output-markdown pytest-matrix-report-linux.md
+      - name: Generate identity-checked Ubuntu 26.04 / CPython 3.14 report
+        if: always()
+        run: |
+          python tools/pytest_matrix.py report \
+            --artifact-root pytest-ubuntu-2604-artifacts \
+            --platform "Ubuntu 26.04" \
+            --versions 3.14 \
+            --expected-sha "${GITHUB_SHA}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --workflow "${GITHUB_WORKFLOW}" \
+            --jobs-json pytest-jobs.json \
+            --artifacts-json pytest-artifacts-api.json \
+            --output-json pytest-matrix-report-ubuntu-2604-cp3.14.json \
+            --output-markdown pytest-matrix-report-ubuntu-2604-cp3.14.md
       - name: Publish Linux matrix report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -355,6 +484,15 @@ jobs:
           path: |
             pytest-matrix-report-linux.json
             pytest-matrix-report-linux.md
+          if-no-files-found: warn
+      - name: Publish Ubuntu 26.04 / CPython 3.14 matrix report
+        if: always()
+        uses: actions/upload-artifact@cf430a030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-matrix-report-ubuntu-2604-cp3.14-a${{ github.run_attempt }}
+          path: |
+            pytest-matrix-report-ubuntu-2604-cp3.14.json
+            pytest-matrix-report-ubuntu-2604-cp3.14.md
           if-no-files-found: warn
 
   release-smoke:

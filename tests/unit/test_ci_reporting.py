@@ -58,6 +58,18 @@ def test_full_suite_artifacts_are_bound_to_matrix_job_and_exact_sha():
         assert "--jobs-json" in text and "--artifacts-json" in text
 
 
+def test_ubuntu_2604_cpython_314_is_a_full_suite_identity_reported_ci_lane():
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    assert "ubuntu-2604-cp314:" in ci
+    assert "runs-on: ubuntu-26.04" in ci
+    assert 'python-version: "3.14"' in ci
+    assert "Full suite (Qt-enabled, offscreen)" in ci
+    assert '--platform "Ubuntu 26.04"' in ci
+    assert '"pytest-ubuntu-2604-cp3.14-a${{ github.run_attempt }}"' in ci
+    assert "--versions 3.14" in ci
+    assert "pytest-matrix-report-ubuntu-2604-cp3.14" in ci
+
+
 def test_pytest_totals_distinguishes_zero_and_interrupted():
     # The parser must distinguish zero tests, interrupted, etc. — this is the
     # contract of tools/pytest_totals.py, not just the CI file.
@@ -93,12 +105,12 @@ def _pytest_matrix_lane(
 ) -> tuple[Path, str]:
     import json
 
-    from tools.pytest_matrix import _expected_artifact_name, record_evidence
+    from tools.pytest_matrix import _PLATFORMS, _expected_artifact_name, record_evidence
 
     attempt = "1"
     repository = "asgareyvazi/Prog-Proc"
-    workflow = "CI" if platform == "Linux" else "CI Windows"
-    job_prefix = "test" if platform == "Linux" else "windows test"
+    workflow = "CI Windows" if platform == "Windows" else "CI"
+    job_prefix, _artifact_template, job_key = _PLATFORMS[platform]
     artifact_name = _expected_artifact_name(platform, version, attempt)
     directory = root / artifact_name
     directory.mkdir(parents=True, exist_ok=True)
@@ -133,7 +145,7 @@ def _pytest_matrix_lane(
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", attempt)
     monkeypatch.setenv("GITHUB_REF", "refs/heads/arena/5957b76d-prog-proc")
     monkeypatch.setenv("GITHUB_SHA", sha)
-    monkeypatch.setenv("GITHUB_JOB", "test")
+    monkeypatch.setenv("GITHUB_JOB", job_key)
     monkeypatch.setenv("PYTEST_MATRIX_JOB_NAME", f"{job_prefix} (cp{version})")
     monkeypatch.chdir(directory)
     record_evidence(
@@ -148,9 +160,9 @@ def _pytest_matrix_lane(
 
 
 def _pytest_matrix_api(platform: str, versions: tuple[str, ...] = ("3.11", "3.14")):
-    from tools.pytest_matrix import _expected_artifact_name
+    from tools.pytest_matrix import _PLATFORMS, _expected_artifact_name
 
-    job_prefix = "test" if platform == "Linux" else "windows test"
+    job_prefix = _PLATFORMS[platform][0]
     return (
         {
             "jobs": [
@@ -177,7 +189,15 @@ def _pytest_matrix_api(platform: str, versions: tuple[str, ...] = ("3.11", "3.14
     )
 
 
-def _build_pytest_matrix(root: Path, *, platform: str, jobs, artifacts, sha: str = "a" * 40):
+def _build_pytest_matrix(
+    root: Path,
+    *,
+    platform: str,
+    jobs,
+    artifacts,
+    sha: str = "a" * 40,
+    versions: tuple[str, ...] = ("3.11", "3.14"),
+):
     from tools.pytest_matrix import build_report
 
     return build_report(
@@ -187,9 +207,10 @@ def _build_pytest_matrix(root: Path, *, platform: str, jobs, artifacts, sha: str
         run_id="41593362382",
         run_attempt="1",
         repository="asgareyvazi/Prog-Proc",
-        workflow="CI" if platform == "Linux" else "CI Windows",
+        workflow="CI Windows" if platform == "Windows" else "CI",
         jobs=jobs,
         artifacts=artifacts,
+        versions=versions,
     )
 
 
@@ -210,6 +231,47 @@ def test_pytest_matrix_assigns_each_lane_by_explicit_identity_and_preserves_skip
         ("3.14", 1001, 2001),
     ]
     assert all(row["passed"] == 4 and row["skipped"] == 1 for row in report["rows"])
+
+
+def test_pytest_matrix_binds_ubuntu_2604_cpython_314_to_its_own_job_and_artifact(
+    tmp_path: Path, monkeypatch
+):
+    from tools.pytest_matrix import _expected_artifact_name
+
+    _pytest_matrix_lane(
+        tmp_path,
+        platform="Ubuntu 26.04",
+        version="3.14",
+        monkeypatch=monkeypatch,
+    )
+    versions = ("3.14",)
+    jobs, artifacts = _pytest_matrix_api("Ubuntu 26.04", versions)
+    report = _build_pytest_matrix(
+        tmp_path,
+        platform="Ubuntu 26.04",
+        jobs=jobs,
+        artifacts=artifacts,
+        versions=versions,
+    )
+
+    assert _expected_artifact_name("Ubuntu 26.04", "3.14", "1") == ("pytest-ubuntu-2604-cp3.14-a1")
+    assert report["result"] == "PASS"
+    assert len(report["rows"]) == 1
+    assert report["rows"][0]["job_name"] == "test Ubuntu 26.04 (cp3.14)"
+    assert report["rows"][0]["job_id"] == 1000
+    assert report["rows"][0]["artifact_id"] == 2000
+    assert report["rows"][0]["head_sha"] == "a" * 40
+
+    jobs["jobs"][0]["conclusion"] = "failure"
+    failed_job_report = _build_pytest_matrix(
+        tmp_path,
+        platform="Ubuntu 26.04",
+        jobs=jobs,
+        artifacts=artifacts,
+        versions=versions,
+    )
+    assert failed_job_report["result"] == "FAIL"
+    assert failed_job_report["rows"][0]["result"] == "INVALID"
 
 
 def test_pytest_matrix_never_assigns_linux_artifacts_to_windows_lanes(tmp_path: Path, monkeypatch):
