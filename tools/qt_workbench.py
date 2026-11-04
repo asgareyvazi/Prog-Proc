@@ -163,7 +163,9 @@ def _safe(node: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", node)
 
 
-def _run_streamed(command: list[str], log_path: Path) -> tuple[int, str]:
+def _run_streamed(
+    command: list[str], log_path: Path, *, env: dict[str, str] | None = None
+) -> tuple[int, str]:
     """Run a child while durably streaming its combined output to disk/stdout."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     output_lines: list[str] = []
@@ -176,6 +178,7 @@ def _run_streamed(command: list[str], log_path: Path) -> tuple[int, str]:
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
+            env=env,
             errors="replace",
             bufsize=1,
         ) as process,
@@ -190,6 +193,20 @@ def _run_streamed(command: list[str], log_path: Path) -> tuple[int, str]:
             output_lines.append(line)
         return_code = process.wait()
     return return_code, "".join(output_lines)
+
+
+def _collection_environment(log_dir: Path) -> dict[str, str]:
+    """Keep collection-only pytest totals out of the enclosing suite's evidence files."""
+    env = os.environ.copy()
+    env["PYTEST_TOTALS_PATH"] = str(log_dir / "collection.pytest-totals.json")
+    return env
+
+
+def _node_environment(log_path: Path) -> dict[str, str]:
+    """Keep each nested pytest node's totals out of the enclosing suite's evidence files."""
+    env = os.environ.copy()
+    env["PYTEST_TOTALS_PATH"] = str(log_path.with_name(f"{log_path.stem}.pytest-totals.json"))
+    return env
 
 
 def _run_node(node: str, log_path: Path) -> tuple[int, str]:
@@ -216,7 +233,7 @@ def _run_node(node: str, log_path: Path) -> tuple[int, str]:
             "-screen 0 1280x1024x24",
             *command,
         ]
-    return _run_streamed(command, log_path)
+    return _run_streamed(command, log_path, env=_node_environment(log_path))
 
 
 def main() -> int:
@@ -230,6 +247,7 @@ def main() -> int:
         [sys.executable, "-m", "pytest", "--collect-only", "--no-header", "tests/ui"],
         capture_output=True,
         text=True,
+        env=_collection_environment(log_dir),
         check=False,
     )
     collect_text = (collected.stdout or "") + "\n" + (collected.stderr or "")

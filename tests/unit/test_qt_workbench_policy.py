@@ -110,6 +110,47 @@ def test_collection_accounts_for_class_async_and_parametrized_tests(tmp_path: Pa
     assert "duplicate declared" in qt_workbench.account_for_collection(hidden, collected)
 
 
+def test_nested_qt_pytest_totals_are_scoped_to_the_attempt_log(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PYTEST_TOTALS_PATH", "pytest-totals.json")
+    log_path = tmp_path / "qt-logs" / "test_workbench.attempt-1.txt"
+
+    env = qt_workbench._node_environment(log_path)
+    collection_env = qt_workbench._collection_environment(log_path.parent)
+
+    assert env["PYTEST_TOTALS_PATH"] == str(
+        log_path.with_name("test_workbench.attempt-1.pytest-totals.json")
+    )
+    assert collection_env["PYTEST_TOTALS_PATH"] == str(
+        log_path.parent / "collection.pytest-totals.json"
+    )
+    assert env["PYTEST_TOTALS_PATH"] != "pytest-totals.json"
+    assert collection_env["PYTEST_TOTALS_PATH"] != "pytest-totals.json"
+
+
+def test_qt_node_runner_passes_a_scoped_pytest_totals_path(monkeypatch, tmp_path: Path):
+    import platform
+    import shutil
+
+    monkeypatch.setenv("PYTEST_TOTALS_PATH", "pytest-totals.json")
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    captured: dict[str, object] = {}
+
+    def capture(command, log_path, *, env=None):
+        captured["command"] = command
+        captured["log_path"] = log_path
+        captured["env"] = env
+        return 0, ""
+
+    monkeypatch.setattr(qt_workbench, "_run_streamed", capture)
+    log_path = tmp_path / "qt-logs" / "test_workbench.attempt-1.txt"
+
+    assert qt_workbench._run_node("tests/ui/test_workbench.py::test_sample", log_path) == (0, "")
+    assert captured["env"]["PYTEST_TOTALS_PATH"] == str(
+        log_path.with_name("test_workbench.attempt-1.pytest-totals.json")
+    )
+
+
 def test_attempt_result_distinguishes_a_retry_pass():
     assert qt_workbench.attempt_result([(1, 0)]) == "FIRST_PASS"
     assert qt_workbench.attempt_result([(1, 134), (2, 0)]) == "RETRY_PASS"
