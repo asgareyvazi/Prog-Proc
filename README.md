@@ -12,7 +12,7 @@ part of this repository serves that sentence.
 
 ## Status
 
-> **Current context (2026-11-04):** Prog-Proc remains **Pre-Alpha**, local-first, and single-user. SQLite is the only qualified database; PostgreSQL is **NOT QUALIFIED**. The 26-class document taxonomy is unchanged. Intake registration remains human-reviewed and non-promoting; Daily DDR authoring/revisions retain actor, reason, provenance, stale-write protection, and independent review. Linux and Windows CI both pass on code SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882`; a real Ubuntu 26.04 × CPython 3.14 full-suite lane also passes. These are automated/offscreen results, not physical Windows desktop acceptance. Workspace archive/restore remains a **database snapshot only**, not a full workspace/source backup. The exact-SHA evidence and open qualification items are in the [Persian closure report](docs/mission-reports/AUTONOMOUS_PRODUCT_CLOSURE_2026-11-04_FA.md) and [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
+> **Current context (2026-11-04):** Prog-Proc remains **Pre-Alpha**, local-first, and single-user. SQLite is the only qualified database; PostgreSQL is **NOT QUALIFIED**. The 26-class document taxonomy is unchanged. Intake registration remains human-reviewed and non-promoting; Daily DDR authoring/revisions retain actor, reason, provenance, stale-write protection, and independent review. The previous baseline passed Linux/Windows and Ubuntu 26.04 × CPython 3.14 CI on code SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882`. New backup-hardening code is on SHA `94d698ffcb2c5e5c2a36ac164dba222e17d65cc1`; its Linux/Windows CI runs `41827377959` / `41827378042` **FAILED** because each full-suite lane reported two test-contract failures. The two test-contract fixes (regenerated exception inventory and disambiguated parser wording) are committed and pushed on code SHA `ff4afddba0d5f319b0f43341dcaed13991b4dd3d`; exact-SHA Linux workflow `41841625094` succeeded, including all three Linux full-suite lanes. Windows workflow `41841625041` failed: both Windows full-suite lanes succeeded, but a separate Windows CPython 3.11 offscreen UI job failed one intake registration/refresh transition (root cause not yet established). All five full-suite lanes passed, but overall CI is **FAILURE**, not a matrix pass. The 29-test focused local result is not a substitute for those workflows. These are automated/offscreen results, not physical Windows desktop acceptance. The `workspace backup/restore` pair remains **database snapshot only**; a separate `workspace archive/restore-archive` pair now handles eligible workspace-owned files plus a consistent SQLite snapshot, while external sources remain out of scope. The exact-SHA evidence and open qualification items are in the [Persian closure report](docs/mission-reports/AUTONOMOUS_PRODUCT_CLOSURE_2026-11-04_FA.md) and [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
 
 The following inventory is a product overview; its capability labels do not substitute for current test or CI evidence:
 
@@ -149,6 +149,30 @@ drillintel workspace restore /secure/backups/well-a3-2026-11-03.dibak /tmp/well-
 # Then restore the source corpus separately and inspect the workspace.
 drillintel doctor --workspace /tmp/well-a3
 ```
+
+For workspace-owned files as well as the registry snapshot, use the separate **full workspace-owned-files**
+archive format. This includes eligible regular files under the workspace root (including configured
+corpus files) and a transaction-consistent SQLite snapshot. It excludes the rebuildable search index,
+runtime cache/logs, VCS/environment state, credentials, and transient files. Configured sources outside
+the workspace are reported, never followed or copied; URL user-info, query strings, and fragments are
+redacted in that report. Symlinks and special files in the included scope are rejected rather than
+followed. Files are SHA-256 checked, archives are unencrypted, and files up to 8 GiB / total included
+content up to 32 GiB are bounded. This scope is broader than `workspace backup`, but is still not a
+copy of external sources or every machine-level dependency.
+
+```bash
+drillintel workspace archive --workspace /tmp/well-a3 \
+    --output /secure/backups/well-a3-2026-11-04.diwa
+# Restore only to the exact recorded workspace root, after that path is absent.
+drillintel workspace restore-archive \
+    /secure/backups/well-a3-2026-11-04.diwa /tmp/well-a3
+```
+
+Restore checks the complete manifest, all member hashes, SQLite integrity/foreign keys, schema and
+workspace identity in a staging directory before atomically publishing the new workspace. Existing
+paths and symlink destinations are refused; re-homing is not supported. Preserve a separate copy of
+the original workspace before testing restore. Neither archive command constitutes a production
+backup policy, encryption, external-source retention approval, or physical Windows acceptance.
 
 `doctor` runs read-only SQLite integrity, foreign-key, and storage preflight checks on an existing
 database and repeats the preflight after creating or upgrading a database. On failure it stops before
