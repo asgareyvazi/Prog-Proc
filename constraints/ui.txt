@@ -19,7 +19,7 @@ anyio==4.16.0
 ast_serialize==0.13.1
 build==1.6.1
 certifi==2026.10.23
-coverage==7.17.1
+coverage==7.17.2
 et_xmlfile==2.0.0
 h11==0.16.0
 httpcore==1.0.9
