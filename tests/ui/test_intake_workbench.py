@@ -284,6 +284,23 @@ def test_intake_review_registration_and_rejection_run_as_distinct_ui_transitions
         window.intake_operation_finished.disconnect(loop.quit)
         return finished.count() >= target
 
+    def lifecycle_snapshot() -> str:
+        thread = window._intake_thread
+        worker = window._intake_worker
+        destroyed = window._worker_destroyed_events.get("_intake_thread")
+        if thread is None:
+            thread_state = "none"
+        else:
+            thread_state = f"running={thread.isRunning()}, finished={thread.isFinished()}"
+        return (
+            f"completed={finished.count()}, active={window._active_intake_operation!r}, "
+            f"status={window.status_label.text()!r}, "
+            f"pending_refresh={window._pending_intake_refresh}, "
+            f"thread={thread_state}, worker={type(worker).__name__ if worker else None}, "
+            f"worker_destroyed={destroyed.is_set() if destroyed else None}, "
+            f"queue_statuses={window._intake_status_by_id!r}"
+        )
+
     def row_for(filename: str) -> int:
         for row in range(window.intake_table.rowCount()):
             if window.intake_table.item(row, 0).text() == filename:
@@ -292,7 +309,9 @@ def test_intake_review_registration_and_rejection_run_as_distinct_ui_transitions
 
     try:
         window._start_intake_operation("enqueue", paths=[accepted_source], actor="operator")
-        assert wait_for_count(2), "enqueue and its pending queue refresh did not both finish"
+        assert wait_for_count(2), (
+            f"enqueue and its pending queue refresh did not both finish; {lifecycle_snapshot()}"
+        )
         accepted_row = row_for(accepted_source.name)
         assert accepted_row >= 0
         window.intake_table.selectRow(accepted_row)
@@ -337,7 +356,9 @@ def test_intake_review_registration_and_rejection_run_as_distinct_ui_transitions
 
         next_count = finished.count() + 2
         window._reject_selected_intake()
-        assert wait_for_count(next_count), "rejection and pending refresh did not finish"
+        assert wait_for_count(next_count), (
+            f"rejection and pending refresh did not finish; {lifecycle_snapshot()}"
+        )
         assert window._intake_status_by_id[rejected_id] == "REJECTED"
         rejected_row = row_for(rejected_source.name)
         window.intake_table.selectRow(rejected_row)
