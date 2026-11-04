@@ -429,15 +429,8 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
         with:
-          pattern: pytest-cp*-a${{ github.run_attempt }}
+          pattern: pytest-*cp*-a${{ github.run_attempt }}
           path: pytest-artifacts
-          merge-multiple: false
-      - name: Download Ubuntu 26.04 / CPython 3.14 evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        continue-on-error: true
-        with:
-          pattern: pytest-ubuntu-2604-cp3.14-a${{ github.run_attempt }}
-          path: pytest-ubuntu-2604-artifacts
           merge-multiple: false
       - name: Resolve GitHub job and artifact IDs
         env:
@@ -464,7 +457,7 @@ jobs:
         if: always()
         run: |
           python tools/pytest_matrix.py report \
-            --artifact-root pytest-ubuntu-2604-artifacts \
+            --artifact-root pytest-artifacts \
             --platform "Ubuntu 26.04" \
             --versions 3.14 \
             --expected-sha "${GITHUB_SHA}" \

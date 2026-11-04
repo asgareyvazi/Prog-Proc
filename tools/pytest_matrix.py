@@ -366,10 +366,11 @@ def build_report(
 
     rows: list[dict[str, Any]] = []
     issues: list[str] = []
+    artifact_prefix = _PLATFORMS[platform][1].split("{python}", 1)[0]
     for directory in directories:
         if (
             directory.is_dir()
-            and directory.name.startswith(("pytest-cp", "pytest-windows-cp"))
+            and directory.name.startswith(artifact_prefix)
             and directory.name not in expected_names
         ):
             issues.append(f"unexpected artifact directory for {platform}: {directory.name}")

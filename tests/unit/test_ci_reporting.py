@@ -71,6 +71,42 @@ def test_ubuntu_2604_cpython_314_is_a_full_suite_identity_reported_ci_lane():
     assert '"pytest-ubuntu-2604-cp3.14-a${{ github.run_attempt }}"' in ci
     assert "--versions 3.14" in ci
     assert "pytest-matrix-report-ubuntu-2604-cp3.14" in ci
+    assert "pattern: pytest-*cp*-a${{ github.run_attempt }}" in ci
+    assert "Download Ubuntu 26.04 / CPython 3.14 evidence" not in ci
+
+
+def test_shared_pytest_artifact_root_preserves_linux_and_ubuntu_lane_identity(
+    tmp_path: Path, monkeypatch
+):
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.11", monkeypatch=monkeypatch)
+    _pytest_matrix_lane(tmp_path, platform="Linux", version="3.14", monkeypatch=monkeypatch)
+    _pytest_matrix_lane(
+        tmp_path,
+        platform="Ubuntu 26.04",
+        version="3.14",
+        monkeypatch=monkeypatch,
+    )
+    linux_jobs, linux_artifacts = _pytest_matrix_api("Linux")
+    ubuntu_jobs, ubuntu_artifacts = _pytest_matrix_api("Ubuntu 26.04", ("3.14",))
+
+    linux = _build_pytest_matrix(
+        tmp_path, platform="Linux", jobs=linux_jobs, artifacts=linux_artifacts
+    )
+    ubuntu = _build_pytest_matrix(
+        tmp_path,
+        platform="Ubuntu 26.04",
+        jobs=ubuntu_jobs,
+        artifacts=ubuntu_artifacts,
+        versions=("3.14",),
+    )
+
+    assert linux["result"] == "PASS"
+    assert [row["artifact_name"] for row in linux["rows"]] == [
+        "pytest-cp3.11-a1",
+        "pytest-cp3.14-a1",
+    ]
+    assert ubuntu["result"] == "PASS"
+    assert ubuntu["rows"][0]["artifact_name"] == "pytest-ubuntu-2604-cp3.14-a1"
 
 
 def test_pytest_totals_distinguishes_zero_and_interrupted():
@@ -287,7 +323,8 @@ def test_pytest_matrix_never_assigns_linux_artifacts_to_windows_lanes(tmp_path: 
     assert report["result"] == "FAIL"
     assert all(row["platform"] == "Windows" for row in report["rows"])
     assert all(row["passed"] is None and row["result"] == "INVALID" for row in report["rows"])
-    assert any("unexpected artifact directory" in issue for issue in report["issues"])
+    assert all("downloaded evidence sidecar is missing" in row["detail"] for row in report["rows"])
+    assert all(row["artifact_name"].startswith("pytest-windows-cp") for row in report["rows"])
 
 
 def test_pytest_matrix_rejects_a_sidecar_from_another_head_sha(tmp_path: Path, monkeypatch):
