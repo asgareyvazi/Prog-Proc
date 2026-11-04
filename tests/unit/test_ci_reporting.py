@@ -60,6 +60,9 @@ def test_full_suite_artifacts_are_bound_to_matrix_job_and_exact_sha():
 
 def test_ubuntu_2604_cpython_314_is_a_full_suite_identity_reported_ci_lane():
     ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    ciw = Path(".github/workflows/ci-windows.yml").read_text(encoding="utf-8")
+    assert "actions/upload-artifact@cf430a030ddbb5b0abf93d22962f4752f3646cd9" not in ci + ciw
+    assert "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" in ci + ciw
     assert "ubuntu-2604-cp314:" in ci
     assert "runs-on: ubuntu-26.04" in ci
     assert 'python-version: "3.14"' in ci
