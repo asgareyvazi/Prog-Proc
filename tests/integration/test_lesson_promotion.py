@@ -14,6 +14,8 @@ from openpyxl import Workbook
 from sqlalchemy import select
 
 from drilling_intelligence.config.settings import Settings
+from drilling_intelligence.core.enums import LessonLifecycle
+from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.database.models import LessonLearned
 from drilling_intelligence.lessons.repository import LessonRepository
 from drilling_intelligence.operations.promote import VersionPromoter
@@ -268,7 +270,7 @@ def test_lesson_revision_supersession(tmp_path):
             }
         ],
     )
-    # Need to wait a bit for mtime change? Ingestion uses content hash, so modification will be detected
+    # Content identity is hash-based; no wall-clock delay is needed.
     _result2, _doc2, _ver2 = _ingest_and_promote(ws, well, xlsx)
     with ws.database.session() as s:
         rows = list(
@@ -281,7 +283,16 @@ def test_lesson_revision_supersession(tmp_path):
         assert len(current) == 1
         assert len(superseded) == 1
         assert current[0].lesson == "Updated lesson text after review"
+        assert current[0].status == LessonLifecycle.DRAFT
+        assert current[0].revision == 2
+        assert current[0].supersedes_id == old_id
         assert superseded[0].id == old_id
+        assert superseded[0].status == LessonLifecycle.SUPERSEDED
+        assert superseded[0].prior_status == LessonLifecycle.DRAFT
+        repo = LessonRepository(s)
+        chain, position = repo._validated_lesson_chain(old_id)
+        assert [item.id for item in chain] == [old_id, current[0].id]
+        assert position == 0
 
 
 def test_lesson_idempotence_second_promotion_no_duplicate(tmp_path):
@@ -402,28 +413,47 @@ def test_lesson_human_approval_governance(tmp_path):
         repo = LessonRepository(s)
         ec = repo.evidence_count(row.id)
         assert ec >= 1
-        # Self-approval must be rejected — create a fresh DRAFT lesson and try
-        # The promoted lesson's created_by is "promotion", so approving as "promotion" is self-approval
-        with pytest.raises(Exception):  # noqa: B017
+        # Self-approval must be rejected — the promoted lesson's author is "promotion".
+        with pytest.raises(ValidationError, match="cannot approve"):
             repo.approve(row.id, by="promotion", note="self")
-        # Valid approval by a different reviewer succeeds
         approved = repo.approve(row.id, by="reviewer@example.com", note="Looks good")
-        assert approved.status == "APPROVED"
-        # Already approved, second approve is no-op (same reviewer, same status preserves)
+        assert approved.status == LessonLifecycle.APPROVED
+        # Repeating the same approval is a no-op and preserves its reviewer.
         approved2 = repo.approve(row.id, by="reviewer@example.com", note="again")
-        assert approved2.status == "APPROVED"
+        assert approved2.status == LessonLifecycle.APPROVED
+        lesson_id = row.id
         s.commit()
-    # Verify that an approved historical record is never overwritten by repromotion
-    # Change source and promote again — should create new version, not overwrite approved current?
-    # Our supersede logic keeps approved rows? Actually _supersede_by_document skips CONFIRMED?
-    # For lessons, we skip only if status == CONFIRMED? Currently we don't check for lesson status, but for other domains we skip CONFIRMED.
-    # For lessons, the same check should preserve APPROVED — let's verify that supersede does not demote approved
-    # In _supersede_by_document, it checks if row.status == CONFIRMED; for lessons status is APPROVED, not CONFIRMED, so it would demote.
-    # But lesson status APPROVED should be preserved — we need to check current logic: _supersede_by_document checks ConfirmationStatus.CONFIRMED, not lesson APPROVED.
-    # So for lessons we may need separate handling — but test that repromotion doesn't overwrite approved row's lesson text
+
+    # A changed source creates a new version and a DRAFT successor. The approved
+    # source revision remains readable as SUPERSEDED with its exact prior state.
+    _build_lesson_xlsx(
+        xlsx,
+        [
+            {
+                "code": "LL-2025-024",
+                "title": "Governance revision",
+                "lesson": "Updated source wording requires a new review",
+                "well": "A-3",
+            }
+        ],
+    )
+    _ingest_and_promote(ws, well, xlsx)
     with ws.database.session() as s:
-        row_after = s.execute(select(LessonLearned).where(LessonLearned.id == row.id)).scalar_one()
-        assert row_after.status == "APPROVED"
+        previous = s.get(LessonLearned, lesson_id)
+        assert previous is not None
+        assert previous.status == LessonLifecycle.SUPERSEDED
+        assert previous.prior_status == LessonLifecycle.APPROVED
+        assert previous.is_current is False
+        successor = s.execute(
+            select(LessonLearned).where(LessonLearned.supersedes_id == lesson_id)
+        ).scalar_one()
+        assert successor.status == LessonLifecycle.DRAFT
+        assert successor.revision == 2
+        assert successor.is_current is True
+        assert successor.lesson == "Updated source wording requires a new review"
+        chain, position = LessonRepository(s)._validated_lesson_chain(lesson_id)
+        assert [item.id for item in chain] == [lesson_id, successor.id]
+        assert position == 0
 
 
 def test_lesson_root_cause_not_inferred(tmp_path):

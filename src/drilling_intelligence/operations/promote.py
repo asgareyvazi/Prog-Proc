@@ -50,10 +50,11 @@ from ..core.enums import (
     ConfirmationStatus,
     KnowledgeOrigin,
     KnowledgeRelationType,
+    LessonLifecycle,
     ProgramLifecycle,
     RecordState,
 )
-from ..core.errors import UnitError
+from ..core.errors import UnitError, ValidationError
 from ..core.hashing import sha256_obj
 from ..core.ids import new_id
 from ..core.units import Quantity, parse_decimal
@@ -3808,8 +3809,10 @@ class VersionPromoter:
         well, and an HSE incident may have no well at all - a slip on the camp steps or a spill at
         the mud warehouse belongs to a site, not to a hole.  Scoping by well there would leave the
         older version current forever.  A document's own rows all carry that document's scope, so
-        the document is the correct boundary for both domains.  A row a person confirmed is never
-        demoted: a later extraction is not evidence that the person misread the source.
+        the document is the correct boundary for both domains. A confirmed operational row remains
+        current. A lesson successor is a separate reviewable revision: the old row is marked
+        SUPERSEDED while its exact prior lifecycle (including APPROVED) is retained in
+        ``prior_status``; approval is never copied to the new source version.
         """
         previous = list(
             self.session.execute(
@@ -3825,8 +3828,28 @@ class VersionPromoter:
         )
         stood_down = 0
         for row in previous:
-            if str(row.status) == ConfirmationStatus.CONFIRMED.value:
+            status = str(row.status or "")
+            if status == ConfirmationStatus.CONFIRMED.value:
                 continue
+            if model is LessonLearned:
+                # Lesson lifecycle is richer than the confirmation flag used by
+                # operational rows. Keep the exact prior review state so the
+                # successor chain remains valid and the next version still needs
+                # its own explicit review.
+                promotable_prior_states = {
+                    LessonLifecycle.DRAFT.value,
+                    LessonLifecycle.REVIEW.value,
+                    LessonLifecycle.APPROVED.value,
+                    LessonLifecycle.REJECTED.value,
+                }
+                if status not in promotable_prior_states:
+                    raise ValidationError(
+                        "cannot supersede a lesson with an unknown or inactive lifecycle state",
+                        lesson_id=str(row.id),
+                        status=status or None,
+                    )
+                row.prior_status = status
+                row.status = LessonLifecycle.SUPERSEDED.value
             row.is_current = False
             stood_down += 1
         return stood_down
