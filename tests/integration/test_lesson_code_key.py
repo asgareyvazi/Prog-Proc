@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 
+from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.database.models import LessonLearned
 from drilling_intelligence.lessons.repository import LessonRepository
 from drilling_intelligence.wells.workspace import Workspace
@@ -40,7 +42,7 @@ def test_case_insensitive_collision_is_rejected(ws: Workspace) -> None:
     sess.commit()
     sess.close()
     repo2, sess2 = _repo(ws)
-    with pytest.raises(Exception, match="already in use"):
+    with pytest.raises(ValidationError, match="already in use"):
         repo2.capture(lesson="second", code="ll-001", title="t2")
         sess2.commit()
     sess2.rollback()
@@ -53,7 +55,7 @@ def test_trim_is_normalized(ws: Workspace) -> None:
     sess.commit()
     sess.close()
     repo2, sess2 = _repo(ws)
-    with pytest.raises(Exception, match="already in use"):
+    with pytest.raises(ValidationError, match="already in use"):
         repo2.capture(lesson="second", code="LL-002", title="t2")
         sess2.commit()
     sess2.rollback()
@@ -66,7 +68,7 @@ def test_unicode_casefold_ss_vs_sharp_s(ws: Workspace) -> None:
     sess.commit()
     sess.close()
     repo2, sess2 = _repo(ws)
-    with pytest.raises(Exception, match="already in use"):
+    with pytest.raises(ValidationError, match="already in use"):
         repo2.capture(lesson="second", code="SS", title="t2")
         sess2.commit()
     sess2.rollback()
@@ -113,7 +115,7 @@ def test_superseded_does_not_block(ws: Workspace) -> None:
     # Superseded row's code_key still exists but is_current=0, so it must not block
     # Trying to create another lesson with same code should still collide with rev (current)
     repo2, sess2 = _repo(ws)
-    with pytest.raises(Exception, match="already in use"):
+    with pytest.raises(ValidationError, match="already in use"):
         repo2.capture(lesson="dup", code="LL-003", title="t2")
         sess2.commit()
     sess2.rollback()
@@ -142,7 +144,7 @@ def test_cross_well_global_uniqueness(ws: Workspace) -> None:
     sess.commit()
     sess.close()
     repo2, sess2 = _repo(ws)
-    with pytest.raises(Exception, match="already in use"):
+    with pytest.raises(ValidationError, match="already in use"):
         repo2.capture(lesson="second", code="LL-GLOBAL", well_id="well-2", title="t2")
         sess2.commit()
     sess2.rollback()
@@ -178,7 +180,7 @@ def test_revision_retains_code_and_changing_code_is_checked(ws: Workspace) -> No
     repo.capture(lesson="other", code="LL-006", title="t2")
     sess.commit()
     # Try to revise rev to collide with other — should fail
-    with pytest.raises(Exception, match="already in use"):
+    with pytest.raises(ValidationError, match="already in use"):
         repo.revise(rev.id, by="author", changes={"code": "LL-006"})
         sess.commit()
     sess.rollback()
@@ -194,7 +196,7 @@ def test_db_unique_enforces_concurrency_via_direct_insert(ws: Workspace) -> None
                 "VALUES ('les-direct-a', 'LL-DB', 'll-db', 1, 1, 'DRAFT', 't', 'l', 'system', datetime('now'), datetime('now'), 'm', 'm', 'UNKNOWN', '', '', '', 'MANUAL', '[]', '{}')"
             )
         )
-        with pytest.raises(Exception, match=r"UNIQUE.*code_key|unique"):
+        with pytest.raises(IntegrityError, match=r"UNIQUE.*code_key|unique"):
             conn.execute(
                 text(
                     "INSERT INTO lesson_learned (id, code, code_key, revision, is_current, status, title, lesson, created_by, created_at, updated_at, depth_from_unit, depth_to_unit, root_cause_status, context, observation, recommendation, origin, provenance, attributes) "

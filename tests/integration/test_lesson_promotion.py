@@ -450,6 +450,8 @@ def test_lesson_human_approval_governance(tmp_path):
         assert successor.status == LessonLifecycle.DRAFT
         assert successor.revision == 2
         assert successor.is_current is True
+        assert successor.approved_by is None
+        assert successor.approved_at is None
         assert successor.lesson == "Updated source wording requires a new review"
         chain, position = LessonRepository(s)._validated_lesson_chain(lesson_id)
         assert [item.id for item in chain] == [lesson_id, successor.id]

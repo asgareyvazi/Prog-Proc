@@ -7,6 +7,7 @@ import pytest
 from drilling_intelligence.database.serialize import record_to_dict
 from drilling_intelligence.engineering.repository import EngineeringRepository
 from drilling_intelligence.review import (
+    ReviewActionError,
     ReviewActionRequest,
     ReviewActionService,
     ReviewRecord,
@@ -119,7 +120,7 @@ def test_action_rechecks_status_and_routes_to_the_existing_procedure_repository(
     )
     assert approved.status == "APPROVED"
 
-    with pytest.raises(Exception, match="stale"):
+    with pytest.raises(ReviewActionError, match="stale"):
         service.execute(
             ReviewActionRequest(
                 record_type="procedure_record",

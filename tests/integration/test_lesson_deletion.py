@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.database.models import KnowledgeRelation, LessonLearned
 from drilling_intelligence.lessons.repository import LessonRepository
 from drilling_intelligence.wells.workspace import Workspace
@@ -160,9 +161,9 @@ def test_bulk_delete_rollback_on_failure(ws: Workspace) -> None:
     b = repo.capture(lesson="b", code="LL-BULK-B", title="t")
     sess.commit()
     # Bulk delete where second id is invalid — should fail before mutating
-    with pytest.raises(Exception):  # noqa: B017 - any validation failure is acceptable here
+    with pytest.raises(ValidationError, match="no lesson"):
         repo.delete_lessons([a.id, "no-such-id"], by="actor", reason="bulk")
-        sess.commit()
+    sess.commit()
     sess.rollback()
     # Both original rows must still exist
     assert sess.get(LessonLearned, a.id) is not None

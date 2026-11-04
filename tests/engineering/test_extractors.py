@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from drilling_intelligence.config.settings import Settings
+from drilling_intelligence.core.errors import ExtractionError
 from drilling_intelligence.extraction.interfaces import ExtractionContext
 from drilling_intelligence.extraction.normalized import NormalizedDocument
 from drilling_intelligence.extraction.registry import build_default_router
@@ -226,6 +227,6 @@ def test_the_stored_artefact_round_trips_without_losing_meaning(corpus_dir, extr
 def test_the_router_degrades_instead_of_failing_on_garbage(tmp_path, extract) -> None:
     broken = tmp_path / "broken.pdf"
     broken.write_bytes(b"%PDF-1.4\nthis is not a document\n%%EOF\n")
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(ExtractionError) as excinfo:
         extract(broken)
     assert not isinstance(excinfo.value, (RecursionError, MemoryError, OSError))
