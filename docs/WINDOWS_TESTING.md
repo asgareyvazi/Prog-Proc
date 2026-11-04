@@ -1,6 +1,6 @@
 # Windows testing
 
-> **Current status (2026-11-03):** Current-code Windows CPython 3.11 and 3.14 full suites, pytest evidence attribution, clean-install smoke, offscreen Qt UI, repeated stability cases, and PowerShell 5.1/7 run-card tests passed on code SHA `be5d76fb93172613d66d6b3be7707e919461b2d9` in run [`41641205205`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41641205205). Migration head is `0026`. Local Qt UI tests in this sandbox are **SKIPPED** because `libGL.so.1` is absent; CI's Qt-enabled tests are the positive evidence. Offscreen evidence does not constitute physical display acceptance; the human workstation checklist remains **NOT RUN**. The closure-document commit is separately checked by its own exact-SHA CI.
+> **Current status (2026-11-04):** Windows CPython 3.11 and 3.14 full suites, exact-SHA pytest attribution, clean-install smoke, offscreen Qt UI/stability and PowerShell run-card tests passed on code SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882` in run [`41804712330`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41804712330) (14/14 jobs succeeded). Migration head is `0026`. Local Qt UI tests in this sandbox are **SKIPPED** because `libGL.so.1` is absent; CI's Qt-enabled tests are the positive evidence. Offscreen evidence does not constitute physical display acceptance; the human workstation checklist remains **NOT RUN**. The documentation-only commit is independently checked by its exact-SHA CI.
 
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the
@@ -9,7 +9,7 @@ not this workstation. The workflow runs CPython 3.11 and 3.14 for the core
 suite, clean-install smoke, and offscreen UI jobs; the disposable pilot and
 PowerShell run-card behavior have separate Windows jobs. Exact current-code
 pytest totals and matrix identity reports are artifacts attached to run
-`41641205205`; older V8.13/V8.14 reports remain historical. A green offscreen
+`41804712330` on SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882`; earlier runs remain historical. A green offscreen
 job is not the same as opening the workbench on this machine.
 
 Commands below are PowerShell. Do not paste the Bash examples from the

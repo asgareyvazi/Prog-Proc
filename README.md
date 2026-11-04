@@ -12,7 +12,7 @@ part of this repository serves that sentence.
 
 ## Status
 
-> **Current context (2026-11-03):** The implementation remains **Pre-Alpha**, local-first, and single-user. SQLite is the only qualified database (PostgreSQL **NOT QUALIFIED**). The 26-class document taxonomy is unchanged. Intake supports reviewed registration without promotion; the desktop workbench supports manual Daily DDR drafts, revisions, provenance comparison, and a governed review boundary. Workspace archive/restore is a **database snapshot only**, not a full workspace/source backup. These changes are not accepted on the basis of this README; qualification requires tests and Linux/Windows CI attached to the exact final commit SHA. See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
+> **Current context (2026-11-04):** Prog-Proc remains **Pre-Alpha**, local-first, and single-user. SQLite is the only qualified database; PostgreSQL is **NOT QUALIFIED**. The 26-class document taxonomy is unchanged. Intake registration remains human-reviewed and non-promoting; Daily DDR authoring/revisions retain actor, reason, provenance, stale-write protection, and independent review. Linux and Windows CI both pass on code SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882`; a real Ubuntu 26.04 × CPython 3.14 full-suite lane also passes. These are automated/offscreen results, not physical Windows desktop acceptance. Workspace archive/restore remains a **database snapshot only**, not a full workspace/source backup. The exact-SHA evidence and open qualification items are in the [Persian closure report](docs/mission-reports/AUTONOMOUS_PRODUCT_CLOSURE_2026-11-04_FA.md) and [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
 
 The following inventory is a product overview; its capability labels do not substitute for current test or CI evidence:
 
@@ -39,7 +39,7 @@ The following inventory is a product overview; its capability labels do not subs
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
 | Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
 | Domain CLI: `intake` add/list/preview/decide/register plus `records`, `records rollup`, `records review`, `timeline`, `fields`, `patterns`, `lessons`, `evidence`, and `doctor` | **implemented** — Intake registration creates registry evidence only after human review; it does not promote domain facts. |
-| Optional Desktop Workbench (`drillintel-ui`) | **implemented in code; qualification tied to green CI on the exact final SHA** — PySide6-Essentials is optional. It includes governed `DomainReviewService`/`ReviewActionService` review, an Intake queue with transient preview and explicit registration, and a Daily DDR draft/save/submit/revision workspace with exact-field comparison and recorded provenance. DDR submit leaves candidate rows; confirm/reject require a reason and a declared actor ID different from `created_by` (the ID is not authenticated). Mutating work runs outside the GUI thread. Local Qt tests blocked by host libraries are **SKIPPED**, not PASS. |
+| Optional Desktop Workbench (`drillintel-ui`) | **implemented; Linux/Windows Qt-enabled offscreen CI PASS on `894161a2f3e296e001c03a7b20b0eeb4f57d5882`** — PySide6-Essentials is optional. It includes governed review, Intake preview/registration, and Daily DDR draft/save/submit/revision with exact-field comparison and provenance. DDR submit leaves candidate rows; confirm/reject require a reason and a declared actor ID distinct from `created_by` (not authenticated). Mutations run outside the GUI thread. Local Qt tests blocked by host libraries are **SKIPPED**, not PASS; physical Windows display acceptance remains **NOT RUN**. |
 | Ollama provider adapter: `drillintel ai status` probes `/api/tags`; completion and embedding calls return non-authoritative text or vectors | **implemented, not on the engineering path** — an embedding is accepted only when it is finite, one vector per input, and names the requested model; a path, query, or credential in the endpoint sends no request; `doctor` does not probe; `openai-compatible` has no adapter (`docs/DECISIONS.md` ADR-51, ADR-52) |
 | Skills and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
@@ -190,9 +190,12 @@ budget is one 120s clock, not a fresh wait per poll (ADR-45). The real-thread pr
 shutdown deadline into a hang, and exit 4 remains a failed shutdown (ADR-46). A cleanup
 that reaches the deadline is not a success, including when the monitor thread has not
 yet been scheduled (ADR-47). The release
-image stays `ubuntu-24.04`. Ubuntu 26.04 is a required compatibility lane, not a silent
-move of `ubuntu-latest`, and CPython 3.14 on that image is not yet certified. Operator-facing errors redact prefixed and quoted credential assignments without
-discarding a connection host.
+image stays `ubuntu-24.04`. Ubuntu 26.04 is a separate required compatibility lane, not a silent
+move of `ubuntu-latest`; its Qt-enabled CPython 3.14 full suite, clean-install smoke, and identity-bound
+pytest report passed on SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882` (run `41804712405`). This is
+CI evidence for that lane, not physical Windows acceptance or a general release certification.
+Operator-facing errors redact prefixed and quoted credential assignments without discarding a
+connection host.
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,
 for callers embedding the library rather than driving the CLI:

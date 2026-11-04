@@ -1,11 +1,12 @@
 # مرجع زمینهٔ پروژه — Prog-Proc
 
 - **وضعیت سند:** مرجع زمینهٔ اجرایی؛ نه گواهی پذیرش یا جایگزین شواهد CI
-- **تاریخ بازبینی:** 2026-11-03 (Asia/Tehran)
+- **تاریخ بازبینی:** 2026-11-04 (Asia/Tehran)
 - **مأموریت:** تکمیل مستقل قابلیت‌های محصول و qualification نهایی پس از V10.3
 - **شاخهٔ مجاز:** `arena/5957b76d-prog-proc`
-- **baseline زندهٔ مأموریت:** `e7a1f074f387f0e6636f065466e1594e083bce0d`؛ HEAD محلی و remote branch هنگام شروع برابر بودند.
-- **baseline محافظت‌شدهٔ `main`:** `85122e1a98087db4495b820a9a0ffae9009b7819`
+- **baseline زندهٔ مأموریت:** remote در آغاز با `112efee5469383fcf3449af3ff09d26370896bbb` تأیید شد. upstream محلی تنظیم نبود؛ HEAD اولیهٔ محلی به‌تنهایی مرجع remote تلقی نشد.
+- **SHA کدِ CI-تأییدشده:** `894161a2f3e296e001c03a7b20b0eeb4f57d5882`؛ Linux و Windows روی همین SHA موفق شدند (runهای `41804712405` و `41804712330`).
+- **baseline محافظت‌شدهٔ `main`:** `85122e1a98087db4495b820a9a0ffae9009b7819`؛ در این مأموریت تغییر نکرد.
 - **migration head در کد این مأموریت:** `0026`؛ باید با Alembic و schema-diff آزموده شود.
 
 > این مرجع، مرزهای محصول و واژگان وضعیت را یک‌جا نگه می‌دارد. هر ادعای قابلیت باید با مسیر کد و آزمون/شاهد اجرایی پشتیبانی شود. متن این سند به‌تنهایی اثبات پیاده‌سازی یا قبولی نیست. گزارش نهایی مأموریت و CI روی SHA نهایی، وضعیت پذیرش را تعیین می‌کنند.
@@ -23,7 +24,7 @@ Prog-Proc یک سکوی محلی، workspace-centric و single-user برای ث�
 
 ## 2. شواهد و taxonomy اسناد
 
-در baseline V10.3، registry مستنداتی 26 کلاس داشت: 14 `END_TO_END_CERTIFIED`، 7 `KNOWLEDGE_SUPPORTED` و 5 `EXTRACT_ONLY`. کار این مأموریت taxonomy یا parser-promotion writerها را توسعه نمی‌دهد؛ Intake یک ورودی/صف مشترک است، نه کلاس بیست‌وهفتم. شمارش و قرارداد هر کلاس در [`DOCUMENT_DOMAIN_COVERAGE.md`](DOCUMENT_DOMAIN_COVERAGE.md) نگهداری می‌شود؛ باید از کد/test manifest و qualification نهایی تطبیق داده شود.
+در baseline V10.3، registry مستنداتی 26 کلاس داشت: 14 `END_TO_END_CERTIFIED`، 7 `KNOWLEDGE_SUPPORTED` و 5 `EXTRACT_ONLY`. این مأموریت taxonomy را گسترش نداد؛ Intake ورودی/صف مشترک است، نه کلاس بیست‌وهفتم. شمارش و قرارداد هر کلاس در [`DOCUMENT_DOMAIN_COVERAGE.md`](DOCUMENT_DOMAIN_COVERAGE.md) نگهداری و در این بستهٔ نهایی با handlerها و test manifest تطبیق داده شده است؛ وضعیت فعلی هر قابلیت در [`PRODUCT_CAPABILITY.md`](PRODUCT_CAPABILITY.md) است.
 
 مرزهای مهم:
 
@@ -52,12 +53,12 @@ Prog-Proc یک سکوی محلی، workspace-centric و single-user برای ث�
 DDR نویسندگی دستی، محصول authoring جدا از ingestion است:
 
 - گزارش با تاریخ canonical `YYYY-MM-DD` و واژگان operation ثبت‌شده ساخته می‌شود. برچسب/شرح/period متن اپراتور است؛ سیستم مدت، depth، NPT یا مقدار دیگری را از متن آزاد حدس نمی‌زند.
-- چرخهٔ authoring گزارش: `DRAFT → SUBMITTED`. نسخهٔ draft فقط با optimistic freshness check و تا وقتی current و `CANDIDATE` است قابل ویرایش است.
+- چرخهٔ authoring گزارش: `DRAFT → SUBMITTED`. نسخهٔ draft فقط با optimistic freshness check و تا وقتی current و `CANDIDATE` است قابل ویرایش است. هر write توکن `updated_at` را حتی در clock tick تکراری به‌صورت strictly monotonic جلو می‌برد؛ stale-write regression و Windows failure موردی پوشش داده شده‌اند.
 - Submit گزارش را خودکار تأیید نمی‌کند. `DdrReport.status` و `WellOperation.status` روی `CANDIDATE` می‌مانند تا review مستقل و action قانونی انجام شود.
 - هر activity دستی، provenance با actor/reason/sequence/revision می‌گیرد؛ در submit به `WellOperation` متناظر وصل می‌شود. نبود ORM relationship برای ترتیب flush مجوز کنارگذاشتن FK یا transaction نیست.
 - Revision نسخهٔ قبلی را تاریخی (`is_current=False`) می‌کند، عملیات آن نسخه را نیز historical می‌کند و revision تازه را draft نگه می‌دارد. Review روی draft در دسترس نیست؛ superseding revision خود به معنی approval نیست.
 - Review actionهای `confirm`/`reject` فقط برای گزارش `SUBMITTED` و current در دسترس‌اند، با re-read و preconditionهای status/current/scope/updated_at؛ reason اجباری است و actor اعلام‌شده باید با `created_by` فرق کند. این مقایسهٔ شناسهٔ ورودی، احراز هویت یا اثبات استقلال شخصی نیست؛ authentication در دامنهٔ این محصول نیست.
-- UI ابزار مقایسهٔ revisionهای صریحاً linked را با مقادیر قبلی/جاری و provenance ثبت‌شده نشان می‌دهد؛ این مقایسه متنی است و هیچ مقدار مهندسی مشتق نمی‌کند. اجرای محلی UI در این sandbox به‌دلیل فقدان `libGL.so.1` **SKIPPED** است؛ Qt-enabled CI در Linux و Windows روی کد SHA `be5d76fb` موفق شد (runهای `41641205203` / `41641205205`). تغییرات مستند closure به CI جداگانه روی exact SHA خودشان نیاز دارند.
+- UI ابزار مقایسهٔ revisionهای صریحاً linked را با مقادیر قبلی/جاری و provenance ثبت‌شده نشان می‌دهد؛ این مقایسه متنی است و هیچ مقدار مهندسی مشتق نمی‌کند. اجرای محلی UI در این sandbox به‌دلیل فقدان `libGL.so.1` **SKIPPED** است؛ بااین‌حال Qt-enabled offscreen، stability، full suite، clean-install و گزارش‌های identity-bound روی SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882` در Linux/Windows موفق شدند (runهای `41804712405`/`41804712330`). Full suite جداگانهٔ Ubuntu 26.04 × CPython 3.14 نیز در run `41804712405` موفق شد؛ این نتایج physical Windows display acceptance نیستند.
 - migration `0026`، جدول activity و ستون‌های authoring/revision/currentness را اضافه می‌کند. SQLite self-reference و authoring-state invariant در migration به‌وسیلهٔ trigger محافظت می‌شوند، زیرا SQLite نمی‌تواند self-FK را با `ALTER TABLE ADD CONSTRAINT` ساده اضافه کند. metadata/bootstrap نیز باید همین guardها را ایجاد کند. رفتار PostgreSQL از این کد استنباط یا qualify نمی‌شود.
 
 مسیرهای اصلی: `operations/ddr.py`, `review/actions.py`, `review/service.py`, UI در `ui/main_window.py`, migration `0026`, `tests/integration/test_ddr_authoring.py` و migration tests.
@@ -92,7 +93,7 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 | `docs/PRODUCT_CAPABILITY.md` | inventory قابلیت‌ها با وضعیت و شواهد |
 | `docs/HUMAN_REVIEW_ACTION_INVENTORY.md` | lifecycle actionهای انسانی و مرز UI |
 | `docs/mission-reports/V10.3_*` | گزارش تاریخی V10.3، معتبر برای SHA/runهای درج‌شده؛ نه وضعیت مأموریت فعلی |
-| `docs/mission-reports/AUTONOMOUS_PRODUCT_CLOSURE_2026-11-03_FA.md` | گزارش نهایی فارسی این مأموریت، شامل تصمیم qualification، exact-SHA evidence و open items |
+| `docs/mission-reports/AUTONOMOUS_PRODUCT_CLOSURE_2026-11-04_FA.md` | گزارش نهایی فارسی این مأموریت، شامل تصمیم qualification، exact-SHA evidence و open items |
 | `docs/PROJECT_CLOSURE_PLAN.md` | snapshot تاریخی V9.0؛ برای وضعیت جاری باید به این سند/گزارش مأموریت جدید ارجاع شود |
 | `docs/WINDOWS_TESTING.md` | run-card و پذیرش Windows؛ automated offscreen و physical display جدا هستند |
 

@@ -1,7 +1,7 @@
 # Product decisions required before the next capabilities
 
 **Status:** decision register, not an implementation plan
-**As of:** 2026-11-02 (M6 delivered; M2–M5 remain owner-gated; post-V10.3 Intake/DDR work does not change those decisions)
+**As of:** 2026-11-04 (M6 delivered; M2–M5 remain owner-gated; latest exact-SHA CI and Ubuntu 26.04 × CPython 3.14 lane do not change those decisions)
 **Companion:** [`PRODUCT_CAPABILITY.md`](PRODUCT_CAPABILITY.md)
 **V9.0 note:** `M6` (`LESSON_LEARNED` tally → `lesson_learned`) was delivered in this milestone with contract `v8`, migration `0020` and 12 corpus tests (`tests/integration/test_lesson_promotion.py`). The remaining four milestones `M2`–`M5` are still open and fail-closed as described below; none is implemented by a setting, table or protocol.
 
