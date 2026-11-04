@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -75,6 +77,7 @@ def test_ddr_draft_submit_review_and_revision_are_explicit(
     )
     assert saved["summary"] == "Corrected operator-entered daily summary."
     assert len(saved["activities"]) == 2
+    assert datetime.fromisoformat(saved["updated_at"]) > datetime.fromisoformat(draft["updated_at"])
     with pytest.raises(ValidationError, match="changed since it was loaded"):
         service.save_draft(
             draft["report_id"],
@@ -365,3 +368,13 @@ def test_ddr_rejects_unknown_operation_type_and_ambiguous_date(db, committed_wel
         )
     with db.read_only() as session:
         assert session.scalars(select(DdrReport)).all() == []
+
+
+def test_ddr_concurrency_timestamp_advances_when_clock_repeats(monkeypatch) -> None:
+    from drilling_intelligence.operations import ddr
+
+    current = datetime(2026, 11, 4, 12, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(ddr, "_utc_now", lambda: current)
+
+    assert ddr._next_updated_at(current) == current + timedelta(microseconds=1)
+    assert ddr._next_updated_at(current.replace(tzinfo=None)) == current + timedelta(microseconds=1)

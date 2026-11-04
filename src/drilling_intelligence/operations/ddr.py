@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -238,6 +238,7 @@ class DdrAuthoringService:
                 reason=reason,
                 content=content,
             )
+            report.updated_at = _next_updated_at(report.updated_at)
             session.flush()
             return self._to_record(session, report).to_dict()
 
@@ -294,6 +295,7 @@ class DdrAuthoringService:
             for activity, operation in operation_links:
                 activity.operation_id = operation.id
             report.authoring_state = "SUBMITTED"
+            report.updated_at = _next_updated_at(report.updated_at)
             report.provenance = list(report.provenance or ()) + _report_provenance(
                 actor=actor,
                 reason=reason,
@@ -355,6 +357,7 @@ class DdrAuthoringService:
                 )
             )
             previous.is_current = False
+            previous.updated_at = _next_updated_at(previous.updated_at)
             prior_operations = list(
                 session.scalars(select(WellOperation).where(WellOperation.report_id == previous.id))
             )
@@ -698,6 +701,19 @@ def _bounded(value: str, name: str, limit: int) -> str:
     if len(normalized) > limit:
         raise ValidationError(f"{name} must not exceed {limit} characters")
     return normalized
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _next_updated_at(previous: datetime | None) -> datetime:
+    """Advance the DDR concurrency token even when the OS clock repeats a tick."""
+    now = _utc_now()
+    if previous is None:
+        return now
+    prior = previous if previous.tzinfo else previous.replace(tzinfo=UTC)
+    return max(now, prior.astimezone(UTC) + timedelta(microseconds=1))
 
 
 def _stamp(value: datetime | str | None) -> str:

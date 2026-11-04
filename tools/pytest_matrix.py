@@ -596,6 +596,12 @@ def _record_command(args: argparse.Namespace) -> int:
     return 1 if result in {"FAIL", "INVALID", "NOT PRODUCED"} else 0
 
 
+def _error_annotation(message: str) -> str:
+    """Format a GitHub error annotation without allowing message text to alter its fields."""
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return f"::error title=Pytest matrix evidence::{escaped}"
+
+
 def _report_command(args: argparse.Namespace) -> int:
     try:
         jobs = _json_file(args.jobs_json, "jobs")
@@ -614,6 +620,7 @@ def _report_command(args: argparse.Namespace) -> int:
         )
     except EvidenceError as exc:
         print(f"pytest matrix report: INVALID — {exc}", file=sys.stderr)
+        print(_error_annotation(f"INVALID: {exc}"))
         return 1
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(
@@ -626,6 +633,9 @@ def _report_command(args: argparse.Namespace) -> int:
     if summary_path:
         with Path(summary_path).open("a", encoding="utf-8") as handle:
             handle.write(markdown)
+    if report["result"] != "PASS":
+        for issue in report["issues"]:
+            print(_error_annotation(issue))
     return 0 if report["result"] == "PASS" else 1
 
 

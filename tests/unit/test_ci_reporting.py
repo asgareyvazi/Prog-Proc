@@ -109,6 +109,53 @@ def test_shared_pytest_artifact_root_preserves_linux_and_ubuntu_lane_identity(
     assert ubuntu["rows"][0]["artifact_name"] == "pytest-ubuntu-2604-cp3.14-a1"
 
 
+def test_failed_pytest_matrix_report_surfaces_integrity_issues_as_annotations(
+    tmp_path: Path, monkeypatch, capsys
+):
+    from argparse import Namespace
+
+    import tools.pytest_matrix as matrix
+
+    jobs = tmp_path / "jobs.json"
+    artifacts = tmp_path / "artifacts.json"
+    jobs.write_text('{"jobs": []}', encoding="utf-8")
+    artifacts.write_text('{"artifacts": []}', encoding="utf-8")
+    issue = "Ubuntu 26.04 CPython 3.14: identity mismatch (job_key)"
+    monkeypatch.setattr(
+        matrix,
+        "build_report",
+        lambda **_kwargs: {
+            "platform": "Ubuntu 26.04",
+            "workflow": "CI",
+            "run_id": "41786154579",
+            "run_attempt": "1",
+            "expected_sha": "6a3cc7992237cc0a4f3be988965c8e52c343a9da",
+            "rows": [],
+            "issues": [issue],
+            "result": "FAIL",
+        },
+    )
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    args = Namespace(
+        jobs_json=jobs,
+        artifacts_json=artifacts,
+        artifact_root=tmp_path,
+        platform="Ubuntu 26.04",
+        expected_sha="6a3cc7992237cc0a4f3be988965c8e52c343a9da",
+        run_id="41786154579",
+        run_attempt="1",
+        repository="asgareyvazi/Prog-Proc",
+        workflow="CI",
+        versions=("3.14",),
+        output_json=tmp_path / "report.json",
+        output_markdown=tmp_path / "report.md",
+    )
+
+    assert matrix._report_command(args) == 1
+    output = capsys.readouterr().out
+    assert f"::error title=Pytest matrix evidence::{issue}" in output
+
+
 def test_pytest_totals_distinguishes_zero_and_interrupted():
     # The parser must distinguish zero tests, interrupted, etc. — this is the
     # contract of tools/pytest_totals.py, not just the CI file.
