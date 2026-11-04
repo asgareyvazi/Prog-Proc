@@ -45,6 +45,10 @@ from ..database.integrity import (
 )
 from ..database.models import Document, DocumentVersion
 from ..database.sqlite_health import inspect_sqlite_database
+from ..database.workspace_archive import (
+    create_workspace_archive,
+    restore_workspace_archive,
+)
 from ..documents.repository import DocumentRepository
 from ..engineering.repository import PLAN_ACTUAL_METRICS
 from ..ingestion.pipeline import IngestionPipeline
@@ -521,6 +525,66 @@ def command_workspace_restore(args: argparse.Namespace) -> int:
         ],
     )
     return 0 if payload["ok"] else 1
+
+
+def command_workspace_archive(args: argparse.Namespace) -> int:
+    """Archive workspace-owned files plus a consistent SQLite snapshot."""
+    workspace = _open_workspace(args)
+    try:
+        result = create_workspace_archive(workspace, args.output)
+        payload = result.to_dict() | {"ok": True}
+        lines = [
+            f"workspace archive created: {result.path}",
+            f"  scope:       {result.backup_scope}; workspace-owned regular files",
+            f"  workspace:   {result.workspace_name} ({result.workspace_root})",
+            f"  entries:     {result.included_files} files, {result.included_directories} directories, {result.included_bytes} bytes",
+            f"  database:    schema {result.schema_revision}; SHA-256 {result.database_sha256}",
+            f"  archive:     SHA-256 {result.archive_sha256}",
+            "  excluded:    rebuildable index, cache/logs, transient and credential files",
+            f"  external:    {len(result.unarchived_source_references)} source reference(s) listed but not copied",
+            "  security:    unencrypted archive; protect it as sensitive data",
+        ]
+        for item in result.unarchived_source_references[:20]:
+            lines.append(f"    not archived: {item['recorded_path']} ({item['reason']})")
+        if len(result.unarchived_source_references) > 20:
+            lines.append(
+                "    additional source references are recorded in the archive manifest and --json result"
+            )
+        _emit(payload, as_json=args.json, lines=lines)
+        return 0
+    finally:
+        workspace.close()
+
+
+def command_workspace_restore_archive(args: argparse.Namespace) -> int:
+    """Restore a verified full workspace archive to its recorded root, atomically."""
+    settings = _settings_for(args)
+    configured_data_dir = settings.app.data_dir or ".drillintel"
+    if Path(configured_data_dir).as_posix() != ".drillintel":
+        raise BackupError(
+            "full workspace archive restore requires the default .drillintel data directory",
+            data_directory=configured_data_dir,
+        )
+    result = restore_workspace_archive(args.archive, args.destination)
+    payload = result.to_dict() | {"ok": True}
+    lines = [
+        f"workspace archive verified and atomically restored: {result.path}",
+        f"  scope:       {result.backup_scope}; workspace-owned files",
+        f"  workspace:   {result.workspace_name} ({result.workspace_root})",
+        f"  restored:    {result.included_files} files, {result.included_directories} directories, {result.included_bytes} bytes",
+        f"  database:    schema {result.schema_revision}; SHA-256 {result.database_sha256}",
+        f"  archive:     SHA-256 {result.archive_sha256}",
+        f"  exclusions:  {len(result.excluded_items)} documented exclusion(s)",
+        f"  external:    {len(result.unarchived_source_references)} source reference(s) remain outside the archive",
+    ]
+    for item in result.unarchived_source_references[:20]:
+        lines.append(f"    not restored: {item['recorded_path']} ({item['reason']})")
+    if len(result.unarchived_source_references) > 20:
+        lines.append(
+            "    additional source references are recorded in the archive manifest and --json result"
+        )
+    _emit(payload, as_json=args.json, lines=lines)
+    return 0
 
 
 def command_ingest(args: argparse.Namespace) -> int:
@@ -3087,6 +3151,25 @@ def _add_workspace_command(sub: Any, common: list[argparse.ArgumentParser]) -> N
     restore.add_argument("archive", help="workspace backup archive")
     restore.add_argument("destination", help="new workspace directory (must not exist)")
     restore.set_defaults(handler=command_workspace_restore)
+
+    archive = workspace_sub.add_parser(
+        "archive",
+        help="archive workspace-owned files with a consistent SQLite snapshot",
+        parents=[common],
+    )
+    archive.add_argument(
+        "--output", required=True, help="new archive path outside the workspace (must not exist)"
+    )
+    archive.set_defaults(handler=command_workspace_archive)
+
+    restore_archive = workspace_sub.add_parser(
+        "restore-archive",
+        help="verify and atomically restore a full workspace archive to its recorded root",
+        parents=[common],
+    )
+    restore_archive.add_argument("archive", help="full workspace archive")
+    restore_archive.add_argument("destination", help="the original workspace root (must not exist)")
+    restore_archive.set_defaults(handler=command_workspace_restore_archive)
 
 
 def _add_wells_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:

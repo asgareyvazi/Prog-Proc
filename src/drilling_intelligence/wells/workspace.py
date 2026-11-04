@@ -14,6 +14,7 @@ PostgreSQL server changes the URL, not the product.
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -30,6 +31,11 @@ from ..database.session import Database
 
 WORKSPACE_MARKER = "workspace.toml"
 log = get_logger("wells.workspace")
+
+
+def _toml_string(value: str) -> str:
+    """Serialize one Python string as a TOML basic string without losing content."""
+    return json.dumps(value, ensure_ascii=False)
 
 
 @dataclass
@@ -56,14 +62,16 @@ class WorkspaceConfig:
         lines = [
             "# Drilling Intelligence workspace descriptor.",
             "# Safe to edit by hand; the platform will not rewrite it implicitly.",
-            f'name = "{self.name}"',
-            f'description = "{self.description}"',
-            f'project_code = "{self.project_code}"',
-            f'created_by = "{self.created_by}"',
-            f'database_path = "{self.database_path}"',
-            f'index_database_path = "{self.index_database_path}"',
-            "corpus_dirs = [" + ", ".join(f'"{d}"' for d in self.corpus_dirs) + "]",
-            "ignore_patterns = [" + ", ".join(f'"{p}"' for p in self.ignore_patterns) + "]",
+            f"name = {_toml_string(self.name)}",
+            f"description = {_toml_string(self.description)}",
+            f"project_code = {_toml_string(self.project_code)}",
+            f"created_by = {_toml_string(self.created_by)}",
+            f"database_path = {_toml_string(self.database_path)}",
+            f"index_database_path = {_toml_string(self.index_database_path)}",
+            "corpus_dirs = [" + ", ".join(_toml_string(d) for d in self.corpus_dirs) + "]",
+            "ignore_patterns = ["
+            + ", ".join(_toml_string(pattern) for pattern in self.ignore_patterns)
+            + "]",
         ]
         return "\n".join(lines) + "\n"
 

@@ -7,6 +7,8 @@ an entirely new directory; this module has no in-place replace or overwrite path
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -14,6 +16,7 @@ import re
 import sqlite3
 import stat
 import struct
+import sys
 import tempfile
 import tomllib
 import zipfile
@@ -261,6 +264,64 @@ def _read_database_backup(source: Path, destination: Path) -> None:
             destination_connection.close()
         if source_connection is not None:
             source_connection.close()
+
+
+def _publish_directory_no_replace(staging: Path, destination: Path) -> None:
+    """Atomically publish one staged directory without replacing an existing path.
+
+    Linux uses ``renameat2(RENAME_NOREPLACE)`` and Windows uses ``MoveFileW``. On
+    other platforms the operation fails closed rather than falling back to a
+    check-then-rename sequence that can replace a concurrently-created empty directory.
+    The caller must stage under the destination parent so publication stays on one volume.
+    """
+    source = Path(staging)
+    target = Path(destination)
+    try:
+        if sys.platform == "win32":
+            move_file = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileW
+            move_file.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p)
+            move_file.restype = ctypes.c_int
+            if not move_file(str(source), str(target)):
+                error = ctypes.get_last_error()
+                if error in {80, 183}:  # ERROR_FILE_EXISTS / ERROR_ALREADY_EXISTS
+                    raise FileExistsError(error, os.strerror(error), str(target))
+                raise OSError(error, ctypes.FormatError(error), str(target))
+            return
+        if sys.platform == "linux":
+            library = ctypes.CDLL(None, use_errno=True)
+            renameat2 = library.renameat2
+            renameat2.argtypes = (
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            )
+            renameat2.restype = ctypes.c_int
+            result = renameat2(-100, os.fsencode(source), -100, os.fsencode(target), 1)
+            if result != 0:
+                error = ctypes.get_errno()
+                if error == errno.EEXIST:
+                    raise FileExistsError(error, os.strerror(error), str(target))
+                raise OSError(error, os.strerror(error), str(target))
+            return
+    except AttributeError as exc:
+        raise BackupError(
+            "atomic no-replace directory publication is unavailable on this platform"
+        ) from exc
+    except FileExistsError as exc:
+        raise BackupError(
+            "restore destination appeared during atomic publication; refusing to overwrite",
+            path=str(target),
+        ) from exc
+    except OSError as exc:
+        raise BackupError(
+            f"atomic no-replace directory publication failed: {exc}", path=str(target)
+        ) from exc
+    raise BackupError(
+        "atomic no-replace directory publication is unsupported on this platform",
+        platform=sys.platform,
+    )
 
 
 def _write_zip(archive_path: Path, database: Path, marker: bytes, manifest: dict[str, Any]) -> None:
@@ -596,31 +657,7 @@ def restore_workspace_backup(
                     os.fsync(marker_file.fileno())
                 marker_stage.chmod(0o600)
                 data_stage.chmod(0o700)
-                try:
-                    # Reserve each path exclusively. Hard-link publication cannot replace a
-                    # path another process creates, and the workspace marker is linked last.
-                    target.mkdir(mode=0o700)
-                    target_data = target / _DATA_DIRECTORY
-                    target_data.mkdir(mode=0o700)
-                    destination_parent = target_data
-                    for part in PurePosixPath(database_relative).parts[:-1]:
-                        destination_parent = destination_parent / part
-                        destination_parent.mkdir(mode=0o700)
-                    os.link(
-                        database_stage, destination_parent / PurePosixPath(database_relative).name
-                    )
-                    os.link(marker_stage, target / _MARKER_MEMBER)
-                except FileExistsError as exc:
-                    raise BackupError(
-                        "restore destination or one of its paths appeared during publication; "
-                        "refusing to overwrite existing data",
-                        path=str(target),
-                    ) from exc
-                except OSError as exc:
-                    raise BackupError(
-                        f"restore was interrupted; the incomplete directory is preserved at {target}: {exc}",
-                        path=str(target),
-                    ) from exc
+                _publish_directory_no_replace(staging, target)
     except BackupError:
         raise
     except (zipfile.BadZipFile, zipfile.LargeZipFile, sqlite3.Error, OSError) as exc:

@@ -384,7 +384,7 @@ def test_restore_rejects_database_member_over_the_resource_limit(
     assert not (tmp_path / "restore-target").exists()
 
 
-def test_restore_marker_is_published_last_and_failed_restore_is_not_a_workspace(
+def test_restore_publication_failure_leaves_no_partial_workspace(
     tmp_path: Path, monkeypatch
 ) -> None:
     import drilling_intelligence.database.backup as backup_module
@@ -398,23 +398,20 @@ def test_restore_marker_is_published_last_and_failed_restore_is_not_a_workspace(
         workspace.close()
     held = tmp_path / "held-workspace"
     root.replace(held)
-    real_link = backup_module.os.link
 
-    def fail_marker(source, destination):
-        if Path(destination).name == "workspace.toml":
-            raise PermissionError("injected marker publication failure")
-        return real_link(source, destination)
+    def fail_publication(_source, _destination):
+        raise BackupError("injected atomic publication failure")
 
-    monkeypatch.setattr(backup_module.os, "link", fail_marker)
-    with pytest.raises(BackupError, match="restore was interrupted"):
+    monkeypatch.setattr(backup_module, "_publish_directory_no_replace", fail_publication)
+    with pytest.raises(BackupError, match="injected atomic publication failure"):
         restore_workspace_backup(backup, root)
 
-    assert (root / ".drillintel/database/drilling_intelligence.db").is_file()
-    assert not (root / "workspace.toml").exists()
+    assert not root.exists()
     assert (held / "workspace.toml").is_file()
+    assert not list(tmp_path.glob(".drillintel-restore-*"))
 
 
-def test_restore_destination_race_does_not_overwrite_a_database_file(
+def test_restore_destination_race_does_not_overwrite_existing_directory(
     tmp_path: Path, monkeypatch
 ) -> None:
     import drilling_intelligence.database.backup as backup_module
@@ -428,21 +425,22 @@ def test_restore_destination_race_does_not_overwrite_a_database_file(
         workspace.close()
     held = tmp_path / "held-workspace"
     root.replace(held)
-    real_link = backup_module.os.link
-    sentinel = b"racing writer owns this path"
+    real_publish = backup_module._publish_directory_no_replace
+    sentinel = b"racing writer owns this directory"
 
-    def race_database(source, destination):
-        if Path(destination).name == "drilling_intelligence.db":
-            Path(destination).write_bytes(sentinel)
-        return real_link(source, destination)
+    def race_publish(source, destination):
+        Path(destination).mkdir()
+        (Path(destination) / "owner-sentinel.txt").write_bytes(sentinel)
+        return real_publish(source, destination)
 
-    monkeypatch.setattr(backup_module.os, "link", race_database)
-    with pytest.raises(BackupError, match="refusing to overwrite existing data"):
+    monkeypatch.setattr(backup_module, "_publish_directory_no_replace", race_publish)
+    with pytest.raises(BackupError, match="refusing to overwrite"):
         restore_workspace_backup(backup, root)
 
-    assert (root / ".drillintel/database/drilling_intelligence.db").read_bytes() == sentinel
+    assert (root / "owner-sentinel.txt").read_bytes() == sentinel
     assert not (root / "workspace.toml").exists()
     assert (held / "workspace.toml").is_file()
+    assert not list(tmp_path.glob(".drillintel-restore-*"))
 
 
 def test_restore_rejects_traversing_archive_member_name(tmp_path: Path) -> None:
