@@ -1036,7 +1036,7 @@ def create_workspace_archive(
         or workspace.data_dir.resolve() != (root / _DATA_DIR).resolve()
     ):
         raise WorkspaceArchiveError(
-            "full archive supports only the default workspace-owned .drillintel data directory"
+            "full archive supports only the default workspace-owned storage directory (.drillintel)"
         )
     try:
         output.relative_to(root)

@@ -562,7 +562,7 @@ def command_workspace_restore_archive(args: argparse.Namespace) -> int:
     configured_data_dir = settings.app.data_dir or ".drillintel"
     if Path(configured_data_dir).as_posix() != ".drillintel":
         raise BackupError(
-            "full workspace archive restore requires the default .drillintel data directory",
+            "full workspace archive restore requires the default workspace storage directory (.drillintel)",
             data_directory=configured_data_dir,
         )
     result = restore_workspace_archive(args.archive, args.destination)

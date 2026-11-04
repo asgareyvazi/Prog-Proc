@@ -8,8 +8,8 @@ to be found by somebody else.
 
 | file | line | catches | kind | reason |
 | --- | --- | --- | --- | --- |
-| `src/drilling_intelligence/cli/app.py` | 3959 | `Exception` | reported |  |
-| `src/drilling_intelligence/cli/app.py` | 3936 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 4042 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 4019 | `Exception` | reported |  |
 | `src/drilling_intelligence/core/provenance.py` | 397 | `Exception` | reported | pragma: no cover; defensive, third-party readers |
 | `src/drilling_intelligence/core/provenance.py` | 429 | `Exception` | suppressed | tolerate legacy/corrupt rows rather than fail a whole listing |
 | `src/drilling_intelligence/core/redact.py` | 220 | `Exception` | reported | a diagnostic may not raise, by definition |
@@ -100,7 +100,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/ui/worker.py` | 414 | `Exception` | reported | the GUI boundary reports, it does not crash |
 | `src/drilling_intelligence/ui/worker.py` | 481 | `Exception` | reported | preserve an explicit visible worker boundary |
 | `src/drilling_intelligence/ui/worker.py` | 560 | `Exception` | reported | preserve a visible worker boundary |
-| `src/drilling_intelligence/wells/workspace.py` | 290 | `Exception` | suppressed | dispose is best-effort during close |
+| `src/drilling_intelligence/wells/workspace.py` | 298 | `Exception` | suppressed | dispose is best-effort during close |
 | `tools/coverage_report.py` | 348 | `Exception` | suppressed | noqa marker |
 | `tools/coverage_report.py` | 446 | `Exception` | suppressed | noqa marker |
 | `tools/pytest_totals.py` | 223 | `Exception` | suppressed | any import probe failure means not available |
