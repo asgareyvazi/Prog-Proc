@@ -12,7 +12,7 @@
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
-# Generated on 2026-11-02.
+# Generated on 2026-11-04.
 
 alembic==1.20.1
 anyio==4.16.0
@@ -28,5 +28,5 @@ MarkupSafe==3.0.4
 openpyxl==3.1.5
 pymupdf==1.28.2
 python-docx==1.2.0
-SQLAlchemy==2.1.6
+SQLAlchemy==2.1.8
 typing_extensions==4.16.0
