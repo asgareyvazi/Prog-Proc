@@ -1,13 +1,13 @@
 # مرجع زمینهٔ پروژه — Prog-Proc
 
 - **وضعیت سند:** مرجع زمینهٔ اجرایی؛ نه گواهی پذیرش یا جایگزین شواهد CI
-- **تاریخ بازبینی:** 2026-11-04 (Asia/Tehran)
-- **مأموریت:** تکمیل مستقل قابلیت‌های محصول و qualification نهایی پس از V10.3
+- **تاریخ بازبینی:** 2026-11-06 (Asia/Tehran)
+- **مأموریت:** closure/qualification محصول؛ مرجع نتیجهٔ نهایی همان گزارش فارسی و شواهد exact-SHA است.
 - **شاخهٔ مجاز:** `arena/5957b76d-prog-proc`
-- **baseline زندهٔ مأموریت:** remote در آغاز با `112efee5469383fcf3449af3ff09d26370896bbb` تأیید شد. upstream محلی تنظیم نبود؛ HEAD اولیهٔ محلی به‌تنهایی مرجع remote تلقی نشد.
-- **SHA کدِ CI-تأییدشده:** `894161a2f3e296e001c03a7b20b0eeb4f57d5882`؛ Linux و Windows روی همین SHA موفق شدند (runهای `41804712405` و `41804712330`).
+- **remote branch:** `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`؛ `main` محافظت‌شده روی `85122e1a98087db4495b820a9a0ffae9009b7819` و دست‌نخورده است.
+- **SHA کد/آزمون qualification‌شده:** `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`; Linux run `41940002906` و Windows run `41940002911` هر دو success شدند (۲۳/۲۳ job در مجموع).
 - **baseline محافظت‌شدهٔ `main`:** `85122e1a98087db4495b820a9a0ffae9009b7819`؛ در این مأموریت تغییر نکرد.
-- **migration head در کد این مأموریت:** `0026`؛ باید با Alembic و schema-diff آزموده شود.
+- **migration head تأییدشده:** `0026`; full-suite/clean-install smoke و Alembic head check سبزند.
 
 > این مرجع، مرزهای محصول و واژگان وضعیت را یک‌جا نگه می‌دارد. هر ادعای قابلیت باید با مسیر کد و آزمون/شاهد اجرایی پشتیبانی شود. متن این سند به‌تنهایی اثبات پیاده‌سازی یا قبولی نیست. گزارش نهایی مأموریت و CI روی SHA نهایی، وضعیت پذیرش را تعیین می‌کنند.
 
@@ -58,10 +58,16 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 - هر activity دستی، provenance با actor/reason/sequence/revision می‌گیرد؛ در submit به `WellOperation` متناظر وصل می‌شود. نبود ORM relationship برای ترتیب flush مجوز کنارگذاشتن FK یا transaction نیست.
 - Revision نسخهٔ قبلی را تاریخی (`is_current=False`) می‌کند، عملیات آن نسخه را نیز historical می‌کند و revision تازه را draft نگه می‌دارد. Review روی draft در دسترس نیست؛ superseding revision خود به معنی approval نیست.
 - Review actionهای `confirm`/`reject` فقط برای گزارش `SUBMITTED` و current در دسترس‌اند، با re-read و preconditionهای status/current/scope/updated_at؛ reason اجباری است و actor اعلام‌شده باید با `created_by` فرق کند. این مقایسهٔ شناسهٔ ورودی، احراز هویت یا اثبات استقلال شخصی نیست؛ authentication در دامنهٔ این محصول نیست.
-- UI ابزار مقایسهٔ revisionهای صریحاً linked را با مقادیر قبلی/جاری و provenance ثبت‌شده نشان می‌دهد؛ این مقایسه متنی است و هیچ مقدار مهندسی مشتق نمی‌کند. اجرای محلی UI در این sandbox به‌دلیل فقدان `libGL.so.1` **SKIPPED** است؛ بااین‌حال Qt-enabled offscreen، stability، full suite، clean-install و گزارش‌های identity-bound روی SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882` در Linux/Windows موفق شدند (runهای `41804712405`/`41804712330`). Full suite جداگانهٔ Ubuntu 26.04 × CPython 3.14 نیز در run `41804712405` موفق شد؛ این نتایج physical Windows display acceptance نیستند.
+- UI ابزار مقایسهٔ revisionهای صریحاً linked را با مقادیر قبلی/جاری و provenance ثبت‌شده نشان می‌دهد؛ این مقایسه متنی است و هیچ مقدار مهندسی مشتق نمی‌کند. اجرای محلی UI در این sandbox به‌دلیل فقدان `libGL.so.1` **SKIPPED** است؛ Qt-enabled offscreen، stability و full-suite روی SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` در Linux/Windows موفق شدند (runهای `41940002906`/`41940002911`). Windows UI روی هر دو runtime 29/29 است؛ failure تاریخی registration/refresh بازتولید نشد اما علت آن اثبات نشده است. این نتایج physical Windows display acceptance نیستند.
 - migration `0026`، جدول activity و ستون‌های authoring/revision/currentness را اضافه می‌کند. SQLite self-reference و authoring-state invariant در migration به‌وسیلهٔ trigger محافظت می‌شوند، زیرا SQLite نمی‌تواند self-FK را با `ALTER TABLE ADD CONSTRAINT` ساده اضافه کند. metadata/bootstrap نیز باید همین guardها را ایجاد کند. رفتار PostgreSQL از این کد استنباط یا qualify نمی‌شود.
 
 مسیرهای اصلی: `operations/ddr.py`, `review/actions.py`, `review/service.py`, UI در `ui/main_window.py`, migration `0026`, `tests/integration/test_ddr_authoring.py` و migration tests.
+
+## 4.1. هویت و lifecycle درس
+
+- کد درس پس از strip و Unicode casefold به‌صورت global یکتا است؛ repository create/update/revision، promotion و partial unique index دیتابیس این قرارداد را enforce می‌کنند.
+- در source supersession، predecessor به `SUPERSEDED` می‌رود و `prior_status` حفظ می‌شود؛ successor تازه `DRAFT` است و approval metadata را به ارث نمی‌برد.
+- Focused lesson/exception suite روی SHA `b3163bf...`: 95 passed. حذف source بدون successor هنوز policy مصوب ندارد؛ audit زنجیرهٔ بدون current/withdrawn disposition را رد کرد. rename/removal/linking باید با تصمیم مالک انجام شود، نه حدس پیاده‌سازی.
 
 ## 5. Database، schema و بسته‌بندی
 
@@ -74,7 +80,7 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 - `doctor` پیش از migration روی SQLite موجود و دوباره پس از bootstrap/upgrade، `integrity_check`, `foreign_key_check` و storage preflight فقط‌خواندنی انجام می‌دهد؛ خطای storage مانع ادعای سلامت domain و مانع domain/search query می‌شود. بررسی‌های cross-row و drift شاخص فقط پس از preflight موفق انجام می‌شوند؛ repair خودکار نداریم.
 - `workspace backup` از SQLite online backup API و manifest شامل SHA-256، UTC، schema revision و storage health استفاده می‌کند؛ مقصد باید تازه باشد. این **database snapshot** است، نه full workspace/source backup: فقط `workspace.toml` و snapshot پایگاه‌داده را دارد؛ corpus/source و search index خارج‌اند و باید جداگانه، با سیاست مجاز اپراتور، حفاظت شوند. archive رمزگذاری نشده است.
 - Restore پایگاه‌داده‌ای فقط در مسیر تازه و برای workspace دارای identity row فقط در همان absolute root ذخیره‌شده مجاز است؛ re-home، overwrite، migration پنهان و overwrite DB فعال وجود ندارد. بررسی path/member/hash/health انجام می‌شود؛ سقف snapshot 8 GiB، overhead آرشیو 16 MiB، metadata یک MiB و تعداد عضو دقیقاً سه است. این دستور فقط database snapshot است.
-- دستورهای جدید `workspace archive` و `workspace restore-archive` قالب versioned جداگانه‌ای برای فایل‌های واجدشرایط زیر workspace به‌علاوه SQLite online snapshot دارند؛ search index، cache/log، VCS، credential و temporaryها مستثنا هستند، و منابع بیرونی فقط گزارش می‌شوند نه اینکه دنبال/کپی شوند. هر عضو hash می‌شود، مسیرهای symlink/special-file رد می‌شوند، restore فقط به ریشه ثبت‌شده و با publish اتمی بدون جایگزینی مجاز است. آرشیو رمزگذاری نشده است؛ Windows فیزیکی هنوز **NOT RUN**. runهای Linux/Windows دقیقاً روی code SHA `94d698ffcb2c5e5c2a36ac164dba222e17d65cc1` (`41827377959` / `41827378042`) هر دو **FAILED** شدند؛ هر یک از پنج full-suite lane دو failure داشت. اصلاح inventory و parser wording روی code SHA `ff4afddba0d5f319b0f43341dcaed13991b4dd3d` commit و push شده و Linux run `41841625094` روی همان SHA با موفقیت تمام شده و هر سه Linux full-suite lane موفق‌اند؛ Windows run `41841625041` با **FAILURE** پایان یافته، هرچند هر دو Windows full-suite lane آن موفق شدند. Check-run Windows UI `126614417177` یک failure در test ثبت/refresh Intake دارد؛ علت ریشه‌ای هنوز تعیین نشده است. در مجموع پنج full-suite lane passed ولی overall CI **FAILURE** است؛ matrix pass ادعا نمی‌شود. سابقهٔ focused 29 passed مربوط به اجرای محلی پیش از commit است، نه full-suite CI. این وضعیت صلاحیت release یا سیاست پشتیبان‌گیری ایجاد نمی‌کند.
+- دستورهای `workspace archive` و `workspace restore-archive` قالب versioned جداگانه‌ای برای فایل‌های واجدشرایط زیر workspace به‌علاوهٔ SQLite online snapshot دارند؛ search index، cache/log، VCS، credential و temporaryها مستثنا هستند و منابع بیرونی فقط گزارش می‌شوند، نه اینکه دنبال/کپی شوند. هر عضو hash می‌شود، مسیر symlink/special-file رد می‌شود، restore فقط به ریشهٔ ثبت‌شده و با publish اتمی بدون جایگزینی مجاز است. آرشیو رمزگذاری نشده و physical Windows acceptance انجام نشده است. روی SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` هر دو workflow Linux `41940002906` و Windows `41940002911` success شدند؛ پنج full-suite lane و clean-install jobs سبزند. سابقهٔ SHA `94d698f...` test-contract failures داشت و SHA `ff4afdd...` یک Windows UI offscreen failure داشت؛ جزئیات و exact-SHA totals فقط در گزارش فارسی‌اند. این نتایج به معنی صلاحیت DR/production یا پشتیبان‌گیری از منابع بیرونی نیست.
 
 ## 6. Workbench، CLI و آزمون‌پذیری
 

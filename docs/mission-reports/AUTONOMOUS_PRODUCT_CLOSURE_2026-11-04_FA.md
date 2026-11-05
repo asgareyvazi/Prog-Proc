@@ -1,212 +1,195 @@
-# گزارش نهایی تکمیل و سخت‌سازی Prog-Proc — ۲۰۲۶-۱۱-۰۴
+# گزارش نهایی مهندسی و qualification محصول Prog-Proc
 
-- **مخاطب:** مالک محصول و مهندسان عملیات حفاری
-- **تصمیم جاری:** **PARTIALLY QUALIFIED — PRE-ALPHA**
-- **شاخهٔ مجاز:** `arena/5957b76d-prog-proc`
-- **آخرین SHA کد منتشرشده:** `ff4afddba0d5f319b0f43341dcaed13991b4dd3d`
-- **CI دقیق روی SHA جاری:** [Linux run 41841625094](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41841625094) با **SUCCESS** و [Windows run 41841625041](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41841625041) با **FAILURE** پایان یافتند. هر پنج full-suite lane موفق‌اند؛ Windows offscreen UI check-run `126614417177` به‌علت یک test failure workflow را قرمز کرد. Totals و artifact ID/digestهای هر دو run در بخش ۹.۱ ثبت شده‌اند. شکست‌های SHA قبلی `94d698ffcb2c5e5c2a36ac164dba222e17d65cc1` در بخش ۹ با totals دقیق آمده‌اند.
-- **مبنای قبلی جداگانه:** کد SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882` با [Linux run 41804712405](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41804712405) و [Windows run 41804712330](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41804712330) موفق بود.
+- **تاریخ گزارش:** ۲۰۲۶-۱۱-۰۶ (Asia/Tehran)
+- **شاخه:** `arena/5957b76d-prog-proc`
+- **SHA کد/آزمون qualification‌شده:** `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`
+- **حکم محصول:** **PARTIALLY QUALIFIED — PRE-ALPHA**
+- **حکم انتشار عمومی/production:** **NOT READY / NOT AUTHORIZED**
 
-> جدول‌های ماتریس و artifact در بخش‌های تاریخی، شواهد SHA قبلی `894161a...` هستند و به SHA جاری منتقل نمی‌شوند. کد backup/archive روی `94d698f...` در CI شکست خورد؛ اصلاح inventory و عبارت parser در code SHA `ff4afdd...` commit و push شده‌اند. هر پنج full-suite lane در دو run exact-SHA آن موفق‌اند؛ Windows workflow به‌علت یک failure در UI offscreen ناموفق پایان یافت. شواهد و artifactهای جاری جداگانه در بخش ۹.۱ ثبت می‌شود. هر commit مستنداتی نیز SHA و CI مستقل خود را خواهد داشت؛ هیچ total یا artifact بین SHAها مخلوط نمی‌شود.
+> این گزارش نتایج را به SHA و run مشخص محدود می‌کند. CI نهاییِ کد/آزمون روی `b3163bf...`، دو workflow موفق و ۲۳/۲۳ job موفق دارد. در این گزارش نتیجهٔ SHAهای پیشین فقط به‌عنوان سابقهٔ شکست/مقایسه آمده و با نتیجهٔ `b3163bf...` ادغام نشده است. پس از ثبت این گزارش، تغییرات مستندسازی جدا از کد/آزمون خواهند بود؛ هرگز ادعا نمی‌شود که runهای `b3163bf...` روی SHA مستنداتی بعدی اجرا شده‌اند.
 
-## ۱. جمع‌بندی تصمیم
+## ۱. حکم نهایی به تفکیک معیار
 
-Prog-Proc در این موج از حالت صرفاً طرح/اسکیما جلوتر است: چرخه‌های واقعی ثبت و بازبینی سند و DDR، workbench مبتنی بر سرویس‌ها، کنترل stale-write، گزارش‌دهی، ذخیره‌سازی محلی و مسیر نصب/اجرا در CI پوشش دارند. در baseline تاریخی SHA `894161a...`، پنج full-suite lane Linux/Windows و Ubuntu 26.04 × CPython 3.14 روی **یک SHA مشخص** موفق بودند؛ گزارش‌های انتساب artifact نیز موفق بودند. follow-up روی SHA `94d698f...` شکست خورد؛ روی code SHA `ff4afdd...` هر پنج full-suite lane Linux/Windows/Ubuntu موفق‌اند، اما Windows offscreen UI یک failure دارد و Windows workflow در مجموع **FAILED** شده است.
-
-این نتیجه **تأیید عمومی یا production نیست**. وضعیت کلی **PARTIALLY QUALIFIED / PRE-ALPHA** می‌ماند، چون پذیرش انسانی روی نمایشگر فیزیکی Windows انجام نشده، PostgreSQL هدف و CI واقعی ندارد، قراردادهای M2–M5 و محاسبات trajectory تصویب نشده‌اند، و احراز هویت/چندکاربره/installer امضاشده اثبات نشده‌اند.
-
-## ۲. Git و مبنای شواهد
-
-- در موج قبلی، remote با `git ls-remote` روی `112efee5469383fcf3449af3ff09d26370896bbb` بررسی شد؛ upstream محلی تنظیم نبود و SHA محلی قدیمی به‌تنهایی مرجع remote تلقی نشد. این سابقه مربوط به آن موج است، نه baseline پیگیری حاضر.
-- تمام کار روی `arena/5957b76d-prog-proc` انجام شد؛ `main` تغییر نکرد. SHA محافظت‌شدهٔ آن `85122e1a98087db4495b820a9a0ffae9009b7819` است.
-- کد اجرایی و تست‌های مورد استناد این گزارش دقیقاً `894161a2f3e296e001c03a7b20b0eeb4f57d5882` هستند. هر دو run زیر همین SHA را به‌عنوان `headSha` ثبت کرده‌اند:
-  - Linux: `41804712405` — completed / success، **۹ از ۹ job موفق**.
-  - Windows: `41804712330` — completed / success، **۱۴ از ۱۴ job موفق**.
-- هیچ run یا artifact از SHA دیگری برای پرکردن نتیجهٔ این جدول استفاده نشده است. مجموعاً ۲۳ job در دو run موفق شدند؛ این عدد جای totals هر suite را نمی‌گیرد.
-- در پیگیری جاری، remote شاخه پیش از commit backup/archive روی SHA `c42a760ce209e12ce3ee090e4cb33f3609d91175` بود؛ آن commit کد `94d698ffcb2c5e5c2a36ac164dba222e17d65cc1` روی شاخهٔ مجاز ساخته و push شد. CI آن در هر پنج full-suite lane شکست خورد.
-- در ادامه، checkout محلی به‌طور shallow روی `317c553...` بود، در حالی که remote روی `94d698f...` قرار داشت و ۱۹۶ مسیر dirty/untracked دیده می‌شد. بازرسی فقط‌خواندنی ancestry/worktree انجام شد؛ هیچ reset، clean، stash، branch-switch یا rewrite انجام نشد. تغییرات محلی با remote tree تطبیق داده شد و code fix commit `ff4afddba0d5f319b0f43341dcaed13991b4dd3d` به‌صورت فرزند مستقیم `94d698f...` ساخته و بدون force push منتشر شد. فقط سه فایل مرتبط با CI در آن commit هستند؛ اصلاحات README، PRODUCT_CAPABILITY، PROJECT_CONTEXT و این گزارش در یک change-set مستنداتی جدا از code/test SHA نگهداری شده‌اند.
-- `out/performance.json` در checkout حاضر وجود نداشت و به‌صورت deletion unstaged دیده شد؛ چون خروجی artifact موجود در checkout نبود، آن را بازیابی، stage یا commit نکردیم. stash خالی بود و تغییرات مستنداتی از code/test SHA جدا نگه داشته شدند. CI code SHA `ff4afdd...`: Linux run `41841625094` با success و Windows run `41841625041` با failure پایان یافتند؛ پنج full-suite lane موفق و یک Windows UI test ناموفق بود. هیچ total یا artifact بین SHAها منتقل نمی‌شود.
-
-## ۳. آنچه در محصول و کد تثبیت شد
-
-### ۳.۱ قابلیت‌ها و مرزهای مهندسی
-
-- فهرست قابلیت‌ها از کد، handlerها و test manifest نگهداری می‌شود: ۲۶ کلاس سند (۱۴ `END_TO_END_CERTIFIED`، ۷ `KNOWLEDGE_SUPPORTED`، ۵ `EXTRACT_ONLY`). این موج کلاس یا promotion writer جدیدی به taxonomy اضافه نکرد.
-- Intake همچنان صف و lifecycle بازبینی انسانی است: پیش‌نمایش به‌تنهایی registry/domain row نمی‌سازد؛ ثبت سند نیز promotion خودکار نیست. actor، reason، source provenance و مرز promotion جدا باقی مانده‌اند.
-- Workbench از `DomainReviewService` و `ReviewActionService` استفاده می‌کند؛ عملیات تغییردهنده از worker خارج از GUI thread اجرا می‌شوند. مقایسهٔ revisionها متنی و مبتنی بر داده/provenance ثبت‌شده است، نه محاسبهٔ مهندسی.
-- DDR چرخهٔ draft → submit → candidate → تصمیم انسانی را حفظ می‌کند. submit، گزارش/عملیات را تأیید نمی‌کند. تصمیم confirm/reject دلیل می‌خواهد و actor ID اعلام‌شده باید از `created_by` جدا باشد؛ این actor شناسهٔ احرازشده نیست و **authentication محسوب نمی‌شود**.
-- `updated_at` در writeهای DDR حتی با تکرار clock tick به‌صورت strictly monotonic جلو می‌رود؛ stale-write guard و revision/activity provenance حفظ شده‌اند.
-- dashboardها و reportهای موجود از read serviceها و read modelهای دامنه استفاده می‌کنند؛ renderer مستقیماً SQL صادر نمی‌کند. NPT roll-up تنها روش محاسباتی ثبت‌شده است. هزینهٔ منبع با ارز اصلی نگهداری می‌شود؛ تبدیل ارز، AFE، risk score و plan-vs-actual مهندسی اضافه نشده‌اند.
-- ایستگاه‌های survey فقط به‌صورت دادهٔ گزارش‌شده باقی می‌مانند. interpolation/trajectory، واحدها یا فرضیات محاسباتی تازه اضافه نشده‌اند.
-
-### ۳.۲ SQLite و دو محدودهٔ مستقل backup
-
-- SQLite تنها backend مورد اتکای این نسخه است. preflight سلامت/foreign-key و migration تا head `0026` در CI تاریخی آزموده شده است؛ PostgreSQL از آن نتیجه استنتاج نمی‌شود.
-- `workspace backup/restore` همچنان **database snapshot only** است: SQLite online backup، manifest/hash و بررسی integrity/FK/revision؛ archive محدود و non-overwriting است و restore مقصد موجود را جایگزین نمی‌کند. فقط `workspace.toml` و snapshot دیتابیس را دارد؛ source corpus و search sidecar بیرون‌اند. شواهد پاس آن فقط به SHA تاریخی `894161a...` تعلق دارد.
-- در follow-up، commit کد `94d698ffcb2c5e5c2a36ac164dba222e17d65cc1` یک قالب جداگانهٔ versioned `.diwa` و CLIهای `workspace archive` و `workspace restore-archive` افزوده است: فایل‌های regular واجد شرایط زیر root به‌علاوهٔ online snapshot پایگاه‌داده، hash جداگانه برای هر عضو، حدود منابع، گزارش exclusion و source reference، redaction اطلاعات URL حساس در گزارش، staging و بررسی کامل hash/SQLite قبل از publish اتمی بدون جایگزینی. index، cache/log، VCS، credential/env و transient files حذف می‌شوند؛ فایل‌های منبع بیرون workspace گزارش می‌شوند اما دنبال یا کپی نمی‌شوند. restore فقط به ریشهٔ ثبت‌شده مجاز است؛ re-home رد می‌شود. آرشیو رمزگذاری نشده است.
-- focused local tests روی SHA `94d698f...` پاس شدند، اما هر پنج full-suite CI lane روی همان SHA هرکدام ۲ failure داشتند. code fix SHA `ff4afdd...` آن دو قرارداد تست را اصلاح می‌کند و هر پنج full-suite lane این SHA موفق شدند؛ Windows offscreen UI یک failure مستقل دارد و workflow Windows را fail کرد. هیچ‌یک از این‌ها backup policy/DR کامل، encryption، منبع بیرونی یا پذیرش فیزیکی Windows را اثبات نمی‌کند.
-
-### ۳.۳ علت‌یابی و اصلاح CI
-
-- شکست قبلی Windows در آزمون DDR دربارهٔ به‌روزرسانی stale token با timestamp بود؛ زمان ثبت write اکنون monotonic است و regression در Windows CPython 3.11/3.14 روی SHA نهایی سبز است.
-- خطای قبلی audit pin drift با تجدید pins از ابزار مجاز `tools/constraints.py` اصلاح شد: `filelock==4.2.8` و `platformdirs==4.14.4`؛ فحص constraints و dependency audit تمیز است.
-- mismatch پیشین در SHA-256 گزارش Ubuntu به اجرای nested pytest در workbench مربوط بود که به‌صورت پیش‌فرض `pytest-totals.json` ریشه را بازنویسی می‌کرد. در یک پروژهٔ موقت محلی این رفتار با `--collect-only` بازتولید شد؛ سپس collection و هر تلاش pytest فرزند به `PYTEST_TOTALS_PATH` جداگانه در `qt-logs` هدایت شدند. Regression آزموده شد و reporterهای Linux، Ubuntu و Windows روی SHA نهایی موفق شدند. Hash/sidecar validation تضعیف نشد.
-
-## ۴. CI دقیق روی SHA کد `894161a2f3e296e001c03a7b20b0eeb4f57d5882`
-
-Totals زیر از annotationهای check-run هر suite گرفته شده‌اند؛ skipped جدا از pass است. همهٔ suiteها exit `0`، صفر failure، صفر error، صفر xfailed و صفر xpassed دارند.
-
-| پلتفرم / Python | Check-run | جمع‌آوری‌شده | Passed | Skipped | Failed / errors | Runtime ثانیه |
-|---|---:|---:|---:|---:|---:|---:|
-| Linux / CPython 3.11 | `126488762659` | 2,770 | 2,709 | 61 | 0 / 0 | 2,848.499 |
-| Linux / CPython 3.14 | `126488762620` | 2,770 | 2,709 | 61 | 0 / 0 | 1,611.808 |
-| Ubuntu 26.04 / CPython 3.14 | `126488762978` | 2,770 | 2,769 | 1 | 0 / 0 | 1,817.713 |
-| Windows / CPython 3.11 | `126488762554` | 2,770 | 2,707 | 63 | 0 / 0 | 3,241.131 |
-| Windows / CPython 3.14 | `126488762999` | 2,770 | 2,707 | 63 | 0 / 0 | 2,830.841 |
-
-- `Ubuntu 26.04 × CPython 3.14` یک **lane واقعی full-suite** است، نه استنتاج از Ubuntu 24.04؛ job `126488762978`، clean-install smoke و totals attribution آن در Linux run موفق‌اند. این مورد، همان ماتریس CI را تأیید می‌کند؛ به‌تنهایی انتشار عمومی یا نصب روی همهٔ Ubuntuها را تأیید نمی‌کند.
-- Linux run تمام jobهایش را با success بست و job گزارش attribution آن `126509548709` بود. Windows نیز تمام jobها را با success بست و job گزارش attribution آن `126511686930` بود.
-- Qt offscreen UI/workbench در CI اجرا شد. UI-package coverage در job `126488762602`: **76.43% خطوط، 54.21% شاخه‌ها** (2,416/3,161 statement و 399/736 branch)، بالاتر از حداقل 70%/40%. این شاخص پوشش همان Qt/UI package است؛ با coverage کل محصول یکی نیست.
-- روی Linux CPython 3.11، full-suite coverage annotation برابر 82.02% خطوط / 70.8% شاخه و کل 79% بود؛ headless UI-package annotation مجزا 26.51%/12.91% است و جایگزین نتیجهٔ Qt-enabled coverage بالا نیست.
-- dependency audit در Linux، `no known vulnerabilities` گزارش کرد؛ datetime-adapter warning count در دو Linux و دو Windows suite برابر صفر بود.
-- گزارش‌های attribution دو warning غیرمسدودکننده از GitHub runner ثبت کردند که `actions/download-artifact` با Node.js 20 تعریف شده ولی runner آن را با Node.js 24 اجرا می‌کند. این warning موفقیت jobها را تغییر نداد و در این موج به‌عنوان defect نرم‌افزار Prog-Proc تعبیر نشده است.
-
-### ۴.۱ Artifactهای suite — ID و digest کامل
-
-Digestها همان مقدار GitHub Actions artifact API هستند و به SHA اجرای همین موج مربوط‌اند.
-
-| Artifact | ID | SHA-256 digest |
-|---|---:|---|
-| `pytest-cp3.11-a1` (Linux) | `13311607981` | `sha256:0e0abec845dae861cb247b74d30e8c4a37a744d13453f2f9f832bdfb8cab6cc8` |
-| `pytest-cp3.14-a1` (Linux) | `13311670319` | `sha256:a8fa32a33d718c959fee1b573bb706cba35ac79015516c40456b1f6d3b8999c3` |
-| `pytest-ubuntu-2604-cp3.14-a1` | `13310917801` | `sha256:3b9a790c6fd2c2d8fbf9deff193bafc0c9308c30886284ac7872dafbbc71d018` |
-| `pytest-windows-cp3.11-a1` | `13312043472` | `sha256:ecadd6e3770b3fe269acfed9ee6081697e8a4f1e2c7236ab2fde6a81b93b9e56` |
-| `pytest-windows-cp3.14-a1` | `13312067518` | `sha256:d675de20f34a7d81e9e865d06b3511d2f3006d03c1d7d5c3de16b9eacd499414` |
-
-### ۴.۲ Artifactهای گزارش انتساب
-
-| گزارش | ID | SHA-256 digest |
-|---|---:|---|
-| `pytest-matrix-report-linux-a1` | `13312715966` | `sha256:5f1050fd9a193e8c1ff8c1b0a59d9125606e45c7b128c5d3ef955845f5d4fc22` |
-| `pytest-matrix-report-ubuntu-2604-cp3.14-a1` | `13312421750` | `sha256:340ae11d2c7752904cbe6408dcfc1746d8398d25f1713297bee1c1ced9fc538e` |
-| `pytest-matrix-report-windows-a1` | `13311839332` | `sha256:becc15cadb4997c94a90f81fb5e62235b327db9cdbc8396c09ea5caa70fa3bdc` |
-
-این جدول digest مربوط به خود archive artifactهاست؛ با checksum فایل totals/JUnit داخل archive یکی نیست. نبودن totals یا artifact هرگز PASS محسوب نشده است.
-
-## ۵. بررسی‌های محلی و فحوص غیر CI
-
-- ۵۱ آزمون در مجموعه‌های regression مربوط به Qt workbench policy، گزارش CI، authoring DDR و exception policy موفق شدند.
-- Ruff، بررسی format، mypy روی ۴۳ فایل منبع، `compileall` و `git diff --check` موفق شدند.
-- `tools/constraints.py --check` برای پنج گروه `runtime`, `development`, `ui`, `build`, `audit` موفق شد؛ dependency audit محلی `clean` و بدون finding بود.
-- اجرای Qt روی همین محیط محلی به‌علت نبودن `libGL.so.1` قابل قبول نبود؛ آن را **SKIPPED** ثبت کردیم، نه PASS. evidence مثبت Qt فقط از laneهای Qt-enabled CI می‌آید.
-- در code SHA منتشرشدهٔ `94d698f...`: focused archive/TOML/backup/CLI tests برابر **27 passed**؛ Ruff، Ruff format، mypy روی **44** source file و Alembic head `0026` موفق بودند. CI همان SHA بعداً دو test contract failure در 3 suite لینوکس را افشا کرد.
-- پیش از commit `ff4afdd...`، پس از اصلاح exception inventory و command-word false positive، focused regression run **29 passed** شد؛ Ruff و Ruff format کامل، mypy (44 files) و Alembic check نیز موفق شدند. این run روی همان source contents اصلاحی بود، اما پیش از commit و بیرون از CI.
-- در checkout جاری pytest package/venv موجود نبود؛ تلاش برای rerun focused tests به‌علت `No module named pytest` **NOT RUN** شد. محیط dependency/cache را برای سبزکردن مصنوعی نتیجه تغییر ندادیم. این محدودیت، نتیجهٔ exact-SHA GitHub Actions را جایگزین نمی‌کند.
-- یک اجرای کامل pytest در محیط محلی روی working tree پیشین به‌مدت 30 دقیقه ادامه یافت اما در 54% بدون پایان/exit code قطعی متوقف شد؛ آن را **NOT COMPLETED / NOT PASS** می‌شماریم و هیچ total از آن استخراج نمی‌کنیم.
-
-## ۶. موارد خارج از تأیید و شروط ادامه
-
-| مورد | وضعیت دقیق | شرط بستن |
+| محور | نتیجه | آنچه نتیجه ثابت می‌کند / نمی‌کند |
 |---|---|---|
-| پذیرش Windows روی نمایشگر فیزیکی | **NOT RUN** | انسان باید checklist `docs/WINDOWS_TESTING.md` را روی Windows واقعی اجرا کند؛ offscreen CI جانشین آن نیست. |
-| PostgreSQL | **NOT QUALIFIED** | مالک باید target/version/مهاجرت را تعیین کند و CI با service واقعی و matrix آزمون اضافه شود. |
-| M2: OpenAI-compatible provider | **OWNER-GATED** | قرارداد endpoint/auth/secret/network و تست عدم ارسال بدون اجازه لازم است. |
-| M3: vector sidecar / semantic ranking | **OWNER-GATED** | dimension، metric، staleness و عدم تغییر retrieval در نبود sidecar باید تصویب شود. |
-| M4: Skills runtime | **OWNER-GATED** | رفتار اپراتور و مرز محاسبه/تغییر دامنه باید تعریف شود. |
-| M5: محاسبهٔ مهندسی اضافه | **OWNER-GATED** | روش، ورودی‌ها، واحدها، assumptions و refusal cases باید پیش از کدنویسی تصویب شوند. |
-| Survey trajectory | **OWNER-GATED؛ محاسبه خاموش** | هیچ interpolation/trajectory بدون قرارداد، units، assumptions، reference و verification مستقل ساخته نشود. |
-| archive فایل‌های owned داخل workspace | پیاده‌سازی روی SHA `94d698f...`؛ CI آن **FAILED** بود. اصلاح دو تست‌قرارداد روی SHA `ff4afdd...` commit/push شده؛ هر پنج full-suite lane **SUCCESS** شدند، اما Windows workflow **FAILED** شد به‌علت یک UI offscreen test failure. | محدوده/exclusion/source بیرونی صریح است؛ منابع بیرونی کپی نمی‌شوند و restore به root اصلی مقید است. encrypted/DR/production backup ادعا نشده؛ physical Windows پذیرش جدا می‌خواهد. |
-| backup پایگاه‌داده | **PASS تاریخی** فقط روی SHA `894161a...` | `workspace backup/restore` فقط marker+SQLite snapshot است؛ این نتیجه به کد `94d698f...` منتقل نشده است. |
-| Production/public release | **NOT CLAIMED** | installer/signing، auth، multi-user، Windows physical acceptance، PostgreSQL و security/release gates هنوز اثبات نشده‌اند. |
+| پیاده‌سازی | **PASS در محدودهٔ مستقل و مصوب مأموریت؛ موارد owner-gated باز** | اصلاح lifecycle درس در supersession منبع، یکتایی کد درس و آزمون‌های regression موجود است. قابلیت جدیدِ فاقد تصمیم مالک ساخته نشده است. این حکم، همهٔ نیازهای محصول آینده را پوشش نمی‌دهد. |
+| آزمون‌ها و quality gates | **PASS روی SHA `b3163bf...`** | Linux، Ubuntu 26.04 و Windows full-suiteها، static checks و attribution موفق‌اند؛ totals دقیق در بخش ۵ آمده است. PASS به‌معنی حذف شمارش‌های SKIPPED نیست. |
+| Windows خودکار | **PASS (offscreen/CI)؛ نمایشگر فیزیکی NOT RUN** | Windows UI دو runtime، stability suites، clean-install و run-card behavioral tests سبزند. این‌ها پذیرش دستی روی دسکتاپ/نمایشگر واقعی Windows نیستند. |
+| Qualification محصول | **PARTIALLY QUALIFIED — PRE-ALPHA** | SQLite و مسیرهای مشخص local-first شواهد اجرایی دارند؛ PostgreSQL، production operations، چندکاربره و پذیرش فیزیکی Windows تأیید نشده‌اند. |
+| آمادگی انتشار | **NOT READY / NOT AUTHORIZED برای production یا انتشار عمومی** | نصب wheel/sdist و CLI smoke سبز است؛ اما installer امضاشده، عملیات/DR کامل، رمزگذاری آرشیو، PostgreSQL، authentication، multi-user و پذیرش دستی Windows اثبات نشده‌اند. |
 
-هیچ‌یک از این شکاف‌ها با default، score، duration، quantity، واحد یا فرمول ساختگی پر نشده است. `database_snapshot_only` را full workspace backup معرفی نمی‌کنیم؛ actor ID را هویت تأییدشده نمی‌خوانیم؛ ثبت سند یا submit DDR را approval تلقی نمی‌کنیم.
+این حکم عمداً میان «کد/آزمون سبز» و «صلاحیت محصول/انتشار» تمایز می‌گذارد. سبز شدن CI، تصمیم مالک یا تأیید operational را جایگزین نمی‌کند.
 
-## ۷. نتیجهٔ نهایی
+## ۲. مبنای Git، حفاظت تغییرات و شواهد
 
-**PARTIALLY QUALIFIED — PRE-ALPHA.**
+- تمام کار روی شاخهٔ مجاز `arena/5957b76d-prog-proc` انجام شد؛ branch دیگر ساخته یا انتخاب نشد.
+- remote branch پیش از این گزارش روی `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` تأیید شد؛ `main` همچنان `85122e1a98087db4495b820a9a0ffae9009b7819` است و تغییر نکرده است.
+- checkout محلی ابتدا روی ancestor `317c55365319af61138000664293ae2d84e27a6e` بود، درحالی‌که remote روی `b3163bf...` قرار داشت. با مقایسهٔ blob همهٔ ۴۵۵ مسیر remote، تمام فایل‌های حاضر دقیقاً با remote برابر بودند به‌جز `out/performance.json` که عمداً غایب است. سپس فقط ref محلی به‌صورت fast-forward به همان remote SHA برده و index با همان tree همگام شد؛ هیچ فایل working tree بازیابی یا جابه‌جا نشد.
+- وضعیت کار محلی مورد حفاظت: `D out/performance.json`، unstaged و خارج از commit. این deletion در سراسر مأموریت restore، stage یا commit نشده است. فایل در tree ریموت وجود دارد؛ deletion فقط تغییر محلی کاربر است.
+- staging پیش از تهیهٔ این گزارش خالی بود. stashها دست‌نخورده ماندند. `main`، branchهای دیگر و commitهای remote بازنویسی نشدند.
+- Runهای qualification دقیقاً به commit `b3163bf...` تعلق دارند: Linux [41940002906](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002906) و Windows [41940002911](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002911). هر دو `completed / success` شدند. در مجموع ۲۳ job (۹ Linux/Ubuntu و ۱۴ Windows، شامل گزارش‌های انتساب) موفق‌اند.
+- اجرای محلی release smoke و focused regression نیز با checkout کد `b3163bf...` انجام شد؛ جزئیات در بخش‌های ۴ و ۶ آمده است.
 
-محدودهٔ مثبتِ **baseline تاریخی** این تصمیم: code SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882`، Linux CPython 3.11/3.14، Windows CPython 3.11/3.14، Ubuntu 26.04 × CPython 3.14، Qt-enabled offscreen CI، clean-install smoke، SQLite/DDR regression، dependency audit و attribution artifacts بخش‌های قبلی. این شواهد به SHA `94d698f...` یا `ff4afdd...` منتقل نمی‌شوند؛ SHA `94d698f...` پنج full-suite lane با شکست داشت. روی `ff4afdd...` هر پنج full-suite lane موفق‌اند، اما Windows run با یک UI offscreen failure پایان یافت؛ این SHA بنابراین full-suite success را دارد، نه overall CI pass.
+## ۳. کار مهندسی و ممیزی انجام‌شده
 
-هیچ‌یک از این نتایج مجوز production، installer امضاشده، PostgreSQL، Windows display acceptance، حساب کاربری/مجوزدهی، multi-user یا محاسبات مهندسی جدید نیست.
+### ۳.۱ چرخهٔ درس و supersession منبع
 
-## ۹. CI follow-up دقیق روی SHA `94d698ffcb2c5e5c2a36ac164dba222e17d65cc1`
+- وقتی نسخهٔ تازهٔ سند، درس مشتق‌شدهٔ قبلی را supersede می‌کند، predecessor اکنون `SUPERSEDED` می‌شود و `prior_status` مقدار lifecycle قبلی را نگه می‌دارد؛ صرفاً `is_current=False` کردن برای اعتبار زنجیره کافی نیست.
+- successor یک lesson تازه در `DRAFT` است؛ `approved_by` یا `approved_at` predecessor را به ارث نمی‌برد. تغییر منبع، approval قدیمی را به approval جدید تبدیل نمی‌کند.
+- regressionهای predecessor با وضعیت‌های قبلی متفاوت و successor فاقد metadata تأیید موروثی افزوده/حفظ شدند. full-suite دقیق SHA نهایی سبز است و focused lesson suite نیز محلی جداگانه اجرا شد.
+- این تغییر در `src/drilling_intelligence/operations/promote.py`، قراردادهای زنجیره در `src/drilling_intelligence/lessons/repository.py` و `tests/integration/test_lesson_promotion.py` دیده می‌شود.
 
-این runها فقط به همان SHA تعلق دارند؛ شکست‌ها ثبت می‌شوند و totals baseline تاریخی یا commit اصلاحی را جایگزین نمی‌کنند.
+### ۳.۲ یکتایی کد درس و مسیرهای نوشتن
 
-| Platform / Python | Check-run | Collected | Passed | Skipped | Failed | Errors | Exit / runtime (s) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Linux / CPython 3.11 | `126565464516` | 2,776 | 2,713 | 61 | 2 | 0 | 1 / 2,687.198 |
-| Linux / CPython 3.14 | `126565464329` | 2,776 | 2,773 | 1 | 2 | 0 | 1 / 1,840.836 |
-| Ubuntu 26.04 / CPython 3.14 | `126565464510` | 2,776 | 2,713 | 61 | 2 | 0 | 1 / 1,274.754 |
-| Windows / CPython 3.11 | `126565464858` | 2,776 | 2,711 | 63 | 2 | 0 | 1 / 3,281.650 |
-| Windows / CPython 3.14 | `126565464983` | 2,776 | 2,711 | 63 | 2 | 0 | 1 / 3,576.037 |
+- کد درس به‌صورت global، پس از strip و Unicode casefold، یکتا است؛ یکتایی per-well نیست.
+- repository مسیرهای ایجاد، ویرایش و ساخت revision را پیش از write بررسی می‌کند؛ partial unique index روی کلید canonical و current rows لایهٔ نهایی دیتابیس است. مسیر promotion نیز duplicate جاری را به `CONFLICT` تبدیل می‌کند؛ promotion تکراری همان identity را idempotent تأیید می‌کند.
+- کد predecessor تاریخی با successor مجاز است؛ تاریخچهٔ زنجیره حفظ می‌شود و unique rule روی lesson جاری اعمال می‌شود. قید پایگاه‌داده در برابر race بین دو writer نیز باقی می‌ماند.
+- migrationهای مرتبط `0020` تا `0023` linkage/identity، کد casefoldشده، canonical key و lifecycle قبلی را پوشش می‌دهند. head schema در این نسخه `0026` است.
+- پنج فایل درس و سیاست exception با هم به‌صورت هدفمند اجرا شدند: **۹۵ passed**؛ فرمان دقیق:
+  `pytest -q tests/integration/test_engineering_lessons.py tests/integration/test_lesson_code_key.py tests/integration/test_lesson_deletion.py tests/integration/test_lesson_lifecycle_forensic.py tests/integration/test_lesson_promotion.py tests/unit/test_exception_policy.py`.
+- حذف lesson با دادهٔ آزمایشی در `TemporaryDirectory` بررسی شد: predecessor حذف‌شده به `SUPERSEDED`، `is_current=False`، `prior_status=DRAFT` و بدون successor می‌رسد؛ validator زنجیره با خطای `chain has no current or withdrawn disposition; destructive action refused` عملیات زنجیره‌ای بعدی را fail-closed می‌کند.
+- **شکاف owner-gated:** حذف منبع یا تغییر `code` در منبع هنوز disposition/linking کامل و مصوبی برای lesson جاری ندارد. این وضعیت با uniqueness/supersession رفع نشده است. سیاست حذف، rename، انتقال هویت یا حفظ/withdrawal lesson ساخته نشد؛ تصمیم مالک لازم است. پرسش در `PRODUCT_DECISIONS_REQUIRED.md` ثبت می‌شود.
 
-- Linux workflow `41827377959` و Windows workflow `41827378042` هر دو **failure** هستند؛ هر پنج test lane دقیقاً ۲ failed و صفر errors دارند. CI annotation در Linux 3.11/3.14 و Windows 3.11/3.14 نام دو failure یکسان را نشان می‌دهد: (۱) `tests/unit/test_exception_policy.py::test_the_inventory_on_disk_matches_the_tree` به‌علت inventory تولیدنشده پس از افزودن handlerها؛ (۲) `tests/unit/test_cli.py::TestCliEndToEnd::test_no_message_prompts_for_a_command_the_cli_does_not_have` چون phrase «drillintel data» به‌عنوان command اشتباه برداشت شد. Ubuntu lane نیز دو failure ثبت کرده، اما نام آن‌ها در annotation آن job موجود نبود؛ علت را برای آن lane جداگانه تأیید نمی‌کنیم.
-- خطای نسبت‌دادن matrix report در هر دو workflow پیامد failure test lanes است؛ successful smoke/Qt/stability jobs در همان run، full-suite failures را خنثی نمی‌کنند.
-- در working tree اصلاح‌شده، `docs/exception_inventory.md` با generator رسمی دوباره تولید شد و phrase متداخل به «workspace storage directory» تغییر یافت. قبل از commit، regressionهای مربوط به این دو مورد و archive/backup/TOML/CLI **29 passed** شدند؛ Ruff کامل، Ruff format کامل و mypy (44 source files) نیز موفق بودند. این‌ها local-only هستند، نه full-suite CI.
+### ۳.۳ علت‌یابی Windows UI
 
-### ۹.۱ کد اصلاحی `ff4afddba0d5f319b0f43341dcaed13991b4dd3d`
+- failure تاریخی هدف، `test_intake_review_registration_and_rejection_run_as_distinct_ui_transitions` در Windows offscreen بود. annotation تنها می‌گفت registration و refresh pending به پایان نرسیده‌اند؛ از آن، علت ریشه‌ای قابل اثبات نبود.
+- assertion timeout در `tests/ui/test_intake_workbench.py` اکنون `lifecycle_snapshot()` را در diagnostic درج می‌کند تا اگر failure بازتولید شد، وضعیت lifecycle در log معلوم باشد. این instrumentation برای تشخیص است؛ خودش علت failure تاریخی را ثابت نمی‌کند.
+- روی `b3163bf...`, Windows UI CPython 3.11، check `126958804124`: **29/29 passed، صفر skip/failure/error**؛ Windows UI CPython 3.14، check `126958803901`: **29/29 passed، صفر skip/failure/error**. Stability suites intake/history/presentation نیز برای دو runtime سبزند.
+- بنابراین failure قبلی در این runها **بازتولید نشد**؛ root cause آن همچنان **نامعلوم/اثبات‌نشده** است. assertion تضعیف، skip/xfail، retry کورکورانه، sleep تصادفی یا broad exception suppression برای سبزکردن UI به‌کار نرفت.
+- نتیجه فقط Qt-enabled **offscreen CI** است؛ **physical Windows display acceptance = NOT RUN**. Run-card رفتاری PowerShell 5.1 و 7 با check `126958803948` موفق شد؛ run-card موجود همچنان ۱۶ مرحله‌ای است و به‌عنوان اجرای workstation/desktop واقعی انجام نشده است.
 
-این code/test-fix commit، فرزند مستقیم `94d698f...`، روی شاخهٔ مجاز push شده است. آن inventory تولیدشده را به‌روز می‌کند و wording تست CLI را از الگوی اشتباه `drillintel data` دور می‌سازد. CI exact-SHA:
+### ۳.۴ SQLite، migration و بسته‌بندی واقعی
 
-| Lane | Check-run | Collected | Passed | Skipped | Failed | Errors | Runtime (s) / status |
-|---|---:|---:|---:|---:|---:|---:|---|
-| Linux / CPython 3.14 | `126614416407` | 2,776 | 2,715 | 61 | 0 | 0 | 1,904.800 / **SUCCESS** |
-| Ubuntu 26.04 / CPython 3.14 | `126614416020` | 2,776 | 2,775 | 1 | 0 | 0 | 1,729.176 / **SUCCESS** |
-| Linux / CPython 3.11 | `126614416484` | 2,776 | 2,715 | 61 | 0 | 0 | 2,975.663 / **SUCCESS** |
-| Windows / CPython 3.11 | `126614417059` | 2,776 | 2,713 | 63 | 0 | 0 | 3,087.797 / **SUCCESS** |
-| Windows / CPython 3.14 | `126614416967` | 2,776 | 2,713 | 63 | 0 | 0 | 3,248.718 / **SUCCESS** |
-| Windows / UI offscreen Qt / CPython 3.11 | `126614417177` | 29 | 28 | 0 | 1 | 0 | 74.505 / **FAILURE** |
+- `tools/release_smoke.py` روی SHA `b3163bf...` با `/tmp/prog-proc-audit-venv/bin/python` موفق شد (exit 0): wheel و sdist ساخته شدند، هر کدام در venv پاک و بیرون checkout نصب شدند، و CLI نصب‌شده واقعاً اجرا شد.
+- هر دو artefact، import از `site-packages` بدون source-checkout leakage، console scripts، `drillintel --help/--version`, workspace creation، metadata schema bootstrap بدون Alembic scripts داخل package، doctor، records/search/timeline، decision/compare/analyze/report و HTML/SVG را گذراندند. bootstrap head `0026` و ۵۲ جدول را ایجاد کرد؛ well با نام غیر ASCII/مسیر دارای فاصله round-trip شد. wheel و sdist هیچ DBی را حمل نمی‌کنند؛ wheel migration scripts را نیز حمل نمی‌کند، پس مسیر metadata bootstrap همان مسیر واقعی نصب است.
+- smoke به‌معنی qualify کردن PostgreSQL، installer Windows، archive encryption، recovery از منبع خارجی یا production DR نیست.
+- full-suite CI روی همین SHA clean-install smoke را برای Linux و Windows، CPython 3.11 و 3.14 اجرا کرد؛ هر چهار job سبز هستند.
+- SQLite تنها backend دارای qualification است. PostgreSQL **NOT QUALIFIED** است؛ از تست SQLite نتیجه‌ای برای PostgreSQL استنتاج نمی‌شود.
 
-Runهای کلی: Linux `41841625094` **SUCCESS**؛ Windows `41841625041` **FAILURE**. هر پنج full-suite lane Linux/Ubuntu/Windows موفق‌اند؛ UI offscreen job علت workflow failure است.
+### ۳.۵ exception، static و تست‌کیفیت
 
-- Check-run `126614417177`، Windows offscreen UI / CPython 3.11، 29 collected، 28 passed، 1 failed، 0 skipped/errors. Failure: `tests/ui/test_intake_workbench.py::test_intake_review_registration_and_rejection_run_as_distinct_ui_transitions`, annotation: «registration and pending refresh did not finish». این یک failure جدا از دو contract failure روی SHA `94d...` است؛ علت ریشه‌ای/تکرارپذیری آن اثبات نشده و هیچ retry یا اصلاح آزمون کورکورانه انجام نشده است. این offscreen Qt نتیجهٔ پذیرش فیزیکی نمایشگر Windows محسوب نمی‌شود.
-- Artifactهای تمام‌شدهٔ runها و ID/digest دقیق در جدول‌های بعدی ثبت شده‌اند. Runهای موفق smoke، stability، full-suite یا artifact report نمی‌توانند UI failure را خنثی کنند.
-- CPython 3.11 Linux annotationهای همین check-run: full-suite coverage **81.82% lines / 70.37% branches**، UI-package headless **26.51% / 12.91%**، total coverage annotation **79%**؛ datetime-adapter warnings **0** و dependency audit `no known vulnerabilities`. این موارد نیز به SHA `ff4afdd...` و همین job محدودند.
-- نتیجهٔ دقیق `ff4afdd...`: پنج full-suite lane موفق، اما workflow Windows به‌علت UI failure ناموفق؛ بنابراین ماتریس/CI کلی **FAILURE**, نه PASS. هیچ baseline قدیمی یا focused local test این failure را پاک نمی‌کند.
+روی `b3163bf...` شواهد محلی ثبت‌شده:
 
-### ۹.۲ Artifactهای exact-SHA — run Linux `41841625094` و Windows `41841625041`
+- Ruff lint: موفق؛ Ruff format: **۴۳۳ فایل already formatted**.
+- mypy: **۴۴ source files** بدون خطا؛ `compileall` موفق.
+- Alembic: یک head، `0026`; `constraints/audit.txt` up-to-date.
+- `tools/exception_review.py --check`: **۱۰۵ broad handlers**، همه مستند و reviewed. `docs/exception_inventory.md` با generator رسمی بازسازی شد. `tests/unit/test_exception_policy.py`: **9 passed**.
+- broad `pytest.raises(Exception/BaseException)` در tests به خطاهای domain/DB مشخص محدود شد؛ جست‌وجوی test tree پس از اصلاح موردی نیافت.
+- CI exact SHA نیز Ruff lint/format، type boundary، resolve pins، dependency audit، byte-compile، Alembic single-head و test totals/artifact identity را سبز کرد. Linux annotation: dependency audit «no known vulnerabilities» و datetime-adapter warning count صفر.
+- پس از به‌روزرسانی اسناد qualification، `tests/unit/test_product_decisions.py`, `tests/unit/test_windows_acceptance_doc.py`, و `tests/unit/test_exception_policy.py` محلی **25 passed** شدند؛ `git diff --check` نیز موفق بود. این focused نتیجه، CI یک SHA مستنداتی نیست.
+- coverage ثبت‌شده در Linux CPython 3.11 full-suite: **81.83% line / 70.37% branch**؛ Qt/UI package در job UI: **76.43% / 54.21%** (از حداقل gate 70/40 بالاتر). اجرای headless-only UI package جداگانه 26.51%/12.91% گزارش شده و با coverage gate Qt واقعی اشتباه نمی‌شود.
+- red/green regressionها و coverage gate، mutation-testing framework نیستند. mutation engine/config این checkout در این مأموریت تأیید نشد؛ بنابراین mutation score یا mutation qualification **ادعا نمی‌شود**.
 
-این شناسه‌ها و digestها از artifact list هر دو run بعد از تکمیل استخراج شده‌اند؛ همه متعلق به code SHA `ff4afddba0d5f319b0f43341dcaed13991b4dd3d` هستند. Digest، SHA-256 archive artifact GitHub است، نه checksum محتوای داخل آن.
+## ۴. CI exact-SHA و totals آزمون
 
-| Run / artifact | ID | SHA-256 digest |
+هر پنج full-suite lane دقیقاً head SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` را checkout کردند. totals از annotation همان check-run گرفته شده‌اند؛ skipها جداگانه باقی می‌مانند. هر lane `failed=0`, `errors=0`, `xfailed=0`, `xpassed=0`, `exit=0` دارد.
+
+| پلتفرم / Python | Check-run | Collected | Passed | Skipped | Failed / errors | Runtime (s) |
+|---|---:|---:|---:|---:|---:|---:|
+| Linux / CPython 3.11 | `126958381847` | 2,776 | 2,715 | 61 | 0 / 0 | 3,585.005 |
+| Linux / CPython 3.14 | `126958381807` | 2,776 | 2,715 | 61 | 0 / 0 | 1,444.794 |
+| Ubuntu 26.04 / CPython 3.14 | `126958381778` | 2,776 | 2,775 | 1 | 0 / 0 | 1,427.792 |
+| Windows / CPython 3.11 | `126958803874` | 2,776 | 2,713 | 63 | 0 / 0 | 3,585.005 |
+| Windows / CPython 3.14 | `126958803945` | 2,776 | 2,713 | 63 | 0 / 0 | 3,592.503 |
+
+جزئیات تکمیلی همین runها:
+
+- Linux run `41940002906`: ۹/۹ job موفق؛ Windows run `41940002911`: ۱۴/۱۴ job موفق. attribution reportهای Linux/Ubuntu `126979874620` و Windows `126984025654` هر دو موفق‌اند.
+- Windows Qt offscreen test checkها `126958804124` و `126958803901`: هر کدام 29/29، صفر skip/failure/error. Linux workbench Qt-enabled checkها `126958381198` و `126958381691` نیز موفق‌اند.
+- Clean install smoke checks: Linux `126958381845` (3.11)، `126958381599` (3.14)؛ Windows `126958803987` (3.11)، `126958803635` (3.14) — همگی موفق.
+- PowerShell run-card check `126958803948` موفق است. Checkهای stability ویندوز برای history، intake و presentation در 3.11/3.14 همگی موفق‌اند.
+- یک skip در Ubuntu و ۶۱/۶۳ skip در suiteهای دیگر به‌عنوان skipped ثبت شده‌اند؛ این‌ها PASS تلقی نمی‌شوند. Qt-enabled jobها تست‌هایشان را واقعاً اجرا کردند و Qt-unavailable skip audit آن‌ها موفق بود.
+
+### ۴.۱ سابقهٔ شکست‌ها، هرکدام محدود به SHA خودش
+
+- SHA `a08f1e510fc62f468e986d2efd13768e17d4605d`, Linux run `41936249541`, CPython 3.14: **2,776 collected, 2,714 passed, 61 skipped, 1 failed**. failure فقط `test_the_inventory_on_disk_matches_the_tree` بود؛ inventory بعد از تغییر line numberهای `promote.py` تازه نشده بود. generator رسمی inventory را در `b3163bf...` بازساخت؛ تست محلی policy 9/9 و CI جدید suite سبز شد. این failure به regression lesson یا Windows نسبت داده نمی‌شود.
+- SHA `94d698ffcb2c5e5c2a36ac164dba222e17d65cc1`: هر پنج full-suite lane دو test-contract failure داشتند؛ inventory stale و عبارت CLI مبهم. اصلاح آن‌ها در SHA `ff4afddba0d5f319b0f43341dcaed13991b4dd3d` ثبت شد. این دو مورد با failure UI بعدی یکی نیستند.
+- SHA `ff4afdd...`, Windows run `41841625041`, check `126614417177`: پنج full-suite lane موفق، اما Windows CPython 3.11 offscreen UI **28 passed / 1 failed / 0 skipped**؛ failure همان test registration/rejection UI بود و annotation «registration and pending refresh did not finish» را ثبت کرد. root cause از annotation اثبات نشد.
+- SHA `b3163bf...`: هر پنج full-suite lane و دو workflow کلی موفق‌اند؛ Windows UI 29/29 در هر دو runtime است. این عدم بازتولید، علت failure در `ff4afdd...` را اثبات نمی‌کند و نتایج SHAها باهم جمع یا جابه‌جا نشده‌اند.
+
+## ۵. Intake / Review و آزمون محصول
+
+- Intake preview، human review، registration و domain promotion از هم جدا هستند: preview خود domain writer نیست؛ registration برای bytes مطابق hash بررسی‌شده، registry evidence و audit می‌سازد، اما promotion انجام نمی‌دهد. Registration و rejection باید transitionهای متمایز بمانند.
+- آزمون UI هدفمند روی SHA نهایی دو بار در Windows (CPython 3.11 و 3.14) سبز شد؛ full-suiteهای Linux/Windows و migration/registration tests نیز سبز هستند.
+- stale/unreviewed registration، idempotency، audit/FK، persistence و نمایش `REGISTERED` از registration record در suiteهای پروژه آزموده می‌شوند؛ هیچ assertion برای سبز کردن run حذف یا شل نشد.
+- این شواهد، دسترسی انسانی، actor authentication یا استفادهٔ چندکاربره را ثابت نمی‌کنند.
+
+## ۶. Open items، محدودیت‌ها و موارد نیازمند مالک
+
+### مالک/محصول
+
+- Milestoneهای **M2–M5** همچنان **OWNER-GATED** هستند؛ PASS CI آن‌ها را تصویب یا پیاده‌سازی نمی‌کند.
+- برداشت/تغییر `lesson.code` در منبع و disposition درس موجود در زمان حذف/rename هنوز policy ندارد. تصمیم مالک باید مشخص کند هویت و زنجیره چگونه حفظ یا بسته می‌شوند؛ تا آن زمان هیچ رفتار خودکار جدیدی اختراع نشده است.
+- PostgreSQL، multi-user/authentication، Skills runtime، provider maturity، vector search، method/calculationهای دیگر، trajectory/survey derivation، risk scoring، currency conversion، AFE و plan-vs-actual خارج از تصمیم‌های مصوب و دروازه‌دار می‌مانند.
+
+### پذیرش و عملیات
+
+- **Physical Windows display acceptance: NOT RUN**؛ offscreen Qt معادل نمایشگر واقعی نیست. Run-card ۱۶ مرحله‌ای حفظ شده؛ behavioral tests آن در PowerShell 5.1 و 7 موفق‌اند اما کارت workstation فیزیکی اجرا نشده است.
+- Qt محلی در host حاضر به‌علت فقدان `libGL.so.1` قابل load نبود؛ local Qt در این محیط **SKIPPED/BLOCKED** است، نه PASS. شواهد Qt-enabled به runnerهای CI مربوط‌اند.
+- archive encryption، external-source backup، recovery exercise/DR واقعی، signed installer، production rollout و deployment qualification انجام نشده‌اند.
+- `workspace backup/restore` دیتابیس‌محور است و باید database snapshot نامیده شود. `workspace archive/restore-archive` مسیر جداگانهٔ فایل‌های واجدشرایط زیر workspace همراه SQLite snapshot است؛ منابع بیرونی کپی نمی‌شوند و archive رمزگذاری نشده است. هیچ‌کدام ادعای backup سازمانی/DR کامل نیستند.
+- mutation-testing engine وجود/اجرا اثبات نشد؛ coverage یا red/green regression معادل mutation score نیست.
+
+## ۷. Defect / acceptance register نهایی
+
+| شناسه | مورد | وضعیت | اقدام/شرط بستن |
+|---|---|---|---|
+| D-01 | stale exception inventory روی Linux CPython 3.14 | **FIXED; exact-SHA CI PASS** | generator رسمی اجرا؛ `b3163bf...` Linux suite موفق. |
+| D-02 | lesson predecessor در supersession به disposition معتبر منتقل نشود | **FIXED; regression + exact-SHA CI PASS** | predecessor `SUPERSEDED` با `prior_status`؛ successor تازه `DRAFT` بدون approval metadata موروثی. |
+| D-03 | Windows Intake registration/refresh transition failure تاریخی | **NOT REPRODUCED; root cause UNKNOWN** | diagnostics snapshot اضافه و دو Windows offscreen suite 29/29 شدند؛ برای بستن علت، failure باید با evidence کافی بازتولید/علت‌یابی شود. |
+| D-04 | removal یا تغییر کد منبع در زنجیرهٔ lesson | **OWNER-GATED / OPEN** | تصمیم مالک دربارهٔ هویت/disposition/linking؛ policy جدید به‌طور خودکار ساخته نمی‌شود. |
+| Q-01 | پذیرش فیزیکی Windows display | **NOT RUN** | اجرای ۱۶ مرحلهٔ run-card روی workstation واقعی و ثبت artifact انسانی. |
+| Q-02 | PostgreSQL، multi-user/auth، production DR/release | **NOT QUALIFIED / OUT OF SCOPE UNTIL OWNER DECISION** | قرارداد، زیرساخت و پذیرش مستقل لازم است؛ از SQLite/offscreen نتیجه‌گیری نشود. |
+| Q-03 | mutation score | **NOT RUN / NOT AVAILABLE** | engine/config مصوب و اجرای mutant واقعی لازم است؛ coverage جایگزین نیست. |
+
+## ۸. Artifactهای CI دقیقاً متعلق به SHA `b3163bf...`
+
+Artifact listهای زیر از runهای [41940002906](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002906) و [41940002911](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002911) گرفته شده‌اند. Digest، SHA-256 آرشیو artifact GitHub است، نه checksum محتویات. دانلود ZIP از محیط محلی به‌علت EOF در storage host انجام نشد؛ شناسه و digest از GitHub API قابل خواندن بود. هیچ artifact بین run/SHAها جابه‌جا نشده است.
+
+| Run / artifact | Artifact ID | SHA-256 digest |
 |---|---:|---|
-| Linux `pytest-cp3.11-a1` | `13333805671` | `sha256:3f4e5ec62724a7f54004b9a1c0ebc8bd89c4981003cdc17ee5efb2c9ea8715a3` |
-| Linux `pytest-cp3.14-a1` | `13332096988` | `sha256:feb1aa17cdf4c82274f23f5142094bf85319d4b1410ec90e7bb55a3fab5e9002` |
-| Linux `pytest-ubuntu-2604-cp3.14-a1` | `13330728666` | `sha256:c438fb16c2d5a59825f91ad89d383382a56b1148f9aa8b9f04e713f9e727756b` |
-| Windows `pytest-windows-cp3.11-a1` | `13334366847` | `sha256:840df58ed35f13464ccb93f94b9ed367763e4861d177d289065b7221d5ec7255` |
-| Windows `pytest-windows-cp3.14-a1` | `13335225684` | `sha256:a3359b0531836782b6724b10a45c4f63e28e0488b66f0d74aa944e51cff5460b` |
-| Linux `coverage-cp3.11` | `13333485979` | `sha256:0bf76ae5b1712f59d773d3d5ab60c05040984f644ad41e7ee37175c02aacbd4b` |
-| Linux `coverage-ui-cp3.11` | `13329781712` | `sha256:cc709793cbd59a55e4d0fd0c106ff3ee6cbc462b2b7f31e1ef619eba77d742bc` |
-| Linux `pytest-matrix-report-linux-a1` | `13335100050` | `sha256:2d259399bdb92d26688207572cb11b41bb4c2acfcb0bc6f1e5848ec341863079` |
-| Linux `pytest-matrix-report-ubuntu-2604-cp3.14-a1` | `13333311001` | `sha256:4598506f333b7b080758e6753c35c473858c1b9194daf88972c6f4e1fbcf9d45` |
-| Windows `pytest-matrix-report-windows-a1` | `13336220429` | `sha256:a5f75155e41c4329dd1dcd330ab3c6d6502b06fc9f00aeb5df3220d493379e58` |
+| Linux pytest CPython 3.11 | `13379035949` | `sha256:7435b3f1f3398b25318ea2a81003d3d9d75f711cf8276519b476faed2cca9b48` |
+| Linux pytest CPython 3.14 | `13376894685` | `sha256:753b4df11f4a5702086409b91a4c443576656ac4f94613fbc46fa712a7cdca88` |
+| Ubuntu 26.04 pytest CPython 3.14 | `13378245191` | `sha256:10bfb4341af3f6d6672c287e9f21a507ef3e9f9ab6570ee849a619cf7edc0e37` |
+| Windows pytest CPython 3.11 | `13378684713` | `sha256:3c22ce578bbf18c382911cb97f608b58ce834458038f1638500bd1033acd97b1` |
+| Windows pytest CPython 3.14 | `13379820641` | `sha256:7ff61b976d55385f46db5ea08ea14423f32246337b29a0c162a495d0bbf52b66` |
+| Linux coverage CPython 3.11 | `13379095785` | `sha256:cf28d01eb148a11ad9643b1af7f13e98097b0f362e9f2845fae639ccb994dfb7` |
+| Linux UI coverage CPython 3.11 | `13374924446` | `sha256:3759862f4cc98224239a88deb7e923ceae1ec99172656f5b1aaf8f9a8ee6614d` |
+| Linux pytest matrix report | `13378258718` | `sha256:f29b7ebc1b0b6a154e50ead0e51270b6c101f8d3885dbefd38269b1046c5b03a` |
+| Ubuntu pytest matrix report | `13378253854` | `sha256:40fb3c5acd6fd4a35142ff0070326a7c1163f6c66b7d0b9c36ce892158e0cde0` |
+| Windows pytest matrix report | `13379307510` | `sha256:93c6e666c14ec56405c400a72f95f20528aa9175c41dbca2844c3b0c6b5996ed` |
+| Linux Qt logs CPython 3.11 | `13376841286` | `sha256:72501e19cee977d849128b6b4efb2e4b49c32ecd2fef94cfdbf1244065388283` |
+| Linux Qt logs CPython 3.14 | `13376021787` | `sha256:553beee185e06a947a8fc3c017136a5ac8d3ec741c2f606261357b7f065cddb2` |
+| Ubuntu Qt logs | `13374959606` | `sha256:bb99171338d824d7394ab7a51aa6d58660bdbc0dc6267150d8b662702458f08e` |
+| Windows UI logs CPython 3.11 | `13376935776` | `sha256:8afb3538717418a673583ddb40bc44cc3d82ce33f1077070864e5230956a42da` |
+| Windows UI logs CPython 3.14 | `13375672843` | `sha256:6d7ef3b19567c4f03a0b91dd72cf459004f3f9c7c2cdfae790465cae2de68620` |
+| Windows stability history CPython 3.11 | `13376011643` | `sha256:610449cc922652c166d8e69b127696f87a5a82180498c63b3f6ef41698209120` |
+| Windows stability history CPython 3.14 | `13375607897` | `sha256:9260973657c20ff5fd13eaaf0c8e2fac160c3ab5d1af1b5ea8b9c02f0dee57ec` |
+| Windows stability intake CPython 3.11 | `13376695971` | `sha256:cc96d22006e5f74d0d1501605cf8692600669f7404c820d6c58093325c9784be` |
+| Windows stability intake CPython 3.14 | `13376181553` | `sha256:420984343c99fba3d5fdbedfe804e6761d978d0298cba801bbcb7089c49f3a15` |
+| Windows stability presentation CPython 3.11 | `13376436168` | `sha256:2717963db31a0a9dc3459632b4a14bd335eff35dc8c3843a722a7fec67adc050` |
+| Windows stability presentation CPython 3.14 | `13376765862` | `sha256:6369617bec259a16df5c4360dfe34183c56c0fc6a50f7c8fb5257bba77d284a0` |
+| Windows PowerShell run-card behavioral logs | `13375088881` | `sha256:165d25d5507db85bc5de0acbb9762d23f1a41d45c981743342a829ef0b92a606` |
 
-#### Log artifacts جانبی
+## ۹. نتیجه و اقدام بعدی
 
-| Run / artifact | ID | SHA-256 digest |
-|---|---:|---|
-| Linux `qt-ubuntu-2604-logs` | `13329787016` | `sha256:bc734970484900b40a05419e1cf35e01e09322300b49bd3ea9bdbddb312a33e5` |
-| Linux `qt-workbench-logs-cp3.11` | `13328962784` | `sha256:d34b54b6b3fb4e611bf141d238672f3032ff90d1423590c49743a8e7502825d3` |
-| Linux `qt-workbench-logs-cp3.14` | `13328503990` | `sha256:413362723f975121e7917a6260bf9e74d786bc212d2a280254f24813f3edd0ca` |
-| Windows `qt-windows-stability-logs-cp3.11-history` | `13328623318` | `sha256:6fe3e74be01132a7bdb448f632fa4eea2ec5a024bf896e24289c438ec397197b` |
-| Windows `qt-windows-stability-logs-cp3.11-intake` | `13328423365` | `sha256:572ed75c3dab813f355e8cc945ee281fa495eddd95364d5c0c67978d0d6ea704` |
-| Windows `qt-windows-stability-logs-cp3.11-presentation` | `13328253418` | `sha256:18c10625d3ade8de537bf8e53476953ddc0b807807f8bd9e9cd4b7fb50978beb` |
-| Windows `qt-windows-stability-logs-cp3.14-history` | `13329546639` | `sha256:6230c40c17e7f8bc56343970def8f29d3aec1289e84f654f1a9a0fead82b28f8` |
-| Windows `qt-windows-stability-logs-cp3.14-intake` | `13329341829` | `sha256:45a843027d0e4dd5b1efa39d73d643c1e314402283870a7bf6ca6d198706fe2d` |
-| Windows `qt-windows-stability-logs-cp3.14-presentation` | `13329806462` | `sha256:02dea97894a161feb60d536301581f349a3e364ee92fbb4889b55cf1fd39567e` |
-| Windows `qt-windows-ui-logs-cp3.11` | `13329052420` | `sha256:301ffb0e8bbeb4598d0c02741e16bcaaa1375aca87d64595eba01554af0c3a7a` |
-| Windows `qt-windows-ui-logs-cp3.14` | `13329751951` | `sha256:97201defd1bbbc2a9f7a174dfc9cb6aaca93d57874d525f6da709470850cd919` |
-| Windows `windows-run-card-powershell-logs` | `13329156789` | `sha256:e32d0c4c5f59c48d9c3ae1d729c0552554452395b6dfbbad3b86ecd618af05f9` |
+**نتیجه:** اصلاحات مهندسیِ مستقل این موج روی SHA `b3163bf...` پیاده‌سازی و آزموده شده‌اند؛ Linux/Ubuntu/Windows CI کامل PASS است. وضعیت محصول همچنان **PARTIALLY QUALIFIED — PRE-ALPHA** و انتشار production/public **NOT READY** است. failure تاریخی Windows بازتولید نشد، اما root cause اثبات نشده؛ physical Windows display acceptance و تمام موارد owner-gated باز می‌مانند.
 
-## ۱۰. شاخص‌های راهنمای نگهداری
+**اقدامات لازم برای ادامهٔ qualification:**
 
-- وضعیت فعلی محصول: [`README.md`](../../README.md)
-- context اجرایی: [`PROJECT_CONTEXT.md`](../PROJECT_CONTEXT.md)
-- فهرست قابلیت‌های مبتنی بر کد: [`PRODUCT_CAPABILITY.md`](../PRODUCT_CAPABILITY.md)
-- تصمیم‌های مالک و قراردادهای باز: [`PRODUCT_DECISIONS_REQUIRED.md`](../PRODUCT_DECISIONS_REQUIRED.md)
-- ماتریس ۲۶ کلاس: [`DOCUMENT_DOMAIN_COVERAGE.md`](../DOCUMENT_DOMAIN_COVERAGE.md)
-- پذیرش انسانی Windows: [`WINDOWS_TESTING.md`](../WINDOWS_TESTING.md)
-- شواهد GitHub — baseline تاریخی `894161a...`: [Linux run](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41804712405)، [Windows run](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41804712330).
-- شواهد follow-up شکست‌خورده روی SHA `94d698f...`: [Linux run](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41827377959)، [Windows run](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41827378042).
-- شواهد code/test-fix SHA `ff4afdd...`: [Linux run](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41841625094)، [Windows run](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41841625041).
+1. مالک محصول دربارهٔ حذف/rename کد منبع در lesson revision تصمیم مکتوب بدهد؛ تا آن زمان رفتار جدیدی اضافه نشود.
+2. اگر failure تاریخی UI دوباره رخ داد، diagnostic snapshot و artifact همان SHA حفظ و از روی evidence علت‌یابی شود؛ از retry/sleep/skip برای سبزکردن استفاده نشود.
+3. run-card ۱۶ مرحله‌ای روی نمایشگر فیزیکی Windows اجرا و با artifact انسانی تکمیل شود؛ offscreen را جایگزین نکنید.
+4. M2–M5 و هر scope اضافه فقط پس از تصمیم مالک و acceptance contract مستقل باز شود.
+5. پیش از هر release ادعاشده، remote ref، کد/تست SHA، workflowها و artifactها مجدداً روی همان SHA بررسی شوند؛ `out/performance.json` را در این مأموریت restore یا commit نکنید.
+
+## مراجع
+
+- README وضعیت محصول: [`../../README.md`](../../README.md)
+- مرجع زمینهٔ پروژه: [`../PROJECT_CONTEXT.md`](../PROJECT_CONTEXT.md)
+- inventory قابلیت‌ها: [`../PRODUCT_CAPABILITY.md`](../PRODUCT_CAPABILITY.md)
+- تصمیم‌های نیازمند مالک: [`../PRODUCT_DECISIONS_REQUIRED.md`](../PRODUCT_DECISIONS_REQUIRED.md)
+- قرارداد Windows: [`../WINDOWS_TESTING.md`](../WINDOWS_TESTING.md)
+- Linux CI روی `b3163bf...`: [run 41940002906](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002906)
+- Windows CI روی `b3163bf...`: [run 41940002911](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002911)
+- failure UI تاریخی روی `ff4afdd...`: [run 41841625041](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41841625041)

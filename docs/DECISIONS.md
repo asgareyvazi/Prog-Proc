@@ -3093,3 +3093,7 @@ provenance re-read, human approval (self-approval and evidence gates), and
 the coverage matrix becomes 14/7/5 with 12 handlers and head `0020`. The
 knowledge-only TXT corpus stays valid and is still the negative case that
 proves promotion does not invent from prose.
+
+**Lifecycle qualification follow-up (2026-11-06; implementation, not a new product policy).** On code/test SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`, a source supersession sets the predecessor to `SUPERSEDED`, preserves its previous lifecycle in `prior_status`, and creates the successor as `DRAFT` without inheriting `approved_by`/`approved_at`. Lesson code identity is globally unique after trim + Unicode casefold among current rows; repository create/update/revision, promotion, and the database partial unique index enforce the rule. Focused lesson and exception tests passed 95/95; full Linux/Ubuntu/Windows suites passed on that exact SHA (see the Persian closure report). This note documents tested lifecycle behavior and does not authorize a source-removal or code-rename policy.
+
+**Owner-gated gap.** If a source revision removes or changes a lesson code without an explicit successor, disposition/linking semantics remain unspecified. An isolated audit showed the resulting chain is refused by the chain validator when no current or withdrawn disposition exists, but the product does not yet define a complete approved behavior for source removal/rename. Do not infer automatic deletion, withdrawal, code reuse, or linkage; see `docs/PRODUCT_DECISIONS_REQUIRED.md`.

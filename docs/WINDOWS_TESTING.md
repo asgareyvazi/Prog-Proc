@@ -1,16 +1,16 @@
 # Windows testing
 
-> **Current status (2026-11-04):** Windows CPython 3.11 and 3.14 full suites, exact-SHA pytest attribution, clean-install smoke, offscreen Qt UI/stability and PowerShell run-card tests passed on code SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882` in run [`41804712330`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41804712330) (14/14 jobs succeeded). Migration head is `0026`. Local Qt UI tests in this sandbox are **SKIPPED** because `libGL.so.1` is absent; CI's Qt-enabled tests are the positive evidence. Offscreen evidence does not constitute physical display acceptance; the human workstation checklist remains **NOT RUN**. The documentation-only commit is independently checked by its exact-SHA CI.
+> **Current automated status (2026-11-06):** On code/test SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`, Windows workflow [`41940002911`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002911) completed successfully (14/14 jobs). Windows CPython 3.11 and 3.14 full suites each collected 2,776, with 2,713 passed, 63 skipped, and zero failures/errors. Offscreen UI passed 29/29 on each Python version; stability suites, clean-install smoke, and PowerShell 5.1/7 run-card behavioral tests passed. Local Qt is **SKIPPED** here because `libGL.so.1` is absent. The historical registration/refresh UI failure was not reproduced; root cause remains unproven. Offscreen CI is not physical display acceptance; the human workstation checklist remains **NOT RUN**.
 
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the
 `windows-2022` workflow in `.github/workflows/ci-windows.yml`. That image is
 not this workstation. The workflow runs CPython 3.11 and 3.14 for the core
 suite, clean-install smoke, and offscreen UI jobs; the disposable pilot and
-PowerShell run-card behavior have separate Windows jobs. Exact current-code
-pytest totals and matrix identity reports are artifacts attached to run
-`41804712330` on SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882`; earlier runs remain historical. A green offscreen
-job is not the same as opening the workbench on this machine.
+PowerShell run-card behavior have separate Windows jobs. Exact totals and
+matrix identity reports are artifacts attached to run `41940002911` on code/test
+SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`; earlier runs remain historical.
+A green offscreen job is not the same as opening the workbench on this machine.
 
 Commands below are PowerShell. Do not paste the Bash examples from the
 README. Keep the repository line endings as LF (`git config core.autocrlf

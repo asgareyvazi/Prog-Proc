@@ -1,20 +1,21 @@
 # Product decisions required before the next capabilities
 
 **Status:** decision register, not an implementation plan
-**As of:** 2026-11-04 (M6 delivered; M2–M5 remain owner-gated; latest exact-SHA CI and Ubuntu 26.04 × CPython 3.14 lane do not change those decisions)
+**As of:** 2026-11-06 (M6 delivered; M2–M5 remain owner-gated; exact-SHA CI on `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` does not change those decisions)
 **Companion:** [`PRODUCT_CAPABILITY.md`](PRODUCT_CAPABILITY.md)
 **V9.0 note:** `M6` (`LESSON_LEARNED` tally → `lesson_learned`) was delivered in this milestone with contract `v8`, migration `0020` and 12 corpus tests (`tests/integration/test_lesson_promotion.py`). The remaining four milestones `M2`–`M5` are still open and fail-closed as described below; none is implemented by a setting, table or protocol.
 
 These items are not defects. The current code fails closed. None of them is
 implemented by a setting name, a table, or a protocol.
 
-**The count, and where it comes from.** This register now holds **four open
-decisions** (`M2`–`M5`) and one delivered milestone (`M6` in V9.0) plus the
-excluded list. `M6` was `LESSON_LEARNED` → `lesson_learned` (v8) and is no
-longer open. The five were the five milestones `PRODUCT_CAPABILITY.md` schedules after the current one (M2
-to M6); the excluded list is the boundary, not a decision. A report that
-counts "six product decisions" is counting the excluded list as a decision, and
-that count was corrected in the end-to-end report on 2026-10-24.
+**The count, and where it comes from.** This register holds **four open
+milestone decisions** (`M2`–`M5`) and one delivered milestone (`M6` in V9.0),
+plus the excluded list. `M6` was `LESSON_LEARNED` → `lesson_learned` (v8) and
+is no longer open. The excluded list is a product boundary, not another
+milestone decision. The lesson source-code removal/change question recorded
+at the end of this register is an additional owner-gated question surfaced by
+the 2026-11-06 audit; it is not numbered as a new milestone and does not alter
+the M2–M5 count.
 
 Each decision below carries the same six parts, so that it can be answered
 without reading the code: the precise question, the current behavior, the safe
@@ -217,3 +218,15 @@ The follow-on Intake and Daily DDR work does not change any owner-gated decision
 - M2–M5, additional engineering calculations, broader document writers, AI/provider/vector capabilities, Skills runtime, and multi-user/authentication remain owner-gated or excluded as already recorded above. SQLite remains the only qualified database; PostgreSQL has no service-backed qualification evidence.
 
 Implementation contracts are recorded in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), ADR 004/005, and migrations `0025`/`0026`. Their implementation status is established by source, integration tests, packaging checks, and exact-SHA CI—not by this decision register.
+
+## Additional owner question surfaced by the 2026-11-06 lesson audit — not a new milestone
+
+**Question requiring the owner.** When a source document is revised so that a lesson code disappears or changes, what disposition and identity-linking behavior is authorized for the current lesson row and its revision chain?
+
+**Observed behavior/evidence.** Lesson codes are canonicalized by strip + Unicode casefold and globally unique among current rows. Create/update/revision and promotion paths enforce the rule; the database partial unique index is the final guard. Supersession caused by an explicit replacement retains the predecessor and prior lifecycle. A temporary isolated audit of source deletion found the predecessor can become `SUPERSEDED`/non-current without a successor; the chain validator then refuses destructive follow-up because no current or withdrawn disposition exists. The current code does not define a complete owner-approved removal/rename policy for the source-identity case.
+
+**Safe interim position.** Do not invent an automatic rename, code reuse, withdrawal, deletion, or successor link. Preserve the existing fail-closed chain validation and require an owner decision before adding any such behavior. This entry does not claim that every source-removal write path itself is already fail-closed.
+
+**Blocked.** A product rule for source lesson disappearance/change, and claims that source edits preserve a complete lesson identity chain in all cases.
+
+**Acceptance evidence before implementation.** Written owner choice for disappearance vs rename vs code reuse; explicit rules for predecessor lifecycle, `prior_status`, successor identity/code, approval metadata, audit/provenance, and destructive actions; regression tests for each selected path plus refusal cases. No code change is authorized by this open question alone.
