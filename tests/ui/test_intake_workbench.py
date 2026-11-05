@@ -336,7 +336,9 @@ def test_intake_review_registration_and_rejection_run_as_distinct_ui_transitions
 
         next_count = finished.count() + 2
         window._register_selected_intake()
-        assert wait_for_count(next_count), "registration and pending refresh did not finish"
+        assert wait_for_count(next_count), (
+            f"registration and pending refresh did not finish; {lifecycle_snapshot()}"
+        )
         assert window._intake_status_by_id[accepted_id] == "REGISTERED"
         registered = controller.intake_items(status="REGISTERED")
         assert len(registered) == 1
