@@ -77,6 +77,7 @@ This section is the closure ledger for the capability inventory above. It distin
 | Q-05 | PostgreSQL backend | **NOT QUALIFIED** | SQLite remains the only qualified backend. A product target and a real PostgreSQL service/migration/integration matrix are prerequisites; no assumption or skipped test closes this item. |
 | O-01 | M2–M5: external AI adapter, vector sidecar, Skills runtime, additional engineering method | **OWNER-GATED** | Remain outside this completion scope until the product owner approves contracts, data boundaries, security and acceptance cases. |
 | O-02 | Trajectory/directional calculations | **OWNER-GATED / calculations disabled** | Survey station storage may remain; no calculation is enabled without a reviewed method, units, assumptions, reference and refusal contract plus independent verification. |
+| O-03 | Lesson source removal or `code` change without explicit successor | **OWNER-GATED / OPEN** | Current code has global casefold identity and chain validation, but no owner-approved removal/rename disposition. Isolated audit rejected an orphaned chain; owner must specify predecessor status, successor/code identity, reuse, approval and audit semantics before an implementation. See `PRODUCT_DECISIONS_REQUIRED.md`. |
 
 ## Historical milestone note — V9.0
 
