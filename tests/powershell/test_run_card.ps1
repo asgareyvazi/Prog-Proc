@@ -55,6 +55,25 @@ foreach ($field in $requiredStepFields) {
 Assert-True ($templateObject.windows_testing_checklist.display -like "NOT RUN*") "physical display checklist remains NOT RUN"
 Assert-True ($templateObject.figures.manual_windows_display -like "NOT RUN*") "offscreen cannot imply physical display acceptance"
 
+# Package smoke, Doctor, and the operator checklist must follow the migration metadata.
+$migrationsPath = Join-Path $repo "src\drilling_intelligence\database\migrations.py"
+$migrationsText = Get-Content -LiteralPath $migrationsPath -Raw
+$metadataMatch = [regex]::Match($migrationsText, 'METADATA_REVISION\s*=\s*["''](?<revision>\d{4})["'']')
+Assert-True $metadataMatch.Success "database migration metadata declares a numeric schema revision"
+$metadataRevision = $metadataMatch.Groups["revision"].Value
+$cardText = Get-Content -LiteralPath $card -Raw
+$cardRevisionMatch = [regex]::Match($cardText, '\$script:ExpectedMigrationRevision\s*=\s*"(?<revision>\d{4})"')
+Assert-True $cardRevisionMatch.Success "run card declares one explicit expected migration revision"
+Assert-True ($cardRevisionMatch.Groups["revision"].Value -eq $metadataRevision) "run-card expected revision matches database migration metadata"
+Assert-True ($cardText -match '\$revisionCode\s*=.*\$\(\$script:ExpectedMigrationRevision\)') "package import check uses the shared expected revision"
+$doctorComparisons = [regex]::Matches($cardText, '\$payload\.schema\.current -ne \$script:ExpectedMigrationRevision')
+Assert-True ($doctorComparisons.Count -eq 2) "package and migration Doctor checks use the shared expected revision"
+Assert-True ($cardText -notmatch '0024') "run card has no stale 0024 expectation"
+$guideText = Get-Content -LiteralPath (Join-Path $repo "docs\WINDOWS_TESTING.md") -Raw
+$staticGate = [regex]::Match($guideText, '(?ms)^4\.\s+\*\*The static gates are green on this machine\.\*\*(?<body>.*?)(?=^5\.)')
+$expectedGuideRevision = "currently ``$metadataRevision``"
+Assert-True ($staticGate.Success -and $staticGate.Groups["body"].Value.Contains($expectedGuideRevision)) "physical Windows checklist stage 4 names the current migration head"
+
 # Execute the actual process adapter without executing the full product run card.
 # The function bodies are extracted from the parsed source AST, then invoked with a temp artifact dir.
 foreach ($functionName in @("Get-UtcNow", "ConvertTo-WindowsArgument", "Write-Utf8File", "Invoke-NativeProcess", "Invoke-Step")) {

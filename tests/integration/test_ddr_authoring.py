@@ -12,6 +12,7 @@ from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.database.models import AuditEvent, DdrActivity, DdrReport, WellOperation
 from drilling_intelligence.operations.ddr import DdrAuthoringService
 from drilling_intelligence.review import ReviewActionRequest, ReviewActionService
+from drilling_intelligence.review.actions import ReviewActionError
 
 
 def _activities() -> list[dict[str, str]]:
@@ -378,3 +379,299 @@ def test_ddr_concurrency_timestamp_advances_when_clock_repeats(monkeypatch) -> N
 
     assert ddr._next_updated_at(current) == current + timedelta(microseconds=1)
     assert ddr._next_updated_at(current.replace(tzinfo=None)) == current + timedelta(microseconds=1)
+
+
+def test_parallel_ddr_saves_with_one_freshness_token_do_not_lose_an_update(
+    db, committed_well_id, monkeypatch
+) -> None:
+    """SQLite's competing snapshot writer must fail rather than silently overwrite a save."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    assert db.engine.dialect.name == "sqlite"
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-10-31",
+        summary="Original operator-entered summary",
+        actor="author-1",
+        reason="Create a concurrency test draft",
+    )
+    barrier = Barrier(2)
+    assert_editable = service._assert_editable
+
+    def wait_after_freshness_check(report, expected_updated_at: str) -> None:
+        assert_editable(report, expected_updated_at)
+        barrier.wait(timeout=10)
+
+    monkeypatch.setattr(service, "_assert_editable", wait_after_freshness_check)
+
+    def save(summary: str) -> dict:
+        return service.save_draft(
+            draft["report_id"],
+            expected_updated_at=draft["updated_at"],
+            report_date="2026-10-31",
+            summary=summary,
+            actor="author-1",
+            reason=f"Concurrent replacement: {summary}",
+        )
+
+    summaries = ("Concurrent update A", "Concurrent update B")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(save, summary) for summary in summaries]
+        successes = []
+        failures = []
+        for future in futures:
+            try:
+                successes.append(future.result(timeout=15))
+            except ValidationError as exc:
+                failures.append(exc)
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert "changed since it was loaded" in str(failures[0])
+    persisted = service.get(draft["report_id"])
+    assert persisted["summary"] in summaries
+    assert persisted["updated_at"] > draft["updated_at"]
+    with db.read_only() as session:
+        events = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.subject_type == "ddr_report",
+                    AuditEvent.subject_id == draft["report_id"],
+                )
+            )
+        )
+    assert [event.action for event in events].count("ddr.draft_saved") == 1
+
+
+def test_parallel_ddr_submissions_create_only_one_candidate_operation(
+    db, committed_well_id, monkeypatch
+) -> None:
+    """One report snapshot cannot create duplicate operation rows under concurrent submit."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-10-31",
+        activities=[{"operation_type": "drilling", "label": "One explicit activity"}],
+        actor="author-1",
+        reason="Create concurrent submit case",
+    )
+    barrier = Barrier(2)
+    assert_editable = service._assert_editable
+
+    def wait_after_freshness_check(report, expected_updated_at: str) -> None:
+        assert_editable(report, expected_updated_at)
+        barrier.wait(timeout=10)
+
+    monkeypatch.setattr(service, "_assert_editable", wait_after_freshness_check)
+
+    def submit():
+        return service.submit(
+            draft["report_id"],
+            expected_updated_at=draft["updated_at"],
+            actor="author-1",
+            reason="Submit the same snapshot",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(submit), pool.submit(submit)]
+        successes = []
+        failures = []
+        for future in futures:
+            try:
+                successes.append(future.result(timeout=15))
+            except ValidationError as exc:
+                failures.append(exc)
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert "changed since it was loaded" in str(failures[0])
+    with db.read_only() as session:
+        operations = list(
+            session.scalars(
+                select(WellOperation).where(WellOperation.report_id == draft["report_id"])
+            )
+        )
+        activities = list(
+            session.scalars(
+                select(DdrActivity).where(DdrActivity.ddr_report_id == draft["report_id"])
+            )
+        )
+    assert len(operations) == len(activities) == 1
+    assert activities[0].operation_id == operations[0].id
+    assert operations[0].status == "CANDIDATE"
+
+
+def test_parallel_ddr_revisions_create_only_one_current_successor(
+    db, committed_well_id, monkeypatch
+) -> None:
+    """Two revision requests from one token cannot create duplicate successor reports."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-10-31",
+        summary="Submitted report to revise concurrently.",
+        actor="author-1",
+        reason="Create concurrent revision case",
+    )
+    submitted = service.submit(
+        draft["report_id"],
+        expected_updated_at=draft["updated_at"],
+        actor="author-1",
+        reason="Submit report before revision race",
+    )
+    barrier = Barrier(2)
+    claim_snapshot = service._claim_snapshot
+
+    def wait_then_claim(session, report, expected_updated_at: str) -> None:
+        barrier.wait(timeout=10)
+        claim_snapshot(session, report, expected_updated_at)
+
+    monkeypatch.setattr(service, "_claim_snapshot", wait_then_claim)
+
+    def revise():
+        return service.create_revision(
+            draft["report_id"],
+            expected_updated_at=submitted["updated_at"],
+            actor="author-1",
+            reason="Create a successor revision",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(revise), pool.submit(revise)]
+        successes = []
+        failures = []
+        for future in futures:
+            try:
+                successes.append(future.result(timeout=15))
+            except ValidationError as exc:
+                failures.append(exc)
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert "changed since it was loaded" in str(failures[0])
+    history = service.list_reports(committed_well_id, include_history=True)
+    assert len(history) == 2
+    assert {record["revision_number"] for record in history} == {1, 2}
+    assert sum(bool(record["is_current"]) for record in history) == 1
+
+
+def test_concurrent_ddr_review_actions_are_serialized_by_the_claimed_snapshot(
+    db, workspace, committed_well_id, monkeypatch
+) -> None:
+    """Two reviewers cannot confirm and reject the same displayed report concurrently."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-10-31",
+        summary="A submitted report for competing review actions.",
+        actor="author-1",
+        reason="Create review concurrency case",
+    )
+    submitted = service.submit(
+        draft["report_id"],
+        expected_updated_at=draft["updated_at"],
+        actor="author-1",
+        reason="Submit the concurrency case",
+    )
+    # Materialize the workspace's lazy engine before either worker starts.
+    _ = workspace.database
+    actions = ReviewActionService.for_workspace(workspace)
+    barrier = Barrier(2)
+    check_preconditions = actions._check_preconditions
+
+    def wait_after_preconditions(session, row, request) -> None:
+        check_preconditions(session, row, request)
+        barrier.wait(timeout=10)
+
+    monkeypatch.setattr(actions, "_check_preconditions", wait_after_preconditions)
+
+    def decide(action: str, actor: str):
+        return actions.execute(
+            ReviewActionRequest(
+                record_type="ddr_report",
+                record_id=draft["report_id"],
+                action=action,
+                actor=actor,
+                expected_status="CANDIDATE",
+                expected_current=True,
+                expected_updated_at=submitted["updated_at"],
+                expected_scope={"well_id": committed_well_id},
+                reason=f"Concurrent independent review: {action}",
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(decide, "confirm", "reviewer-1"),
+            pool.submit(decide, "reject", "reviewer-2"),
+        ]
+        successes = []
+        failures = []
+        for future in futures:
+            try:
+                successes.append(future.result(timeout=15))
+            except ReviewActionError as exc:
+                failures.append(exc)
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert "stale" in str(failures[0])
+    final = service.get(draft["report_id"])
+    assert final["status"] in {"CONFIRMED", "REJECTED"}
+    history = [item for item in final["provenance"] if item.get("source_kind") == "review_decision"]
+    assert len(history) == 1
+
+
+def test_ddr_operation_review_uses_the_same_atomic_claim_without_confirming_its_report(
+    db, workspace, committed_well_id
+) -> None:
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-10-31",
+        activities=[{"operation_type": "drilling", "label": "Operator-entered operation"}],
+        actor="author-1",
+        reason="Create operation review case",
+    )
+    submitted = service.submit(
+        draft["report_id"],
+        expected_updated_at=draft["updated_at"],
+        actor="author-1",
+        reason="Submit one candidate operation",
+    )
+    operation_id = submitted["activities"][0]["operation_id"]
+    with db.read_only() as session:
+        operation = session.get(WellOperation, operation_id)
+        assert operation is not None
+        operation_updated_at = operation.updated_at
+
+    result = ReviewActionService.for_workspace(workspace).execute(
+        ReviewActionRequest(
+            record_type="well_operation",
+            record_id=operation_id,
+            action="confirm",
+            actor="reviewer-1",
+            expected_status="CANDIDATE",
+            expected_current=True,
+            expected_updated_at=operation_updated_at.isoformat(),
+            expected_scope={"well_id": committed_well_id},
+            reason="Independently confirmed the authored operation",
+        )
+    )
+    assert result.status == "CONFIRMED"
+    with db.read_only() as session:
+        report = session.get(DdrReport, draft["report_id"])
+        operation = session.get(WellOperation, operation_id)
+        assert report is not None and report.status == "CANDIDATE"
+        assert operation is not None and operation.status == "CONFIRMED"

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..core.enums import KNOWN_OPERATION_TYPES
@@ -216,6 +216,7 @@ class DdrAuthoringService:
         with self._database.unit_of_work() as session:
             report = self._report(session, report_id)
             self._assert_editable(report, expected_updated_at)
+            self._claim_snapshot(session, report, expected_updated_at)
             report.report_date = parsed_date
             report.report_date_text = date_text
             report.report_number = content.report_number or None
@@ -251,6 +252,7 @@ class DdrAuthoringService:
         with self._database.unit_of_work() as session:
             report = self._report(session, report_id)
             self._assert_editable(report, expected_updated_at)
+            self._claim_snapshot(session, report, expected_updated_at)
             activities = list(
                 session.scalars(
                     select(DdrActivity)
@@ -349,6 +351,7 @@ class DdrAuthoringService:
             group_id = previous.revision_group_id
             if not group_id:
                 raise ValidationError("manual DDR revision has no revision-group identity")
+            self._claim_snapshot(session, previous, expected_updated_at)
             activities = list(
                 session.scalars(
                     select(DdrActivity)
@@ -441,6 +444,36 @@ class DdrAuthoringService:
                 "DDR draft changed since it was loaded; reload before continuing",
                 expected_updated_at=expected_updated_at,
                 actual_updated_at=actual,
+            )
+
+    def _claim_snapshot(
+        self, session: Session, report: DdrReport, expected_updated_at: str
+    ) -> None:
+        """Atomically reserve the exact row snapshot before a multi-row authoring write.
+
+        A read-then-write check alone permits two SQLite sessions to load the same token and both
+        proceed before either commits. The no-op conditional UPDATE obtains the database writer
+        lock and rechecks status, currentness, revision and timestamp in the database; only one
+        competing transaction can claim that snapshot.
+        """
+        self._assert_fresh(report, expected_updated_at)
+        result = session.execute(
+            update(DdrReport)
+            .where(
+                DdrReport.id == report.id,
+                DdrReport.updated_at == report.updated_at,
+                DdrReport.status == report.status,
+                DdrReport.authoring_state == report.authoring_state,
+                DdrReport.revision_number == report.revision_number,
+                DdrReport.is_current.is_(report.is_current),
+            )
+            .values(updated_at=DdrReport.updated_at)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            raise ValidationError(
+                "DDR draft changed since it was loaded; reload before continuing",
+                expected_updated_at=expected_updated_at,
             )
 
     def _assert_editable(self, report: DdrReport, expected_updated_at: str) -> None:

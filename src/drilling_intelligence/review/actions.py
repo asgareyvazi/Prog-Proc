@@ -17,8 +17,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
+from sqlalchemy import update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from ..core.enums import RecommendationLifecycle, RiskLifecycle
@@ -573,6 +575,7 @@ class ReviewActionService:
                             "the application does not authenticate actor identity"
                         ),
                     )
+            self._claim_ddr_snapshot(session, row)
             detail: dict[str, Any] = {}
             self._route(session, row, req, capability)
             session.flush()
@@ -600,6 +603,55 @@ class ReviewActionService:
     ) -> ReviewActionResult:
         """Explicitly named alias for the write boundary used by UI/controllers."""
         return self.execute(request)
+
+    @staticmethod
+    def _claim_ddr_snapshot(session: Session, row: Any) -> None:
+        """Serialize concurrent DDR decisions with an atomic check of the displayed row state.
+
+        SQLite has no ``SELECT ... FOR UPDATE``. A conditional no-op UPDATE takes its writer lock
+        before the owning repository changes status, so a second reviewer cannot apply a competing
+        action using the same stale snapshot. The original timestamp/status/revision remain the
+        predicates; the domain transition below remains the only value-changing write.
+        """
+        model: Any
+        if isinstance(row, DdrReport):
+            model = DdrReport
+        elif isinstance(row, WellOperation):
+            attributes = row.attributes if isinstance(row.attributes, Mapping) else {}
+            if attributes.get("authoring_channel") != "DDR_WORKSPACE":
+                return
+            model = WellOperation
+        else:
+            return
+
+        predicates = [
+            model.id == row.id,
+            model.status == row.status,
+            model.is_current.is_(row.is_current),
+            model.updated_at == row.updated_at,
+            model.well_id == row.well_id,
+        ]
+        if model is DdrReport:
+            predicates.extend(
+                [
+                    DdrReport.authoring_state == row.authoring_state,
+                    DdrReport.revision_number == row.revision_number,
+                ]
+            )
+        result = cast(
+            CursorResult[Any],
+            session.execute(
+                update(model)
+                .where(*predicates)
+                .values(updated_at=model.updated_at)
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        if result.rowcount != 1:
+            raise ReviewActionError(
+                f"review action for {row.id!r} is stale: record changed during the decision",
+                hint="reload the authoritative review before acting",
+            )
 
     def _execute_conflict(self, session: Session, req: ReviewActionRequest) -> ReviewActionResult:
         conflict = session.get(KnowledgeConflict, req.record_id)

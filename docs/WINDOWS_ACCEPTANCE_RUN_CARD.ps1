@@ -28,6 +28,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+# Keep package-bootstrap and Doctor assertions aligned with database/migrations.py.
+# tests/powershell/test_run_card.ps1 compares this value with METADATA_REVISION.
+$script:ExpectedMigrationRevision = "0026"
 $script:StartedAt = [DateTime]::UtcNow.ToString("o")
 $script:RunId = [Guid]::NewGuid().ToString("N")
 $script:RunDir = Join-Path (Join-Path $script:RepoRoot $OutDir) $script:RunId
@@ -264,9 +267,9 @@ function Invoke-PackageSmoke {
     if ($create.Status -ne "PASS") { return $create }
     $install = Invoke-NativeProcess -FilePath $cleanPython -ArgumentList @("-m", "pip", "install", $PackagePath) -StepId "$($script:ActiveStepId)-$Label-install"
     if ($install.Status -ne "PASS") { return $install }
+    $revisionCode = "import importlib; revision = importlib.import_module('drilling_intelligence.database.migrations').METADATA_REVISION; assert revision == '$($script:ExpectedMigrationRevision)'; print(revision)"
     $check = Invoke-NativeProcess -FilePath $cleanPython -ArgumentList @(
-        "-c",
-        'import importlib; revision = importlib.import_module(''drilling_intelligence.database.migrations'').METADATA_REVISION; assert revision == ''0024''; print(revision)'
+        "-c", $revisionCode
     ) -StepId "$($script:ActiveStepId)-$Label-import"
     if ($check.Status -ne "PASS") { return $check }
     $cli = Join-Path $cleanVenv "Scripts\drillintel.exe"
@@ -279,8 +282,8 @@ function Invoke-PackageSmoke {
     if ($doctor.Status -ne "PASS") { return $doctor }
     try {
         $payload = $doctor.Stdout | ConvertFrom-Json
-        if ($payload.schema.current -ne "0024" -or -not $payload.schema.up_to_date) {
-            throw "clean $Label package bootstrap/Doctor did not report 0024 current"
+        if ($payload.schema.current -ne $script:ExpectedMigrationRevision -or -not $payload.schema.up_to_date) {
+            throw "clean $Label package bootstrap/Doctor did not report $($script:ExpectedMigrationRevision) current"
         }
     } catch {
         return [pscustomobject]@{
@@ -305,7 +308,7 @@ function Invoke-PackageSmoke {
     return [pscustomobject]@{
         Status = "PASS"; ExitCode = 0; StartedAt = $doctor.StartedAt; EndedAt = Get-UtcNow
         Stdout = $doctor.Stdout; Stderr = $uiMissing.Stderr; Log = ($doctor.Log + "; " + $uiMissing.Log)
-        Message = ($Label + " import, CLI, workspace bootstrap, Doctor 0024, and missing-UI behavior passed"); Ran = $true
+        Message = ($Label + " import, CLI, workspace bootstrap, Doctor " + $script:ExpectedMigrationRevision + ", and missing-UI behavior passed"); Ran = $true
     }
 }
 
@@ -422,7 +425,9 @@ try {
         $doctor = Invoke-NativeProcess -FilePath $cli -ArgumentList @("doctor", "--workspace", $migrationWorkspace, "--json") -StepId "$($script:ActiveStepId)-doctor"
         if ($doctor.Status -ne "PASS") { return $doctor }
         $payload = $doctor.Stdout | ConvertFrom-Json
-        if ($payload.schema.current -ne "0024" -or -not $payload.schema.up_to_date) { throw "Doctor did not report migration 0024 as current" }
+        if ($payload.schema.current -ne $script:ExpectedMigrationRevision -or -not $payload.schema.up_to_date) {
+            throw "Doctor did not report migration $($script:ExpectedMigrationRevision) as current"
+        }
         return $doctor
     } | Out-Null
 

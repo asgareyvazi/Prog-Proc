@@ -859,12 +859,21 @@ def command_ddr(args: argparse.Namespace) -> int:
     from ..operations.ddr import DdrAuthoringService
     from ..review.actions import ReviewActionRequest, ReviewActionService
 
+    action = args.action
+    content: dict[str, Any] | None = None
+    if action == "create":
+        content = _read_ddr_content(args.content, require_complete=False)
+    elif action == "save":
+        content = _read_ddr_content(args.content, require_complete=True)
+
+    # Reject malformed/oversized JSON before opening the lazy workspace database; an invalid
+    # snapshot must not trigger schema bootstrap or any write-side database initialization.
     workspace = _open_workspace(args)
     try:
         authoring = DdrAuthoringService(workspace.database)
-        action = args.action
         if action == "create":
-            content = _read_ddr_content(args.content, require_complete=False)
+            if content is None:
+                raise DrillingIntelligenceError("DDR create content was not validated")
             well_id = _resolve_well_id(workspace, args.well)
             record = authoring.create_draft(
                 well_id=str(well_id or ""),
@@ -916,7 +925,8 @@ def command_ddr(args: argparse.Namespace) -> int:
                     + (", ".join(item["action_id"] for item in available) or "none")
                 ]
         elif action == "save":
-            content = _read_ddr_content(args.content, require_complete=True)
+            if content is None:
+                raise DrillingIntelligenceError("DDR save content was not validated")
             record = authoring.save_draft(
                 args.report_id,
                 expected_updated_at=args.expected_updated_at,

@@ -426,3 +426,32 @@ def test_cli_ddr_content_size_limit_is_checked_before_json_parsing(
     assert "at most 200 activities" in excessive["message"]
     with workspace.database.read_only() as session:
         assert session.scalar(select(DdrReport.id)) is None
+
+
+def test_invalid_ddr_json_does_not_bootstrap_an_unopened_workspace_database(tmp_path: Path) -> None:
+    """A rejected snapshot must fail before lazy schema creation touches the workspace DB."""
+    from drilling_intelligence.wells.workspace import Workspace
+
+    fresh = Workspace.create(tmp_path / "unopened-workspace", name="Unopened workspace")
+    database_path = fresh.database_path
+    assert not database_path.exists()
+    invalid = tmp_path / "duplicate-key.json"
+    invalid.write_text('{"report_date":"2026-11-07","report_date":"2026-11-08"}', encoding="utf-8")
+
+    result = _call(
+        fresh,
+        "ddr",
+        "create",
+        "--well",
+        "A-3",
+        "--content",
+        str(invalid),
+        "--by",
+        "author",
+        "--reason",
+        "malformed snapshots must have no database side effect",
+        expect=1,
+    )
+    assert result["ok"] is False
+    assert "duplicate JSON key" in result["message"]
+    assert not database_path.exists()

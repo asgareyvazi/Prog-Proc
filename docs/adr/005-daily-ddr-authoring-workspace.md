@@ -7,7 +7,7 @@
 
 ## Decision
 
-1. An operator creates and edits a `DRAFT` using required, canonical `YYYY-MM-DD` report date, recorded operation vocabulary, and optional source-worded report fields. Author, reason, report revision, and activity sequence are retained in provenance/audit. Optimistic `updated_at` preconditions prevent stale writes.
+1. An operator creates and edits a `DRAFT` using required, canonical `YYYY-MM-DD` report date, recorded operation vocabulary, and optional source-worded report fields. Author, reason, report revision, and activity sequence are retained in provenance/audit. Optimistic `updated_at` preconditions prevent stale writes; save, submit, and revision atomically claim the exact SQLite row snapshot before changing it, so concurrent requests with one token cannot both commit.
 2. Draft activities are not yet `WellOperation` facts. On explicit submit, the service transaction creates corresponding `WellOperation` rows with `CANDIDATE` status and links the `DdrActivity` entries. No duration, depth, NPT category, total, or other engineering value is inferred from narrative text.
 3. Submit moves `authoring_state` to `SUBMITTED`; it does not change the report/operation review status from `CANDIDATE`. Independent review uses the existing `ReviewActionService` only for a current submitted report. Review/confirmation is not inferred from authoring, the source document, or submission.
 4. A revision is a new report revision, never an in-place rewrite of historical evidence. The old report and its operations become non-current; the new revision starts as a draft and requires its own review. Review state is not copied as approval.
@@ -26,7 +26,7 @@
 ## Consequences
 
 - `DdrAuthoringService` is the transactional domain API; UI and CLI must use its lifecycle and cannot write arbitrary fields directly. The headless `ddr` CLI is a thin compatibility adapter: create/save consume bounded strict JSON snapshots; save and lifecycle actions require the service's optimistic freshness token; review goes only through `ReviewActionService` with status, currentness, scope, revision and timestamp preconditions. It is not an ingestion route, calculation engine, or alternate writer.
-- `ReviewActionService` resolves `DdrReport.revision_number` as the review revision precondition. A caller-supplied actor remains a declared audit value, not an authenticated identity; self-review is refused by comparing it with the recorded author.
+- `ReviewActionService` resolves `DdrReport.revision_number` as the review revision precondition and atomically claims the displayed DDR report/operation snapshot before routing the status change. Concurrent actions from the same stale status/timestamp cannot both commit. SQLite remains the only qualified database; actor comparison does not authenticate a person. A caller-supplied actor remains a declared audit value, not an authenticated identity; self-review is refused by comparing it with the recorded author.
 - `DdrActivity` provides ordered operator-authored text linked to resulting operations; provenance follows report revision/actor/reason.
 - The review UI must gate actions to current submitted reports and reload after a successful action.
 - `tests/integration/test_ddr_authoring.py`, `tests/integration/test_ddr_cli.py`, the CLI surface snapshot, migration integrity/downgrade tests, and Qt UI tests are part of the evidence. A skipped Qt test is not a pass; exact-SHA offscreen CI and physical display acceptance are separate. The CLI tests do not replace exact-SHA CI evidence.

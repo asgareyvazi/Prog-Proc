@@ -1,6 +1,6 @@
 # Windows testing
 
-> **Automated status reviewed 2026-11-07:** Code/test SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` passed Windows workflow [`41940002911`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002911) (14/14 jobs); its two full suites each collected 2,776, with 2,713 passed, 63 skipped, and zero failures/errors. Offscreen UI passed 29/29 on each Python version; stability suites, clean-install smoke, and PowerShell 5.1/7 run-card behavioral tests passed. The separate report/constraints SHA `b549ee5a2249fc18ab02ac32d65610d00bd94d68` also passed Windows run [`42126486402`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42126486402) (14/14 jobs); its totals are not folded into the earlier SHA's test counts. Local Qt is **SKIPPED** here because `libGL.so.1` is absent. The historical registration/refresh UI failure was not reproduced; root cause remains unproven. Offscreen CI is not physical display acceptance; the human workstation checklist remains **NOT RUN**. The DDR CLI/audit-pin working-tree changes await exact-SHA CI.
+> **Automated status reviewed 2026-11-07:** Historical code/test SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` passed Windows workflow [`41940002911`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002911) (14/14 jobs); its two full suites each collected 2,776, with 2,713 passed, 63 skipped, and zero failures/errors. The later report/constraints SHA `b549ee5a2249fc18ab02ac32d65610d00bd94d68` separately passed [`42126486402`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42126486402) (14/14 jobs). These historical totals do not transfer to later SHAs. The latest remote code/test SHA `8626d61fe9a40db2b560507c79db5872f5ad1e12` passed Linux [`42353817465`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42353817465) (9/9), but Windows [`42353817436`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42353817436) ended **CANCELLED** (13 jobs passed; history/CPython 3.14 stability exceeded its existing 45-minute limit and evidence verification failed). A previous consecutive Windows run [`42348862485`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42348862485) hit the same limit; logs/artifacts could not be downloaded (EOF), so the root cause is unresolved. The 15 attempts, timeout, selectors and assertions were not weakened. This change set fixes stale migration-head checks (`0026`) and adds PowerShell drift regression coverage; its exact-SHA CI remains pending until the change set is pushed. Local Qt is **SKIPPED** here because `libGL.so.1` is absent. Offscreen CI is not physical display acceptance; the 16-step human workstation checklist remains **NOT RUN**.
 
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the
@@ -355,7 +355,7 @@ happily print an error and carry on.
    `-m ruff check .`, `-m ruff format --check .`, `-m mypy`,
    `-m compileall -q src tests migrations tools`, `-m alembic heads`.
    Pass: the first four exit 0, and `alembic heads` prints exactly one
-   line containing `(head)`, currently `0019`.
+   line containing `(head)`, currently `0026`.
 
 5. **The suite runs, and the skips are named.**
    `.\.venv\Scripts\python.exe -m pytest`.
