@@ -98,7 +98,8 @@ def test_output_from_a_run_that_exited_non_zero_is_used_but_never_silent(
             "out = sys.argv[sys.argv.index('-o') + 1]\n"
             "d = os.path.join(out, 'auto', 'scanned')\n"
             "os.makedirs(d, exist_ok=True)\n"
-            "json.dump({'pdf_info': [{'page_idx': 0, 'para_blocks': []}]},\n"
+            "json.dump({'pdf_info': [{'page_idx': 0, 'para_blocks': ["
+            "{'type': 'text', 'lines': [{'spans': [{'type': 'text', 'content': 'partial text'}]}]}]}]},\n"
             "          open(os.path.join(d, 'scanned_middle.json'), 'w'))\n"
             "sys.stderr.write('CUDA out of memory - aborted after page 1\\n')\n"
             "sys.exit(1)\n"
@@ -139,7 +140,8 @@ def test_a_clean_cli_run_is_not_marked_incomplete(settings, tmp_path: Path) -> N
             "out = sys.argv[sys.argv.index('-o') + 1]\n"
             "d = os.path.join(out, 'auto', 'clean')\n"
             "os.makedirs(d, exist_ok=True)\n"
-            "json.dump({'pdf_info': [{'page_idx': 0, 'para_blocks': []}]},\n"
+            "json.dump({'pdf_info': [{'page_idx': 0, 'para_blocks': ["
+            "{'type': 'text', 'lines': [{'spans': [{'type': 'text', 'content': 'complete text'}]}]}]}]},\n"
             "          open(os.path.join(d, 'clean_middle.json'), 'w'))\n"
             "sys.exit(0)\n"
         ),
@@ -203,6 +205,24 @@ def _envelope(entry: object) -> dict[str, object]:
     }
 
 
+def _legacy_http_openapi() -> dict[str, object]:
+    return {
+        "ok": True,
+        "status_code": 200,
+        "json": {
+            "info": {"version": "2.0.0"},
+            "paths": {
+                "/file_parse": {
+                    "post": {"responses": {"200": {"content": {"application/json": {}}}}}
+                }
+            },
+        },
+        "text": "",
+        "url": "http://mineru.test/openapi.json",
+        "error": "",
+    }
+
+
 def test_a_well_formed_http_response_carrying_no_content_is_refused(
     settings, tmp_path: Path, monkeypatch
 ) -> None:
@@ -216,6 +236,8 @@ def test_a_well_formed_http_response_carrying_no_content_is_refused(
     """
 
     def handler(method, url, **kwargs):
+        if url.endswith("/openapi.json"):
+            return _legacy_http_openapi()
         if url.endswith("/health"):
             return {
                 "ok": True,
@@ -245,6 +267,8 @@ def test_a_transport_failure_is_reported_not_swallowed(
     """A non-success HTTP status is an unavailable integration, not an empty document."""
 
     def handler(method, url, **kwargs):
+        if url.endswith("/openapi.json"):
+            return _legacy_http_openapi()
         if url.endswith("/health"):
             return {
                 "ok": True,
@@ -279,6 +303,8 @@ def test_a_valid_http_result_still_extracts(settings, tmp_path: Path, monkeypatc
     """The refusal is narrow: real content over HTTP still produces a document."""
 
     def handler(method, url, **kwargs):
+        if url.endswith("/openapi.json"):
+            return _legacy_http_openapi()
         if url.endswith("/health"):
             return {
                 "ok": True,
@@ -361,7 +387,7 @@ def test_a_forced_http_mode_does_not_silently_fall_back_to_cli(
     status = MinerUProber(settings).status()
     assert status.available is False
     assert status.mode == "http"
-    assert "no HTTP response" in status.reason, status.reason
+    assert "does not implement the configured JSON parse contract" in status.reason, status.reason
     assert {c["mode"] for c in status.to_dict()["checks"]} == {"http"}, status.to_dict()["checks"]
 
 
@@ -373,14 +399,18 @@ def test_auto_mode_prefers_the_transport_that_answers(settings, tmp_path, monkey
     monkeypatch.setattr(
         discovery_mod,
         "http_json",
-        lambda method, url, **kw: {
-            "ok": True,
-            "status_code": 200,
-            "json": {"version": "2.1.0"},
-            "text": "",
-            "url": url,
-            "error": "",
-        },
+        lambda method, url, **kw: (
+            _legacy_http_openapi()
+            if url.endswith("/openapi.json")
+            else {
+                "ok": True,
+                "status_code": 200,
+                "json": {"version": "2.1.0"},
+                "text": "",
+                "url": url,
+                "error": "",
+            }
+        ),
     )
     settings.mineru.mode = "auto"
     settings.mineru.endpoint = "http://mineru.test"
@@ -462,3 +492,182 @@ def test_the_stand_in_binary_contract_is_real_json(tmp_path: Path) -> None:
     assert Path(binary).exists()
     payload = {"pdf_info": [{"page_idx": 0}]}
     assert json.loads(json.dumps(payload)) == payload
+
+
+def _mineru_v4_middle() -> dict[str, object]:
+    """Small deterministic fixture shaped like MinerU 4.1's real middle JSON output."""
+    return {
+        "metadata": {"producer": {"name": "mineru", "version": "4.1.7"}},
+        "extensions": {
+            "mineru": {"tier": "flash", "parse_mode": "txt"},
+            "docvortex_layout": {"pages": [{"page_idx": 0, "width_pt": 612, "height_pt": 792}]},
+        },
+        "pages": [
+            {
+                "page_idx": 0,
+                "blocks": [
+                    {
+                        "type": "text",
+                        "index": 0,
+                        "bbox": [0.1, 0.2, 0.8, 0.25],
+                        "content": [{"type": "text", "content": "Synthetic report text"}],
+                    },
+                    {
+                        "type": "table",
+                        "index": 1,
+                        "bbox": [0.1, 0.3, 0.8, 0.5],
+                        "content": [
+                            {
+                                "type": "table_body",
+                                "content": "<table><tr><td>Activity</td><td>Depth</td></tr>"
+                                "<tr><td>Drilling</td><td>12,345 ft</td></tr></table>",
+                            }
+                        ],
+                    },
+                ],
+            }
+        ],
+        "schema": "docvortex.middle",
+        "schema_version": "2.0",
+    }
+
+
+def test_mineru_middle_json_requires_a_mapping_root() -> None:
+    from drilling_intelligence.integrations.mineru.normalize import normalize_middle_json
+
+    with pytest.raises(ExtractionError, match="root must be a JSON object"):
+        normalize_middle_json(
+            [],
+            filename="malformed.pdf",
+            document_id="doc-invalid",
+            version_id="ver-invalid",
+            sha256=SHA,
+        )
+
+
+def test_mineru_4_middle_json_preserves_page_table_and_fractional_bbox_provenance(
+    tmp_path: Path,
+) -> None:
+    from drilling_intelligence.integrations.mineru.normalize import (
+        load_mineru_outputs,
+        normalize_middle_json,
+    )
+
+    output = tmp_path / "synthetic_middle.json"
+    output.write_text(json.dumps(_mineru_v4_middle()), encoding="utf-8")
+    raw = load_mineru_outputs(tmp_path, "synthetic")
+    assert raw.best == "middle.json"
+
+    document, diagnostics = normalize_middle_json(
+        raw.middle or {},
+        filename="synthetic.pdf",
+        document_id="doc-v4",
+        version_id="ver-v4",
+        sha256=SHA,
+    )
+    assert "Synthetic report text" in document.text
+    assert "12,345 ft" in document.text
+    assert document.pages[0].index == 1
+    assert (document.pages[0].width, document.pages[0].height) == (612.0, 792.0)
+    assert len(document.tables) == 1
+    assert document.tables[0].rows == [["Activity", "Depth"], ["Drilling", "12,345 ft"]]
+    locator = document.tables[0].provenance.locator
+    assert locator.page == 1
+    assert locator.bbox == (0.1, 0.3, 0.8, 0.5)
+    assert document.metadata.extra["mineru_tier"] == "flash"
+    assert document.metadata.extra["mineru_bbox_units"] == "normalized fractions (0-1)"
+    assert any("MinerU 4.x docvortex.middle" in item for item in diagnostics)
+
+
+def test_mineru_kit_cli_runs_in_isolation_and_cleans_its_scratch_directory(
+    settings, tmp_path: Path
+) -> None:
+    marker = tmp_path / "output-path.txt"
+    binary = _fake_mineru(
+        tmp_path,
+        name="mineru-kit",
+        script=(
+            "import json, sys\n"
+            "out = sys.argv[sys.argv.index('--output') + 1]\n"
+            f"open({str(marker)!r}, 'w', encoding='utf-8').write(out)\n"
+            f"payload = json.loads(json.loads({json.dumps(json.dumps(_mineru_v4_middle()))!r}))\n"
+            "json.dump(payload, open(out, 'w', encoding='utf-8'))\n"
+        ),
+    )
+    source = tmp_path / "synthetic.pdf"
+    source.write_bytes(b"%PDF synthetic fixture")
+    settings.mineru.mode = "cli"
+    settings.mineru.binary = binary
+    extractor = MinerUExtractor(settings, prober=_available_cli_prober(settings, binary))
+
+    document = extractor.extract(_context(source), _provenance(source))
+
+    output = Path(marker.read_text(encoding="utf-8"))
+    scratch = output.parent.parent
+    assert not scratch.exists(), "per-run MinerU output must be removed after normalization"
+    assert "Synthetic report text" in document.text
+    assert document.metadata.extra["mineru"]["version"] == "9.9.9"
+    assert "--tier basic" in document.metadata.extra["mineru"]["command"]
+    assert document.metadata.extra["provenance_source"] == "middle.json"
+
+
+def test_default_mineru_binary_resolves_to_v4_stateless_kit() -> None:
+    from drilling_intelligence.integrations.mineru.cli import resolve_cli_binary
+
+    assert (
+        resolve_cli_binary("mineru", find_executable=lambda name: "/isolated/bin/mineru-kit")
+        == "/isolated/bin/mineru-kit"
+    )
+    assert resolve_cli_binary("/custom/legacy-parser", find_executable=lambda _name: None) == (
+        "/custom/legacy-parser"
+    )
+
+
+def test_mineru_v4_file_parse_attachment_api_is_not_misreported_as_legacy_json_http(
+    settings, monkeypatch
+) -> None:
+    import drilling_intelligence.integrations.mineru.discovery as discovery_mod
+
+    def handler(method, url, **kwargs):
+        assert method == "GET"
+        return {
+            "ok": True,
+            "status_code": 200,
+            "json": {
+                "paths": {
+                    "/v1/file_parse": {
+                        "post": {"responses": {"200": {"content": {"application/zip": {}}}}}
+                    }
+                }
+            },
+            "text": "",
+            "url": url,
+            "error": "",
+        }
+
+    monkeypatch.setattr(discovery_mod, "http_json", handler)
+    settings.mineru.mode = "http"
+    settings.mineru.endpoint = "http://mineru-v4.test"
+    settings.mineru.http_parse_path = "/file_parse"
+
+    status = MinerUProber(settings).status()
+
+    assert status.available is False
+    assert "does not implement the configured JSON parse contract" in status.reason
+
+
+def test_prober_recognizes_mineru_kit_as_a_supported_v4_cli(settings, tmp_path: Path) -> None:
+    binary = _fake_mineru(
+        tmp_path,
+        name="mineru-kit",
+        script="import sys\nprint('MinerU version: 4.1.7')\n",
+    )
+    settings.mineru.mode = "cli"
+    settings.mineru.binary = binary
+
+    status = MinerUProber(settings).status()
+
+    assert status.available is True
+    assert status.mode == "cli"
+    assert status.version == "4.1.7"
+    assert Path(status.location).name.startswith("mineru-kit")

@@ -85,6 +85,7 @@ def test_every_problem_is_reported_in_one_error(tmp_path) -> None:
         ("mineru", "timeout_seconds", "0", "must be >="),
         ("mineru", "mode", '"clii"', "must be one of"),
         ("mineru", "backend", '"gpu-magic"', "must be one of"),
+        ("mineru", "tier", '"gpu-magic"', "must be one of"),
         ("mineru", "prefer_when_pages_above", "-3", "must be >="),
         ("extraction", "pdf_max_pages", "0", "must be >="),
         ("extraction", "pdf_min_table_rows", "0", "must be >="),

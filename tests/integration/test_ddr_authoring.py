@@ -15,6 +15,46 @@ from drilling_intelligence.review import ReviewActionRequest, ReviewActionServic
 from drilling_intelligence.review.actions import ReviewActionError
 
 
+def _independent_ddr_save_process(
+    database_url: str,
+    report_id: str,
+    expected_updated_at: str,
+    summary: str,
+    barrier: object,
+    result_queue: object,
+) -> None:
+    """Compete from a fresh process, engine, session factory, and service instance."""
+    from drilling_intelligence.config.settings import Settings
+    from drilling_intelligence.database.session import Database
+
+    database = Database.from_url(database_url, Settings())
+    service = DdrAuthoringService(database)
+    assert_editable = service._assert_editable
+
+    def wait_after_snapshot(report, expected: str) -> None:
+        assert_editable(report, expected)
+        barrier.wait(timeout=20)  # type: ignore[attr-defined]
+
+    service._assert_editable = wait_after_snapshot  # type: ignore[method-assign]
+    try:
+        saved = service.save_draft(
+            report_id,
+            expected_updated_at=expected_updated_at,
+            report_date="2026-10-31",
+            summary=summary,
+            activities=[{"operation_type": "drilling", "label": summary}],
+            actor="parallel-author",
+            reason=f"Independent process save: {summary}",
+        )
+        result_queue.put(("success", saved["summary"]))  # type: ignore[attr-defined]
+    except ValidationError as exc:
+        result_queue.put(("stale", str(exc)))  # type: ignore[attr-defined]
+    except BaseException as exc:  # noqa: BLE001 - surfaced to the parent assertion
+        result_queue.put(("error", f"{type(exc).__name__}: {exc}"))  # type: ignore[attr-defined]
+    finally:
+        database.dispose()
+
+
 def _activities() -> list[dict[str, str]]:
     return [
         {
@@ -586,18 +626,20 @@ def test_concurrent_ddr_review_actions_are_serialized_by_the_claimed_snapshot(
     )
     # Materialize the workspace's lazy engine before either worker starts.
     _ = workspace.database
-    actions = ReviewActionService.for_workspace(workspace)
+    actions_a = ReviewActionService.for_workspace(workspace)
+    actions_b = ReviewActionService.for_workspace(workspace)
     barrier = Barrier(2)
-    check_preconditions = actions._check_preconditions
+    check_preconditions = actions_a._check_preconditions
 
     def wait_after_preconditions(session, row, request) -> None:
         check_preconditions(session, row, request)
         barrier.wait(timeout=10)
 
-    monkeypatch.setattr(actions, "_check_preconditions", wait_after_preconditions)
+    monkeypatch.setattr(actions_a, "_check_preconditions", wait_after_preconditions)
+    monkeypatch.setattr(actions_b, "_check_preconditions", wait_after_preconditions)
 
-    def decide(action: str, actor: str):
-        return actions.execute(
+    def decide(service, action: str, actor: str):
+        return service.execute(
             ReviewActionRequest(
                 record_type="ddr_report",
                 record_id=draft["report_id"],
@@ -613,8 +655,8 @@ def test_concurrent_ddr_review_actions_are_serialized_by_the_claimed_snapshot(
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
-            pool.submit(decide, "confirm", "reviewer-1"),
-            pool.submit(decide, "reject", "reviewer-2"),
+            pool.submit(decide, actions_a, "confirm", "reviewer-1"),
+            pool.submit(decide, actions_b, "reject", "reviewer-2"),
         ]
         successes = []
         failures = []
@@ -675,3 +717,79 @@ def test_ddr_operation_review_uses_the_same_atomic_claim_without_confirming_its_
         operation = session.get(WellOperation, operation_id)
         assert report is not None and report.status == "CANDIDATE"
         assert operation is not None and operation.status == "CONFIRMED"
+
+
+def test_same_ddr_snapshot_is_claimed_once_across_independent_sqlite_processes(
+    db, committed_well_id
+) -> None:
+    """File-backed SQLite must reject a stale writer across engines and processes.
+
+    Both workers load and validate the same pre-write token before the process barrier releases
+    either one. The conditional snapshot claim is then exercised against separate SQLAlchemy
+    engines/session factories, not shared Python service state.
+    """
+    import multiprocessing
+
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-10-31",
+        summary="Original process-race snapshot.",
+        activities=[{"operation_type": "drilling", "label": "Original activity"}],
+        actor="author-1",
+        reason="Create process-level concurrency case",
+    )
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    summaries = ("Independent process A", "Independent process B")
+    workers = [
+        context.Process(
+            target=_independent_ddr_save_process,
+            args=(db.url, draft["report_id"], draft["updated_at"], summary, barrier, results),
+        )
+        for summary in summaries
+    ]
+    try:
+        for worker in workers:
+            worker.start()
+        outcomes = [results.get(timeout=45) for _ in workers]
+        for worker in workers:
+            worker.join(timeout=45)
+        assert all(not worker.is_alive() for worker in workers), [
+            worker.exitcode for worker in workers
+        ]
+        assert [worker.exitcode for worker in workers] == [0, 0]
+    finally:
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=5)
+        results.close()
+        results.join_thread()
+
+    successes = [value for state, value in outcomes if state == "success"]
+    stale = [value for state, value in outcomes if state == "stale"]
+    errors = [value for state, value in outcomes if state == "error"]
+    assert errors == [], errors
+    assert len(successes) == len(stale) == 1, outcomes
+    assert "changed since it was loaded" in stale[0]
+
+    persisted = service.get(draft["report_id"])
+    assert persisted["summary"] == successes[0]
+    assert persisted["summary"] in summaries
+    assert persisted["updated_at"] > draft["updated_at"]
+    assert len(persisted["activities"]) == 1
+    assert persisted["activities"][0]["label"] == persisted["summary"]
+    with db.read_only() as session:
+        events = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.subject_type == "ddr_report",
+                    AuditEvent.subject_id == draft["report_id"],
+                )
+            )
+        )
+    assert [event.action for event in events].count("ddr.draft_saved") == 1
+    with db.engine.connect() as connection:
+        assert list(connection.execute(text("PRAGMA foreign_key_check"))) == []

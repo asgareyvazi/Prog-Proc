@@ -128,12 +128,12 @@ def _spans_text(block: dict[str, Any]) -> tuple[str, list[tuple[float, float, fl
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):
-            if node.get("type") == "text" and "content" in node:
-                parts.append(str(node.get("content", "")))
+            if node.get("type") == "text" and isinstance(node.get("content"), str):
+                parts.append(node["content"])
                 bbox = node.get("bbox")
                 if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
                     boxes.append(tuple(float(v) for v in bbox))  # type: ignore[arg-type]
-            for key in ("lines", "spans", "blocks", "table_body"):
+            for key in ("lines", "spans", "blocks", "table_body", "content"):
                 if key in node:
                     walk(node[key])
         elif isinstance(node, list):
@@ -178,10 +178,24 @@ def normalize_middle_json(
         clean_text,
     )
 
+    if not isinstance(payload, dict):
+        raise ExtractionError("MinerU middle.json root must be a JSON object", file=filename)
+    if payload.get("schema") == "docvortex.middle":
+        return _normalize_docvortex_middle_json(
+            payload,
+            filename=filename,
+            document_id=document_id,
+            version_id=version_id,
+            sha256=sha256,
+        )
+
     diagnostics: list[str] = []
     pages = payload.get("pdf_info")
     if not isinstance(pages, list):
-        raise ExtractionError("MinerU middle.json has no 'pdf_info' page list", file=filename)
+        raise ExtractionError(
+            "MinerU middle.json has neither the legacy 'pdf_info' nor docvortex.middle page list",
+            file=filename,
+        )
 
     provenance_parser = f"mineru/{payload.get('_version_name', '?')}"
     meta = ExtractionMetadata(
@@ -361,6 +375,88 @@ def normalize_middle_json(
     return document, diagnostics
 
 
+def _normalize_docvortex_middle_json(
+    payload: dict[str, Any], *, filename: str, document_id: str, version_id: str, sha256: str
+) -> tuple[Any, list[str]]:
+    """MinerU 4.x ``docvortex.middle`` -> the shared, page-anchored normalizer.
+
+    MinerU 4.x changed the outer shape from ``pdf_info/para_blocks`` to
+    ``pages/blocks`` and uses normalized fractional bounding boxes. Adapt only
+    those structural differences; retain the source text, page/block IDs, and
+    exact bbox values rather than inventing legacy coordinate units.
+    """
+    pages = payload.get("pages")
+    if not isinstance(pages, list):
+        raise ExtractionError("MinerU docvortex.middle has no 'pages' list", file=filename)
+
+    extensions = payload.get("extensions")
+    extensions = extensions if isinstance(extensions, dict) else {}
+    layout = extensions.get("docvortex_layout")
+    layout_pages = layout.get("pages") if isinstance(layout, dict) else []
+    layout_by_index = (
+        {
+            int(item.get("page_idx", index)): item
+            for index, item in enumerate(layout_pages)
+            if isinstance(item, dict)
+        }
+        if isinstance(layout_pages, list)
+        else {}
+    )
+
+    legacy_pages: list[dict[str, Any]] = []
+    for page_number, page in enumerate(pages):
+        if not isinstance(page, dict):
+            continue
+        page_index = int(page.get("page_idx", page_number) or 0)
+        layout_page = layout_by_index.get(page_index, {})
+        blocks = page.get("blocks")
+        if not isinstance(blocks, list):
+            blocks = []
+        normalized_blocks: list[dict[str, Any]] = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            adapted = dict(block)
+            if str(block.get("type", "")).lower() == "table":
+                html = _table_html(block)
+                if html:
+                    adapted["table_body"] = html
+            normalized_blocks.append(adapted)
+        legacy_pages.append(
+            {
+                "page_idx": page_index,
+                "page_size": [layout_page.get("width_pt", 0), layout_page.get("height_pt", 0)],
+                "para_blocks": normalized_blocks,
+            }
+        )
+
+    metadata = payload.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    producer = metadata.get("producer")
+    producer = producer if isinstance(producer, dict) else {}
+    mineru_extension = extensions.get("mineru")
+    mineru_extension = mineru_extension if isinstance(mineru_extension, dict) else {}
+    adapted_payload = {
+        "pdf_info": legacy_pages,
+        "_version_name": producer.get("version", ""),
+        "_backend": mineru_extension.get("tier", ""),
+    }
+    document, diagnostics = normalize_middle_json(
+        adapted_payload,
+        filename=filename,
+        document_id=document_id,
+        version_id=version_id,
+        sha256=sha256,
+    )
+    document.metadata.extra["mineru_schema"] = str(payload.get("schema_version") or "2.0")
+    document.metadata.extra["mineru_tier"] = mineru_extension.get("tier", "")
+    document.metadata.extra["mineru_bbox_units"] = "normalized fractions (0-1)"
+    diagnostics.append(
+        "MinerU 4.x docvortex.middle output used; bounding boxes are normalized fractions"
+    )
+    return document, diagnostics
+
+
 def _block_bbox(block: dict[str, Any]) -> tuple[float, float, float, float] | None:
     bbox = block.get("bbox")
     if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
@@ -380,6 +476,10 @@ def _table_html(block: dict[str, Any]) -> str:
         body = candidate.get("table_body")
         if isinstance(body, str) and "<" in body:
             return body
+        if candidate.get("type") == "table_body":
+            content = candidate.get("content")
+            if isinstance(content, str) and "<" in content:
+                return content
     return ""
 
 

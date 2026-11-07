@@ -1,23 +1,14 @@
-"""MinerU client: run the parser as an external process or service.
+"""MinerU client: run the parser as an external process or legacy JSON service.
 
-Two transports, chosen by configuration and by what discovery found:
+MinerU 4 is invoked through ``mineru-kit parse`` and writes the versioned
+``docvortex.middle`` JSON contract. Older separately managed CLI builds retain
+their ``-p/-o/-b/-l`` invocation. HTTP mode deliberately accepts only the
+legacy JSON parse endpoint verified through OpenAPI; MinerU 4's ``/v1/file_parse``
+returns attachments and is not the JSON envelope this client consumes.
 
-``cli``
-    ``mineru -p <file> -o <outdir> -b <backend> -l <lang>`` in a temporary
-    output directory.  Works with a per-machine MinerU install (its own venv),
-    which is the recommended deployment for offline desktop use.
-
-``http``
-    ``POST {endpoint}/file_parse`` with the file and the same options, reading
-    ``md_content`` / ``middle_json`` / ``content_list`` from the response.  This
-    is what a shared GPU host or ``mineru-router`` deployment exposes.
-
-Why a process boundary rather than ``import mineru``:
-MinerU pins its own dependency stack (models, torch, its own Python range:
-PyPI metadata for 3.4.x requires ``<3.14``) and its licence is Apache-2.0 with
-additional conditions.  Keeping it outside the application keeps our runtime,
-our licence and our upgrade schedule independent, and keeps a segfault in an OCR
-stack from taking down a desktop session with unsaved review state.
+MinerU stays in a separate environment/process so its heavy, version-specific
+runtime and license terms do not enter the application installation, and an OCR
+process failure cannot take down a desktop session with unsaved review state.
 """
 
 from __future__ import annotations
@@ -33,6 +24,8 @@ from ...core.errors import ExtractionError, IntegrationUnavailableError
 from ...core.hashing import short_hash
 from ...core.logging import get_logger
 from ..base import http_json, run_command
+from .cli import is_mineru_kit, resolve_cli_binary
+from .discovery import legacy_http_parse_contract
 from .normalize import MinerURawOutput
 
 log = get_logger("integrations.mineru.client")
@@ -83,6 +76,7 @@ class MinerUClient:
         self.mode = str(getattr(mineru, "mode", "auto") or "auto").lower()
         self.binary = str(getattr(mineru, "binary", "mineru") or "mineru")
         self.backend = str(getattr(mineru, "backend", "pipeline") or "pipeline")
+        self.tier = str(getattr(mineru, "tier", "basic") or "basic").lower()
         self.endpoint = str(getattr(mineru, "endpoint", "") or "").rstrip("/")
         self.timeout = float(getattr(mineru, "timeout_seconds", 900.0) or 900.0)
         self.extra_env: dict[str, str] = dict(getattr(mineru, "env", {}) or {})
@@ -96,16 +90,16 @@ class MinerUClient:
             raise IntegrationUnavailableError("MinerU", "disabled in configuration")
         mode = self.mode
         if mode == "auto":
-            # Prefer HTTP when an endpoint answers, else CLI.  The prober has the
-            # authoritative view; here we only pick the transport.
-            mode = (
-                "http"
-                if (
-                    self.endpoint
-                    and http_json("GET", self.endpoint + "/docs", timeout=3.0).get("ok")
-                )
-                else "cli"
+            # Prefer an installed local CLI.  A reachable /docs page alone is not
+            # proof that a server implements the legacy JSON /file_parse contract.
+            resolved = resolve_cli_binary(self.binary)
+            cli_available = bool(shutil.which(resolved) or Path(resolved).expanduser().exists())
+            http_compatible = (
+                legacy_http_parse_contract(self.endpoint, self.parse_path)[0]
+                if self.endpoint
+                else False
             )
+            mode = "cli" if cli_available or not http_compatible else "http"
         if mode == "http":
             if not self.endpoint:
                 raise IntegrationUnavailableError(
@@ -116,29 +110,47 @@ class MinerUClient:
 
     # -- transports ---------------------------------------------------------
     def _parse_cli(self, source: Path, filename_hint: str = "") -> MinerURun:
-        if not shutil.which(self.binary) and not Path(self.binary).expanduser().exists():
-            raise IntegrationUnavailableError(
-                "MinerU", f"executable {self.binary!r} not found on PATH"
-            )
+        binary = resolve_cli_binary(self.binary)
+        if not shutil.which(binary) and not Path(binary).expanduser().exists():
+            raise IntegrationUnavailableError("MinerU", f"executable {binary!r} not found on PATH")
+        kit_cli = is_mineru_kit(binary)
         workdir = Path(tempfile.mkdtemp(prefix=f"mineru-{short_hash(uuid.uuid4().hex, 8)}-"))
         outdir = workdir / "out"
         outdir.mkdir(parents=True, exist_ok=True)
-        command = [
-            self.binary or "mineru",
-            "-p",
-            str(source),
-            "-o",
-            str(outdir),
-            "-b",
-            self.backend,
-            "-l",
-            self.language,
-        ]
+        if kit_cli:
+            # MinerU 4's supported stateless CLI writes the page/block-preserving
+            # docvortex.middle JSON contract. Keep it in the same isolated output
+            # directory as legacy artefacts so discovery/cleanup remain uniform.
+            output_file = outdir / f"{source.stem or filename_hint or 'document'}_middle.json"
+            command = [
+                binary,
+                "parse",
+                str(source),
+                "--output",
+                str(output_file),
+                "--format",
+                "middle_json",
+                "--tier",
+                self.tier,
+            ]
+        else:
+            # MinerU <=3 compatible CLI. Preserve its explicit backend/language
+            # contract for existing separately managed runtimes.
+            command = [
+                binary,
+                "-p",
+                str(source),
+                "-o",
+                str(outdir),
+                "-b",
+                self.backend,
+                "-l",
+                self.language,
+            ]
         run = run_command(command, timeout=self.timeout, cwd=workdir, env=self.extra_env)
         duration = float(run.get("duration_ms") or 0.0)
-        # Not `run.get("returncode", -1) or -1`: 0 is falsy, so that turned a *successful* exit
-        # into -1.  Every clean run was therefore recorded as a failure, the `code == 0` branch
-        # below could never be taken, and acceptance rested entirely on artefact discovery.
+        # Not `run.get("returncode", -1) or -1`: 0 is falsy, so that turned a
+        # successful exit into -1 and accepted artefact discovery as the only signal.
         raw_code = run.get("returncode", -1)
         code = -1 if raw_code is None else int(raw_code)
         stdout = str(run.get("stdout") or "")
@@ -148,7 +160,6 @@ class MinerUClient:
         ok = False
         if code == 0 or any(outdir.rglob("*.json")) or any(outdir.rglob("*.md")):
             try:
-                # One discovery implementation, shared with the adapter path.
                 from .normalize import load_mineru_outputs
 
                 artefacts = load_mineru_outputs(outdir, source.stem or filename_hint)
@@ -160,11 +171,8 @@ class MinerUClient:
                 f"mineru exited with code {code}: {stderr.strip()[:400] or stdout.strip()[:400]}"
             )
         elif ok and code != 0:
-            # Tolerating a non-zero exit when usable artefacts were written is deliberate: MinerU
-            # builds do exit non-zero after producing valid output.  What was *not* acceptable is
-            # doing it silently - the run reported ok with an empty error, so a document parsed
-            # from a crash part-way through (say page 1 of 9) was indistinguishable in the record
-            # from a clean full parse.  The tolerance stays; the silence goes.
+            # Some builds write valid output before failing; keep the output but
+            # make the potentially partial parse visible in the audit record.
             error = (
                 f"mineru exited with code {code} but wrote usable output; "
                 f"the extraction may be incomplete: {stderr.strip()[:300]}"
@@ -178,9 +186,7 @@ class MinerUClient:
             stderr=stderr[-4000:],
             duration_ms=duration,
             command=command,
-            output_dir=artefacts.directory
-            if (artefacts and self.keep_artifacts)
-            else (outdir if self.keep_artifacts else None),
+            output_dir=workdir,
             error=error,
             keep=self.keep_artifacts,
         )

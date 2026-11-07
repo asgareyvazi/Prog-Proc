@@ -66,8 +66,9 @@ openai_api_key = "OPENAI_API_KEY"
 # auto = use MinerU when a runtime is reachable, otherwise fall back.
 # Other modes: cli | http | disabled
 mode = "auto"
-binary = "mineru"
-backend = "pipeline"                  # pipeline runs on CPU; vlm/hybrid need a GPU
+binary = "mineru"                     # v4 mineru-kit is auto-selected when installed alongside mineru
+backend = "pipeline"                  # legacy CLI only
+tier = "basic"                       # v4 mineru-kit tier; model setup/download is external
 endpoint = "http://127.0.0.1:8000"
 timeout_seconds = 900
 # Routing heuristic: prefer MinerU for complex/text-layer-poor PDFs.

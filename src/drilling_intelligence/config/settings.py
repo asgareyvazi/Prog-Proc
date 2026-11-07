@@ -109,7 +109,8 @@ class AiSettings:
 class MineruSettings:
     mode: str = "auto"  # auto | cli | http | disabled
     binary: str = "mineru"
-    backend: str = "pipeline"
+    backend: str = "pipeline"  # legacy MinerU CLI backend
+    tier: str = "basic"  # MinerU 4.x mineru-kit parsing tier
     endpoint: str = "http://127.0.0.1:8000"
     timeout_seconds: float = 900.0
     prefer_when_pages_above: int = 12
@@ -436,6 +437,7 @@ class Settings:
                 "mode": self.mineru.mode,
                 "binary": self.mineru.binary,
                 "backend": self.mineru.backend,
+                "tier": self.mineru.tier,
             },
             "authority_hierarchy": list(self.authority.hierarchy),
             "overrides": list(self.applied_overrides),
@@ -610,6 +612,7 @@ _CHOICES: dict[str, frozenset[str]] = {
             "olmocr",
         }
     ),
+    "mineru.tier": frozenset({"flash", "basic", "standard", "advanced"}),
     "search.vector_store": frozenset({"auto", "sqlite-vec", "memory", "none"}),
     "logging.level": frozenset({"debug", "info", "warning", "error", "critical"}),
     "logging.format": frozenset({"text", "json"}),
