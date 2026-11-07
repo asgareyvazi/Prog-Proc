@@ -12,7 +12,7 @@ part of this repository serves that sentence.
 
 ## Status
 
-> **Current context (2026-11-06):** Prog-Proc remains **Pre-Alpha**, local-first, and single-user; SQLite is the only qualified database and PostgreSQL is **NOT QUALIFIED**. The 26-class document taxonomy is unchanged. On code/test SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`, exact-SHA Linux run [`41940002906`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002906) and Windows run [`41940002911`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002911) both succeeded (23/23 jobs total). All five Linux, Ubuntu 26.04, and Windows full-suite lanes passed with their skips recorded separately; Windows offscreen UI, stability, clean-install, and PowerShell run-card behavioral checks also passed. The historical Windows Intake UI failure was not reproduced, but its root cause remains unproven; offscreen CI is not physical Windows desktop acceptance. Wheel and sdist clean-install smoke passed; schema head is `0026`. Product status remains **PARTIALLY QUALIFIED — PRE-ALPHA**, not production/release approval. Open owner decisions and exact-SHA evidence are in the [Persian closure report](docs/mission-reports/AUTONOMOUS_PRODUCT_CLOSURE_2026-11-04_FA.md) and [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
+> **Current context (2026-11-07):** Prog-Proc remains **Pre-Alpha**, local-first, and single-user; SQLite is the only qualified database and PostgreSQL is **NOT QUALIFIED**. The 26-class document taxonomy is unchanged. The tested code/test baseline `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` passed exact-SHA Linux run [`41940002906`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002906) and Windows run [`41940002911`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/41940002911) (23/23 jobs total). A later report/constraints head `b549ee5a2249fc18ab02ac32d65610d00bd94d68` independently passed Linux [`42126486411`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42126486411) (9/9) and Windows [`42126486402`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42126486402) (14/14); its counts are not merged into the baseline totals. The current DDR CLI and audit-pin revision passed a local full-suite run (2,718 passed / 63 skipped / 0 failures) before the final chronology-only doc reconciliation; after that doc edit, all 42 focused CLI-snapshot, exception-inventory, product-decision and Windows-acceptance documentation tests passed. These are local worktree results, not exact-SHA CI; this revision still awaits CI on a commit. Windows offscreen, stability, clean-install, and PowerShell run-card behavioral checks passed on the prior exact-SHA baselines. The historical Windows Intake UI failure was not reproduced, but its root cause remains unproven; offscreen CI is not physical Windows desktop acceptance. Wheel and sdist clean-install smoke passed; schema head is `0026`. Product status remains **PARTIALLY QUALIFIED — PRE-ALPHA**, not production/release approval. Open owner decisions and exact-SHA evidence are in the [Persian closure report](docs/mission-reports/AUTONOMOUS_PRODUCT_CLOSURE_2026-11-04_FA.md) and [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
 
 The following inventory is a product overview; its capability labels do not substitute for current test or CI evidence:
 
@@ -38,7 +38,7 @@ The following inventory is a product overview; its capability labels do not subs
 | Comparison pack: two or more wells side by side on the same recorded basis - per-metric values with `COMPARABLE`/`INCOMPARABLE`/`MISSING`/`UNRESOLVED` states, unit and risk-scale identity gates, offset-candidate discovery, forensic evidence, limitations (`fields compare`) | **implemented, tested, query-count scale-certified at 6 + 39 SELECTs per subject** (`docs/DECISIONS.md` ADR-36) |
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
 | Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
-| Domain CLI: `intake` add/list/preview/decide/register plus `records`, `records rollup`, `records review`, `timeline`, `fields`, `patterns`, `lessons`, `evidence`, and `doctor` | **implemented** — Intake registration creates registry evidence only after human review; it does not promote domain facts. |
+| Domain CLI: `intake` add/list/preview/decide/register, manual `ddr` create/list/show/actions/save/submit/revise/decide, plus `records`, `records rollup`, `records review`, `timeline`, `fields`, `patterns`, `lessons`, `evidence`, and `doctor` | **implemented through existing lifecycle services** — DDR CLI input is bounded strict JSON; save requires a complete snapshot and freshness token; submit leaves operations candidate, and review uses only `ReviewActionService`. Declared actor strings are not authenticated. Intake registration creates registry evidence only after human review; it does not promote domain facts. Focused CLI integration evidence: `tests/integration/test_ddr_cli.py`; exact-SHA qualification is tracked separately. |
 | Optional Desktop Workbench (`drillintel-ui`) | **implemented; Linux/Windows Qt-enabled offscreen CI PASS on code/test SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`** — PySide6-Essentials is optional. It includes governed review, Intake preview/registration, and Daily DDR draft/save/submit/revision with exact-field comparison and provenance. DDR submit leaves candidate rows; confirm/reject require a reason and a declared actor ID distinct from `created_by` (not authenticated). Mutations run outside the GUI thread. Local Qt tests blocked by host libraries are **SKIPPED**, not PASS; Windows UI ran 29/29 on both CPython 3.11/3.14, but the historical registration/refresh failure root cause remains unproven and physical Windows display acceptance remains **NOT RUN**. See runs `41940002906` / `41940002911`. |
 | Ollama provider adapter: `drillintel ai status` probes `/api/tags`; completion and embedding calls return non-authoritative text or vectors | **implemented, not on the engineering path** — an embedding is accepted only when it is finite, one vector per input, and names the requested model; a path, query, or credential in the endpoint sends no request; `doctor` does not probe; `openai-compatible` has no adapter (`docs/DECISIONS.md` ADR-51, ADR-52) |
 | Skills and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
@@ -77,6 +77,36 @@ drillintel intake register ITEM_ID --workspace /path/to/workspace --by registrar
 ```
 
 Registration links the source through the existing Document Registry and does not promote domain records. The optional desktop workbench also exposes **Intake** and **Daily DDR** navigation pages. Daily DDR submission creates candidate operations; confirmation/rejection is a separate review action. See `docs/PROJECT_CONTEXT.md` and the relevant ADRs for the lifecycle contract.
+
+The headless `ddr` command is a service adapter for manual authoring, not an import path. Create a strict UTF-8 JSON snapshot (max 1 MiB); `save` requires every field so omitted values are never silently cleared:
+
+```json
+{
+  "report_date": "2026-11-07",
+  "report_number": "DDR-2026-311",
+  "shift": "Day",
+  "summary": "Operator-entered shift summary",
+  "activities": [
+    {
+      "operation_type": "drilling",
+      "label": "Drilled the 12 1/4 in interval",
+      "description": "Operator-entered wording",
+      "period_text": "06:00-18:00"
+    }
+  ]
+}
+```
+
+```bash
+drillintel ddr create --well A-3 --content shift.json --by operator --reason "Start daily report" --workspace /path/to/workspace --json
+drillintel ddr show REPORT_ID --workspace /path/to/workspace --json
+drillintel ddr submit REPORT_ID --expected-updated-at TIMESTAMP --by operator --reason "Ready for review" --workspace /path/to/workspace --json
+drillintel ddr actions REPORT_ID --workspace /path/to/workspace --json
+# Decide only an action shown above; scope/status/revision/timestamp are checked again by ReviewActionService.
+drillintel ddr decide REPORT_ID --well A-3 --action confirm --expected-status CANDIDATE --expected-revision 1 --expected-updated-at TIMESTAMP --by reviewer --reason "Reviewed shift evidence" --workspace /path/to/workspace --json
+```
+
+The timestamp and revision are read from `ddr show`; save also requires a complete replacement snapshot. Review actor IDs are declared audit values, not authenticated identities. Confirmation of a DDR report does not silently confirm each candidate operation.
 
 The same gates run in CI on both supported runtimes - the CPython 3.11 floor and the 3.14 product
 target named in `docs/DECISIONS.md` ADR-0002 - see `.github/workflows/ci.yml`. Required jobs pin

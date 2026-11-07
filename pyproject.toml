@@ -77,8 +77,9 @@ dev = [
 
 [project.scripts]
 # One command, and it exists: `drillintel` is drilling_intelligence.cli (version, workspace,
-# wells, ingest, search, evidence, index, knowledge, doctor, timeline, records, fields,
-# patterns, lessons).  The optional desktop command is a thin lazy Qt launcher; it is present
+# wells, ingest, intake, ddr, search, evidence, index, knowledge, doctor, timeline, records, fields,
+# patterns, lessons). The DDR command is a thin adapter over the approved manual-authoring and
+# governed-review services. The optional desktop command is a thin lazy Qt launcher; it is present
 # only because the read-only Review Workbench is implemented and audited as a real application.
 drillintel = "drilling_intelligence.cli:main"
 drillintel-ui = "drilling_intelligence.ui.app:main"

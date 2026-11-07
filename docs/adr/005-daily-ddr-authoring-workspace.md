@@ -1,6 +1,7 @@
 # ADR 005 — Daily DDR authoring workspace
 
-- **Status:** Accepted for the post-V10.3 mission scope (2026-11-02)
+- **Status:** Accepted for the post-V10.3 mission scope (2026-11-02); thin CLI adapter amendment recorded 2026-11-07
+- **Amendment:** Expose the existing authoring/review lifecycle through the headless `ddr` CLI without introducing another writer, workflow, or product policy.
 - **Context:** Daily operator authoring is separate from file ingestion, review, promotion, and engineering calculation.
 - **Decides:** Provide a real local authoring lifecycle for a daily drilling report and its explicitly entered activities, linked to the existing operational record model.
 
@@ -24,7 +25,8 @@
 
 ## Consequences
 
-- `DdrAuthoringService` is the transactional domain API; the UI must use its lifecycle and cannot write arbitrary fields directly. No separate DDR CLI is claimed here.
+- `DdrAuthoringService` is the transactional domain API; UI and CLI must use its lifecycle and cannot write arbitrary fields directly. The headless `ddr` CLI is a thin compatibility adapter: create/save consume bounded strict JSON snapshots; save and lifecycle actions require the service's optimistic freshness token; review goes only through `ReviewActionService` with status, currentness, scope, revision and timestamp preconditions. It is not an ingestion route, calculation engine, or alternate writer.
+- `ReviewActionService` resolves `DdrReport.revision_number` as the review revision precondition. A caller-supplied actor remains a declared audit value, not an authenticated identity; self-review is refused by comparing it with the recorded author.
 - `DdrActivity` provides ordered operator-authored text linked to resulting operations; provenance follows report revision/actor/reason.
 - The review UI must gate actions to current submitted reports and reload after a successful action.
-- `tests/integration/test_ddr_authoring.py`, migration integrity/downgrade tests, and Qt UI tests are part of the evidence. A skipped Qt test is not a pass; exact-SHA offscreen CI and physical display acceptance are separate.
+- `tests/integration/test_ddr_authoring.py`, `tests/integration/test_ddr_cli.py`, the CLI surface snapshot, migration integrity/downgrade tests, and Qt UI tests are part of the evidence. A skipped Qt test is not a pass; exact-SHA offscreen CI and physical display acceptance are separate. The CLI tests do not replace exact-SHA CI evidence.

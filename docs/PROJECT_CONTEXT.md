@@ -1,11 +1,13 @@
 # مرجع زمینهٔ پروژه — Prog-Proc
 
 - **وضعیت سند:** مرجع زمینهٔ اجرایی؛ نه گواهی پذیرش یا جایگزین شواهد CI
-- **تاریخ بازبینی:** 2026-11-06 (Asia/Tehran)
+- **تاریخ بازبینی:** 2026-11-07 (Asia/Tehran)
 - **مأموریت:** closure/qualification محصول؛ مرجع نتیجهٔ نهایی همان گزارش فارسی و شواهد exact-SHA است.
 - **شاخهٔ مجاز:** `arena/5957b76d-prog-proc`
-- **remote branch:** `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`؛ `main` محافظت‌شده روی `85122e1a98087db4495b820a9a0ffae9009b7819` و دست‌نخورده است.
-- **SHA کد/آزمون qualification‌شده:** `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`; Linux run `41940002906` و Windows run `41940002911` هر دو success شدند (۲۳/۲۳ job در مجموع).
+- **remote branch هنگام شروع این بازبینی:** `b549ee5a2249fc18ab02ac32d65610d00bd94d68`؛ `main` محافظت‌شده روی `85122e1a98087db4495b820a9a0ffae9009b7819` و دست‌نخورده است.
+- **baseline کد/آزمون qualification‌شده:** `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`; Linux run `41940002906` و Windows run `41940002911` هر دو success شدند (۲۳/۲۳ job در مجموع).
+- **پیگیری report/constraints:** remote SHA `b549ee5a2249fc18ab02ac32d65610d00bd94d68` به‌طور مستقل در Linux run `42126486411` (9/9) و Windows run `42126486402` (14/14) موفق شد؛ این totals جدا از baseline ثبت می‌شوند.
+- **working tree این بازبینی:** DDR CLI، اصلاح revision precondition و refresh pin audit به‌صورت local تغییر کرده‌اند؛ full suite محلی پیش از آخرین reconcile اسناد 2,718 PASS / 63 SKIP / 0 FAIL شد و سپس 42 تست متمرکز docs/snapshot/inventory سبز شدند. هیچ‌کدام exact-SHA CI این revision نیست؛ CI commit‌شده هنوز pending است.
 - **baseline محافظت‌شدهٔ `main`:** `85122e1a98087db4495b820a9a0ffae9009b7819`؛ در این مأموریت تغییر نکرد.
 - **migration head تأییدشده:** `0026`; full-suite/clean-install smoke و Alembic head check سبزند.
 
@@ -57,11 +59,12 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 - Submit گزارش را خودکار تأیید نمی‌کند. `DdrReport.status` و `WellOperation.status` روی `CANDIDATE` می‌مانند تا review مستقل و action قانونی انجام شود.
 - هر activity دستی، provenance با actor/reason/sequence/revision می‌گیرد؛ در submit به `WellOperation` متناظر وصل می‌شود. نبود ORM relationship برای ترتیب flush مجوز کنارگذاشتن FK یا transaction نیست.
 - Revision نسخهٔ قبلی را تاریخی (`is_current=False`) می‌کند، عملیات آن نسخه را نیز historical می‌کند و revision تازه را draft نگه می‌دارد. Review روی draft در دسترس نیست؛ superseding revision خود به معنی approval نیست.
-- Review actionهای `confirm`/`reject` فقط برای گزارش `SUBMITTED` و current در دسترس‌اند، با re-read و preconditionهای status/current/scope/updated_at؛ reason اجباری است و actor اعلام‌شده باید با `created_by` فرق کند. این مقایسهٔ شناسهٔ ورودی، احراز هویت یا اثبات استقلال شخصی نیست؛ authentication در دامنهٔ این محصول نیست.
+- Review actionهای `confirm`/`reject` فقط برای گزارش `SUBMITTED` و current در دسترس‌اند، با re-read و preconditionهای status/current/scope/revision/updated_at؛ reason اجباری است و actor اعلام‌شده باید با `created_by` فرق کند. `ReviewActionService` مقدار `DdrReport.revision_number` را نیز به‌عنوان revision precondition می‌خواند. این مقایسهٔ شناسهٔ ورودی، احراز هویت یا اثبات استقلال شخصی نیست؛ authentication در دامنهٔ این محصول نیست.
+- CLI مستقل `ddr` برای create/list/show/actions/save/submit/revise/decide همان `DdrAuthoringService` و `ReviewActionService` را مصرف می‌کند. فایل UTF-8 JSON حداکثر 1 MiB است؛ کلید تکراری/ناشناخته و shape مبهم رد می‌شود، save snapshot کامل و `expected_updated_at` می‌خواهد، و review همهٔ پیش‌شرط‌ها را دوباره در سرویس اعمال می‌کند. CLI محاسبه، import یا خودکارکردن review اضافه نمی‌کند.
 - UI ابزار مقایسهٔ revisionهای صریحاً linked را با مقادیر قبلی/جاری و provenance ثبت‌شده نشان می‌دهد؛ این مقایسه متنی است و هیچ مقدار مهندسی مشتق نمی‌کند. اجرای محلی UI در این sandbox به‌دلیل فقدان `libGL.so.1` **SKIPPED** است؛ Qt-enabled offscreen، stability و full-suite روی SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` در Linux/Windows موفق شدند (runهای `41940002906`/`41940002911`). Windows UI روی هر دو runtime 29/29 است؛ failure تاریخی registration/refresh بازتولید نشد اما علت آن اثبات نشده است. این نتایج physical Windows display acceptance نیستند.
 - migration `0026`، جدول activity و ستون‌های authoring/revision/currentness را اضافه می‌کند. SQLite self-reference و authoring-state invariant در migration به‌وسیلهٔ trigger محافظت می‌شوند، زیرا SQLite نمی‌تواند self-FK را با `ALTER TABLE ADD CONSTRAINT` ساده اضافه کند. metadata/bootstrap نیز باید همین guardها را ایجاد کند. رفتار PostgreSQL از این کد استنباط یا qualify نمی‌شود.
 
-مسیرهای اصلی: `operations/ddr.py`, `review/actions.py`, `review/service.py`, UI در `ui/main_window.py`, migration `0026`, `tests/integration/test_ddr_authoring.py` و migration tests.
+مسیرهای اصلی: `operations/ddr.py`, `review/actions.py`, `review/service.py`, CLI در `cli/app.py`, UI در `ui/main_window.py`, migration `0026`, `tests/integration/test_ddr_authoring.py`, `tests/integration/test_ddr_cli.py`, CLI snapshot tests و migration tests.
 
 ## 4.1. هویت و lifecycle درس
 

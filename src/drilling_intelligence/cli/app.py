@@ -735,6 +735,254 @@ def command_intake(args: argparse.Namespace) -> int:
         workspace.close()
 
 
+_DDR_CONTENT_MAX_BYTES = 1_048_576
+_DDR_CONTENT_KEYS = frozenset({"report_date", "report_number", "shift", "summary", "activities"})
+_DDR_ACTIVITY_KEYS = frozenset({"operation_type", "label", "description", "period_text"})
+
+
+def _read_ddr_content(path: str, *, require_complete: bool) -> dict[str, Any]:
+    """Read one bounded, explicit DDR snapshot; never infer omitted save fields.
+
+    Create accepts optional metadata fields, while save requires the whole mutable snapshot so an
+    omitted CLI/JSON field cannot accidentally clear a value the operator did not mean to replace.
+    Duplicate JSON keys and unknown properties are rejected rather than resolved by parser order.
+    """
+    from ..core.errors import ValidationError
+
+    source = Path(path).expanduser()
+    try:
+        with source.open("rb") as handle:
+            raw = handle.read(_DDR_CONTENT_MAX_BYTES + 1)
+    except OSError as exc:
+        raise ValidationError(
+            f"could not read DDR content file {source.name!r}: {type(exc).__name__}"
+        ) from exc
+    if len(raw) > _DDR_CONTENT_MAX_BYTES:
+        raise ValidationError("DDR content file exceeds the 1 MiB input limit", size_bytes=len(raw))
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError("DDR content file must be UTF-8 JSON") from exc
+
+    def object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    def reject_non_json_constant(value: str) -> None:
+        raise ValueError(f"non-JSON numeric constant {value!r}")
+
+    try:
+        payload = json.loads(
+            text,
+            object_pairs_hook=object_without_duplicates,
+            parse_constant=reject_non_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+        raise ValidationError(f"DDR content file is not unambiguous JSON: {detail}") from exc
+    if not isinstance(payload, dict):
+        raise ValidationError("DDR content JSON must be one object")
+    unknown = set(payload) - _DDR_CONTENT_KEYS
+    if unknown:
+        raise ValidationError("DDR content has unknown field(s)", fields=sorted(unknown))
+    required = {"report_date", "report_number", "shift", "summary", "activities"}
+    missing = required - set(payload) if require_complete else {"report_date"} - set(payload)
+    if missing:
+        raise ValidationError("DDR content is missing required field(s)", fields=sorted(missing))
+
+    normalized: dict[str, Any] = {}
+    for field in ("report_date", "report_number", "shift", "summary"):
+        value = payload.get(field, "")
+        if not isinstance(value, str):
+            raise ValidationError(f"DDR content field {field!r} must be a string")
+        normalized[field] = value
+    activities = payload.get("activities", [])
+    if not isinstance(activities, list):
+        raise ValidationError("DDR content field 'activities' must be a JSON array")
+    if len(activities) > 200:
+        raise ValidationError("DDR content may contain at most 200 activities")
+    parsed_activities: list[dict[str, str]] = []
+    for index, activity in enumerate(activities):
+        if not isinstance(activity, dict):
+            raise ValidationError(f"DDR activity {index + 1} must be a JSON object")
+        extra = set(activity) - _DDR_ACTIVITY_KEYS
+        missing_activity = {"operation_type", "label"} - set(activity)
+        if extra or missing_activity:
+            raise ValidationError(
+                f"DDR activity {index + 1} has an invalid shape",
+                unknown_fields=sorted(extra),
+                missing_fields=sorted(missing_activity),
+            )
+        normalized_activity: dict[str, str] = {}
+        for field in _DDR_ACTIVITY_KEYS:
+            value = activity.get(field, "")
+            if not isinstance(value, str):
+                raise ValidationError(f"DDR activity {index + 1} field {field!r} must be a string")
+            normalized_activity[field] = value
+        parsed_activities.append(normalized_activity)
+    normalized["activities"] = parsed_activities
+    return normalized
+
+
+def _ddr_display_lines(record: Mapping[str, Any]) -> list[str]:
+    report_id = str(record.get("report_id") or "")
+    current = "current" if record.get("is_current") else "historical"
+    lines = [
+        f"DDR {report_id}: {record.get('report_date_text') or 'undated'} · "
+        f"revision {record.get('revision_number')} · {current}",
+        f"authoring: {record.get('authoring_state')} · review status: {record.get('status')}",
+    ]
+    if record.get("report_number"):
+        lines.append(f"number: {record['report_number']}")
+    if record.get("shift"):
+        lines.append(f"shift: {record['shift']}")
+    if record.get("summary"):
+        lines.append(f"summary: {record['summary']}")
+    for activity in record.get("activities") or ():
+        lines.append(
+            f"activity {activity.get('sequence')}: [{activity.get('operation_type')}] "
+            f"{activity.get('label')}"
+        )
+        if activity.get("period_text"):
+            lines.append(f"  period (operator text): {activity['period_text']}")
+        if activity.get("description"):
+            lines.append(f"  {activity['description']}")
+    return lines
+
+
+def command_ddr(args: argparse.Namespace) -> int:
+    """CLI surface for the existing DDR authoring and governed review services."""
+    from ..operations.ddr import DdrAuthoringService
+    from ..review.actions import ReviewActionRequest, ReviewActionService
+
+    workspace = _open_workspace(args)
+    try:
+        authoring = DdrAuthoringService(workspace.database)
+        action = args.action
+        if action == "create":
+            content = _read_ddr_content(args.content, require_complete=False)
+            well_id = _resolve_well_id(workspace, args.well)
+            record = authoring.create_draft(
+                well_id=str(well_id or ""),
+                **content,
+                actor=args.by,
+                reason=args.reason,
+            )
+            payload: Any = record
+            lines = ["DDR draft created; no operational rows exist until explicit submission."]
+            lines.extend(_ddr_display_lines(record))
+        elif action == "list":
+            well_id = _resolve_well_id(workspace, args.well)
+            records = authoring.list_reports(str(well_id or ""), include_history=args.history)
+            payload = {
+                "well_id": well_id,
+                "history_included": bool(args.history),
+                "count": len(records),
+                "reports": list(records),
+            }
+            lines = [
+                f"{record['report_date_text']} · rev {record['revision_number']} · "
+                f"{record['authoring_state']} / {record['status']} · {record['report_id']}"
+                for record in records
+            ] or ["no manually authored DDRs for this well"]
+        elif action in {"show", "actions"}:
+            record = authoring.get(args.report_id)
+            if action == "show":
+                payload = record
+                lines = _ddr_display_lines(record)
+            else:
+                review = ReviewActionService.for_workspace(workspace)
+                review_record = {
+                    "record_type": "ddr_report",
+                    "status": record["status"],
+                    "current": record["is_current"],
+                    "data": {"authoring_state": record["authoring_state"]},
+                    "provenance": record["provenance"],
+                }
+                available = [item.to_dict() for item in review.available_actions(review_record)]
+                payload = {
+                    "report_id": record["report_id"],
+                    "status": record["status"],
+                    "authoring_state": record["authoring_state"],
+                    "is_current": record["is_current"],
+                    "actions": available,
+                }
+                lines = [
+                    f"available review actions for {record['report_id']}: "
+                    + (", ".join(item["action_id"] for item in available) or "none")
+                ]
+        elif action == "save":
+            content = _read_ddr_content(args.content, require_complete=True)
+            record = authoring.save_draft(
+                args.report_id,
+                expected_updated_at=args.expected_updated_at,
+                **content,
+                actor=args.by,
+                reason=args.reason,
+            )
+            payload = record
+            lines = [
+                "DDR draft saved with optimistic freshness protection.",
+                *_ddr_display_lines(record),
+            ]
+        elif action == "submit":
+            record = authoring.submit(
+                args.report_id,
+                expected_updated_at=args.expected_updated_at,
+                actor=args.by,
+                reason=args.reason,
+            )
+            payload = record
+            lines = [
+                "DDR submitted; resulting operational rows remain CANDIDATE for independent review.",
+                *_ddr_display_lines(record),
+            ]
+        elif action == "revise":
+            record = authoring.create_revision(
+                args.report_id,
+                expected_updated_at=args.expected_updated_at,
+                actor=args.by,
+                reason=args.reason,
+            )
+            payload = record
+            lines = [
+                "new DRAFT revision created; its predecessor remains historical and its review is not inherited.",
+                *_ddr_display_lines(record),
+            ]
+        elif action == "decide":
+            well_id = _resolve_well_id(workspace, args.well)
+            request = ReviewActionRequest(
+                record_type="ddr_report",
+                record_id=args.report_id,
+                action=args.review_action,
+                actor=args.by,
+                expected_status=args.expected_status,
+                reason=args.reason,
+                well_id=str(well_id or ""),
+                expected_revision=args.expected_revision,
+                expected_current=True,
+                expected_scope={"well_id": str(well_id or "")},
+                expected_updated_at=args.expected_updated_at,
+            )
+            result = ReviewActionService.for_workspace(workspace).execute(request)
+            record = authoring.get(args.report_id)
+            payload = {"action": result.to_dict(), "report": record}
+            lines = [
+                f"{result.action} recorded: {result.previous_status} → {result.status}; "
+                "actor identity is a declared value, not authenticated by this single-user application."
+            ]
+        else:
+            raise DrillingIntelligenceError(f"unsupported DDR action: {action}")
+        _emit(payload, as_json=args.json, lines=lines)
+        return 0
+    finally:
+        workspace.close()
+
+
 def command_search(args: argparse.Namespace) -> int:
     workspace = _open_workspace(args)
     try:
@@ -3278,6 +3526,88 @@ def _add_intake_command(sub: Any, common: list[argparse.ArgumentParser]) -> None
     register.set_defaults(handler=command_intake)
 
 
+def _add_ddr_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Expose manual DDR authoring and governed review without duplicating domain rules."""
+    ddr = sub.add_parser(
+        "ddr",
+        help="author, inspect, submit, revise and independently review manual DDRs",
+        parents=[common],
+    )
+    actions = ddr.add_subparsers(dest="action", required=True)
+
+    create = actions.add_parser(
+        "create", help="create an explicit DRAFT from a JSON snapshot", parents=[common]
+    )
+    create.add_argument("--well", required=True, help="registered well id or exact name")
+    create.add_argument("--content", required=True, help="UTF-8 JSON snapshot file (max 1 MiB)")
+    create.add_argument("--by", required=True, help="declared author recorded in provenance")
+    create.add_argument("--reason", required=True, help="why this draft is being created")
+    create.set_defaults(handler=command_ddr)
+
+    listing = actions.add_parser("list", help="list current DDRs for a well", parents=[common])
+    listing.add_argument("--well", required=True, help="registered well id or exact name")
+    listing.add_argument("--history", action="store_true", help="include preserved prior revisions")
+    listing.set_defaults(handler=command_ddr)
+
+    for name, help_text in (
+        ("show", "show one authored DDR and its source-entered activities"),
+        ("actions", "show governed review actions currently allowed for one DDR"),
+    ):
+        view = actions.add_parser(name, help=help_text, parents=[common])
+        view.add_argument("report_id", help="DDR report id")
+        view.set_defaults(handler=command_ddr)
+
+    save = actions.add_parser(
+        "save", help="replace a current DRAFT from a complete JSON snapshot", parents=[common]
+    )
+    save.add_argument("report_id", help="DDR report id")
+    save.add_argument(
+        "--content", required=True, help="complete UTF-8 JSON snapshot file (max 1 MiB)"
+    )
+    save.add_argument(
+        "--expected-updated-at", required=True, help="timestamp from the last `ddr show`"
+    )
+    save.add_argument("--by", required=True, help="declared author recorded in provenance")
+    save.add_argument(
+        "--reason", required=True, help="why this complete draft snapshot is replacing the old one"
+    )
+    save.set_defaults(handler=command_ddr)
+
+    for name, help_text in (
+        ("submit", "submit a DRAFT; operations remain CANDIDATE until independent review"),
+        ("revise", "start a new DRAFT revision of a submitted manual report"),
+    ):
+        operation = actions.add_parser(name, help=help_text, parents=[common])
+        operation.add_argument("report_id", help="DDR report id")
+        operation.add_argument(
+            "--expected-updated-at", required=True, help="timestamp from the last `ddr show`"
+        )
+        operation.add_argument("--by", required=True, help="declared actor recorded in provenance")
+        operation.add_argument(
+            "--reason", required=True, help="why this lifecycle action is being taken"
+        )
+        operation.set_defaults(handler=command_ddr)
+
+    decide = actions.add_parser(
+        "decide", help="apply an existing governed review action", parents=[common]
+    )
+    decide.add_argument("report_id", help="DDR report id")
+    decide.add_argument("--well", required=True, help="well scope shown by `ddr show`")
+    decide.add_argument(
+        "--action", dest="review_action", required=True, help="one action listed by `ddr actions`"
+    )
+    decide.add_argument("--expected-status", required=True, help="status shown by `ddr show`")
+    decide.add_argument(
+        "--expected-revision", required=True, type=int, help="revision number shown by `ddr show`"
+    )
+    decide.add_argument(
+        "--expected-updated-at", required=True, help="timestamp shown by `ddr show`"
+    )
+    decide.add_argument("--by", required=True, help="declared reviewer id; not authenticated")
+    decide.add_argument("--reason", required=True, help="required decision reason")
+    decide.set_defaults(handler=command_ddr)
+
+
 def _add_search_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
     """Register the "search" command and its options."""
     search = sub.add_parser(
@@ -3973,6 +4303,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_wells_command(sub, common)
     _add_ingest_command(sub, common)
     _add_intake_command(sub, common)
+    _add_ddr_command(sub, common)
     _add_search_command(sub, common)
     _add_evidence_command(sub, common)
     _add_index_command(sub, common)

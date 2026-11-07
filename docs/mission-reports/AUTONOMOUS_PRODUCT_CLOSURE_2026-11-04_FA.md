@@ -29,7 +29,7 @@ CI سبز، تصمیم مالک، پذیرش انسانی یا operational quali
 - commits مرتبط: `b3163bf...` شامل اصلاحات کد/آزمون محصول؛ `6df276d...` و `6512d96...` شامل مستندسازی/تصمیم owner gate؛ `279449e...` شامل به‌روزرسانی رسمی Ruff pinها پس از مشاهدهٔ resolver drift. اجرای qualification نهایی روی `279449e...` انجام شده است.
 - Linux CI دقیق SHA `279449e...`: [run 42117361649](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42117361649)، `completed / success`، **۹/۹ job موفق**.
 - Windows CI دقیق همان SHA: [run 42117361615](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42117361615)، `completed / success`، **۱۴/۱۴ job موفق**. در مجموع این دو run، **۲۳/۲۳ job** موفق‌اند.
-- `git diff --check` پس از اصلاح pinها موفق بود. پس از انتشار این گزارش، نتیجهٔ CI برای commit گزارش‌محور احتمالی جدا از qualification دقیق `279449e...` گزارش خواهد شد؛ totals و artifactهای اینجا به SHA دیگری نسبت داده نمی‌شوند.
+- `git diff --check` پس از اصلاح pinها موفق بود. پس از انتشار این گزارش، نتیجهٔ CI برای commit گزارش‌محور جداگانه ثبت شد: GitHub Actions metadata مستقلاً SHA `b549ee5a2249fc18ab02ac32d65610d00bd94d68` را برای Linux run [`42126486411`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42126486411) با **۹/۹ job success** و Windows run [`42126486402`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42126486402) با **۱۴/۱۴ job success** تأیید می‌کند. این report/constraints head همان source/test set را حمل می‌کرد، اما totals/artifactهای آن به جدول‌های دقیق SHA `279449e...` منتقل یا با آن جمع نشده‌اند.
 
 ## ۳. کار مهندسی و ممیزی
 

@@ -188,6 +188,10 @@ def _row_status(row: Any) -> str:
 def _row_revision(row: Any) -> int | None:
     value = getattr(row, "revision", None)
     if value is None:
+        # Authored DDR revisions use the explicit ``revision_number`` field; other
+        # reviewable record families conventionally expose ``revision``.
+        value = getattr(row, "revision_number", None)
+    if value is None:
         return None
     try:
         return int(value)
