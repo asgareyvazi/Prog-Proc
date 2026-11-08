@@ -105,9 +105,30 @@ def synthetic_fixture_png() -> bytes:
     return (
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(b"IHDR", ihdr)
-        + _png_chunk(b"IDAT", zlib.compress(scanlines, level=9))
+        + _png_chunk(b"IDAT", _stored_zlib(scanlines))
         + _png_chunk(b"IEND", b"")
     )
+
+
+def _stored_zlib(data: bytes) -> bytes:
+    """Return a deterministic zlib stream using RFC 1951 uncompressed blocks.
+
+    ``zlib.compress`` is valid but may emit different DEFLATE bytes across zlib
+    versions/platforms. Stored blocks keep this checked-in synthetic fixture
+    byte-identical on Linux and Windows without adding image dependencies.
+    """
+    output = bytearray(b"\x78\x01")  # zlib header: DEFLATE, fastest/no compression
+    block_size = 65_535
+    for offset in range(0, len(data), block_size):
+        block = data[offset : offset + block_size]
+        is_final = offset + len(block) == len(data)
+        output.append(1 if is_final else 0)  # BFINAL, BTYPE=00, byte-aligned padding
+        output.extend(struct.pack("<HH", len(block), len(block) ^ 0xFFFF))
+        output.extend(block)
+    if not data:
+        output.extend(b"\x01\x00\x00\xff\xff")
+    output.extend(struct.pack(">I", zlib.adler32(data) & 0xFFFFFFFF))
+    return bytes(output)
 
 
 def _png_chunk(kind: bytes, data: bytes) -> bytes:

@@ -65,7 +65,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/integrations/base.py` | 228 | `Exception` | reported | a response that is not JSON has no payload |
 | `src/drilling_intelligence/integrations/mineru/adapter.py` | 118 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/integrations/mineru/client.py` | 297 | `Exception` | re-raised |  |
-| `src/drilling_intelligence/integrations/mineru/qualification.py` | 324 | `Exception` | reported | external parser/runtime boundary |
+| `src/drilling_intelligence/integrations/mineru/qualification.py` | 345 | `Exception` | reported | external parser/runtime boundary |
 | `src/drilling_intelligence/knowledge/conflicts.py` | 151 | `Exception` | suppressed | an unresolvable unit makes this not a quantity |
 | `src/drilling_intelligence/knowledge/conflicts.py` | 290 | `Exception` | suppressed | a candidate with unreadable provenance is still a candidate |
 | `src/drilling_intelligence/knowledge/conflicts.py` | 120 | `Exception` | reported | an unresolvable unit is not a match for anything |

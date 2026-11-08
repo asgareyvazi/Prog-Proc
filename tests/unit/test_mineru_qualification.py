@@ -55,6 +55,8 @@ def test_synthetic_png_is_a_deterministic_valid_fixture_with_ground_truth() -> N
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     offset = 8
     chunks = []
+    image_header = b""
+    image_data = bytearray()
     while offset < len(png):
         length = int.from_bytes(png[offset : offset + 4], "big")
         kind = png[offset + 4 : offset + 8]
@@ -62,8 +64,15 @@ def test_synthetic_png_is_a_deterministic_valid_fixture_with_ground_truth() -> N
         crc = int.from_bytes(png[offset + 8 + length : offset + 12 + length], "big")
         assert zlib.crc32(kind + data) & 0xFFFFFFFF == crc
         chunks.append(kind)
+        if kind == b"IHDR":
+            image_header = data
+        elif kind == b"IDAT":
+            image_data.extend(data)
         offset += 12 + length
     assert chunks == [b"IHDR", b"IDAT", b"IEND"]
+    width = int.from_bytes(image_header[:4], "big")
+    height = int.from_bytes(image_header[4:8], "big")
+    assert len(zlib.decompress(image_data)) == (width + 1) * height
 
 
 def test_cer_and_wer_are_true_character_and_word_edit_rates() -> None:
