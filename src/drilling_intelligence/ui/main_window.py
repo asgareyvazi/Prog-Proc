@@ -2352,7 +2352,8 @@ class MainWindow(QMainWindow):
             [
                 "Read-only revision comparison — not an approval",
                 f"{before.get('report_id')} (rev {before.get('revision_number')}) → "
-                f"{after.get('report_id')} (rev {after.get('revision_number')})",
+                f"{after.get('report_id')} (rev {after.get('revision_number')}); "
+                f"comparison={comparison.get('status')}",
             ],
         )
         QTreeWidgetItem(
@@ -2364,6 +2365,15 @@ class MainWindow(QMainWindow):
                 "approval was not evaluated",
             ],
         )
+        if comparison.get("status") == "AMBIGUOUS":
+            QTreeWidgetItem(
+                root,
+                [
+                    "Alignment warning",
+                    "Some activity identity cannot be established from exact authored content; "
+                    "no pairing was guessed.",
+                ],
+            )
         field_group = QTreeWidgetItem(root, ["Authored fields", ""])
         for change in comparison["fields"]:
             field = QTreeWidgetItem(
@@ -2377,7 +2387,7 @@ class MainWindow(QMainWindow):
         activity_group = QTreeWidgetItem(
             root,
             [
-                "Activities (authored sequence; no calculation)",
+                "Activities (authored order; no calculation)",
                 ", ".join(f"{key}={value}" for key, value in counts.items())
                 or str(activity_diff.get("status", "unknown")),
             ],
@@ -2385,57 +2395,91 @@ class MainWindow(QMainWindow):
         QTreeWidgetItem(
             activity_group,
             [
-                "Sequence order",
+                "Authored positions",
                 f"predecessor={_sequence_preview(activity_diff.get('predecessor_order', []))}; "
                 f"successor={_sequence_preview(activity_diff.get('successor_order', []))}",
             ],
         )
         changes = activity_diff.get("items") or []
         display_limit = 250
-        activity_fields = ("operation_type", "label", "description", "period_text")
+
+        def add_side(parent: Any, label: str, value: Any, positions: Any) -> None:
+            if isinstance(value, Mapping):
+                _add_tree_value(parent, label, value)
+                return
+            if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+                group = QTreeWidgetItem(parent, [label, f"{len(value)} activity row(s)"])
+                for index, row in enumerate(value):
+                    if isinstance(row, Mapping):
+                        position = positions[index] if index < len(positions) else "?"
+                        _add_tree_value(group, f"position {position}", row)
+                    else:
+                        QTreeWidgetItem(
+                            group, ["Malformed activity", "a non-object row was omitted"]
+                        )
+
         for change in changes[:display_limit]:
+            previous_positions = change.get("previous_positions") or []
+            successor_positions = change.get("successor_positions") or []
             activity_item = QTreeWidgetItem(
                 activity_group,
-                [f"activity {change.get('sequence')}", str(change.get("status", "")).lower()],
+                [
+                    f"activity positions {previous_positions or '—'} → {successor_positions or '—'}",
+                    str(change.get("status", "")).lower(),
+                ],
             )
+            if change.get("reason"):
+                QTreeWidgetItem(activity_item, ["alignment detail", str(change["reason"])])
+            if change.get("changed_fields"):
+                QTreeWidgetItem(
+                    activity_item,
+                    ["changed authored fields", ", ".join(change["changed_fields"])],
+                )
             prior = change.get("previous")
             next_value = change.get("successor")
-            if prior is not None and next_value is not None:
-                for key in activity_fields:
-                    if prior.get(key) != next_value.get(key):
-                        field_item = QTreeWidgetItem(activity_item, [key, "modified"])
-                        QTreeWidgetItem(field_item, ["predecessor", _value_text(prior.get(key))])
-                        QTreeWidgetItem(field_item, ["successor", _value_text(next_value.get(key))])
-                if change.get("status") == "UNCHANGED":
-                    _add_tree_value(activity_item, "operator-authored text", next_value)
-                else:
-                    _add_tree_value(activity_item, "predecessor operator text", prior)
-                    _add_tree_value(activity_item, "successor operator text", next_value)
-            elif prior is not None:
-                _add_tree_value(activity_item, "removed operator activity", prior)
-            elif next_value is not None:
-                _add_tree_value(activity_item, "added operator activity", next_value)
+            if change.get("status") == "UNCHANGED":
+                add_side(activity_item, "operator-authored text", next_value, successor_positions)
+            elif change.get("status") == "AMBIGUOUS":
+                add_side(activity_item, "predecessor candidate rows", prior, previous_positions)
+                add_side(activity_item, "successor candidate rows", next_value, successor_positions)
+            else:
+                add_side(activity_item, "predecessor operator text", prior, previous_positions)
+                add_side(activity_item, "successor operator text", next_value, successor_positions)
         if len(changes) > display_limit:
+            omitted = len(changes) - display_limit
             QTreeWidgetItem(
                 activity_group,
-                [
-                    "Display limit",
-                    f"{len(changes) - display_limit} additional sequence entries were not expanded",
-                ],
+                ["Display limit", f"{omitted} comparison item(s) not expanded"],
             )
         if comparison.get("issues"):
             issues = QTreeWidgetItem(root, ["History diagnostics", "malformed or incomplete data"])
             for issue in comparison["issues"]:
                 QTreeWidgetItem(issues, ["warning", str(issue)])
 
-        provenance = QTreeWidgetItem(root, ["Authored provenance", ""])
+        provenance = QTreeWidgetItem(
+            root, ["Authored provenance (declared metadata; not authentication)", ""]
+        )
+        provenance_keys = (
+            "source_kind",
+            "action",
+            "actor",
+            "reason",
+            "at",
+            "revision_number",
+            "sequence",
+        )
+
+        def add_provenance_event(parent: Any, event: Mapping[str, Any]) -> None:
+            visible = {key: event[key] for key in provenance_keys if key in event}
+            _add_tree_value(parent, "event", visible)
+
         for label, record in (("predecessor", previous), ("successor", current)):
             revision_provenance = QTreeWidgetItem(provenance, [label, ""])
             events = record.get("provenance") or ()
             if isinstance(events, Sequence) and not isinstance(events, str | bytes):
                 for entry in events[:250]:
                     if isinstance(entry, Mapping):
-                        _add_tree_value(revision_provenance, "event", entry)
+                        add_provenance_event(revision_provenance, entry)
                     else:
                         QTreeWidgetItem(
                             revision_provenance,
@@ -2459,13 +2503,7 @@ class MainWindow(QMainWindow):
                     continue
                 activity_item = QTreeWidgetItem(
                     revision_provenance,
-                    [f"activity {activity.get('sequence', '')}", ""],
-                )
-                QTreeWidgetItem(
-                    activity_item, ["created_at", str(activity.get("created_at") or "")]
-                )
-                QTreeWidgetItem(
-                    activity_item, ["updated_at", str(activity.get("updated_at") or "")]
+                    [f"activity position {activity.get('sequence', '')}", ""],
                 )
                 activity_events = activity.get("provenance") or ()
                 if isinstance(activity_events, Sequence) and not isinstance(
@@ -2473,7 +2511,7 @@ class MainWindow(QMainWindow):
                 ):
                     for entry in activity_events[:100]:
                         if isinstance(entry, Mapping):
-                            _add_tree_value(activity_item, "event", entry)
+                            add_provenance_event(activity_item, entry)
                         else:
                             QTreeWidgetItem(
                                 activity_item,

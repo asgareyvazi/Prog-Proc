@@ -698,6 +698,14 @@ def test_daily_ddr_workbench_creates_saves_reviews_reopens_and_compares_revision
         revision_id = window._selected_ddr_record["report_id"]
         assert revision_id != report["report_id"]
         assert window._selected_ddr_record["supersedes_report_id"] == report["report_id"]
+        window.ddr_add_activity_button.click()
+        inserted_row = window.ddr_activities_table.rowCount() - 1
+        inserted_type = window.ddr_activities_table.cellWidget(inserted_row, 0)
+        assert inserted_type is not None
+        inserted_type.setCurrentText(controller.ddr_operation_types()[0])
+        window.ddr_activities_table.item(inserted_row, 1).setText("Revision-only activity")
+        window.ddr_activities_table.item(inserted_row, 2).setText("Exact inserted operator text")
+        window.ddr_activities_table.item(inserted_row, 3).setText("Changed shift")
         window.ddr_summary_input.setPlainText("Operator wording updated in revision two.")
         window.ddr_reason_input.setText("Corrected the submitted summary")
         window.ddr_save_button.click()
@@ -723,6 +731,7 @@ def test_daily_ddr_workbench_creates_saves_reviews_reopens_and_compares_revision
         window.ddr_compare_button.click()
         assert "not in loaded history" in window.ddr_compare_tree.topLevelItem(0).text(1)
         window._ddr_records_by_id[report["report_id"]] = parent_record
+        before_compare = _database_fingerprint(controller.workspace)
         window.ddr_compare_button.click()
         assert window.ddr_compare_tree.topLevelItemCount() == 1
         compared = window.ddr_compare_tree.topLevelItem(0)
@@ -735,10 +744,13 @@ def test_daily_ddr_workbench_creates_saves_reviews_reopens_and_compares_revision
         assert "summary" in labels and "modified" in labels
         assert "report_date_text" in labels
         assert "Read-only revision comparison — not an approval" in labels
-        assert "Activities (authored sequence; no calculation)" in labels
-        assert "Sequence order" in labels
-        assert "Authored provenance" in labels
+        assert "Activities (authored order; no calculation)" in labels
+        assert "Authored positions" in labels
+        assert "Authored provenance (declared metadata; not authentication)" in labels
         assert "Corrected the submitted summary" in labels
+        assert "Revision-only activity" in labels
+        assert "added" in labels
+        assert _database_fingerprint(controller.workspace) == before_compare
 
         # The review UI enforces reason and a distinct declared actor before confirmation. The
         # affirmative action is still only a declared actor string, not an authenticated identity.

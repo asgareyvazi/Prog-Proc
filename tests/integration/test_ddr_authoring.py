@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.database.models import AuditEvent, DdrActivity, DdrReport, WellOperation
 from drilling_intelligence.operations.ddr import DdrAuthoringService
+from drilling_intelligence.operations.ddr_comparison import compare_ddr_revisions
 from drilling_intelligence.review import ReviewActionRequest, ReviewActionService
 from drilling_intelligence.review.actions import ReviewActionError
 
@@ -55,6 +56,34 @@ def _independent_ddr_save_process(
         database.dispose()
 
 
+def _independent_ddr_failing_save_process(
+    database_url: str,
+    report_id: str,
+    expected_updated_at: str,
+    result_queue: object,
+) -> None:
+    """Run one save in a fresh process so a DB trigger can prove transaction rollback."""
+    from drilling_intelligence.config.settings import Settings
+    from drilling_intelligence.database.session import Database
+
+    database = Database.from_url(database_url, Settings())
+    try:
+        DdrAuthoringService(database).save_draft(
+            report_id,
+            expected_updated_at=expected_updated_at,
+            report_date="2026-11-08",
+            summary="Must roll back after injected insert failure",
+            activities=[{"operation_type": "tripping", "label": "Must not persist"}],
+            actor="declared-author",
+            reason="Exercise spawned transactional rollback",
+        )
+        result_queue.put(("unexpected_success", "save unexpectedly committed"))  # type: ignore[attr-defined]
+    except BaseException as exc:  # noqa: BLE001 - sent to the parent test assertion
+        result_queue.put(("error", f"{type(exc).__name__}: {exc}"))  # type: ignore[attr-defined]
+    finally:
+        database.dispose()
+
+
 def _independent_ddr_transition_process(
     database_url: str,
     report_id: str,
@@ -88,7 +117,24 @@ def _independent_ddr_transition_process(
                 reason=f"Independent process submission by {actor}",
             )
             result_queue.put(("success", value["authoring_state"]))  # type: ignore[attr-defined]
-        elif action in {"confirm", "reject"}:
+        elif action == "revision":
+            claim_snapshot = authoring._claim_snapshot
+
+            def wait_then_claim(session, report, expected: str) -> None:
+                barrier.wait(timeout=20)  # type: ignore[attr-defined]
+                claim_snapshot(session, report, expected)
+
+            authoring._claim_snapshot = wait_then_claim  # type: ignore[method-assign]
+            value = authoring.create_revision(
+                report_id,
+                expected_updated_at=expected_updated_at,
+                actor=actor,
+                reason=f"Independent process revision by {actor}",
+            )
+            result_queue.put(("success", value["report_id"]))  # type: ignore[attr-defined]
+        elif action in {"confirm", "reject", "operation_confirm", "operation_reject"}:
+            operation_action = action.startswith("operation_")
+            review_action = action.removeprefix("operation_")
             review = ReviewActionService(workspace=SimpleNamespace(database=database))
             check = review._check_preconditions
 
@@ -99,12 +145,12 @@ def _independent_ddr_transition_process(
             review._check_preconditions = wait_after_preconditions  # type: ignore[method-assign]
             value = review.execute(
                 ReviewActionRequest(
-                    record_type="ddr_report",
+                    record_type="well_operation" if operation_action else "ddr_report",
                     record_id=report_id,
-                    action=action,
+                    action=review_action,
                     actor=actor,
                     expected_status="CANDIDATE",
-                    expected_revision=1,
+                    expected_revision=None if operation_action else 1,
                     expected_current=True,
                     expected_updated_at=expected_updated_at,
                     reason=f"Independent process review by {actor}",
@@ -121,19 +167,39 @@ def _independent_ddr_transition_process(
         database.dispose()
 
 
-def _run_process_race(db, *, report_id: str, token: str, action: str, actors: tuple[str, str]):
+def _run_process_race(
+    db,
+    *,
+    report_id: str,
+    token: str,
+    action: str,
+    actors: tuple[str, str],
+    actions: tuple[str, str] | None = None,
+):
+    """Race spawned workers against disposable file-backed SQLite.
+
+    Actor values are declared provenance strings only; no authentication or human identity is
+    exercised or implied by using different values here.
+    """
     import multiprocessing
+    from pathlib import Path
+
+    from sqlalchemy.engine import make_url
 
     assert db.engine.dialect.name == "sqlite"
+    database_path = make_url(db.url).database
+    assert database_path not in {None, ":memory:"}
+    assert Path(database_path).is_file(), "process races require disposable file-backed SQLite"
+    worker_actions = actions or (action, action)
     context = multiprocessing.get_context("spawn")
     barrier = context.Barrier(2)
     results = context.Queue()
     workers = [
         context.Process(
             target=_independent_ddr_transition_process,
-            args=(db.url, report_id, token, action, barrier, results, actor),
+            args=(db.url, report_id, token, worker_action, barrier, results, actor),
         )
-        for actor in actors
+        for worker_action, actor in zip(worker_actions, actors, strict=True)
     ]
     outcomes = []
     try:
@@ -824,6 +890,76 @@ def test_ddr_operation_review_uses_the_same_atomic_claim_without_confirming_its_
         assert operation is not None and operation.status == "CONFIRMED"
 
 
+def test_spawned_ddr_save_failure_rolls_back_rows_and_audit_on_file_backed_sqlite(
+    db, committed_well_id
+) -> None:
+    import multiprocessing
+    from pathlib import Path
+
+    from sqlalchemy.engine import make_url
+
+    assert db.engine.dialect.name == "sqlite"
+    database_path = make_url(db.url).database
+    assert database_path not in {None, ":memory:"}
+    assert Path(database_path).is_file()
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-08",
+        summary="Persisted before the injected failure",
+        activities=[{"operation_type": "drilling", "label": "Original persisted activity"}],
+        actor="declared-author",
+        reason="Create spawned rollback case",
+    )
+    original = service.get(draft["report_id"])
+    with db.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TRIGGER reject_spawned_activity_insert BEFORE INSERT ON ddr_activity "
+            "BEGIN SELECT RAISE(ABORT, 'injected spawned activity insert failure'); END"
+        )
+
+    context = multiprocessing.get_context("spawn")
+    results = context.Queue()
+    worker = context.Process(
+        target=_independent_ddr_failing_save_process,
+        args=(db.url, draft["report_id"], draft["updated_at"], results),
+    )
+    try:
+        worker.start()
+        outcome = results.get(timeout=45)
+        worker.join(timeout=30)
+        assert not worker.is_alive()
+        assert worker.exitcode == 0
+        assert outcome[0] == "error"
+        assert "injected spawned activity insert failure" in outcome[1]
+    finally:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(timeout=5)
+        results.close()
+        results.join_thread()
+        with db.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER IF EXISTS reject_spawned_activity_insert")
+
+    persisted = service.get(draft["report_id"])
+    assert persisted["summary"] == original["summary"]
+    assert persisted["activities"] == original["activities"]
+    assert persisted["updated_at"] == original["updated_at"]
+    with db.read_only() as session:
+        events = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.subject_type == "ddr_report",
+                    AuditEvent.subject_id == draft["report_id"],
+                )
+            )
+        )
+    assert [event.action for event in events].count("ddr.draft_saved") == 0
+    with db.engine.connect() as connection:
+        assert list(connection.execute(text("PRAGMA foreign_key_check"))) == []
+        assert connection.execute(text("PRAGMA integrity_check")).scalar_one() == "ok"
+
+
 def test_same_ddr_submission_snapshot_is_claimed_once_across_independent_processes(
     db, committed_well_id
 ) -> None:
@@ -919,6 +1055,180 @@ def test_same_ddr_review_snapshot_is_claimed_once_across_independent_processes(
         assert connection.execute(text("PRAGMA integrity_check")).scalar_one() == "ok"
 
 
+def test_same_ddr_revision_token_is_claimed_once_across_independent_processes(
+    db, committed_well_id
+) -> None:
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-08",
+        activities=[{"operation_type": "drilling", "label": "Authored predecessor activity"}],
+        actor="declared-author",
+        reason="Create process revision race",
+    )
+    submitted = service.submit(
+        draft["report_id"],
+        expected_updated_at=draft["updated_at"],
+        actor="declared-author",
+        reason="Submit before process revision race",
+    )
+    successor_id, stale = _run_process_race(
+        db,
+        report_id=draft["report_id"],
+        token=submitted["updated_at"],
+        action="revision",
+        actors=("declared-author", "declared-author"),
+    )
+    assert "changed since it was loaded" in stale
+    history = service.list_reports(committed_well_id, include_history=True)
+    assert len(history) == 2
+    assert sum(bool(item["is_current"]) for item in history) == 1
+    successor = service.get(successor_id)
+    predecessor = service.get(draft["report_id"])
+    assert successor["supersedes_report_id"] == predecessor["report_id"]
+    assert successor["revision_number"] == 2
+    assert successor["activities"][0]["label"] == "Authored predecessor activity"
+    assert predecessor["is_current"] is False
+    with db.read_only() as session:
+        reports = list(
+            session.scalars(
+                select(DdrReport).where(DdrReport.revision_group_id == draft["revision_group_id"])
+            )
+        )
+        activities = list(
+            session.scalars(select(DdrActivity).where(DdrActivity.ddr_report_id == successor_id))
+        )
+        events = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.subject_type == "ddr_report",
+                    AuditEvent.subject_id == draft["report_id"],
+                )
+            )
+        )
+    assert len(reports) == 2
+    assert len(activities) == 1
+    assert [event.action for event in events].count("ddr.revision_superseded") == 1
+    assert [event.action for event in events if event.action == "ddr.revision_superseded"] == [
+        "ddr.revision_superseded"
+    ]
+    with db.engine.connect() as connection:
+        assert list(connection.execute(text("PRAGMA foreign_key_check"))) == []
+        assert connection.execute(text("PRAGMA integrity_check")).scalar_one() == "ok"
+
+
+def test_process_level_confirm_and_reject_race_persists_exactly_one_report_decision(
+    db, committed_well_id
+) -> None:
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-08",
+        activities=[{"operation_type": "drilling", "label": "Reviewable authored activity"}],
+        actor="declared-author",
+        reason="Create spawned report review race",
+    )
+    submitted = service.submit(
+        draft["report_id"],
+        expected_updated_at=draft["updated_at"],
+        actor="declared-author",
+        reason="Submit for independent review",
+    )
+    status, stale = _run_process_race(
+        db,
+        report_id=draft["report_id"],
+        token=submitted["updated_at"],
+        action="confirm",
+        actions=("confirm", "reject"),
+        actors=("reviewer-one", "reviewer-two"),
+    )
+    assert status in {"CONFIRMED", "REJECTED"}
+    assert "stale" in stale
+    persisted = service.get(draft["report_id"])
+    assert persisted["status"] == status
+    decisions = [
+        item for item in persisted["provenance"] if item.get("source_kind") == "review_decision"
+    ]
+    assert len(decisions) == 1
+    assert decisions[0]["actor"] in {"reviewer-one", "reviewer-two"}
+    assert decisions[0]["reason"].startswith("Independent process review by")
+    with db.read_only() as session:
+        operations = list(
+            session.scalars(
+                select(WellOperation).where(WellOperation.report_id == draft["report_id"])
+            )
+        )
+        events = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.subject_type == "ddr_report",
+                    AuditEvent.subject_id == draft["report_id"],
+                )
+            )
+        )
+    assert len(operations) == 1 and operations[0].status == "CANDIDATE"
+    assert [event.action for event in events].count("ddr.submitted") == 1
+    with db.engine.connect() as connection:
+        assert list(connection.execute(text("PRAGMA foreign_key_check"))) == []
+        assert connection.execute(text("PRAGMA integrity_check")).scalar_one() == "ok"
+
+
+def test_process_level_operation_review_race_does_not_confirm_its_parent_ddr(
+    db, committed_well_id
+) -> None:
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-08",
+        activities=[{"operation_type": "drilling", "label": "Candidate operation for race"}],
+        actor="declared-author",
+        reason="Create spawned operation review race",
+    )
+    submitted = service.submit(
+        draft["report_id"],
+        expected_updated_at=draft["updated_at"],
+        actor="declared-author",
+        reason="Create candidate operation",
+    )
+    operation_id = submitted["activities"][0]["operation_id"]
+    with db.read_only() as session:
+        operation = session.get(WellOperation, operation_id)
+        assert operation is not None
+        operation_token = operation.updated_at.isoformat()
+    status, stale = _run_process_race(
+        db,
+        report_id=operation_id,
+        token=operation_token,
+        action="operation_confirm",
+        actions=("operation_confirm", "operation_reject"),
+        actors=("operation-reviewer-one", "operation-reviewer-two"),
+    )
+    assert status in {"CONFIRMED", "REJECTED"}
+    assert "stale" in stale
+    with db.read_only() as session:
+        report = session.get(DdrReport, draft["report_id"])
+        operation = session.get(WellOperation, operation_id)
+        events = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.subject_type == "well_operation",
+                    AuditEvent.subject_id == operation_id,
+                )
+            )
+        )
+    assert report is not None and report.status == "CANDIDATE"
+    assert report.authoring_state == "SUBMITTED"
+    assert operation is not None and operation.status == status
+    assert len(events) == 1 and events[0].action == "ddr.activity_submitted"
+    status_history = operation.attributes["status_history"]
+    assert len(status_history) == 1
+    assert status_history[0]["by"] in {"operation-reviewer-one", "operation-reviewer-two"}
+    assert status_history[0]["reason"].startswith("Independent process review by")
+    with db.engine.connect() as connection:
+        assert list(connection.execute(text("PRAGMA foreign_key_check"))) == []
+        assert connection.execute(text("PRAGMA integrity_check")).scalar_one() == "ok"
+
+
 def test_same_ddr_snapshot_is_claimed_once_across_independent_sqlite_processes(
     db, committed_well_id
 ) -> None:
@@ -993,3 +1303,122 @@ def test_same_ddr_snapshot_is_claimed_once_across_independent_sqlite_processes(
     assert [event.action for event in events].count("ddr.draft_saved") == 1
     with db.engine.connect() as connection:
         assert list(connection.execute(text("PRAGMA foreign_key_check"))) == []
+        assert connection.execute(text("PRAGMA integrity_check")).scalar_one() == "ok"
+
+
+def test_service_generated_revision_comparison_classifies_edit_insert_delete_and_reorder(
+    db, committed_well_id
+) -> None:
+    service = DdrAuthoringService(db)
+    before_rows = [
+        {"operation_type": "drilling", "label": "Anchor A"},
+        {"operation_type": "drilling", "label": "Old edit text", "description": "verbatim old"},
+        {"operation_type": "tripping", "label": "Anchor B"},
+        {"operation_type": "cementing", "label": "Removed authored row"},
+        {"operation_type": "drilling", "label": "Anchor C"},
+        {"operation_type": "tripping", "label": "Moved authored row"},
+        {"operation_type": "drilling", "label": "Anchor E"},
+    ]
+    predecessor = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-08",
+        summary="Exact service-generated predecessor",
+        activities=before_rows,
+        actor="declared-author",
+        reason="Create authored predecessor for comparison",
+    )
+    submitted = service.submit(
+        predecessor["report_id"],
+        expected_updated_at=predecessor["updated_at"],
+        actor="declared-author",
+        reason="Submit before creating the successor revision",
+    )
+    successor = service.create_revision(
+        predecessor["report_id"],
+        expected_updated_at=submitted["updated_at"],
+        actor="declared-author",
+        reason="Create service-generated successor revision",
+    )
+    successor = service.save_draft(
+        successor["report_id"],
+        expected_updated_at=successor["updated_at"],
+        report_date="2026-11-08",
+        summary="Exact service-generated predecessor",
+        activities=[
+            {"operation_type": "drilling", "label": "Anchor A"},
+            {
+                "operation_type": "drilling",
+                "label": "Corrected edit text",
+                "description": "verbatim corrected",
+            },
+            {"operation_type": "tripping", "label": "Anchor B"},
+            {"operation_type": "tripping", "label": "Moved authored row"},
+            {"operation_type": "drilling", "label": "Anchor C"},
+            {"operation_type": "drilling", "label": "Anchor E"},
+            {"operation_type": "cementing", "label": "Inserted authored row"},
+        ],
+        actor="declared-author",
+        reason="Edit, reorder, remove and insert authored text",
+    )
+
+    before_compare = service.get(predecessor["report_id"])
+    after_compare = service.get(successor["report_id"])
+    result = compare_ddr_revisions(before_compare, after_compare)
+    statuses = [item["status"] for item in result["activities"]["items"]]
+    assert statuses.count("UNCHANGED") == 3
+    assert statuses.count("MODIFIED") == 1
+    assert statuses.count("REORDERED") == 2
+    assert statuses.count("REMOVED") == 1
+    assert statuses.count("ADDED") == 1
+    assert result["status"] == "OK" and result["conclusive"] is True
+    assert result["activities"]["order_changed"] is True
+    modification = next(
+        item for item in result["activities"]["items"] if item["status"] == "MODIFIED"
+    )
+    assert modification["previous"]["label"] == "Old edit text"
+    assert modification["successor"]["label"] == "Corrected edit text"
+    assert modification["changed_fields"] == ["label", "description"]
+    before_ids = {row["id"] for row in before_compare["activities"]}
+    after_ids = {row["id"] for row in after_compare["activities"]}
+    assert before_ids.isdisjoint(after_ids), (
+        "revision clone must not imply durable activity identity"
+    )
+    assert (
+        before_compare["activities"][0]["sequence"]
+        == after_compare["activities"][0]["sequence"]
+        == 1
+    )
+    assert before_compare["activities"][-1]["sequence"] == 7
+    assert after_compare["activities"][-1]["sequence"] == 7
+
+    duplicate = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-08",
+        activities=[
+            {"operation_type": "drilling", "label": "Repeated authored activity"},
+            {"operation_type": "drilling", "label": "Repeated authored activity"},
+        ],
+        actor="declared-author",
+        reason="Create repeated-content predecessor",
+    )
+    duplicate_submitted = service.submit(
+        duplicate["report_id"],
+        expected_updated_at=duplicate["updated_at"],
+        actor="declared-author",
+        reason="Submit repeated-content predecessor",
+    )
+    duplicate_successor = service.create_revision(
+        duplicate["report_id"],
+        expected_updated_at=duplicate_submitted["updated_at"],
+        actor="declared-author",
+        reason="Create repeated-content successor",
+    )
+    duplicate_result = compare_ddr_revisions(
+        service.get(duplicate["report_id"]), service.get(duplicate_successor["report_id"])
+    )
+    assert duplicate_result["status"] == "AMBIGUOUS"
+    assert duplicate_result["conclusive"] is False
+    assert duplicate_result["has_changes"] is None
+    assert duplicate_result["activities"]["items"][0]["reason"] == (
+        "repeated_content_has_no_durable_identity"
+    )

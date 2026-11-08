@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import math
 import struct
 import tempfile
 import zlib
@@ -18,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ...config.settings import Settings
+from ...core.redact import safe_detail
 from ...extraction.normalized import clean_text
 from .cli import is_mineru_kit
 from .client import MinerUClient
@@ -29,9 +29,9 @@ from .normalize import (
 )
 
 GROUND_TRUTH_TEXT = "DRILLING REPORT 27\nDEPTH 12345 FT"
-FIXTURE_SCOPE = "one deterministic synthetic raster image; not representative field OCR accuracy"
-MAX_CHARACTER_ERROR_RATE = 0.10
-MAX_WORD_ERROR_RATE = 0.20
+FIXTURE_SCOPE = (
+    "deterministic generated synthetic raster corpus; not representative field OCR accuracy"
+)
 
 _FONT: dict[str, tuple[str, ...]] = {
     " ": ("00000",) * 7,
@@ -138,6 +138,193 @@ def _png_chunk(kind: bytes, data: bytes) -> bytes:
     )
 
 
+def synthetic_fixture_corpus() -> dict[str, dict[str, Any]]:
+    """Return deterministic, generated-only fixtures and their exact ground truth.
+
+    The layouts are controlled test inputs, not representative field documents. Rotation and skew
+    are exact integer raster transforms so fixture hashes are stable across supported platforms.
+    """
+    specifications: dict[str, dict[str, Any]] = {
+        "single_column": {
+            "columns": [["DRILLING REPORT 27", "DEPTH 12345 FT"]],
+            "scale": 8,
+            "background": 255,
+            "ink": 16,
+            "ground_truth": GROUND_TRUTH_TEXT,
+            "layout": "single_column",
+            "transform": "none",
+        },
+        "multi_column": {
+            "columns": [["WELL 17", "DEPTH 12345 FT"], ["SHIFT DAY", "PUMP CHECK"]],
+            "scale": 6,
+            "background": 255,
+            "ink": 16,
+            "ground_truth": "WELL 17\nDEPTH 12345 FT\nSHIFT DAY\nPUMP CHECK",
+            "layout": "two_columns_read_left_then_right",
+            "transform": "none",
+        },
+        "table_mixed": {
+            "columns": [
+                [
+                    "DAILY OPERATIONS",
+                    "ACTIVITY      DEPTH",
+                    "DRILLING      12345 FT",
+                    "CEMENTING     12300 FT",
+                ]
+            ],
+            "scale": 5,
+            "background": 255,
+            "ink": 16,
+            "ground_truth": "DAILY OPERATIONS\nACTIVITY      DEPTH\nDRILLING      12345 FT\nCEMENTING     12300 FT",
+            "layout": "heading_with_aligned_table_like_rows",
+            "transform": "none",
+        },
+        "small_print": {
+            "columns": [["SHIFT REPORT 27", "MUD CHECK 125"]],
+            "scale": 3,
+            "background": 255,
+            "ink": 16,
+            "ground_truth": "SHIFT REPORT 27\nMUD CHECK 125",
+            "layout": "single_column_small_glyphs",
+            "transform": "none",
+        },
+        "low_quality": {
+            "columns": [["DRILLING REPORT 27", "DEPTH 12345 FT"]],
+            "scale": 4,
+            "background": 232,
+            "ink": 168,
+            "ground_truth": GROUND_TRUTH_TEXT,
+            "layout": "single_column_low_contrast_with_deterministic_sparse_noise",
+            "transform": "deterministic_sparse_noise",
+        },
+        "rotated_90": {
+            "columns": [["ROTATED PAGE 90", "DEPTH 12345 FT"]],
+            "scale": 5,
+            "background": 255,
+            "ink": 16,
+            "ground_truth": "ROTATED PAGE 90\nDEPTH 12345 FT",
+            "layout": "single_column",
+            "transform": "90_degrees_clockwise",
+        },
+        "skewed": {
+            "columns": [["SKEWED PAGE 02", "DEPTH 12345 FT"]],
+            "scale": 5,
+            "background": 255,
+            "ink": 16,
+            "ground_truth": "SKEWED PAGE 02\nDEPTH 12345 FT",
+            "layout": "single_column",
+            "transform": "integer_row_shear_one_pixel_per_twenty_rows",
+        },
+    }
+    result: dict[str, dict[str, Any]] = {}
+    for name, specification in specifications.items():
+        if name == "single_column":
+            image = synthetic_fixture_png()
+        else:
+            pixels, width, height = _render_columns(
+                specification["columns"],
+                scale=int(specification["scale"]),
+                background=int(specification["background"]),
+                ink=int(specification["ink"]),
+                sparse_noise=name == "low_quality",
+            )
+            if name == "rotated_90":
+                pixels, width, height = _rotate_clockwise(pixels, width, height)
+            elif name == "skewed":
+                pixels, width = _shear_rows(pixels, width, height)
+            image = _encode_gray_png(pixels, width, height)
+        ground_truth = str(specification["ground_truth"])
+        result[name] = {
+            "name": name,
+            "png": image,
+            "fixture_sha256": hashlib.sha256(image).hexdigest(),
+            "ground_truth": ground_truth,
+            "ground_truth_sha256": hashlib.sha256(ground_truth.encode("utf-8")).hexdigest(),
+            "layout": specification["layout"],
+            "transform": specification["transform"],
+            "scale": specification["scale"],
+        }
+    return result
+
+
+def _render_columns(
+    columns: list[list[str]], *, scale: int, background: int, ink: int, sparse_noise: bool
+) -> tuple[bytearray, int, int]:
+    margin = 16
+    line_gap = max(3, scale * 2)
+    column_gap = scale * 5
+    column_widths = [
+        max((len(line) for line in column), default=0) * 6 * scale for column in columns
+    ]
+    width = max(1, 2 * margin + sum(column_widths) + max(0, len(columns) - 1) * column_gap)
+    row_count = max((len(column) for column in columns), default=0)
+    height = max(1, 2 * margin + row_count * 7 * scale + max(0, row_count - 1) * line_gap)
+    pixels = bytearray([background]) * (width * height)
+    x_origins: list[int] = []
+    origin = margin
+    for column_width in column_widths:
+        x_origins.append(origin)
+        origin += column_width + column_gap
+    for column_index, column_lines in enumerate(columns):
+        for row_index, line in enumerate(column_lines):
+            y_origin = margin + row_index * (7 * scale + line_gap)
+            x_origin = x_origins[column_index]
+            for character in line:
+                glyph = _FONT.get(character)
+                if glyph is None:
+                    raise ValueError(f"synthetic fixture character {character!r} has no glyph")
+                for glyph_row, pattern in enumerate(glyph):
+                    for glyph_column, bit in enumerate(pattern):
+                        if bit == "1":
+                            x0 = x_origin + glyph_column * scale
+                            y0 = y_origin + glyph_row * scale
+                            for y in range(y0, y0 + scale):
+                                start = y * width + x0
+                                pixels[start : start + scale] = bytes([ink]) * scale
+                x_origin += 6 * scale
+    if sparse_noise:
+        for y in range(height):
+            for x in range(width):
+                offset = y * width + x
+                if pixels[offset] == background and (x * 17 + y * 31) % 211 == 0:
+                    pixels[offset] = background - 12
+    return pixels, width, height
+
+
+def _rotate_clockwise(pixels: bytearray, width: int, height: int) -> tuple[bytearray, int, int]:
+    rotated_width, rotated_height = height, width
+    rotated = bytearray([255]) * (rotated_width * rotated_height)
+    for y in range(height):
+        for x in range(width):
+            rotated[x * rotated_width + (height - 1 - y)] = pixels[y * width + x]
+    return rotated, rotated_width, rotated_height
+
+
+def _shear_rows(pixels: bytearray, width: int, height: int) -> tuple[bytearray, int]:
+    padding = height // 20 + 1
+    sheared_width = width + padding
+    sheared = bytearray([255]) * (sheared_width * height)
+    for y in range(height):
+        shift = y // 20
+        source = y * width
+        destination = y * sheared_width + shift
+        sheared[destination : destination + width] = pixels[source : source + width]
+    return sheared, sheared_width
+
+
+def _encode_gray_png(pixels: bytearray, width: int, height: int) -> bytes:
+    scanlines = b"".join(
+        b"\x00" + bytes(pixels[row * width : (row + 1) * width]) for row in range(height)
+    )
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", _stored_zlib(scanlines))
+        + _png_chunk(b"IEND", b"")
+    )
+
+
 def levenshtein_distance(left: str, right: str) -> int:
     """Character-level Levenshtein distance with O(min(n,m)) memory."""
     return _sequence_distance(list(left), list(right))
@@ -184,7 +371,7 @@ def error_metrics(expected: str, actual: str) -> dict[str, Any]:
 def validate_local_mineru(
     settings: Settings, *, run_synthetic_ocr: bool = False
 ) -> tuple[dict[str, Any], int]:
-    """Report local CLI readiness; optionally measure one local synthetic OCR fixture."""
+    """Report local readiness; optionally measure the generated corpus with local MinerU only."""
     configured_mode = settings.mineru.mode
     local_settings = copy.copy(settings)
     local_settings.mineru = copy.copy(settings.mineru)
@@ -218,24 +405,21 @@ def validate_local_mineru(
             "metrics": None,
             "fixture_pass": None,
             "general_ocr_accuracy_qualified": False,
-            "note": "CLI readiness is not an OCR accuracy result; inference is opt-in.",
+            "note": "Readiness is not an OCR result; inference is opt-in and no metric threshold is configured.",
         },
     }
     if not run_synthetic_ocr:
         return result, 0 if ready else 1
     if not ready:
         result["ok"] = False
-        result["ocr_qualification"]["status"] = "NOT_RUN"
         result["ocr_qualification"]["note"] = (
-            "Local CLI is unavailable; inference and metrics were not run."
+            "Local CLI is unavailable; model files were not checked, inference was not run, and metrics are null."
         )
         return result, 1
     if not is_mineru_kit(status.location):
         result["ok"] = False
-        result["ocr_qualification"]["status"] = "NOT_RUN"
         result["ocr_qualification"]["note"] = (
-            "Synthetic OCR validation requires the supported MinerU 4 mineru-kit CLI; "
-            "the detected legacy CLI was not invoked."
+            "Synthetic OCR requires the supported MinerU 4 mineru-kit CLI; the detected legacy CLI was not invoked."
         )
         return result, 1
 
@@ -247,117 +431,124 @@ def validate_local_mineru(
         "MINERU_MODEL_SOURCE": "local",
         "MINERU_MODEL_SMALL_BACKEND": "onnx",
     }
-    fixture_bytes = synthetic_fixture_png()
-    sha256 = hashlib.sha256(fixture_bytes).hexdigest()
-    try:
-        with tempfile.TemporaryDirectory(prefix="drillintel-mineru-qualification-") as directory:
-            fixture = Path(directory) / "synthetic_scan.png"
-            fixture.write_bytes(fixture_bytes)
-            run = MinerUClient(local_settings).parse(fixture, selected_mode="cli")
-            try:
-                if not run.ok or run.returncode != 0 or run.artefacts is None:
-                    result["ok"] = False
-                    result["ocr_qualification"]["status"] = "INFERENCE_FAILED"
-                    result["ocr_qualification"]["note"] = (
-                        run.error
-                        or "Local MinerU did not complete a clean inference; metrics were not computed."
-                    )
-                    result["ocr_qualification"]["returncode"] = run.returncode
-                    result["ocr_qualification"]["timed_out"] = run.timed_out
-                    result["ocr_qualification"]["metrics"] = None
-                    result["ocr_qualification"]["scratch_cleanup"] = "pending"
-                    result["model_readiness"] = {"status": "LOCAL_INFERENCE_FAILED"}
-                    return result, 1
-                artefacts = run.artefacts
-                kwargs = {
-                    "filename": fixture.name,
-                    "document_id": "synthetic-ocr-fixture",
-                    "version_id": "synthetic-ocr-fixture-v1",
-                    "sha256": sha256,
-                }
-                if artefacts.middle:
-                    document, _diagnostics = normalize_middle_json(artefacts.middle, **kwargs)
-                elif artefacts.content_list:
-                    document, _diagnostics = normalize_content_list(
-                        artefacts.content_list, **kwargs
-                    )
-                else:
-                    document, _diagnostics = normalize_markdown(artefacts.markdown, **kwargs)
-                recognized = document.text or artefacts.markdown
-                if not clean_text(recognized):
-                    result["ok"] = False
-                    result["ocr_qualification"]["status"] = "INFERENCE_FAILED"
-                    result["ocr_qualification"]["note"] = (
-                        "Inference completed without readable text; no metrics computed."
-                    )
-                    result["ocr_qualification"]["metrics"] = None
-                    result["model_readiness"] = {"status": "LOCAL_INFERENCE_COMPLETED"}
-                    return result, 1
-                metrics = error_metrics(GROUND_TRUTH_TEXT, recognized)
-                fixture_pass = (
-                    math.isfinite(metrics["character_error_rate"])
-                    and math.isfinite(metrics["word_error_rate"])
-                    and metrics["character_error_rate"] <= MAX_CHARACTER_ERROR_RATE
-                    and metrics["word_error_rate"] <= MAX_WORD_ERROR_RATE
-                )
-                result["model_readiness"] = {"status": "LOCAL_INFERENCE_COMPLETED"}
-                result["ocr_qualification"] = {
-                    "status": "SYNTHETIC_METRICS_RECORDED",
-                    "scope": FIXTURE_SCOPE,
-                    "inference_completed": True,
-                    "fixture_sha256": sha256,
-                    "expected_text": GROUND_TRUTH_TEXT,
-                    "metrics": metrics,
-                    "thresholds": {
-                        "max_character_error_rate": MAX_CHARACTER_ERROR_RATE,
-                        "max_word_error_rate": MAX_WORD_ERROR_RATE,
-                    },
-                    "fixture_pass": fixture_pass,
-                    "general_ocr_accuracy_qualified": False,
-                    "model_source": "local",
-                    "tier": "basic",
-                    "note": "A synthetic fixture result is not general or field-document OCR accuracy qualification.",
-                }
-                result["ok"] = bool(fixture_pass)
-                had_scratch = run.output_dir is not None
-                cleanup_ok = run.cleanup()
-                result["ocr_qualification"]["scratch_cleanup"] = (
-                    "removed"
-                    if had_scratch and cleanup_ok
-                    else "not_applicable"
-                    if cleanup_ok
-                    else "failed"
-                )
-                if not cleanup_ok:
-                    result["ok"] = False
-                    result["ocr_qualification"]["status"] = "METRICS_RECORDED_CLEANUP_FAILED"
-                return result, 0 if result["ok"] else 1
-            finally:
-                if run.output_dir is not None:
-                    cleanup_ok = run.cleanup()
-                    result["ocr_qualification"]["scratch_cleanup"] = (
-                        "removed" if cleanup_ok else "failed"
-                    )
-                    if not cleanup_ok:
-                        result["ok"] = False
-                        result["ocr_qualification"]["status"] = "METRICS_RECORDED_CLEANUP_FAILED"
-                        result["model_readiness"] = {"status": "LOCAL_INFERENCE_COMPLETED"}
-    except Exception as exc:  # noqa: BLE001 - external parser/runtime boundary
-        result["ok"] = False
-        result["ocr_qualification"]["status"] = "INFERENCE_FAILED"
-        result["ocr_qualification"]["note"] = f"{type(exc).__name__}: {exc}"
-        result["ocr_qualification"]["metrics"] = None
-        result["model_readiness"] = {"status": "LOCAL_INFERENCE_FAILED"}
-        return result, 1
+    case_results: list[dict[str, Any]] = []
+    overall_cleanup_ok = True
+    for name, case in synthetic_fixture_corpus().items():
+        case_result: dict[str, Any] = {
+            "name": name,
+            "fixture_sha256": case["fixture_sha256"],
+            "ground_truth_sha256": case["ground_truth_sha256"],
+            "ground_truth": case["ground_truth"],
+            "layout": case["layout"],
+            "transform": case["transform"],
+            "status": "NOT_RUN",
+            "inference_completed": False,
+            "metrics": None,
+        }
+        run = None
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="drillintel-mineru-qualification-"
+            ) as directory:
+                fixture = Path(directory) / f"{name}.png"
+                fixture.write_bytes(case["png"])
+                try:
+                    run = MinerUClient(local_settings).parse(fixture, selected_mode="cli")
+                    if not run.ok or run.returncode != 0 or run.artefacts is None:
+                        case_result["status"] = "INFERENCE_FAILED"
+                        case_result["returncode"] = run.returncode
+                        case_result["timed_out"] = run.timed_out
+                        case_result["detail"] = safe_detail(
+                            run.error or "Local inference produced no clean output."
+                        )
+                    else:
+                        artefacts = run.artefacts
+                        kwargs = {
+                            "filename": fixture.name,
+                            "document_id": f"synthetic-ocr-{name}",
+                            "version_id": f"synthetic-ocr-{name}-v1",
+                            "sha256": case["fixture_sha256"],
+                        }
+                        if artefacts.middle:
+                            document, _diagnostics = normalize_middle_json(
+                                artefacts.middle, **kwargs
+                            )
+                        elif artefacts.content_list:
+                            document, _diagnostics = normalize_content_list(
+                                artefacts.content_list, **kwargs
+                            )
+                        else:
+                            document, _diagnostics = normalize_markdown(
+                                artefacts.markdown, **kwargs
+                            )
+                        recognized = document.text or artefacts.markdown
+                        if clean_text(recognized):
+                            case_result["status"] = "METRICS_RECORDED"
+                            case_result["inference_completed"] = True
+                            case_result["metrics"] = error_metrics(case["ground_truth"], recognized)
+                        else:
+                            case_result["status"] = "INFERENCE_FAILED"
+                            case_result["inference_completed"] = True
+                            case_result["detail"] = (
+                                "Inference completed without readable text; metrics are null."
+                            )
+                except Exception as exc:  # noqa: BLE001 - optional external parser boundary
+                    fixture_text = str(fixture)
+                    detail = str(exc).replace(fixture_text, "<synthetic-fixture>")
+                    detail = detail.replace(fixture.as_posix(), "<synthetic-fixture>")
+                    case_result["status"] = "INFERENCE_FAILED"
+                    case_result["detail"] = safe_detail(f"{type(exc).__name__}: {detail[:500]}")
+                finally:
+                    if run is not None:
+                        had_scratch = run.output_dir is not None
+                        cleanup_ok = run.cleanup()
+                        overall_cleanup_ok = overall_cleanup_ok and cleanup_ok
+                        case_result["scratch_cleanup"] = (
+                            "removed"
+                            if had_scratch and cleanup_ok
+                            else "not_applicable"
+                            if cleanup_ok
+                            else "failed"
+                        )
+        except Exception as exc:  # noqa: BLE001 - local temp-file boundary
+            case_result["status"] = "INFERENCE_FAILED"
+            case_result["detail"] = safe_detail(f"{type(exc).__name__}: {str(exc)[:500]}")
+        case_results.append(case_result)
+
+    all_completed = all(case["status"] == "METRICS_RECORDED" for case in case_results)
+    result["ok"] = bool(all_completed and overall_cleanup_ok)
+    result["ocr_qualification"] = {
+        "status": (
+            "SYNTHETIC_METRICS_RECORDED"
+            if all_completed and overall_cleanup_ok
+            else "METRICS_RECORDED_CLEANUP_FAILED"
+            if all_completed
+            else "INFERENCE_FAILED"
+        ),
+        "scope": FIXTURE_SCOPE,
+        "inference_completed": all_completed,
+        "fixture_pass": None,
+        "fixtures": case_results,
+        "metrics": (
+            {case["name"]: case["metrics"] for case in case_results}
+            if all(case["metrics"] is not None for case in case_results)
+            else None
+        ),
+        "general_ocr_accuracy_qualified": False,
+        "model_source": "local",
+        "tier": "basic",
+        "scratch_cleanup": "removed" if overall_cleanup_ok else "failed",
+        "note": "CER/WER are descriptive per generated fixture; no pass threshold or field-accuracy claim is configured.",
+    }
+    return result, 0 if result["ok"] else 1
 
 
 __all__ = [
     "FIXTURE_SCOPE",
     "GROUND_TRUTH_TEXT",
-    "MAX_CHARACTER_ERROR_RATE",
-    "MAX_WORD_ERROR_RATE",
     "error_metrics",
     "levenshtein_distance",
+    "synthetic_fixture_corpus",
     "synthetic_fixture_png",
     "validate_local_mineru",
 ]

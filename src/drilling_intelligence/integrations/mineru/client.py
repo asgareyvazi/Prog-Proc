@@ -24,9 +24,10 @@ from typing import Any
 from ...core.errors import ExtractionError, IntegrationUnavailableError
 from ...core.hashing import short_hash
 from ...core.logging import get_logger
+from ...core.redact import safe_detail
 from ..base import http_json, run_command
 from .cli import is_mineru_kit, resolve_cli_binary
-from .discovery import MinerUProber, legacy_http_parse_contract
+from .discovery import MinerUProber, http_endpoint_problem, legacy_http_parse_contract
 from .normalize import MinerURawOutput
 
 log = get_logger("integrations.mineru.client")
@@ -118,7 +119,7 @@ class MinerURun:
             for candidate in {str(path), path.as_posix()}:
                 if candidate:
                     detail = detail.replace(candidate, "<temporary-output>")
-            self.cleanup_error = f"{type(exc).__name__}: {detail}"
+            self.cleanup_error = safe_detail(f"{type(exc).__name__}: {detail}")
             log.warning(
                 "MinerU scratch directory cleanup failed",
                 extra={"event": "mineru.cleanup_failed", "error": self.cleanup_error},
@@ -199,6 +200,9 @@ class MinerUClient:
                 raise IntegrationUnavailableError(
                     "MinerU", "[mineru].endpoint is required for http mode"
                 )
+            endpoint_problem = http_endpoint_problem(self.endpoint)
+            if endpoint_problem:
+                raise IntegrationUnavailableError("MinerU", endpoint_problem)
             if not contract_verified:
                 compatible, reason, _version = legacy_http_parse_contract(
                     self.endpoint, self.parse_path
@@ -286,11 +290,11 @@ class MinerUClient:
                 mode="cli",
                 artefacts=artefacts,
                 stdout=stdout[-4000:],
-                stderr=_redact_paths(stderr[-4000:], source, workdir),
+                stderr=safe_detail(_redact_paths(stderr[-4000:], source, workdir)),
                 duration_ms=duration,
                 command=_safe_command(command, source, workdir),
                 output_dir=workdir,
-                error=_redact_paths(error, source, workdir),
+                error=safe_detail(_redact_paths(error, source, workdir)),
                 ownership_marker_value=ownership_marker_value,
                 timed_out=timed_out,
             )
@@ -315,15 +319,20 @@ class MinerUClient:
             "return_content_list": "true",
         }
         started = time.perf_counter()
-        with source.open("rb") as handle:
-            response = http_json(
-                "POST",
-                url,
-                files={"files": (source.name, handle, "application/pdf")},
-                data=data,
-                timeout=self.timeout,
-                follow_redirects=False,
-            )
+        try:
+            with source.open("rb") as handle:
+                response = http_json(
+                    "POST",
+                    url,
+                    files={"files": (source.name, handle, "application/pdf")},
+                    data=data,
+                    timeout=self.timeout,
+                    follow_redirects=False,
+                )
+        except OSError as exc:
+            raise IntegrationUnavailableError(
+                "MinerU", f"could not read the source document ({type(exc).__name__})"
+            ) from exc
         duration_ms = (time.perf_counter() - started) * 1000
         status_code = response.get("status_code")
         if (
@@ -332,7 +341,7 @@ class MinerUClient:
             or not 200 <= status_code < 300
         ):
             raise IntegrationUnavailableError(
-                "MinerU", f"HTTP {status_code}: {str(response.get('error'))[:200]}"
+                "MinerU", f"HTTP {status_code}: response details omitted"
             )
         content_type = str(response.get("content_type") or "").split(";", 1)[0].strip().lower()
         if content_type != "application/json" and not content_type.endswith("+json"):
@@ -348,12 +357,15 @@ class MinerUClient:
             raise IntegrationUnavailableError(
                 "MinerU", "HTTP parse response has no non-empty 'results' object"
             )
-        entry = results.get(source.name)
-        if entry is None and len(results) == 1:
-            entry = next(iter(results.values()))
+        if set(results) != {source.name}:
+            raise IntegrationUnavailableError(
+                "MinerU",
+                "HTTP parse response is ambiguous or does not match the uploaded filename",
+            )
+        entry = results[source.name]
         if not isinstance(entry, dict):
             raise IntegrationUnavailableError(
-                "MinerU", f"HTTP parse response has no result for {source.name!r}"
+                "MinerU", f"HTTP parse response has no result object for {source.name!r}"
             )
 
         middle_value = entry.get("middle_json")

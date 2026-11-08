@@ -101,7 +101,7 @@ def test_output_from_a_run_that_exited_non_zero_is_used_but_never_silent(
             "json.dump({'pdf_info': [{'page_idx': 0, 'para_blocks': ["
             "{'type': 'text', 'lines': [{'spans': [{'type': 'text', 'content': 'partial text'}]}]}]}]},\n"
             "          open(os.path.join(d, 'scanned_middle.json'), 'w'))\n"
-            "sys.stderr.write('CUDA out of memory - aborted after page 1\\n')\n"
+            "sys.stderr.write('CUDA out of memory - aborted after page 1 API_KEY=TOP_SECRET_SENTINEL https://user:pass@mineru.test/private?token=QUERY_SENTINEL\\n')\n"
             "sys.exit(1)\n"
         ),
     )
@@ -122,11 +122,16 @@ def test_output_from_a_run_that_exited_non_zero_is_used_but_never_silent(
     assert "exited with code 1" in run.error, run.error
     assert "may be incomplete" in run.error, run.error
     assert "CUDA out of memory" in run.error, "the engine's own reason must be carried through"
+    assert "TOP_SECRET_SENTINEL" not in run.error
+    assert "QUERY_SENTINEL" not in run.error
 
     # And a reviewer reading the document sees it, because the adapter's stated contract is to
     # report its own limitations in diagnostics.
     extractor = MinerUExtractor(settings, prober=_available_cli_prober(settings, binary))
     document = extractor.extract(_context(source), _provenance(source))
+    stderr_tail = document.metadata.extra["mineru"]["stderr_tail"]
+    assert "TOP_SECRET_SENTINEL" not in stderr_tail
+    assert "QUERY_SENTINEL" not in stderr_tail
     assert any("exited with code 1" in line for line in document.diagnostics), document.diagnostics
 
 
@@ -225,6 +230,64 @@ def test_http_upload_does_not_follow_redirects(settings, tmp_path: Path, monkeyp
     assert run.ok is True
     assert captured["follow_redirects"] is False
     assert "files" in captured and "data" in captured
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://mineru.test/private-route?token=redacted",
+        "https://mineru.test/private route",
+        "https://mineru.test\\private-route",
+    ],
+)
+def test_http_endpoint_rejects_query_and_malformed_url_characters(endpoint: str) -> None:
+    from drilling_intelligence.integrations.mineru.discovery import http_endpoint_problem
+
+    assert http_endpoint_problem(endpoint)
+
+
+def test_http_contract_probe_disables_redirects_and_refuses_credentialed_endpoints(
+    settings, tmp_path: Path, monkeypatch
+) -> None:
+    import drilling_intelligence.integrations.mineru.client as client_mod
+    import drilling_intelligence.integrations.mineru.discovery as discovery_mod
+
+    calls: list[tuple[str, str, bool]] = []
+
+    def redirect(method, url, **kwargs):
+        calls.append((method, url, kwargs.get("follow_redirects", True)))
+        return {
+            "ok": False,
+            "status_code": 302,
+            "json": None,
+            "text": "redirect refused",
+            "url": url,
+            "error": "HTTP 302",
+            "content_type": "text/plain",
+        }
+
+    monkeypatch.setattr(discovery_mod, "http_json", redirect)
+    settings.mineru.mode = "http"
+    settings.mineru.endpoint = "https://mineru.test/private-route"
+    status = MinerUProber(settings).status()
+    assert status.available is False
+    assert calls == [("GET", "https://mineru.test/private-route/openapi.json", False)]
+    assert "redirects" not in status.reason
+
+    calls.clear()
+    settings.mineru.endpoint = "https://user:SECRET_SENTINEL@mineru.test/private-route"
+    status = MinerUProber(settings).status()
+    assert status.available is False
+    assert calls == []
+    assert "SECRET_SENTINEL" not in status.summary()
+    assert "user:" not in status.summary()
+    source = tmp_path / "credentialed.pdf"
+    source.write_bytes(b"synthetic")
+    monkeypatch.setattr(client_mod, "http_json", redirect)
+    with pytest.raises(IntegrationUnavailableError) as excinfo:
+        MinerUClient(settings).parse(source, selected_mode="http", contract_verified=True)
+    assert "SECRET_SENTINEL" not in str(excinfo.value)
+    assert calls == []
 
 
 def _legacy_http_openapi() -> dict[str, object]:
@@ -340,6 +403,43 @@ def test_a_transport_failure_is_reported_not_swallowed(
     assert "503" in str(excinfo.value), str(excinfo.value)
 
 
+def test_http_failures_do_not_echo_server_secrets_or_source_paths(
+    settings, tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "private-source-sentinel.pdf"
+    source.write_bytes(b"%PDF synthetic")
+    settings.mineru.mode = "http"
+    settings.mineru.endpoint = "https://mineru.test/private-route"
+
+    def handler(method, url, **kwargs):
+        return {
+            "ok": False,
+            "status_code": 503,
+            "json": None,
+            "text": "",
+            "url": url,
+            "error": f"SECRET_SENTINEL {source} https://user:SECRET@mineru.test/private-route",
+            "content_type": "text/plain",
+        }
+
+    import drilling_intelligence.integrations.mineru.client as client_mod
+
+    monkeypatch.setattr(client_mod, "http_json", handler)
+    with pytest.raises(IntegrationUnavailableError) as excinfo:
+        MinerUClient(settings).parse(source, selected_mode="http", contract_verified=True)
+    message = str(excinfo.value)
+    assert "SECRET_SENTINEL" not in message
+    assert "private-source-sentinel" not in message
+    assert "user:SECRET" not in message
+    assert "503" in message
+
+    missing = tmp_path / "not-present-sentinel.pdf"
+    with pytest.raises(IntegrationUnavailableError) as missing_error:
+        MinerUClient(settings).parse(missing, selected_mode="http", contract_verified=True)
+    assert str(missing) not in str(missing_error.value)
+    assert "could not read the source document" in str(missing_error.value)
+
+
 def test_a_valid_http_result_still_extracts(settings, tmp_path: Path, monkeypatch) -> None:
     """The refusal is narrow: real content over HTTP still produces a document."""
 
@@ -377,6 +477,26 @@ def _available_cli_prober(settings, binary: str) -> MinerUProber:
     prober = MinerUProber(settings)
     prober._probe_cli = _cli_ok(binary)
     return prober
+
+
+def test_cli_probe_errors_do_not_echo_process_output_secrets_or_source_paths(
+    settings, tmp_path: Path
+) -> None:
+    secret_output = "https://operator:top-secret@mineru.example/private/credential?token=hidden"  # noqa: S105 - synthetic redaction sentinel
+    binary = _fake_mineru(
+        tmp_path,
+        name="mineru-bad-version",
+        script=f"import sys\nsys.stderr.write({secret_output!r})\nsys.exit(1)\n",
+    )
+    settings.mineru.mode = "cli"
+    settings.mineru.binary = binary
+
+    status = MinerUProber(settings).status()
+    rendered = json.dumps(status.to_dict(), sort_keys=True)
+    assert "top-secret" not in rendered
+    assert "token=hidden" not in rendered
+    assert "/private/credential" not in status.reason
+    assert "process output omitted" in status.reason
 
 
 def test_a_forced_cli_mode_does_not_silently_fall_back_to_http(settings, monkeypatch) -> None:
@@ -622,8 +742,27 @@ def test_http_rejects_attachment_content_type_and_unmatched_multi_file_response(
         }
 
     _stub_http(monkeypatch, mismatched)
-    with pytest.raises(ExtractionError, match=r"no result for 'scanned\.pdf'"):
+    with pytest.raises(ExtractionError, match="ambiguous or does not match"):
         MinerUExtractor(settings).extract(_context(source), _provenance(source))
+
+    for results in (
+        {"other.pdf": {"md_content": "unrelated"}},
+        {
+            "scanned.pdf": {"md_content": "matched"},
+            "other.pdf": {"md_content": "unrelated"},
+        },
+    ):
+
+        def ambiguous(method, url, *, results=results, **kwargs):
+            if url.endswith("/openapi.json"):
+                return _legacy_http_openapi()
+            if url.endswith("/health"):
+                return {"ok": True, "status_code": 200, "json": {"version": "2.0"}}
+            return {**_envelope({}), "json": {"results": results}}
+
+        _stub_http(monkeypatch, ambiguous)
+        with pytest.raises(ExtractionError, match="ambiguous or does not match"):
+            MinerUExtractor(settings).extract(_context(source), _provenance(source))
 
 
 def test_disabled_mode_says_disabled_and_names_the_fallback(settings) -> None:
@@ -867,9 +1006,48 @@ def test_mineru_kit_cli_runs_in_isolation_and_cleans_its_scratch_directory(
     assert document.metadata.extra["provenance_source"] == "middle.json"
     assert "layout_pdf" not in document.metadata.extra["mineru"]
     assert document.metadata.extra["mineru"]["scratch_cleanup"] == "removed"
+    # Generic product provenance retains the selected source path; MinerU-specific command/error
+    # metadata is separately sanitized and must not duplicate source/scratch paths.
+    assert document.metadata.path == str(source)
     assert document.metadata.extra["mineru"]["returncode"] == 0
     assert document.metadata.extra["mineru"]["partial"] is False
     assert http_attempts == []
+
+
+@pytest.mark.parametrize("failure", ["timeout", "normalization"])
+def test_adapter_cleans_owned_scratch_after_timeout_and_normalization_failure(
+    settings, tmp_path: Path, monkeypatch, failure: str
+) -> None:
+    import drilling_intelligence.integrations.mineru.client as client_mod
+
+    source = tmp_path / "synthetic-failure.pdf"
+    source.write_bytes(b"%PDF synthetic")
+    binary = _fake_mineru(tmp_path, name="mineru-kit", script="import sys\\nsys.exit(0)\\n")
+    settings.mineru.mode = "cli"
+    settings.mineru.binary = binary
+    working_directories: list[Path] = []
+
+    def run_command(argv, *, timeout, cwd, env):
+        del timeout, env
+        working_directories.append(Path(cwd))
+        if failure == "normalization":
+            output = Path(argv[argv.index("--output") + 1])
+            output.write_text("{ malformed", encoding="utf-8")
+            return {"returncode": 0, "stdout": "", "stderr": "", "duration_ms": 1, "timeout": False}
+        return {
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "deadline elapsed",
+            "duration_ms": 1,
+            "timeout": True,
+        }
+
+    monkeypatch.setattr(client_mod, "run_command", run_command)
+    extractor = MinerUExtractor(settings, prober=_available_cli_prober(settings, binary))
+    with pytest.raises(ExtractionError):
+        extractor.extract(_context(source), _provenance(source))
+    assert len(working_directories) == 1
+    assert not working_directories[0].exists(), f"owned scratch remained after {failure}"
 
 
 def test_content_list_rejects_malformed_roots_and_retains_unstructured_table_text() -> None:

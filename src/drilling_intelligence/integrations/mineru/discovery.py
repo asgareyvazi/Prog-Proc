@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 import threading
+from urllib.parse import urlsplit
 
 from ...core.logging import get_logger
 from ..base import IntegrationStatus, http_json, run_command, which
@@ -28,6 +29,43 @@ from .cli import is_mineru_kit, resolve_cli_binary
 log = get_logger("integrations.mineru.discovery")
 
 _VERSION_RE = re.compile(r"(?:v|version)?\s*(\d+\.\d+(?:\.\d+)?)")
+
+
+def http_endpoint_problem(endpoint: str) -> str:
+    """Return a safe reason when an HTTP endpoint could expose credentials or URL secrets."""
+    try:
+        parsed = urlsplit(endpoint)
+        hostname = parsed.hostname
+        # Accessing .port also validates malformed port syntax.
+        _ = parsed.port
+    except ValueError:
+        return "HTTP endpoint must be a valid http(s) URL without credentials or URL parameters"
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(
+            ord(character) < 32 or character.isspace() or character == "\\"
+            for character in endpoint
+        )
+    ):
+        return "HTTP endpoint must be a valid http(s) URL without credentials or URL parameters"
+    return ""
+
+
+def _safe_endpoint_label(endpoint: str) -> str:
+    try:
+        parsed = urlsplit(endpoint)
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return f"{parsed.scheme.lower()}://{hostname}{port}"
+    except ValueError:
+        return "<configured-http-endpoint>"
 
 
 def _resolve_local_schema(document: dict[str, object], schema: object) -> dict[str, object] | None:
@@ -73,7 +111,15 @@ def legacy_http_parse_contract(endpoint: str, parse_path: str) -> tuple[bool, st
     """
     if not endpoint:
         return False, "HTTP endpoint is not configured", ""
-    response = http_json("GET", endpoint.rstrip("/") + "/openapi.json", timeout=4.0)
+    problem = http_endpoint_problem(endpoint)
+    if problem:
+        return False, problem, ""
+    response = http_json(
+        "GET",
+        endpoint.rstrip("/") + "/openapi.json",
+        timeout=4.0,
+        follow_redirects=False,
+    )
     status_code = response.get("status_code")
     if not response.get("ok") or not isinstance(status_code, int) or not 200 <= status_code < 300:
         return False, "OpenAPI description is unavailable", ""
@@ -124,7 +170,9 @@ def legacy_http_parse_contract(endpoint: str, parse_path: str) -> tuple[bool, st
     if not json_success:
         return False, "parse route does not declare a successful JSON response", ""
     info = payload.get("info") if isinstance(payload, dict) else None
-    version = str(info.get("version", "")) if isinstance(info, dict) else ""
+    raw_version = str(info.get("version", "")) if isinstance(info, dict) else ""
+    match = _VERSION_RE.search(raw_version)
+    version = match.group(1) if match else "unknown"
     return True, "", version
 
 
@@ -242,20 +290,14 @@ class MinerUProber:
             help_result = run_command([path, "--help"], timeout=60.0)
             if int(help_result["returncode"]) != 0:
                 record["reason"] = (
-                    f"{binary} --version failed: {str(result['stderr'])[:160] or str(help_result['stderr'])[:160]}"
+                    "configured CLI --version and --help failed; process output omitted"
                 )
                 return record
             found = _VERSION_RE.findall(str(help_result["stdout"]))
             version = found[0] if found else "unknown"
         else:
             found = _VERSION_RE.findall(str(result["stdout"]) + str(result["stderr"]))
-            version = (
-                found[0]
-                if found
-                else str(result["stdout"]).strip().splitlines()[0][:32]
-                if str(result["stdout"]).strip()
-                else "unknown"
-            )
+            version = found[0] if found else "unknown"
 
         record["version"] = version
         # MinerU 4's `mineru` command is its document-library interface, not the
@@ -278,11 +320,15 @@ class MinerUProber:
             "mode": "http",
             "available": False,
             "version": "",
-            "endpoint": endpoint,
+            "endpoint": _safe_endpoint_label(endpoint) if endpoint else "",
             "reason": "",
         }
         if not endpoint:
             record["reason"] = "[mineru].endpoint is empty"
+            return record
+        problem = http_endpoint_problem(endpoint)
+        if problem:
+            record["reason"] = problem
             return record
         compatible, reason, version = legacy_http_parse_contract(endpoint, parse_path)
         record["contract"] = {
@@ -291,15 +337,18 @@ class MinerUProber:
         }
         if not compatible:
             record["reason"] = (
-                f"HTTP service at {endpoint} does not implement the configured JSON parse contract: {reason}"
+                f"HTTP service does not implement the configured JSON parse contract: {reason}"
             )
             return record
-        health = http_json("GET", endpoint + "/health", timeout=4.0)
+        health = http_json("GET", endpoint + "/health", timeout=4.0, follow_redirects=False)
         payload = health.get("json") if health.get("ok") else None
         if isinstance(payload, dict):
-            version = str(payload.get("version") or payload.get("version_name") or version)
+            raw_version = str(payload.get("version") or payload.get("version_name") or version)
+            match = _VERSION_RE.search(raw_version)
+            if match:
+                version = match.group(1)
         record["available"] = True
-        record["endpoint"] = endpoint + parse_path
+        record["endpoint"] = _safe_endpoint_label(endpoint)
         record["version"] = version
         return record
 

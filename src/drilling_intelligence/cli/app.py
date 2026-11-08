@@ -14,8 +14,9 @@ The CLI exists for three reasons and does nothing outside them:
 3.  **Machine-readable output.**  ``--json`` on every command, so a script or a smoke test
     asserts on the same numbers a human reads.
 
-``argparse`` (stdlib) with explicit subcommands and nothing else.  Exit codes: ``0`` success,
-``1`` a domain error or ingestion failure, ``2`` a usage error (argparse's own).
+``argparse`` (stdlib) with explicit subcommands and nothing else. Exit codes: ``0`` conclusive
+success, ``1`` a domain error or ingestion failure, ``2`` a usage error (argparse's own), and ``3``
+a DDR comparison that ran but is malformed or ambiguous. Code 3 still carries the comparison JSON.
 """
 
 from __future__ import annotations
@@ -952,6 +953,31 @@ def command_ddr(args: argparse.Namespace) -> int:
                 f"{record['authoring_state']} / {record['status']} · {record['report_id']}"
                 for record in records
             ] or ["no manually authored DDRs for this well"]
+        elif action == "compare":
+            from ..operations.ddr_comparison import compare_ddr_revisions
+
+            predecessor = authoring.get(args.predecessor_report_id)
+            successor = authoring.get(args.successor_report_id)
+            if predecessor["well_id"] != successor["well_id"]:
+                raise DrillingIntelligenceError(
+                    "DDR revisions belong to different wells; comparison was not run"
+                )
+            if successor.get("supersedes_report_id") != predecessor.get("report_id"):
+                raise DrillingIntelligenceError(
+                    "the requested successor does not name the requested predecessor"
+                )
+            comparison = compare_ddr_revisions(predecessor, successor)
+            payload = {"ok": comparison["status"] == "OK", "comparison": comparison}
+            lines = [
+                "Read-only DDR revision comparison; no review decision or state change was made.",
+                f"{predecessor['report_id']} (rev {predecessor['revision_number']}) → "
+                f"{successor['report_id']} (rev {successor['revision_number']})",
+                f"comparison status: {comparison['status']}; "
+                f"conclusive: {str(comparison['conclusive']).lower()}",
+                f"activity classifications: {comparison['activities'].get('counts', {})}",
+            ]
+            _emit(payload, as_json=args.json, lines=lines)
+            return 0 if comparison["status"] == "OK" else 3
         elif action in {"show", "actions"}:
             record = authoring.get(args.report_id)
             if action == "show":
@@ -3654,6 +3680,15 @@ def _add_ddr_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
         view = actions.add_parser(name, help=help_text, parents=[common])
         view.add_argument("report_id", help="DDR report id")
         view.set_defaults(handler=command_ddr)
+
+    compare = actions.add_parser(
+        "compare",
+        help="compare an explicitly named predecessor and its direct successor (read-only)",
+        parents=[common],
+    )
+    compare.add_argument("predecessor_report_id", help="exact predecessor DDR report id")
+    compare.add_argument("successor_report_id", help="exact successor DDR report id")
+    compare.set_defaults(handler=command_ddr)
 
     save = actions.add_parser(
         "save", help="replace a current DRAFT from a complete JSON snapshot", parents=[common]

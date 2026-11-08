@@ -13,6 +13,7 @@ from typing import Any
 from ... import EXTRACTION_ENGINE_VERSION
 from ...core.errors import ExtractionError, ParserUnavailableError
 from ...core.logging import get_logger
+from ...core.redact import safe_detail
 from ...extraction.interfaces import DocumentComplexity, ExtractionContext, ProvenanceBuilder
 from ...extraction.normalized import NormalizedDocument, clean_text
 from .client import MinerUClient
@@ -37,11 +38,15 @@ def _safe_run_text(value: str, run: Any, context: ExtractionContext) -> str:
         for candidate in candidates:
             if candidate:
                 text = text.replace(candidate, replacement)
-    return text
+    return safe_detail(text)
 
 
 def _command_summary(run: Any, client: MinerUClient) -> str:
-    """Keep command provenance useful without persisting source or scratch paths."""
+    """Redact source/scratch paths from MinerU command/error metadata.
+
+    Generic ``NormalizedDocument.metadata.path`` remains product provenance and is separate from
+    these sanitized MinerU-specific command and error fields.
+    """
     if run.mode != "cli":
         return "HTTP multipart/JSON parse"
     if "--format" in run.command:
@@ -116,7 +121,8 @@ class MinerUExtractor:
         except ParserUnavailableError:
             raise
         except Exception as exc:
-            raise ExtractionError(f"MinerU run failed: {type(exc).__name__}: {exc}") from exc
+            detail = safe_detail(f"{type(exc).__name__}: {exc}")
+            raise ExtractionError(f"MinerU run failed: {detail}") from exc
         document: NormalizedDocument | None = None
         try:
             artefacts = run.artefacts

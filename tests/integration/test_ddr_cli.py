@@ -13,7 +13,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 
 from drilling_intelligence.cli.app import main
 from drilling_intelligence.database.models import DdrReport, WellOperation
@@ -455,3 +455,137 @@ def test_invalid_ddr_json_does_not_bootstrap_an_unopened_workspace_database(tmp_
     assert result["ok"] is False
     assert "duplicate JSON key" in result["message"]
     assert not database_path.exists()
+
+
+def _sqlite_fingerprint(database) -> tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]:
+    names = sorted(inspect(database.engine).get_table_names())
+    with database.engine.connect() as connection:
+        return tuple(
+            (
+                name,
+                tuple(
+                    tuple(str(value) for value in row)
+                    for row in connection.exec_driver_sql(
+                        f'SELECT * FROM "{name}" ORDER BY rowid'  # noqa: S608
+                    ).fetchall()
+                ),
+            )
+            for name in names
+        )
+
+
+def test_cli_ddr_compare_is_scoped_read_only_stable_and_reports_ambiguity(
+    workspace, committed_well_id: str
+) -> None:
+    service = DdrAuthoringService(workspace.database)
+    predecessor = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-07",
+        summary="Operator summary",
+        activities=[
+            {"operation_type": "drilling", "label": "First", "description": "Exact text"},
+            {"operation_type": "tripping", "label": "Last", "description": "Last text"},
+        ],
+        actor="declared-author",
+        reason="Create comparison predecessor",
+    )
+    submitted = service.submit(
+        predecessor["report_id"],
+        expected_updated_at=predecessor["updated_at"],
+        actor="declared-author",
+        reason="Submit comparison predecessor",
+    )
+    successor = service.create_revision(
+        predecessor["report_id"],
+        expected_updated_at=submitted["updated_at"],
+        actor="declared-author",
+        reason="Create comparison successor",
+    )
+    successor = service.save_draft(
+        successor["report_id"],
+        expected_updated_at=successor["updated_at"],
+        report_date="2026-11-07",
+        summary="Operator summary",
+        activities=[
+            {"operation_type": "drilling", "label": "First", "description": "Exact text"},
+            {"operation_type": "cementing", "label": "Inserted", "description": "Exact insert"},
+            {"operation_type": "tripping", "label": "Last", "description": "Last text"},
+        ],
+        actor="declared-author",
+        reason="Insert one explicitly authored activity",
+    )
+
+    before = _sqlite_fingerprint(workspace.database)
+    first = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+    )
+    second = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+    )
+    assert first == second
+    assert first["ok"] is True
+    comparison = first["comparison"]
+    assert comparison["status"] == "OK"
+    assert comparison["read_only"] is True
+    assert comparison["approval_evaluated"] is False
+    assert [item["status"] for item in comparison["activities"]["items"]] == [
+        "UNCHANGED",
+        "ADDED",
+        "UNCHANGED",
+    ]
+    assert comparison["activities"]["items"][1]["successor"]["label"] == "Inserted"
+    assert _sqlite_fingerprint(workspace.database) == before
+
+    mismatched = _call(
+        workspace,
+        "ddr",
+        "compare",
+        successor["report_id"],
+        predecessor["report_id"],
+        expect=1,
+    )
+    assert "does not name the requested predecessor" in mismatched["message"]
+    assert str(workspace.root) not in json.dumps(mismatched)
+    assert _sqlite_fingerprint(workspace.database) == before
+
+    repeated = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-07",
+        activities=[
+            {"operation_type": "drilling", "label": "Repeated"},
+            {"operation_type": "drilling", "label": "Repeated"},
+        ],
+        actor="declared-author",
+        reason="Create a duplicate-content comparison case",
+    )
+    repeated_submitted = service.submit(
+        repeated["report_id"],
+        expected_updated_at=repeated["updated_at"],
+        actor="declared-author",
+        reason="Submit duplicate-content predecessor",
+    )
+    repeated_successor = service.create_revision(
+        repeated["report_id"],
+        expected_updated_at=repeated_submitted["updated_at"],
+        actor="declared-author",
+        reason="Create duplicate-content successor",
+    )
+    ambiguous = _call(
+        workspace,
+        "ddr",
+        "compare",
+        repeated["report_id"],
+        repeated_successor["report_id"],
+        expect=3,
+    )
+    assert ambiguous["ok"] is False
+    assert ambiguous["comparison"]["status"] == "AMBIGUOUS"
+    assert ambiguous["comparison"]["has_changes"] is None
