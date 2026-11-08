@@ -2401,7 +2401,9 @@ class MainWindow(QMainWindow):
             ],
         )
         changes = activity_diff.get("items") or []
-        display_limit = 250
+        # Bound the tree below the authoring service's 200-activity maximum so
+        # valid revisions can exercise the exact omitted-item indicator.
+        display_limit = 150
 
         def add_side(parent: Any, label: str, value: Any, positions: Any) -> None:
             if isinstance(value, Mapping):
@@ -2498,7 +2500,8 @@ class MainWindow(QMainWindow):
             raw_activities = record.get("activities") or ()
             if not isinstance(raw_activities, Sequence) or isinstance(raw_activities, str | bytes):
                 raw_activities = ()
-            for activity in raw_activities[:250]:
+            activity_display_limit = 150
+            for activity in raw_activities[:activity_display_limit]:
                 if not isinstance(activity, Mapping):
                     continue
                 activity_item = QTreeWidgetItem(
@@ -2530,12 +2533,12 @@ class MainWindow(QMainWindow):
                         activity_item,
                         ["Malformed provenance", "event history is not an ordered list"],
                     )
-            if len(raw_activities) > 250:
+            if len(raw_activities) > activity_display_limit:
                 QTreeWidgetItem(
                     revision_provenance,
                     [
                         "Display limit",
-                        f"{len(raw_activities) - 250} activity provenance entries not expanded",
+                        f"{len(raw_activities) - activity_display_limit} activity provenance entries not expanded",
                     ],
                 )
         self.ddr_compare_tree.expandToDepth(2)

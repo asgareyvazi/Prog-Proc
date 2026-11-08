@@ -55,7 +55,7 @@ def test_ui_shows_ambiguity_and_exact_omitted_count_without_database_writes(
         summary="Large authored comparison case",
         activities=[
             {"operation_type": "drilling", "label": f"Operator activity {index:03d}"}
-            for index in range(1, 261)
+            for index in range(1, 201)
         ],
         actor="declared-author",
         reason="Create large display-limit predecessor",
@@ -80,7 +80,7 @@ def test_ui_shows_ambiguity_and_exact_omitted_count_without_database_writes(
         activities=[
             *[
                 {"operation_type": "drilling", "label": f"Operator activity {index:03d}"}
-                for index in range(1, 261)
+                for index in range(1, 200)
             ],
             {"operation_type": "cementing", "label": "One extra exact row"},
         ],
@@ -139,10 +139,10 @@ def test_ui_shows_ambiguity_and_exact_omitted_count_without_database_writes(
         qt_app.processEvents()
         values = _tree_text(window)
         assert "Activities (authored order; no calculation)" in values
-        assert "11 comparison item(s) not expanded" in values
+        assert "50 comparison item(s) not expanded" in values
         assert "1 provenance events not expanded" in values
         assert "1 activity events not expanded" in values
-        assert "11 activity provenance entries not expanded" in values
+        assert "50 activity provenance entries not expanded" in values
         assert "/private/unrelated/source.pdf" not in values
         assert "display-only provenance fixture" in values
         assert "One extra exact row" not in values
