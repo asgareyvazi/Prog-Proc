@@ -118,6 +118,22 @@ def stability_dirname(node: str) -> str:
     return f"{stem}-{digest}"
 
 
+def append_live_attempt_status(
+    step_summary: Path | None,
+    node: str,
+    ordinal: int,
+    repeats: int,
+    status: str,
+) -> None:
+    """Persist progress before and after an attempt so a job timeout is diagnosable."""
+    if step_summary is None:
+        return
+    safe_node = " ".join(node.replace("|", "\\|").replace("`", "").split())
+    safe_status = " ".join(status.replace("|", "\\|").split())
+    with step_summary.open("a", encoding="utf-8") as handle:
+        handle.write(f"| `{safe_node}` | {ordinal}/{repeats} | {safe_status} |\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repeats", type=int, default=15)
@@ -130,6 +146,14 @@ def main(argv: list[str] | None = None) -> int:
     selected = tuple(args.node) if args.node else HISTORIC_NODES
     workbench = _workbench()
     args.log_dir.mkdir(parents=True, exist_ok=True)
+    raw_step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    step_summary = Path(raw_step_summary) if raw_step_summary else None
+    if step_summary is not None:
+        with step_summary.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "### Qt stability attempts (live)\n\n"
+                "| Test node | Attempt | State |\n| --- | ---: | --- |\n"
+            )
     groups: list[tuple[str, list[tuple[int, int, str]]]] = []
     node_records: list[dict[str, object]] = []
     for node in selected:
@@ -146,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
                 encoding="utf-8",
             )
             print(f"ATTEMPT {ordinal}/{args.repeats} START node={node}", flush=True)
+            append_live_attempt_status(
+                step_summary, node, ordinal, args.repeats, f"RUNNING started {started_utc}"
+            )
             try:
                 code, output = workbench._run_node(node, log_path)
             except (OSError, RuntimeError, ValueError) as exc:
@@ -175,6 +202,13 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
             print(header.strip())
+            append_live_attempt_status(
+                step_summary,
+                node,
+                ordinal,
+                args.repeats,
+                f"EXIT {code} duration_s={duration:.3f} reason={reason or '-'}",
+            )
             if reason:
                 print(f"::error::stability attempt {ordinal} failed: {reason}")
         groups.append((node, records))
@@ -195,9 +229,8 @@ def main(argv: list[str] | None = None) -> int:
     for line in summary.splitlines():
         if line.startswith(("ATTEMPT ", "NODE ", "stability ")):
             print(f"::notice::{line[:200]}")
-    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
-    if step_summary:
-        with Path(step_summary).open("a", encoding="utf-8") as handle:
+    if step_summary is not None:
+        with step_summary.open("a", encoding="utf-8") as handle:
             handle.write("### Qt stability qualification\n\n```\n")
             handle.write(summary)
             handle.write("```\n")

@@ -297,6 +297,24 @@ def unexpected_skips_qt_enabled(path: Path) -> list[str]:
     return found
 
 
+def failed_test_cases(path: Path) -> list[str]:
+    """Return content-free identities for failed/error test cases.
+
+    Failure bodies are deliberately excluded: they may contain host paths or
+    sensitive values. The JUnit artifact remains the detailed diagnostic.
+    """
+    root = ET.parse(path).getroot()  # noqa: S314
+    found: list[str] = []
+    for case in root.iter("testcase"):
+        outcome = next((kind for kind in ("failure", "error") if case.find(kind) is not None), None)
+        if outcome is None:
+            continue
+        classname = " ".join((case.attrib.get("classname") or "").split())
+        name = " ".join((case.attrib.get("name") or "").split())
+        found.append(f"failed test: {classname} | {name} ({outcome})")
+    return found
+
+
 def unexpected_skips(path: Path) -> list[str]:
     """JUnit skips that are not the known headless Qt skip."""
     root = ET.parse(path).getroot()  # noqa: S314
@@ -379,14 +397,14 @@ def notice_lines(text: str) -> list[str]:
 
 
 def error_lines(text: str) -> list[str]:
-    """Disagreement lines. Notices are capped, so these must be separate."""
+    """Failure identities and record disagreements for GitHub error annotations."""
     lines: list[str] = []
     emitting = False
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("disagreement:"):
             emitting = True
-        if emitting and stripped:
+        if stripped.startswith("failed test:") or (emitting and stripped):
             lines.append(stripped[:200])
     return lines
 
@@ -513,6 +531,7 @@ def publish(
     try:
         recorded = _load_stats(stats_path)
         junit = totals_from_junit(junit_path, shell_exit)
+        failures = failed_test_cases(junit_path)
         skips = unexpected_skips(junit_path)
     except RecordError as exc:
         text = "pytest totals\nrecord: unreadable\n" + str(exc)
@@ -545,6 +564,8 @@ def publish(
     text += f"\npytest_result: {_process_result(shell_exit, output_path, state_path)}"
     if problems:
         text += "\ndisagreement:\n" + "\n".join(problems)
+    if failures:
+        text += "\nfailed test cases:\n" + "\n".join(failures)
     _write_summary(summary_path, text)
     failed = _int(recorded.get("failed"))
     errors = _int(recorded.get("errors"))

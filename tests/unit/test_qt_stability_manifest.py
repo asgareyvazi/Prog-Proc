@@ -41,6 +41,22 @@ def test_manifest_hashes_every_attempt_and_records_versions(tmp_path: Path) -> N
     assert payload["nodes"] == []
 
 
+def test_live_attempt_progress_retains_started_and_completed_rows(tmp_path: Path) -> None:
+    summary = tmp_path / "step-summary.md"
+    node = "tests/ui/test_workbench.py::test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail"
+
+    qt_stability.append_live_attempt_status(summary, node, 3, 15, "RUNNING started fixture-time")
+    qt_stability.append_live_attempt_status(
+        summary, node, 3, 15, "EXIT 0 duration_s=1.250 reason=-"
+    )
+
+    rows = summary.read_text(encoding="utf-8").splitlines()
+    assert rows == [
+        f"| `{node}` | 3/15 | RUNNING started fixture-time |",
+        f"| `{node}` | 3/15 | EXIT 0 duration_s=1.250 reason=- |",
+    ]
+
+
 def test_a_late_failure_on_one_historic_node_fails_the_gate(tmp_path: Path) -> None:
     history = "tests/ui/test_workbench.py::test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail"
     presentation = "tests/ui/test_workbench.py::test_presentation_filter_conflict_detail_and_explicit_error_states"

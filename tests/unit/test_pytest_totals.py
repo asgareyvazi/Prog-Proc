@@ -11,6 +11,7 @@ from pathlib import Path
 from tools.pytest_totals import (
     ExitRecordError,
     disagreements,
+    failed_test_cases,
     format_totals,
     main,
     notice_lines,
@@ -63,6 +64,40 @@ def test_junit_totals_split_skips_from_xfail_and_xpass(tmp_path: Path) -> None:
     assert totals["xfailed"] == 1
     assert totals["xpassed"] == 1
     assert "collected: 8" in format_totals(totals)
+
+
+def test_failed_test_cases_report_identity_without_failure_body(tmp_path: Path) -> None:
+    path = tmp_path / "pytest-junit.xml"
+    path.write_text(_JUNIT, encoding="utf-8")
+
+    failures = failed_test_cases(path)
+
+    assert failures == [
+        "failed test: a | bad (failure)",
+        "failed test: a | bad2 (failure)",
+        "failed test: a | boom (error)",
+    ]
+    assert all("nope" not in item and "setup" not in item for item in failures)
+
+
+def test_failed_test_identities_are_published_as_errors_not_only_counts(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    stats = tmp_path / "pytest-totals.json"
+    junit = tmp_path / "pytest-junit.xml"
+    summary = tmp_path / "summary.md"
+    _stats_file(stats)
+    junit.write_text(_JUNIT, encoding="utf-8")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    assert publish(stats, junit, None, summary) == 1
+
+    output = capsys.readouterr().out
+    text = summary.read_text(encoding="utf-8")
+    for identity in ("a | bad (failure)", "a | bad2 (failure)", "a | boom (error)"):
+        assert f"failed test: {identity}" in text
+        assert f"::error::failed test: {identity}" in output
+    assert "nope" not in text and "setup" not in text
 
 
 def test_session_stats_count_xpass_that_junit_folds_into_passed() -> None:
