@@ -609,6 +609,7 @@ def test_mineru_kit_cli_runs_in_isolation_and_cleans_its_scratch_directory(
     assert document.metadata.extra["mineru"]["version"] == "9.9.9"
     assert "--tier basic" in document.metadata.extra["mineru"]["command"]
     assert document.metadata.extra["provenance_source"] == "middle.json"
+    assert "layout_pdf" not in document.metadata.extra["mineru"]
 
 
 def test_default_mineru_binary_resolves_to_v4_stateless_kit() -> None:

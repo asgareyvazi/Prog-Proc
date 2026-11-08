@@ -37,7 +37,7 @@ class MinerURawOutput:
     middle: dict[str, Any] | None = None
     content_list: Any = None
     markdown: str = ""
-    layout_pdf: Path = Path()
+    layout_pdf: Path | None = None
     directory: Path = Path()
 
     @property
@@ -809,7 +809,7 @@ def load_mineru_outputs(directory: Path, stem: str) -> MinerURawOutput:
     middle: dict[str, Any] | None = None
     content_list: Any = None
     markdown = ""
-    layout_pdf = Path()
+    layout_pdf: Path | None = None
     for candidate in sorted(root.rglob("*")):
         if not candidate.is_file():
             continue
