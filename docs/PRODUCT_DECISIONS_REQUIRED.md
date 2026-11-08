@@ -1,7 +1,7 @@
 # Product decisions required before the next capabilities
 
 **Status:** decision register, not an implementation plan
-**As of:** 2026-11-07 (M6 delivered; M2–M5 remain owner-gated; baseline code/test CI on `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` and separate report/constraints-head CI on `b549ee5a2249fc18ab02ac32d65610d00bd94d68` do not change those decisions)
+**As of:** 2026-11-08 (M6 remains delivered; M2–M5 and all exclusions remain owner-gated. Current code/test baseline: `8cc4c0fec923329f9371ddd1ce222a5e8ca0df80`; its exact-SHA Linux run `42449344642` and Windows run `42449344633` both succeeded. Platform counts and remaining qualification limits are tracked in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md). CI evidence cannot approve or resolve an owner decision.)
 **Companion:** [`PRODUCT_CAPABILITY.md`](PRODUCT_CAPABILITY.md)
 **V9.0 note:** `M6` (`LESSON_LEARNED` tally → `lesson_learned`) was delivered in this milestone with contract `v8`, migration `0020` and 12 corpus tests (`tests/integration/test_lesson_promotion.py`). The remaining four milestones `M2`–`M5` are still open and fail-closed as described below; none is implemented by a setting, table or protocol.
 

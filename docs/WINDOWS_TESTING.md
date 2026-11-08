@@ -1,18 +1,17 @@
 # Windows testing
 
-> **Automated status reviewed 2026-11-07:** Source/test SHA `be8f66cb0456feeff8ab2109322575f410e26571` passed exact Windows workflow [`42367459043`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42367459043), 14/14 jobs. CPython 3.11 and 3.14 full suites each collected 2,787 (2,724 passed / 63 skipped and 2,726 / 61 respectively; zero failures). Offscreen UI passed 29/29 on each Python version; all six stability lanes completed 15/15 attempts; clean-install smoke and run-card behavioral checks passed on both Windows PowerShell 5.1 and PowerShell 7. The earlier parent SHA `8626d61fe9a40db2b560507c79db5872f5ad1e12` Windows run [`42353817436`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42353817436) was cancelled after its history/CPython 3.14 stability run approached the 45-minute limit. The current pass does **not** prove the historical cause. The workflow's 15 attempts, 45-minute timeout, selectors and assertions were not weakened. GitHub pytest log/artifact downloads for this SHA failed with EOF; check annotations preserve lane totals but not all runner-specific skip reasons. Local Qt is **SKIPPED** because `libGL.so.1` is absent. Offscreen CI is not physical display acceptance; the 16-step human workstation checklist remains **NOT RUN**. The mission-report/documentation follow-up has its own new SHA and requires its own CI; results above belong only to `be8f66c...`.
+> **Current code/test CI:** C1 SHA `43afa1f2873356e2c5e73d1b8b0491374d3b6cc5` passed Linux [`42381352913`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42381352913), 9/9 jobs, and Windows [`42381353106`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42381353106), 14/14 jobs. Linux CPython 3.11/3.14 each collected 2,795 (2,734 passed / 61 skipped / 0 failed), Ubuntu 26.04/3.14 collected 2,795 (2,794 passed / 1 skipped / 0 failed); Windows CPython 3.11/3.14 each collected 2,795 (2,732 passed / 63 skipped / 0 failed). Windows offscreen UI was 29/29 on both runtimes and all six stability lanes completed 15/15 attempts. C2 correction SHA `8cc4c0fec923329f9371ddd1ce222a5e8ca0df80` also passed its exact-SHA Linux run [`42449344642`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42449344642), 9/9 jobs, and Windows run [`42449344633`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42449344633), 14/14 jobs. Its Linux totals were 2,795 collected / 2,734 passed / 61 skipped / 0 failed on CPython 3.11 and 3.14, plus 2,795 / 2,794 / 1 / 0 on Ubuntu 26.04/3.14; Windows totals were 2,795 / 2,732 / 63 / 0 on CPython 3.11 and 3.14. C2 Windows offscreen UI was 29/29 on both runtimes and all six stability lanes completed 15/15 attempts. No stability attempt count, 45-minute timeout, selector, assertion, or classifier has been changed. Local Qt is **SKIPPED** because `libGL.so.1` is absent. Offscreen CI is not physical display acceptance; the 16-step human workstation checklist remains **NOT RUN**. See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and the current mission report for the latest exact-SHA verdict.
 
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the
 `windows-2022` workflow in `.github/workflows/ci-windows.yml`. That image is
 not this workstation. The workflow runs CPython 3.11 and 3.14 for the core
 suite, clean-install smoke, and offscreen UI jobs; the disposable pilot and
-PowerShell run-card behavior have separate Windows jobs. Exact totals and
-matrix identity reports are artifacts attached to run `41940002911` on code/test
-SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`. The report/constraints SHA
-`b549ee5a2249fc18ab02ac32d65610d00bd94d68` has its own later run
-`42126486402` (14/14 jobs); its totals are not transferred to the earlier SHA.
-A green offscreen job is not the same as opening the workbench on this machine.
+PowerShell run-card behavior have separate Windows jobs. C1 and C2's
+identity-bound Windows totals are recorded above for their exact SHAs.
+Older run totals belong only to the exact SHAs printed in their artifacts and
+are not transferred here. A green offscreen job is not the same as opening
+the workbench on this machine.
 
 Commands below are PowerShell. Do not paste the Bash examples from the
 README. Keep the repository line endings as LF (`git config core.autocrlf

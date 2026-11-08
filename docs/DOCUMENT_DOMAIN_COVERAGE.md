@@ -1,10 +1,10 @@
-# Document/domain coverage matrix (V7 authority)
+# Historical document/domain coverage matrix (V7 authority snapshot)
 
-> **Current context (2026-11-04):** The taxonomy remains 26 classes with the V10.3 code-evidenced baseline of 14 certified / 7 knowledge-supported / 5 extract-only; this mission adds no class and no document-promotion handler. Intake registration remains separate from promotion, and manual DDR authoring remains an operator workflow, not a parser handler. The current SQLite/DDR/backup changes do not alter the taxonomy. Exact-SHA Linux/Windows qualification passed on code SHA `894161a2f3e296e001c03a7b20b0eeb4f57d5882` (runs `41804712405` / `41804712330`); Ubuntu 26.04 × CPython 3.14 full-suite lane passed in the Linux run. SQLite alone is qualified, PostgreSQL is **NOT QUALIFIED**, and physical Windows display acceptance is **NOT RUN**. See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and the [Persian closure report](mission-reports/AUTONOMOUS_PRODUCT_CLOSURE_2026-11-04_FA.md).
+> **Historical record (reviewed 2026-11-07):** This matrix is preserved without rewriting its historical taxonomy rows. The current source review still confirms 26 classes: 14 `END_TO_END_CERTIFIED`, 7 `KNOWLEDGE_SUPPORTED`, 5 `EXTRACT_ONLY`, and 12 named handlers. The MinerU 4 integration, operator Intake, and manual DDR workflow add no document class or parser/promotion handler. These counts are not CI evidence; current exact-SHA status and open qualification gates belong in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and the current Persian mission report.
 
-> The `Inspected HEAD` and short commit references in the historical V7 matrix below are records from that earlier review, not current mission evidence. This checkout is not shallow; current-mission baseline and final qualification evidence belong in `PROJECT_CONTEXT.md` and the mission closure report.
+> `Inspected HEAD`, branch, release notes, and version-specific statements below describe the historical V7/V9 matrix snapshot. Do not treat them as the current branch or current mission evidence. The taxonomy counts are the preserved product contract; this document's historical release wording is intentionally not reconciled in place.
 
-**Status:** authoritative source-derived registry and certification index
+**Status:** historical source-derived registry and certification snapshot; current test/CI status is tracked separately
 **As of:** 2026-10-05 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0c936-prog-proc`

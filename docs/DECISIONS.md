@@ -155,6 +155,16 @@ is Apache-2.0 with additional terms (attribution if offered as an online service
 separate commercial licence only past 100M MAU or $20M/month, neither of which applies
 here) — recorded so the next reader does not have to re-litigate it.
 
+**Current runtime/license addendum (reviewed 2026-11-08; initial audit 2026-10-20).** The optional MinerU 4.1.7
+runtime was installed and exercised in an isolated environment during the
+current mission; it is not a core dependency and CI does not install it. The
+upstream [MinerU license](https://github.com/opendatalab/MinerU/blob/master/LICENSE.md)
+contains Apache-2.0 terms plus additional conditions, including service and
+commercial-use language. The older threshold note above is a transcription of
+that source, **not** a legal determination that any condition does or does not
+apply. Re-read the license version shipped with the exact runtime and obtain
+appropriate review for the intended deployment.
+
 ---
 
 ## ADR-0007 — The document core's invariants live in the schema, the repository and the checker

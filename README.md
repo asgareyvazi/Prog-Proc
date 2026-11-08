@@ -12,7 +12,7 @@ part of this repository serves that sentence.
 
 ## Status
 
-> **Current context (2026-11-07):** Prog-Proc remains **Pre-Alpha**, local-first, and single-user; SQLite is the only qualified database and PostgreSQL is **NOT QUALIFIED**. The 26-class document taxonomy is unchanged. Source/test commit `be8f66cb0456feeff8ab2109322575f410e26571` passed exact-SHA Linux [`42367459096`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42367459096) (9/9 jobs) and Windows [`42367459043`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42367459043) (14/14 jobs). Each Python 3.11/3.14 core suite collected 2,787 with 2,724/63 and 2,726/61 pass/skip respectively (zero failures); Ubuntu 26.04/3.14 collected 2,787 with 2,786 passed and one skip. Windows offscreen UI, six 15-attempt stability lanes, clean-install smoke and PowerShell 5.1/7 run-card checks all passed on that exact SHA. Historical `8626d61...` Windows run [`42353817436`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42353817436) had been cancelled after its history/CPython 3.14 stability job approached the 45-minute limit; the later pass does not prove that historical cause. The current code changes include run-card/checklist migration-head alignment, strict DDR JSON validation before lazy DB bootstrap, and atomic SQLite snapshot claims for concurrent DDR save/submit/revision/review. Local grouped suite totals were 2,740 passed / 47 skipped / 0 failed of 2,787; skips were the intentionally unqualified PostgreSQL lane, shallow history for two checks, and unavailable `libGL.so.1` for Qt. Ruff, format, mypy, compileall, exception inventory, Alembic head, and wheel/sdist clean-install smoke passed locally. GitHub log/artifact downloads for exact-SHA pytest details failed with EOF; run/check annotations provide the totals above, but not every runner-specific skip reason. The two prior Windows timeout logs were also unavailable; no attempt, timeout, assertion or classifier was weakened, and root cause remains **UNRESOLVED**. Physical Windows display acceptance is **NOT RUN**. Any report-only follow-up commit has its own exact-SHA workflow and cannot inherit results from `be8f66c`. Product status remains **PARTIALLY QUALIFIED — PRE-ALPHA**, not production/release approval. Owner gates and mission evidence are tracked in [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and [the mission report](docs/mission-reports/AUTONOMOUS_MISSION_2026-11-07_FA.md).
+> **Current context (2026-11-08):** Prog-Proc remains **Pre-Alpha**, local-first, and single-user; SQLite is the only qualified database, PostgreSQL is **NOT QUALIFIED**, and the 26-class matrix remains 14 `END_TO_END_CERTIFIED` / 7 `KNOWLEDGE_SUPPORTED` / 5 `EXTRACT_ONLY` across 12 named handlers. C1 code/test SHA `43afa1f2873356e2c5e73d1b8b0491374d3b6cc5` is pushed to the authorized branch. Its exact-SHA Linux run [`42381352913`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42381352913) passed 9/9 jobs: CPython 3.11 and 3.14 each collected 2,795 (2,734 passed, 61 skipped, 0 failed); Ubuntu 26.04/3.14 collected 2,795 (2,794 passed, 1 skipped, 0 failed). The exact-SHA Windows run [`42381353106`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42381353106) passed 14/14 jobs. Windows CPython 3.11 and 3.14 each collected 2,795 (2,732 passed, 63 skipped, 0 failed); offscreen UI was 29/29 on both versions, all six stability lanes completed 15/15 attempts, and clean-install plus PowerShell 5.1/7 run-card checks passed. GitHub pytest log/artifact downloads returned EOF, so the Windows skip reasons were not independently recoverable. A focused grouped local suite passed 157 tests and skipped 2 shallow-history integrity checks (0 failures); a separate MinerU boundary run passed 18. The single-process `pytest -q` attempt hit the 30-minute tool limit around 90% without a summary; that local attempt is **NOT PASS** (it does not override the Linux exact-SHA full-suite results). Ruff, format, mypy, compileall, exception policy, Alembic head, and a disposable-workspace doctor smoke passed locally. MinerU 4.1.7 was exercised via a separately installed CPU `mineru-kit` on two synthetic PDFs through the production adapter; OCR model download failed before inference, so OCR accuracy is **NOT RUN**. The extraction-boundary correction is commit `8cc4c0fec923329f9371ddd1ce222a5e8ca0df80`; its exact-SHA Linux run [`42449344642`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42449344642) passed 9/9 jobs and Windows run [`42449344633`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42449344633) passed 14/14 jobs. Linux CPython 3.11/3.14 each collected 2,795 (2,734 passed, 61 skipped, 0 failed), and Ubuntu 26.04/3.14 collected 2,795 (2,794 passed, 1 skipped, 0 failed). Windows CPython 3.11/3.14 each collected 2,795 (2,732 passed, 63 skipped, 0 failed); offscreen UI was 29/29 on both runtimes, six stability lanes completed 15/15 attempts, and clean-install plus PowerShell 5.1/7 run-card checks passed. Both runs show a non-blocking Node.js 20 deprecation notice for an artifact action forced to Node.js 24. The documentation/mission-report follow-up is a separate SHA with independent exact-SHA CI; evidence does not transfer between SHAs. Physical Windows display acceptance remains **NOT RUN**. Product status is **PARTIALLY QUALIFIED — PRE-ALPHA**, not production approval. Current evidence and owner gates are in [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md) and the [current Persian mission report](docs/mission-reports/AUTONOMOUS_MISSION_2026-11-08_MINERU_DDR_FA.md).
 
 The following inventory is a product overview; its capability labels do not substitute for current test or CI evidence:
 
@@ -39,17 +39,19 @@ The following inventory is a product overview; its capability labels do not subs
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
 | Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
 | Domain CLI: `intake` add/list/preview/decide/register, manual `ddr` create/list/show/actions/save/submit/revise/decide, plus `records`, `records rollup`, `records review`, `timeline`, `fields`, `patterns`, `lessons`, `evidence`, and `doctor` | **implemented through existing lifecycle services** — DDR CLI input is bounded strict JSON; save requires a complete snapshot and freshness token; submit leaves operations candidate, and review uses only `ReviewActionService`. Declared actor strings are not authenticated. Intake registration creates registry evidence only after human review; it does not promote domain facts. Focused CLI integration evidence: `tests/integration/test_ddr_cli.py`; exact-SHA qualification is tracked separately. |
-| Optional Desktop Workbench (`drillintel-ui`) | **implemented; Linux/Windows Qt-enabled offscreen CI PASS on code/test SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`** — PySide6-Essentials is optional. It includes governed review, Intake preview/registration, and Daily DDR draft/save/submit/revision with exact-field comparison and provenance. DDR submit leaves candidate rows; confirm/reject require a reason and a declared actor ID distinct from `created_by` (not authenticated). Mutations run outside the GUI thread. Local Qt tests blocked by host libraries are **SKIPPED**, not PASS; Windows UI ran 29/29 on both CPython 3.11/3.14, but the historical registration/refresh failure root cause remains unproven and physical Windows display acceptance remains **NOT RUN**. See runs `41940002906` / `41940002911`. |
+| Optional Desktop Workbench (`drillintel-ui`) | **Implemented; Linux and Windows Qt-enabled offscreen CI PASS on C1 SHA `43afa1f2873356e2c5e73d1b8b0491374d3b6cc5`** — PySide6-Essentials is optional. It includes governed review, Intake preview/registration, and Daily DDR draft/save/submit/revision with exact-field comparison and provenance. DDR submit leaves candidate rows; confirm/reject require a reason and a declared actor ID distinct from `created_by` (not authenticated). Mutations run outside the GUI thread. Local Qt tests blocked by host libraries are **SKIPPED**, not PASS; Linux run `42381352913` includes the offscreen jobs. Windows run `42381353106` passed 29/29 offscreen UI tests on both Python runtimes; physical Windows display acceptance remains **NOT RUN**. The historical registration/refresh failure root cause remains unproven. |
 | Ollama provider adapter: `drillintel ai status` probes `/api/tags`; completion and embedding calls return non-authoritative text or vectors | **implemented, not on the engineering path** — an embedding is accepted only when it is finite, one vector per input, and names the requested model; a path, query, or credential in the endpoint sends no request; `doctor` does not probe; `openai-compatible` has no adapter (`docs/DECISIONS.md` ADR-51, ADR-52) |
 | Skills and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
-Nothing here needs a GPU, a model download, or a server. `mineru` (for scanned pages) is a real
-optional integration: install it separately and the router will use it, otherwise the built-in
-extractors carry on. The Ollama adapter is also optional and local. `drillintel doctor` names the
-configured provider and does not contact it. `drillintel ai status` probes only when asked, and a
-successful probe does not write a record. Installing Ollama changes that probe; it does not change
-extraction, promotion, search, or citation audit.
+The built-in application path needs no GPU, model download, or server. `mineru` is a separate,
+optional runtime for PDF layout/OCR; OCR can download models during an explicitly requested parse,
+so it must be installed and networked under a separate operator policy. Without that runtime, the
+built-in extractors carry on and report when a scanned PDF needs OCR. The Ollama adapter is also
+optional and local. `drillintel doctor` names the configured provider and does not contact it.
+`drillintel ai status` probes only when asked, and a successful probe does not write a record.
+Installing Ollama changes that probe; it does not change extraction, promotion, search, or citation
+audit.
 
 ## Quick start
 
@@ -129,6 +131,31 @@ directory present, a well written and read back, the read surfaces, and `doctor`
 wheel bootstraps its schema from the ORM metadata and stamps it at the current revision, because it
 deliberately does not carry the Alembic scripts; `doctor` reports that mode as healthy rather than
 as drift.
+
+### Optional MinerU 4 PDF runtime
+
+MinerU is an optional, separately managed parser for complex/scanned PDFs. It is **not** part of
+Prog-Proc's core dependencies, and neither application startup nor `drillintel doctor` downloads
+models or probes MinerU. Keep the parser in its own environment; use the path to its `mineru` entry
+point and let the adapter resolve the adjacent `mineru-kit` parser:
+
+```bash
+python3 -m venv /opt/prog-proc-mineru
+/opt/prog-proc-mineru/bin/python -m pip install "mineru==4.1.7"
+export DRILLINTEL_MINERU_MODE=cli
+export DRILLINTEL_MINERU_BINARY=/opt/prog-proc-mineru/bin/mineru
+export DRILLINTEL_MINERU_TIER=flash
+```
+
+MinerU 4's `mineru-kit parse` writes the `docvortex.middle` contract, which Prog-Proc normalizes
+into page-anchored text/table output with source locators. The regular HTTP adapter accepts only a
+legacy JSON parse contract verified from OpenAPI; MinerU 4's attachment/ZIP `/v1/file_parse` API is
+not treated as compatible. OCR tiers may need model downloads during an explicitly requested parse;
+install/cache those model files under the runtime's own policy and network boundary. The parser's
+text is extraction evidence, not engineering validation or an automatic domain record. Test
+representative scans and table semantics before operational use; this repository has no OCR-accuracy
+claim. MinerU is third-party software with additional license conditions; review its upstream terms
+for the intended deployment and do not treat this note as legal advice.
 
 Ingest a folder of documents into a workspace (this is the whole point of phase 0, so it
 is worth running once on your own files).  From a terminal, nothing else is required:
@@ -333,7 +360,7 @@ src/drilling_intelligence/
   review/         deterministic read-only per-well Domain Review contract and service
   intelligence/   timelines, field rollups, recurring patterns and their snapshots
   ingestion/      scanner, planner (incremental decisions), pipeline
-  integrations/   MinerU client (subprocess/HTTP), disabled by default
+  integrations/   optional MinerU client (subprocess/legacy JSON HTTP); heavy runtime stays external
 migrations/       Alembic chain; alembic.ini carries no URL by design
 tests/            unit, engineering (real files), integration (real database)
 docs/             DECISIONS.md - the ADRs the code cites
@@ -510,9 +537,11 @@ version does. Nothing in the projection is ever written back to the domain table
 Proprietary: an internal engineering platform for the drilling team. No public
 distribution, no sublicense, and no warranty of fitness is offered; see the `license`
 field in `pyproject.toml`. Third-party components keep their own terms — notably MinerU,
-which is Apache-2.0 with additional conditions (attribution if it is ever offered to
-third parties as an online service), and is not vendored or required by this repository.
-`wellpathpy` (LGPL) is planned for a later phase behind a wrapper, per `docs/DECISIONS.md`.
+which is not vendored or required by this repository. Upstream MinerU 4.1.7 supplies an
+Apache-2.0 license text with additional conditions; review the exact upstream terms (including
+service attribution/commercial-use conditions) for the intended deployment before use. This
+repository's note is not legal advice. `wellpathpy` (LGPL) is planned for a later phase behind a
+wrapper, per `docs/DECISIONS.md`.
 
 ## Production ingestion & domain promotion
 
@@ -534,10 +563,13 @@ CASING_REPORT      -> casing
 CEMENT_REPORT      -> cement
 WELL_CONTROL       -> well_control   (V7.2)
 HSE                -> hse            (V7.2)
+LESSON_LEARNED     -> lesson_learned (V9.0)
 ```
 
-That is 11 named handlers across 13 `END_TO_END_CERTIFIED` classifications out of 26. The V2 wave
-shipped only the first four of these; the list above is the current state, not the V2 state.
+That is 12 named handlers across 14 `END_TO_END_CERTIFIED` classifications out of 26; 7 classes are
+`KNOWLEDGE_SUPPORTED` and 5 are `EXTRACT_ONLY`. These counts are the current taxonomy snapshot, not
+an expansion from MinerU, Intake, or the separate manual DDR-authoring workflow. See the preserved
+historical matrix in [`docs/DOCUMENT_DOMAIN_COVERAGE.md`](docs/DOCUMENT_DOMAIN_COVERAGE.md).
 
 No other classification is promoted merely because its file has a table, its filename contains a
 keyword, a search hit exists, or an enum/knowledge entity exists. Evidence-only classes remain
