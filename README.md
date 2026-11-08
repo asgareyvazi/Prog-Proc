@@ -38,16 +38,18 @@ The following inventory is a product overview; its capability labels do not subs
 | Comparison pack: two or more wells side by side on the same recorded basis - per-metric values with `COMPARABLE`/`INCOMPARABLE`/`MISSING`/`UNRESOLVED` states, unit and risk-scale identity gates, offset-candidate discovery, forensic evidence, limitations (`fields compare`) | **implemented, tested, query-count scale-certified at 6 + 39 SELECTs per subject** (`docs/DECISIONS.md` ADR-36) |
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
 | Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
-| Domain CLI: `intake` add/list/preview/decide/register, manual `ddr` create/list/show/actions/save/submit/revise/decide, plus `records`, `records rollup`, `records review`, `timeline`, `fields`, `patterns`, `lessons`, `evidence`, and `doctor` | **implemented through existing lifecycle services** — DDR CLI input is bounded strict JSON; save requires a complete snapshot and freshness token; submit leaves operations candidate, and review uses only `ReviewActionService`. Declared actor strings are not authenticated. Intake registration creates registry evidence only after human review; it does not promote domain facts. Focused CLI integration evidence: `tests/integration/test_ddr_cli.py`; exact-SHA qualification is tracked separately. |
-| Optional Desktop Workbench (`drillintel-ui`) | **Implemented; Linux and Windows Qt-enabled offscreen CI PASS on C1 SHA `43afa1f2873356e2c5e73d1b8b0491374d3b6cc5`** — PySide6-Essentials is optional. It includes governed review, Intake preview/registration, and Daily DDR draft/save/submit/revision with exact-field comparison and provenance. DDR submit leaves candidate rows; confirm/reject require a reason and a declared actor ID distinct from `created_by` (not authenticated). Mutations run outside the GUI thread. Local Qt tests blocked by host libraries are **SKIPPED**, not PASS; Linux run `42381352913` includes the offscreen jobs. Windows run `42381353106` passed 29/29 offscreen UI tests on both Python runtimes; physical Windows display acceptance remains **NOT RUN**. The historical registration/refresh failure root cause remains unproven. |
+| Domain CLI: `intake` add/list/preview/decide/register, manual `ddr` create/list/show/actions/save/submit/revise/decide, `config validate`, `mineru validate`, plus `records`, `records rollup`, `records review`, `timeline`, `fields`, `patterns`, `lessons`, `evidence`, and `doctor` | **implemented through existing lifecycle services** — DDR CLI input is bounded strict JSON; save requires a complete snapshot and freshness token; submit leaves operations candidate, and review uses only `ReviewActionService`. Declared actor strings are not authenticated. Intake registration creates registry evidence only after human review; it does not promote domain facts. Config validation is local/read-only; MinerU validation separates runtime readiness from OCR qualification. Focused CLI integration evidence: `tests/integration/test_ddr_cli.py`; exact-SHA qualification is tracked separately. |
+| Optional Desktop Workbench (`drillintel-ui`) | **Implemented; Linux and Windows Qt-enabled offscreen CI PASS on C1 SHA `43afa1f2873356e2c5e73d1b8b0491374d3b6cc5`** — PySide6-Essentials is optional. It includes governed review, Intake preview/registration, and Daily DDR draft/save/submit/revision with a read-only predecessor/successor comparison of exact fields, authored activity changes/order, and provenance. DDR submit leaves candidate rows; confirm/reject require a reason and a declared actor ID distinct from `created_by` (not authenticated). Mutations run outside the GUI thread. Local Qt tests blocked by host libraries are **SKIPPED**, not PASS; Linux run `42381352913` includes the offscreen jobs. Windows run `42381353106` passed 29/29 offscreen UI tests on both Python runtimes; physical Windows display acceptance remains **NOT RUN**. The historical registration/refresh failure root cause remains unproven. |
 | Ollama provider adapter: `drillintel ai status` probes `/api/tags`; completion and embedding calls return non-authoritative text or vectors | **implemented, not on the engineering path** — an embedding is accepted only when it is finite, one vector per input, and names the requested model; a path, query, or credential in the endpoint sends no request; `doctor` does not probe; `openai-compatible` has no adapter (`docs/DECISIONS.md` ADR-51, ADR-52) |
 | Skills and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
 The built-in application path needs no GPU, model download, or server. `mineru` is a separate,
-optional runtime for PDF layout/OCR; OCR can download models during an explicitly requested parse,
-so it must be installed and networked under a separate operator policy. Without that runtime, the
-built-in extractors carry on and report when a scanned PDF needs OCR. The Ollama adapter is also
+optional runtime for PDF layout/OCR. The application defaults its model source to `local`, so ordinary
+extraction only uses preinstalled model files and does not implicitly fetch them. An operator may
+explicitly select a remote model source in configuration; that choice can contact its configured
+provider during parsing and must be governed by the operator's network/data policy. Without the
+runtime or local models, the built-in extractors carry on and report when a scanned PDF needs OCR. The Ollama adapter is also
 optional and local. `drillintel doctor` names the configured provider and does not contact it.
 `drillintel ai status` probes only when asked, and a successful probe does not write a record.
 Installing Ollama changes that probe; it does not change extraction, promotion, search, or citation
@@ -148,14 +150,37 @@ export DRILLINTEL_MINERU_TIER=flash
 ```
 
 MinerU 4's `mineru-kit parse` writes the `docvortex.middle` contract, which Prog-Proc normalizes
-into page-anchored text/table output with source locators. The regular HTTP adapter accepts only a
-legacy JSON parse contract verified from OpenAPI; MinerU 4's attachment/ZIP `/v1/file_parse` API is
-not treated as compatible. OCR tiers may need model downloads during an explicitly requested parse;
-install/cache those model files under the runtime's own policy and network boundary. The parser's
-text is extraction evidence, not engineering validation or an automatic domain record. Test
-representative scans and table semantics before operational use; this repository has no OCR-accuracy
-claim. MinerU is third-party software with additional license conditions; review its upstream terms
-for the intended deployment and do not treat this note as legal advice.
+into page-anchored text/table output with source locators. The regular HTTP adapter accepts only the
+legacy multipart/JSON parse contract; MinerU 4's attachment/ZIP `/v1/file_parse` API is not treated as
+compatible. The configured `model_source` defaults to `local`: parsing will not fetch missing models
+implicitly, and may fail until the operator installs the selected models. Set an explicit remote
+source only after reviewing the provider and data/network policy. The user-operable checks are:
+
+```bash
+drillintel mineru validate --json
+# Explicit inference attempt against one deterministic synthetic PNG; still local-only:
+drillintel mineru validate --run-synthetic-ocr --json
+```
+
+The default command checks the local CLI runtime only; it does not inspect model files, make an HTTP
+request, download a model, upload a document, or run OCR. The optional synthetic command forces CLI,
+local models, Basic tier and ONNX small backend; if inference does not complete it reports failure
+without emitting OCR metrics. Successful CER/WER values apply only to the one fixture and are not a
+general OCR qualification. The parser's text is extraction evidence, not engineering validation or an
+automatic domain record. MinerU 4.1.7 is an optional external Python runtime; the PyPI metadata
+checked for that release lists Python >=3.11,<3.15. Recheck exact runtime requirements before use;
+model files and their terms are separate. Review the exact
+upstream [MinerU license](https://github.com/opendatalab/MinerU/blob/master/LICENSE.md), model terms,
+and runtime requirements for the intended deployment. This note is not a legal determination.
+
+Validate the effective configuration without connecting to services (JSON output is available):
+
+```bash
+drillintel config validate --json
+```
+
+The command applies the same defaults and environment overrides as startup, reports unknown keys,
+and returns a nonzero exit code for invalid configuration. It never prints secret values.
 
 Ingest a folder of documents into a workspace (this is the whole point of phase 0, so it
 is worth running once on your own files).  From a terminal, nothing else is required:

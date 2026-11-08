@@ -165,6 +165,16 @@ that source, **not** a legal determination that any condition does or does not
 apply. Re-read the license version shipped with the exact runtime and obtain
 appropriate review for the intended deployment.
 
+**No-implicit-model-fetch policy (2026-10-20 engineering expansion).** Prog-Proc's
+MinerU integration defaults `MINERU_MODEL_SOURCE=local`; missing local model files
+cause the requested parse/qualification attempt to fail instead of downloading
+models. An operator can opt into a remote model source in the `mineru.model_source`
+setting; that is an explicit network-policy decision. `drillintel mineru validate`
+checks the local runtime without inspecting/downloading models or uploading a
+document. Its separate synthetic OCR option pins local CLI, Basic tier and ONNX;
+metrics are emitted only after inference and remain fixture-scoped. This policy
+does not qualify OCR accuracy or authorize any deployment.
+
 ---
 
 ## ADR-0007 — The document core's invariants live in the schema, the repository and the checker

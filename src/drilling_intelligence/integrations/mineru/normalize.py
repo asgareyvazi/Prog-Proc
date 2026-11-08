@@ -19,6 +19,7 @@ the metadata and surfaced in the UI.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -37,8 +38,6 @@ class MinerURawOutput:
     middle: dict[str, Any] | None = None
     content_list: Any = None
     markdown: str = ""
-    layout_pdf: Path | None = None
-    directory: Path = Path()
 
     @property
     def best(self) -> str:
@@ -130,9 +129,9 @@ def _spans_text(block: dict[str, Any]) -> tuple[str, list[tuple[float, float, fl
         if isinstance(node, dict):
             if node.get("type") == "text" and isinstance(node.get("content"), str):
                 parts.append(node["content"])
-                bbox = node.get("bbox")
-                if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-                    boxes.append(tuple(float(v) for v in bbox))  # type: ignore[arg-type]
+                bbox = _safe_bbox(node.get("bbox"))
+                if bbox is not None:
+                    boxes.append(bbox)
             for key in ("lines", "spans", "blocks", "table_body", "content"):
                 if key in node:
                     walk(node[key])
@@ -215,6 +214,7 @@ def normalize_middle_json(
     paragraph_index = 0
     char_cursor = 0
     current_section: Section | None = None
+    invalid_bbox_count = 0
 
     def locate(page_number: int, block_index: int | None, bbox: Any, excerpt: str) -> Provenance:
         return Provenance(
@@ -227,39 +227,54 @@ def normalize_middle_json(
             parser=provenance_parser,
             excerpt=excerpt[:2000],
             source_sha256=sha256,
-            confidence=0.95,
         )
 
-    for page_info in pages:
+    for page_position, page_info in enumerate(pages):
         if not isinstance(page_info, dict):
+            diagnostics.append(
+                f"MinerU middle.json page at index {page_position} was malformed and omitted"
+            )
             continue
-        page_index = int(
-            page_info.get("page_idx", page_info.get("page_no", len(document.pages))) or 0
+        page_index = _safe_index(
+            page_info.get("page_idx", page_info.get("page_no", len(document.pages))),
+            len(document.pages),
+            filename=filename,
         )
         page_number = page_index + 1
         size = page_info.get("page_size") or [0, 0]
         blocks = page_info.get("para_blocks") or page_info.get("preproc_blocks") or []
+        if not isinstance(blocks, list):
+            diagnostics.append(
+                f"MinerU page {page_number} had a malformed block list; blocks were omitted"
+            )
+            blocks = []
         page_start = char_cursor
         page_texts: list[str] = []
         for block_index, block in enumerate(blocks):
             if not isinstance(block, dict):
+                diagnostics.append(
+                    f"MinerU page {page_number} block {block_index + 1} was malformed and omitted"
+                )
                 continue
             kind = str(block.get("type", "text"))
+            if block.get("bbox") is not None and _block_bbox(block) is None:
+                invalid_bbox_count += 1
             if kind == "table":
                 rows = _table_rows(block)
                 if rows:
                     html = _table_html(block)
+                    bbox = _block_bbox(block)
                     document.tables.append(
                         Table(
                             table_id=f"p{page_number}-table{block_index + 1}",
                             rows=rows,
                             caption=str(block.get("table_caption") or "")[:200],
                             page=page_number,
-                            anchor=f"bbox={_union([tuple(b) for b in [block['bbox']]] if isinstance(block.get('bbox'), list) else [])}",
+                            anchor=f"bbox={bbox}" if bbox else "",
                             provenance=locate(
                                 page_number,
                                 block_index,
-                                _block_bbox(block),
+                                bbox,
                                 _table_text(rows)[:2000],
                             ),
                             extra={"source": "mineru", "html_available": bool(html)},
@@ -267,6 +282,31 @@ def normalize_middle_json(
                     )
                     page_texts.append(_table_text(rows))
                     char_cursor += len(page_texts[-1]) + 2
+                else:
+                    text, _boxes = _spans_text(block)
+                    text = clean_text(text)
+                    if text:
+                        document.paragraphs.append(
+                            Paragraph(
+                                index=paragraph_index,
+                                text=text,
+                                page=page_number,
+                                block=block_index,
+                                style="table_text_unstructured",
+                                char_start=char_cursor,
+                                char_end=char_cursor + len(text),
+                                provenance=locate(
+                                    page_number, block_index, _block_bbox(block), text
+                                ),
+                            )
+                        )
+                        paragraph_index += 1
+                        page_texts.append(text)
+                        char_cursor += len(text) + 2
+                    diagnostics.append(
+                        f"table block {block_index + 1} on page {page_number} lacked a structured grid; "
+                        "available text was retained without inferred rows"
+                    )
                 continue
             if kind in ("image", "chart"):
                 document.figures.append(
@@ -283,7 +323,9 @@ def normalize_middle_json(
                             _spans_text(block)[0][:200],
                         ),
                         text=_spans_text(block)[0][:4000],
-                        extra={"image_path": block.get("image_path", "")},
+                        # MinerU image paths point into its transient output tree. Retain only
+                        # whether one existed; never publish a path that cleanup will invalidate.
+                        extra={"image_available": bool(block.get("image_path"))},
                     )
                 )
                 continue
@@ -345,10 +387,15 @@ def normalize_middle_json(
             page_texts.append(text)
 
         discarded = page_info.get("discarded_blocks") or []
-        if discarded:
-            meta.extra.setdefault("discarded_blocks", 0)
-            meta.extra["discarded_blocks"] = int(meta.extra.get("discarded_blocks", 0)) + len(
-                discarded
+        if isinstance(discarded, (list, tuple)):
+            if discarded:
+                meta.extra.setdefault("discarded_blocks", 0)
+                meta.extra["discarded_blocks"] = int(meta.extra.get("discarded_blocks", 0)) + len(
+                    discarded
+                )
+        else:
+            diagnostics.append(
+                f"MinerU page {page_number} had malformed discarded-block metadata; it was ignored"
             )
         document.pages.append(
             Page(
@@ -356,16 +403,20 @@ def normalize_middle_json(
                 text=clean_text("\n\n".join(page_texts)),
                 char_start=page_start,
                 char_end=char_cursor,
-                width=float(size[0] or 0)
-                if isinstance(size, (list, tuple)) and len(size) > 0
+                width=_finite_dimension(size[0])
+                if isinstance(size, (list, tuple)) and size
                 else 0.0,
-                height=float(size[1] or 0)
+                height=_finite_dimension(size[1])
                 if isinstance(size, (list, tuple)) and len(size) > 1
                 else 0.0,
                 block_count=len(blocks),
             )
         )
 
+    if invalid_bbox_count:
+        diagnostics.append(
+            f"MinerU supplied {invalid_bbox_count} invalid bounding box(es); those locators were omitted"
+        )
     if meta.extra.get("discarded_blocks"):
         diagnostics.append(
             f"MinerU discarded {meta.extra['discarded_blocks']} header/footer/page-number block(s); "
@@ -389,34 +440,49 @@ def _normalize_docvortex_middle_json(
     if not isinstance(pages, list):
         raise ExtractionError("MinerU docvortex.middle has no 'pages' list", file=filename)
 
+    diagnostics: list[str] = []
     extensions = payload.get("extensions")
     extensions = extensions if isinstance(extensions, dict) else {}
     layout = extensions.get("docvortex_layout")
     layout_pages = layout.get("pages") if isinstance(layout, dict) else []
-    layout_by_index = (
-        {
-            int(item.get("page_idx", index)): item
-            for index, item in enumerate(layout_pages)
-            if isinstance(item, dict)
-        }
-        if isinstance(layout_pages, list)
-        else {}
-    )
+    layout_by_index: dict[int, dict[str, Any]] = {}
+    if isinstance(layout_pages, list):
+        for index, item in enumerate(layout_pages):
+            if isinstance(item, dict):
+                page_index = _safe_index(item.get("page_idx", index), index, filename=filename)
+                layout_by_index[page_index] = item
 
     legacy_pages: list[dict[str, Any]] = []
+    invalid_bbox_count = 0
     for page_number, page in enumerate(pages):
         if not isinstance(page, dict):
+            diagnostics.append(
+                f"MinerU docvortex.middle page at index {page_number} was malformed and omitted"
+            )
             continue
-        page_index = int(page.get("page_idx", page_number) or 0)
+        page_index = _safe_index(page.get("page_idx", page_number), page_number, filename=filename)
         layout_page = layout_by_index.get(page_index, {})
         blocks = page.get("blocks")
         if not isinstance(blocks, list):
+            diagnostics.append(
+                f"MinerU docvortex.middle page {page_index} had a malformed block list; blocks were omitted"
+            )
             blocks = []
         normalized_blocks: list[dict[str, Any]] = []
-        for block in blocks:
+        for block_index, block in enumerate(blocks):
             if not isinstance(block, dict):
+                diagnostics.append(
+                    f"MinerU docvortex.middle page {page_index} block {block_index + 1} was malformed and omitted"
+                )
                 continue
             adapted = dict(block)
+            if block.get("bbox") is not None:
+                bbox = _block_bbox(block, normalized=True)
+                if bbox is None:
+                    invalid_bbox_count += 1
+                    adapted.pop("bbox", None)
+                else:
+                    adapted["bbox"] = list(bbox)
             if str(block.get("type", "")).lower() == "table":
                 html = _table_html(block)
                 if html:
@@ -441,30 +507,76 @@ def _normalize_docvortex_middle_json(
         "_version_name": producer.get("version", ""),
         "_backend": mineru_extension.get("tier", ""),
     }
-    document, diagnostics = normalize_middle_json(
+    document, legacy_diagnostics = normalize_middle_json(
         adapted_payload,
         filename=filename,
         document_id=document_id,
         version_id=version_id,
         sha256=sha256,
     )
+    diagnostics.extend(legacy_diagnostics)
     document.metadata.extra["mineru_schema"] = str(payload.get("schema_version") or "2.0")
     document.metadata.extra["mineru_tier"] = mineru_extension.get("tier", "")
-    document.metadata.extra["mineru_bbox_units"] = "normalized fractions (0-1)"
+    document.metadata.extra["mineru_bbox_units"] = "normalized fractions (0-1), source schema"
     diagnostics.append(
-        "MinerU 4.x docvortex.middle output used; bounding boxes are normalized fractions"
+        "MinerU 4.x docvortex.middle output used; source bounding-box units are normalized fractions"
     )
+    if invalid_bbox_count:
+        diagnostics.append(
+            f"MinerU supplied {invalid_bbox_count} invalid normalized bounding box(es); those locators were omitted"
+        )
     return document, diagnostics
 
 
-def _block_bbox(block: dict[str, Any]) -> tuple[float, float, float, float] | None:
-    bbox = block.get("bbox")
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-        try:
-            return (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
-        except (TypeError, ValueError):
-            return None
-    return None
+def _safe_index(value: Any, default: int, *, filename: str) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        raise ExtractionError("MinerU page index must be a non-negative integer", file=filename)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise ExtractionError(
+            "MinerU page index must be a non-negative integer", file=filename
+        ) from None
+    if parsed < 0 or str(value).strip() not in {str(parsed), f"{parsed}.0"}:
+        raise ExtractionError("MinerU page index must be a non-negative integer", file=filename)
+    return parsed
+
+
+def _safe_bbox(value: Any, *, normalized: bool = False) -> tuple[float, float, float, float] | None:
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 4
+        or any(isinstance(item, bool) for item in value)
+    ):
+        return None
+    try:
+        values = tuple(float(item) for item in value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(item) for item in values):
+        return None
+    x0, y0, x1, y1 = values
+    if x1 < x0 or y1 < y0:
+        return None
+    if normalized and not all(0.0 <= item <= 1.0 for item in values):
+        return None
+    return values  # type: ignore[return-value]
+
+
+def _block_bbox(
+    block: dict[str, Any], *, normalized: bool = False
+) -> tuple[float, float, float, float] | None:
+    return _safe_bbox(block.get("bbox"), normalized=normalized)
+
+
+def _finite_dimension(value: Any) -> float:
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return parsed if math.isfinite(parsed) and parsed >= 0 else 0.0
 
 
 def _table_html(block: dict[str, Any]) -> str:
@@ -494,30 +606,14 @@ def _iter_dicts(node: Any):
 
 
 def _table_rows(block: dict[str, Any]) -> list[list[str | None]]:
+    """Return a structured grid only when MinerU supplied a table representation.
+
+    Grouping spans by an invented coordinate scale can reorder or merge operator
+    values. If no HTML/grid is supplied, the caller retains available text as an
+    uninterpreted block and emits a diagnostic instead of fabricating rows.
+    """
     html = _table_html(block)
-    if html:
-        rows = parse_table_html(html)
-        if rows:
-            return rows
-    # No HTML: rebuild rows from line/span geometry.  Rough, but visible as such.
-    rows_by_y: dict[int, list[tuple[float, str]]] = {}
-    for line in _iter_dicts(block):
-        spans = line.get("spans")
-        if not isinstance(spans, list):
-            continue
-        for span in spans:
-            if not isinstance(span, dict) or span.get("type") not in (None, "text"):
-                continue
-            content = str(span.get("content", "")).strip()
-            bbox = span.get("bbox")
-            if not content or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
-                continue
-            rows_by_y.setdefault(int(float(bbox[1]) / 6.0), []).append((float(bbox[0]), content))
-    grid: list[list[str | None]] = []
-    for key in sorted(rows_by_y):
-        items = sorted(rows_by_y[key], key=lambda item: item[0])
-        grid.append([text for _x, text in items])
-    return grid
+    return parse_table_html(html) if html else []
 
 
 def _table_text(rows: list[list[str | None]]) -> str:
@@ -538,9 +634,18 @@ def normalize_content_list(
         clean_text,
     )
 
-    items = payload if isinstance(payload, list) else []
-    diagnostics = [
-        "MinerU content_list.json used instead of middle.json (section structure unavailable)"
+    if isinstance(payload, list):
+        items = payload
+        diagnostics = [
+            "MinerU content_list.json used instead of middle.json (section structure unavailable)"
+        ]
+    else:
+        items = []
+        diagnostics = ["MinerU content_list.json root was not an array; no items were retained"]
+    page_indices = [
+        _safe_index(item.get("page_idx", 0), 0, filename=filename)
+        for item in items
+        if isinstance(item, dict)
     ]
     document = NormalizedDocument(
         metadata=ExtractionMetadata(
@@ -548,28 +653,23 @@ def normalize_content_list(
             sha256=sha256,
             parser="mineru",
             engine="MinerU content_list",
-            page_count=max(
-                (int(item.get("page_idx", 0) or 0) for item in items if isinstance(item, dict)),
-                default=0,
-            )
-            + 1,
+            page_count=max(page_indices, default=0) + 1,
         )
     )
     pages: dict[int, list[str]] = {}
     index = 0
-    for item in items:
+    for item_index, item in enumerate(items):
         if not isinstance(item, dict):
+            diagnostics.append(
+                f"MinerU content_list item {item_index + 1} was malformed and omitted"
+            )
             continue
-        page = int(item.get("page_idx", 0) or 0) + 1
+        page = _safe_index(item.get("page_idx", 0), 0, filename=filename) + 1
         kind = str(item.get("type", "text"))
-        bbox = item.get("bbox")
-        boxes = (
-            tuple(float(v) for v in bbox)
-            if isinstance(bbox, (list, tuple)) and len(bbox) == 4
-            else None
-        )
+        boxes = _safe_bbox(item.get("bbox"))
         if kind == "table":
-            rows = parse_table_html(str(item.get("table_body") or ""))
+            raw_table = item.get("table_body")
+            rows = parse_table_html(raw_table if isinstance(raw_table, str) else "")
             if rows:
                 document.tables.append(
                     Table(
@@ -589,9 +689,47 @@ def normalize_content_list(
                     )
                 )
                 pages.setdefault(page, []).append(_table_text(rows))
+            else:
+                raw_text = item.get("text")
+                text = clean_text(raw_text) if isinstance(raw_text, str) else ""
+                if not text and isinstance(raw_table, str):
+                    text = clean_text(strip_html(raw_table))
+                if not text and isinstance(item.get("table_caption"), str):
+                    text = clean_text(item["table_caption"])
+                if text:
+                    document.paragraphs.append(
+                        Paragraph(
+                            index=index,
+                            text=text,
+                            page=page,
+                            block=index,
+                            style="table_text_unstructured",
+                            provenance=Provenance(
+                                document_id=document_id,
+                                document_version_id=version_id or None,
+                                filename=filename,
+                                locator=PdfLocator(page=page, paragraph=index, bbox=boxes),
+                                parser="mineru/content_list",
+                                excerpt=text[:2000],
+                                source_sha256=sha256,
+                            ),
+                        )
+                    )
+                    pages.setdefault(page, []).append(text)
+                    diagnostics.append(
+                        f"MinerU content_list table item {index + 1} had no parseable grid; "
+                        "available text was retained without inferred rows"
+                    )
+                else:
+                    diagnostics.append(
+                        f"MinerU content_list table item {index + 1} was empty/unreadable and omitted"
+                    )
             index += 1
             continue
-        text = clean_text(str(item.get("text") or item.get("caption") or ""))
+        raw_text = item.get("text")
+        if not isinstance(raw_text, str):
+            raw_text = item.get("caption")
+        text = clean_text(raw_text) if isinstance(raw_text, str) else ""
         if not text:
             continue
         document.paragraphs.append(
@@ -809,7 +947,6 @@ def load_mineru_outputs(directory: Path, stem: str) -> MinerURawOutput:
     middle: dict[str, Any] | None = None
     content_list: Any = None
     markdown = ""
-    layout_pdf: Path | None = None
     for candidate in sorted(root.rglob("*")):
         if not candidate.is_file():
             continue
@@ -822,8 +959,6 @@ def load_mineru_outputs(directory: Path, stem: str) -> MinerURawOutput:
             not stem or candidate.stem.lower().startswith(stem.lower()[:4])
         ):
             markdown = candidate.read_text(encoding="utf-8", errors="replace")
-        elif candidate.suffix == ".pdf" and "layout" in name:
-            layout_pdf = candidate
     if middle is None and content_list is None and not markdown:
         raise ExtractionError(
             f"MinerU produced no readable output in {root} for {stem}", directory=str(root)
@@ -832,8 +967,6 @@ def load_mineru_outputs(directory: Path, stem: str) -> MinerURawOutput:
         middle=middle,
         content_list=content_list,
         markdown=markdown,
-        layout_pdf=layout_pdf,
-        directory=root,
     )
 
 

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import re
 import threading
-from pathlib import Path
 
 from ...core.logging import get_logger
 from ..base import IntegrationStatus, http_json, run_command, which
@@ -31,30 +30,100 @@ log = get_logger("integrations.mineru.discovery")
 _VERSION_RE = re.compile(r"(?:v|version)?\s*(\d+\.\d+(?:\.\d+)?)")
 
 
+def _resolve_local_schema(document: dict[str, object], schema: object) -> dict[str, object] | None:
+    """Resolve only bounded local OpenAPI schema refs; never fetch external refs."""
+    current = schema
+    seen: set[str] = set()
+    while isinstance(current, dict) and "$ref" in current:
+        reference = current.get("$ref")
+        if (
+            not isinstance(reference, str)
+            or not reference.startswith("#/components/schemas/")
+            or reference in seen
+        ):
+            return None
+        seen.add(reference)
+        key = reference.removeprefix("#/components/schemas/").replace("~1", "/").replace("~0", "~")
+        components = document.get("components")
+        schemas = components.get("schemas") if isinstance(components, dict) else None
+        current = schemas.get(key) if isinstance(schemas, dict) else None
+    return current if isinstance(current, dict) else None
+
+
+def _is_upload_schema(document: dict[str, object], schema: object, *, depth: int = 0) -> bool:
+    if depth >= 16:
+        return False
+    resolved = _resolve_local_schema(document, schema)
+    if not resolved:
+        return False
+    if resolved.get("type") == "string":
+        return resolved.get("format") == "binary"
+    if resolved.get("type") == "array":
+        return _is_upload_schema(document, resolved.get("items"), depth=depth + 1)
+    return False
+
+
 def legacy_http_parse_contract(endpoint: str, parse_path: str) -> tuple[bool, str, str]:
-    """Require the JSON multipart endpoint this client actually consumes.
+    """Require the multipart request and JSON result envelope this client consumes.
 
     A reachable docs page is not enough: MinerU 4's standalone file-parse API
-    returns attachments from ``/v1/file_parse``, while this integration's HTTP
-    adapter consumes a JSON ``results`` envelope from a legacy route.
+    returns attachments, while this integration accepts a legacy JSON ``results``
+    envelope from a multipart ``files`` request. The actual response is validated
+    again after every parse; OpenAPI is only a compatibility declaration.
     """
+    if not endpoint:
+        return False, "HTTP endpoint is not configured", ""
     response = http_json("GET", endpoint.rstrip("/") + "/openapi.json", timeout=4.0)
-    payload = response.get("json") if response.get("ok") else None
+    status_code = response.get("status_code")
+    if not response.get("ok") or not isinstance(status_code, int) or not 200 <= status_code < 300:
+        return False, "OpenAPI description is unavailable", ""
+    payload = response.get("json")
     paths = payload.get("paths") if isinstance(payload, dict) else None
     operation = paths.get(parse_path) if isinstance(paths, dict) else None
     post = operation.get("post") if isinstance(operation, dict) else None
-    responses = post.get("responses") if isinstance(post, dict) else None
-    if not isinstance(responses, dict):
-        return False, "OpenAPI does not expose the configured parse route", ""
-    json_response = any(
-        isinstance(value, dict)
-        and isinstance(value.get("content"), dict)
-        and any("json" in str(media_type).lower() for media_type in value["content"])
-        for value in responses.values()
+    if not isinstance(post, dict):
+        return False, "OpenAPI does not expose the configured POST parse route", ""
+
+    request_body = post.get("requestBody")
+    request_content = request_body.get("content") if isinstance(request_body, dict) else None
+    multipart = (
+        next(
+            (
+                value
+                for media_type, value in request_content.items()
+                if str(media_type).split(";", 1)[0].strip().lower() == "multipart/form-data"
+                and isinstance(value, dict)
+            ),
+            None,
+        )
+        if isinstance(request_content, dict)
+        else None
     )
-    if not json_response:
-        return False, "configured parse route does not declare a JSON response", ""
-    info = payload.get("info")
+    schema = multipart.get("schema") if isinstance(multipart, dict) else None
+    resolved_schema = _resolve_local_schema(payload, schema) if isinstance(payload, dict) else None
+    properties = resolved_schema.get("properties") if resolved_schema else None
+    if not isinstance(properties, dict) or "files" not in properties:
+        return False, "parse route does not declare the multipart 'files' field", ""
+    if not _is_upload_schema(payload, properties.get("files")):
+        return False, "multipart 'files' field is not declared as a binary upload", ""
+
+    responses = post.get("responses")
+    if not isinstance(responses, dict):
+        return False, "OpenAPI does not declare parse responses", ""
+    json_success = any(
+        isinstance(response_spec, dict)
+        and str(code).startswith("2")
+        and isinstance(response_spec.get("content"), dict)
+        and any(
+            str(media_type).split(";", 1)[0].strip().lower() == "application/json"
+            or str(media_type).split(";", 1)[0].strip().lower().endswith("+json")
+            for media_type in response_spec["content"]
+        )
+        for code, response_spec in responses.items()
+    )
+    if not json_success:
+        return False, "parse route does not declare a successful JSON response", ""
+    info = payload.get("info") if isinstance(payload, dict) else None
     version = str(info.get("version", "")) if isinstance(info, dict) else ""
     return True, "", version
 
@@ -104,10 +173,12 @@ class MinerUProber:
 
         backend = str(getattr(mineru, "backend", "pipeline") or "pipeline")
         tier = str(getattr(mineru, "tier", "basic") or "basic")
+        model_source = str(getattr(mineru, "model_source", "local") or "local")
         status.limitations.extend(
             [
                 f"MinerU 4 mineru-kit uses configured tier '{tier}'; legacy CLI backend '{backend}' applies only to older CLI builds",
-                "OCR/model availability and resource use are controlled by the separately installed MinerU runtime; an OCR parse may need external model downloads",
+                f"model source is configured as '{model_source}'; local prevents implicit downloads, while non-local sources may contact their providers when parsing",
+                "model-file readiness is not inspected by this runtime probe; OCR quality is not qualified by a successful CLI check",
                 "MinerU's Python and dependency requirements remain outside the application because it runs as a subprocess/service",
                 "MinerU output is layout-based; cell-level Excel provenance is *not* available from it, which is why XLSX stays on the native openpyxl extractor",
             ]
@@ -233,11 +304,4 @@ class MinerUProber:
         return record
 
 
-def output_root(data_dir: Path | None = None) -> Path:
-    """Directory where MinerU run artefacts are written for inspection."""
-    root = Path(data_dir) if data_dir else Path.cwd() / "var"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-__all__ = ["MinerUProber", "output_root"]
+__all__ = ["MinerUProber", "legacy_http_parse_contract"]

@@ -455,6 +455,60 @@ def command_wells(args: argparse.Namespace) -> int:
         workspace.close()
 
 
+def command_config_validate(args: argparse.Namespace) -> int:
+    """Validate settings without opening a workspace/database or probing services."""
+    settings = Settings.load(args.config) if getattr(args, "config", None) else Settings.load()
+    unknown = list(settings.unknown_keys)
+    if getattr(args, "strict", False) and unknown:
+        from ..core.errors import ConfigurationError
+
+        raise ConfigurationError(
+            "configuration contains unknown key(s)",
+            problems=[f"unknown configuration key: {key}" for key in unknown],
+            config_path=settings.source_path or "(defaults and environment)",
+        )
+    payload = {
+        "ok": True,
+        "valid": True,
+        "source_path": settings.source_path or "(defaults only)",
+        "applied_overrides": list(settings.applied_overrides),
+        "unknown_keys": unknown,
+        "warnings": [f"unknown key: {key}" for key in unknown],
+        "services_probed": False,
+        "workspace_opened": False,
+        "database_opened": False,
+    }
+    _emit(
+        payload,
+        as_json=args.json,
+        lines=[
+            f"configuration valid: {payload['source_path']}",
+            f"overrides: {len(payload['applied_overrides'])}; unknown keys: {len(unknown)}",
+            "services and workspace database were not opened or probed",
+            *(payload["warnings"]),
+        ],
+    )
+    return 0
+
+
+def command_mineru_validate(args: argparse.Namespace) -> int:
+    """Validate local MinerU CLI readiness, optionally on a bundled synthetic image."""
+    from ..integrations.mineru.qualification import validate_local_mineru
+
+    result, exit_code = validate_local_mineru(
+        _settings_for(args), run_synthetic_ocr=bool(args.run_synthetic_ocr)
+    )
+    lines = [
+        f"local MinerU runtime: {result['runtime_readiness']['status']}",
+        f"OCR fixture: {result['ocr_qualification']['status']}",
+        f"model readiness: {result['model_readiness']['status']}",
+        str(result["transport_scope"]),
+        str(result["ocr_qualification"].get("note") or ""),
+    ]
+    _emit(result, as_json=args.json, lines=lines)
+    return exit_code
+
+
 def command_workspace_create(args: argparse.Namespace) -> int:
     workspace = Workspace.create(
         args.path,
@@ -3369,6 +3423,40 @@ def _common() -> argparse.ArgumentParser:
     return common
 
 
+def _add_mineru_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    mineru = sub.add_parser(
+        "mineru", help="validate the optional local MinerU runtime without uploading documents"
+    )
+    actions = mineru.add_subparsers(dest="action", required=True)
+    validate = actions.add_parser(
+        "validate",
+        help="check local CLI readiness; OCR is not run unless explicitly requested",
+        parents=[common],
+    )
+    validate.add_argument(
+        "--run-synthetic-ocr",
+        action="store_true",
+        help="run the bundled synthetic image through local MinerU using local-only model settings",
+    )
+    validate.set_defaults(handler=command_mineru_validate)
+
+
+def _add_config_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    config = sub.add_parser(
+        "config", help="inspect application configuration without opening a workspace"
+    )
+    actions = config.add_subparsers(dest="action", required=True)
+    validate = actions.add_parser(
+        "validate",
+        help="validate TOML and environment settings without service probes",
+        parents=[common],
+    )
+    validate.add_argument(
+        "--strict", action="store_true", help="treat unknown configuration keys as an error"
+    )
+    validate.set_defaults(handler=command_config_validate)
+
+
 def _add_version_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
     """Register the "version" command and its options."""
     version = sub.add_parser(
@@ -4308,6 +4396,8 @@ def build_parser() -> argparse.ArgumentParser:
     common = _common()
     parser.add_argument("--version", action="store_true", help="print the version and exit")
     sub = parser.add_subparsers(dest="command")
+    _add_config_command(sub, common)
+    _add_mineru_command(sub, common)
     _add_version_command(sub, common)
     _add_workspace_command(sub, common)
     _add_wells_command(sub, common)

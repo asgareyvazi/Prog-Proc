@@ -61,6 +61,7 @@ from ..core.errors import (
     WorkspaceError,
 )
 from ..database.integrity import KnowledgeIntegrityError
+from ..operations.ddr_comparison import compare_ddr_revisions
 from ..reporting.exhibits import exhibits_from_comparison
 from ..reporting.html import write_report_html
 from ..review import (
@@ -108,6 +109,14 @@ _NAVIGATION = (
     "Calculations",
     "History",
 )
+
+
+def _sequence_preview(value: Any, *, limit: int = 250) -> str:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return "unavailable"
+    prefix = list(value[:limit])
+    suffix = f" … ({len(value)} total)" if len(value) > limit else ""
+    return f"{prefix}{suffix}"
 
 
 def _value_text(value: Any) -> str:
@@ -2312,61 +2321,140 @@ class MainWindow(QMainWindow):
         self._ddr_update_controls()
 
     def _ddr_compare_selected_revision(self) -> None:
-        """Show exact authored field differences and provenance against the named parent revision."""
+        """Render an exact, read-only diff against the named predecessor."""
         current = self._selected_ddr_record or {}
         parent_id = str(current.get("supersedes_report_id") or "")
         previous = self._ddr_records_by_id.get(parent_id)
         self.ddr_compare_tree.clear()
-        if not parent_id or previous is None:
+        if not parent_id:
+            QTreeWidgetItem(
+                self.ddr_compare_tree,
+                ["Comparison unavailable", "This report has no recorded predecessor."],
+            )
+            self._set_status("No predecessor is recorded for this DDR revision.", error=True)
+            return
+        if previous is None:
+            QTreeWidgetItem(
+                self.ddr_compare_tree,
+                ["Comparison unavailable", f"Predecessor {parent_id} is not in loaded history."],
+            )
             self._set_status(
-                "The selected DDR has no loaded superseded revision to compare.", error=True
+                "The named predecessor is missing from loaded history; no comparison was inferred.",
+                error=True,
             )
             return
+
+        comparison = compare_ddr_revisions(previous, current)
+        before = comparison["previous"]
+        after = comparison["successor"]
         root = QTreeWidgetItem(
             self.ddr_compare_tree,
             [
-                "Revision lineage",
-                f"{previous.get('report_id')} → {current.get('report_id')}",
+                "Read-only revision comparison — not an approval",
+                f"{before.get('report_id')} (rev {before.get('revision_number')}) → "
+                f"{after.get('report_id')} (rev {after.get('revision_number')})",
             ],
         )
-        fields = (
-            "report_date",
-            "report_date_text",
-            "report_number",
-            "shift",
-            "summary",
-            "activities",
+        QTreeWidgetItem(
+            root,
+            [
+                "Review state (display only)",
+                f"predecessor={before.get('status')}/{before.get('authoring_state')}; "
+                f"successor={after.get('status')}/{after.get('authoring_state')}; "
+                "approval was not evaluated",
+            ],
         )
-        for key in fields:
-            before = previous.get(key)
-            after = current.get(key)
-            if key == "activities":
-                activity_fields = (
-                    "sequence",
-                    "operation_type",
-                    "label",
-                    "description",
-                    "period_text",
-                )
-                before = [
-                    {field: activity.get(field) for field in activity_fields}
-                    for activity in previous.get("activities") or ()
-                ]
-                after = [
-                    {field: activity.get(field) for field in activity_fields}
-                    for activity in current.get("activities") or ()
-                ]
-            state = "CHANGED" if before != after else "unchanged"
-            field_item = QTreeWidgetItem(root, [key, state])
-            QTreeWidgetItem(field_item, ["previous", _value_text(before)])
-            QTreeWidgetItem(field_item, ["current", _value_text(after)])
+        field_group = QTreeWidgetItem(root, ["Authored fields", ""])
+        for change in comparison["fields"]:
+            field = QTreeWidgetItem(
+                field_group, [str(change["field"]), str(change["status"]).lower()]
+            )
+            QTreeWidgetItem(field, ["predecessor", _value_text(change["previous"])])
+            QTreeWidgetItem(field, ["successor", _value_text(change["successor"])])
+
+        activity_diff = comparison["activities"]
+        counts = activity_diff.get("counts") or {}
+        activity_group = QTreeWidgetItem(
+            root,
+            [
+                "Activities (authored sequence; no calculation)",
+                ", ".join(f"{key}={value}" for key, value in counts.items())
+                or str(activity_diff.get("status", "unknown")),
+            ],
+        )
+        QTreeWidgetItem(
+            activity_group,
+            [
+                "Sequence order",
+                f"predecessor={_sequence_preview(activity_diff.get('predecessor_order', []))}; "
+                f"successor={_sequence_preview(activity_diff.get('successor_order', []))}",
+            ],
+        )
+        changes = activity_diff.get("items") or []
+        display_limit = 250
+        activity_fields = ("operation_type", "label", "description", "period_text")
+        for change in changes[:display_limit]:
+            activity_item = QTreeWidgetItem(
+                activity_group,
+                [f"activity {change.get('sequence')}", str(change.get("status", "")).lower()],
+            )
+            prior = change.get("previous")
+            next_value = change.get("successor")
+            if prior is not None and next_value is not None:
+                for key in activity_fields:
+                    if prior.get(key) != next_value.get(key):
+                        field_item = QTreeWidgetItem(activity_item, [key, "modified"])
+                        QTreeWidgetItem(field_item, ["predecessor", _value_text(prior.get(key))])
+                        QTreeWidgetItem(field_item, ["successor", _value_text(next_value.get(key))])
+                if change.get("status") == "UNCHANGED":
+                    _add_tree_value(activity_item, "operator-authored text", next_value)
+                else:
+                    _add_tree_value(activity_item, "predecessor operator text", prior)
+                    _add_tree_value(activity_item, "successor operator text", next_value)
+            elif prior is not None:
+                _add_tree_value(activity_item, "removed operator activity", prior)
+            elif next_value is not None:
+                _add_tree_value(activity_item, "added operator activity", next_value)
+        if len(changes) > display_limit:
+            QTreeWidgetItem(
+                activity_group,
+                [
+                    "Display limit",
+                    f"{len(changes) - display_limit} additional sequence entries were not expanded",
+                ],
+            )
+        if comparison.get("issues"):
+            issues = QTreeWidgetItem(root, ["History diagnostics", "malformed or incomplete data"])
+            for issue in comparison["issues"]:
+                QTreeWidgetItem(issues, ["warning", str(issue)])
+
         provenance = QTreeWidgetItem(root, ["Authored provenance", ""])
-        for label, record in (("previous", previous), ("current", current)):
+        for label, record in (("predecessor", previous), ("successor", current)):
             revision_provenance = QTreeWidgetItem(provenance, [label, ""])
-            for entry in record.get("provenance") or ():
-                if isinstance(entry, Mapping):
-                    _add_tree_value(revision_provenance, "event", entry)
-            for activity in record.get("activities") or ():
+            events = record.get("provenance") or ()
+            if isinstance(events, Sequence) and not isinstance(events, str | bytes):
+                for entry in events[:250]:
+                    if isinstance(entry, Mapping):
+                        _add_tree_value(revision_provenance, "event", entry)
+                    else:
+                        QTreeWidgetItem(
+                            revision_provenance,
+                            ["Malformed provenance", "a non-object event was omitted"],
+                        )
+                if len(events) > 250:
+                    QTreeWidgetItem(
+                        revision_provenance,
+                        ["Display limit", f"{len(events) - 250} provenance events not expanded"],
+                    )
+            elif events:
+                QTreeWidgetItem(
+                    revision_provenance,
+                    ["Malformed provenance", "event history is not an ordered list"],
+                )
+            raw_activities = record.get("activities") or ()
+            if not isinstance(raw_activities, Sequence) or isinstance(raw_activities, str | bytes):
+                raw_activities = ()
+            for activity in raw_activities[:250]:
                 if not isinstance(activity, Mapping):
                     continue
                 activity_item = QTreeWidgetItem(
@@ -2379,13 +2467,43 @@ class MainWindow(QMainWindow):
                 QTreeWidgetItem(
                     activity_item, ["updated_at", str(activity.get("updated_at") or "")]
                 )
-                for entry in activity.get("provenance") or ():
-                    if isinstance(entry, Mapping):
-                        _add_tree_value(activity_item, "event", entry)
+                activity_events = activity.get("provenance") or ()
+                if isinstance(activity_events, Sequence) and not isinstance(
+                    activity_events, str | bytes
+                ):
+                    for entry in activity_events[:100]:
+                        if isinstance(entry, Mapping):
+                            _add_tree_value(activity_item, "event", entry)
+                        else:
+                            QTreeWidgetItem(
+                                activity_item,
+                                ["Malformed provenance", "a non-object event was omitted"],
+                            )
+                    if len(activity_events) > 100:
+                        QTreeWidgetItem(
+                            activity_item,
+                            [
+                                "Display limit",
+                                f"{len(activity_events) - 100} activity events not expanded",
+                            ],
+                        )
+                elif activity_events:
+                    QTreeWidgetItem(
+                        activity_item,
+                        ["Malformed provenance", "event history is not an ordered list"],
+                    )
+            if len(raw_activities) > 250:
+                QTreeWidgetItem(
+                    revision_provenance,
+                    [
+                        "Display limit",
+                        f"{len(raw_activities) - 250} activity provenance entries not expanded",
+                    ],
+                )
         self.ddr_compare_tree.expandToDepth(2)
         self._set_status(
-            f"Compared revision {current.get('revision_number')} with its recorded predecessor; "
-            "no derived engineering values were calculated."
+            "Read-only predecessor/successor comparison rendered; no state was changed and "
+            "no approval or engineering value was inferred."
         )
 
     def _ddr_update_controls(self) -> None:
@@ -2413,10 +2531,9 @@ class MainWindow(QMainWindow):
         self.ddr_save_button.setEnabled(available and not busy and draft)
         self.ddr_submit_button.setEnabled(available and not busy and draft)
         self.ddr_revision_button.setEnabled(available and not busy and revisable)
-        has_parent = bool(
-            record.get("supersedes_report_id")
-            and str(record.get("supersedes_report_id")) in self._ddr_records_by_id
-        )
+        # Keep the control available when a lineage reference exists but its row is missing;
+        # the comparison panel then explains the missing predecessor instead of hiding it.
+        has_parent = bool(record.get("supersedes_report_id"))
         self.ddr_compare_button.setEnabled(available and not busy and has_parent)
         self.ddr_refresh_button.setEnabled(available and not busy and not self._ddr_new_draft_mode)
         self.ddr_add_activity_button.setEnabled(editing and not busy and not self._global_busy)

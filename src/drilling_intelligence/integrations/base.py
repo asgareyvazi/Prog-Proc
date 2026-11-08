@@ -191,6 +191,7 @@ def http_json(
     headers: dict[str, str] | None = None,
     files: dict[str, Any] | None = None,
     data: dict[str, Any] | None = None,
+    follow_redirects: bool = True,
 ) -> dict[str, Any]:
     """Small HTTP helper used by the Ollama/MinerU clients (httpx under the hood).
 
@@ -209,13 +210,19 @@ def http_json(
             headers=headers or {},
             files=files,
             data=data,
-            follow_redirects=True,
+            follow_redirects=follow_redirects,
         )
     except httpx.HTTPError as exc:
-        return {"ok": False, "status_code": 0, "error": f"{type(exc).__name__}: {exc}", "url": url}
+        return {
+            "ok": False,
+            "status_code": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+            "url": url,
+            "content_type": "",
+        }
     payload: Any = None
     content_type = response.headers.get("content-type", "")
-    if "json" in content_type:
+    if "json" in content_type.lower():
         try:
             payload = response.json()
         except Exception:  # noqa: BLE001 - a response that is not JSON has no payload
@@ -227,6 +234,7 @@ def http_json(
         "text": response.text if payload is None else "",
         "url": url,
         "error": "" if response.is_success else f"HTTP {response.status_code}",
+        "content_type": content_type,
     }
 
 

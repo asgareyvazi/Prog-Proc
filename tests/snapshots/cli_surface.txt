@@ -8,6 +8,36 @@ command
     arg --json dest=json type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
     arg --debug dest=debug type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
     arg --version dest=version type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  config
+  prog drillintel config
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+command  config validate
+  prog drillintel config validate
+  description -
+  handler command_config_validate
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --strict dest=strict type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+command  mineru
+  prog drillintel mineru
+  description -
+  handler -
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+command  mineru validate
+  prog drillintel mineru validate
+  description -
+  handler command_mineru_validate
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --run-synthetic-ocr dest=run_synthetic_ocr type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
 command  version
   prog drillintel version
   description -

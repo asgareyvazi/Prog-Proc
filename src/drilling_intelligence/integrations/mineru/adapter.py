@@ -27,6 +27,35 @@ from .normalize import (
 log = get_logger("integrations.mineru.adapter")
 
 
+def _safe_run_text(value: str, run: Any, context: ExtractionContext) -> str:
+    text = str(value or "")
+    paths = ((context.path, "<document>"), (run.output_dir, "<temporary-output>"))
+    for path, replacement in paths:
+        if path is None:
+            continue
+        candidates = {str(path), path.as_posix()}
+        for candidate in candidates:
+            if candidate:
+                text = text.replace(candidate, replacement)
+    return text
+
+
+def _command_summary(run: Any, client: MinerUClient) -> str:
+    """Keep command provenance useful without persisting source or scratch paths."""
+    if run.mode != "cli":
+        return "HTTP multipart/JSON parse"
+    if "--format" in run.command:
+        return (
+            "mineru-kit parse <document> --output <temporary-output> "
+            f"--format middle_json --tier {client.tier}"
+        )
+    if "-o" in run.command:
+        return (
+            f"mineru -p <document> -o <temporary-output> -b {client.backend} -l {client.language}"
+        )
+    return "MinerU CLI (command details omitted)"
+
+
 class MinerUExtractor:
     """Preferred extractor for complex, table-heavy or scanned PDFs."""
 
@@ -78,11 +107,17 @@ class MinerUExtractor:
                 hint="install MinerU separately, or set [mineru].mode = 'disabled' to silence the fallback",
             )
         try:
-            run = self.client.parse(context.path, filename_hint=context.filename)
+            run = self.client.parse(
+                context.path,
+                filename_hint=context.filename,
+                selected_mode=status.mode,
+                contract_verified=status.mode == "http",
+            )
         except ParserUnavailableError:
             raise
         except Exception as exc:
             raise ExtractionError(f"MinerU run failed: {type(exc).__name__}: {exc}") from exc
+        document: NormalizedDocument | None = None
         try:
             artefacts = run.artefacts
             if not run.ok or artefacts is None:
@@ -111,11 +146,17 @@ class MinerUExtractor:
             document.metadata.engine = (document.metadata.engine or "") or f"MinerU via {run.mode}"
             document.metadata.extra["mineru"] = {
                 "mode": run.mode,
+                "model_source": self.client.model_source,
                 "duration_ms": round(run.duration_ms, 1),
                 "artefact": artefacts.best,
-                "command": " ".join(run.command),
-                "stderr_tail": (run.stderr or "")[-600:],
+                "command": _command_summary(run, self.client),
+                "stderr_tail": _safe_run_text(run.stderr, run, context)[-600:],
                 "version": status.version,
+                "returncode": run.returncode,
+                "partial": run.partial,
+                "timed_out": run.timed_out,
+                "error": _safe_run_text(run.error, run, context),
+                "scratch_cleanup": "pending" if run.output_dir else "not_applicable",
             }
             document.metadata.extra["provenance_source"] = artefacts.best
             document.diagnostics.extend(diagnostics)
@@ -126,13 +167,36 @@ class MinerUExtractor:
                 document.diagnostics.append(
                     f"MinerU exited with code {run.returncode}; output was used but may be incomplete"
                 )
-            if artefacts.layout_pdf and artefacts.layout_pdf.exists():
-                document.metadata.extra["mineru"]["layout_pdf"] = str(artefacts.layout_pdf)
+            if run.partial:
+                document.diagnostics.append(
+                    "MinerU produced usable output but exited abnormally; this extraction is partial "
+                    "and must not be read as a complete parse"
+                )
             return document
         finally:
-            # CLI output is per-run scratch unless keep_artifacts was explicitly requested.
-            # Cleanup also covers failed commands, empty output, and normalization errors.
-            run.cleanup()
+            # Scratch is always transient. The cleanup status is recorded without persisting a path.
+            had_scratch = run.output_dir is not None
+            cleaned = run.cleanup()
+            if document is not None:
+                mineru_meta = document.metadata.extra.get("mineru")
+                if isinstance(mineru_meta, dict):
+                    mineru_meta["scratch_cleanup"] = (
+                        (
+                            "removed"
+                            if had_scratch and cleaned and run.output_dir is None
+                            else "not_applicable"
+                        )
+                        if cleaned
+                        else "failed"
+                    )
+                    if run.cleanup_error:
+                        mineru_meta["scratch_cleanup_error"] = _safe_run_text(
+                            run.cleanup_error, run, context
+                        )
+                if not cleaned:
+                    document.diagnostics.append(
+                        "MinerU temporary output cleanup failed; transient parser files may remain"
+                    )
 
     # -- internals ----------------------------------------------------------
     def _normalize(

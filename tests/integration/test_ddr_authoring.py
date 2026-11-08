@@ -55,6 +55,111 @@ def _independent_ddr_save_process(
         database.dispose()
 
 
+def _independent_ddr_transition_process(
+    database_url: str,
+    report_id: str,
+    expected_updated_at: str,
+    action: str,
+    barrier: object,
+    result_queue: object,
+    actor: str,
+) -> None:
+    """Race a lifecycle/review write using a process-local engine and service."""
+    from types import SimpleNamespace
+
+    from drilling_intelligence.config.settings import Settings
+    from drilling_intelligence.database.session import Database
+
+    database = Database.from_url(database_url, Settings())
+    authoring = DdrAuthoringService(database)
+    try:
+        if action == "submit":
+            assert_editable = authoring._assert_editable
+
+            def wait_after_freshness(report, expected: str) -> None:
+                assert_editable(report, expected)
+                barrier.wait(timeout=20)  # type: ignore[attr-defined]
+
+            authoring._assert_editable = wait_after_freshness  # type: ignore[method-assign]
+            value = authoring.submit(
+                report_id,
+                expected_updated_at=expected_updated_at,
+                actor=actor,
+                reason=f"Independent process submission by {actor}",
+            )
+            result_queue.put(("success", value["authoring_state"]))  # type: ignore[attr-defined]
+        elif action in {"confirm", "reject"}:
+            review = ReviewActionService(workspace=SimpleNamespace(database=database))
+            check = review._check_preconditions
+
+            def wait_after_preconditions(session, row, request) -> None:
+                check(session, row, request)
+                barrier.wait(timeout=20)  # type: ignore[attr-defined]
+
+            review._check_preconditions = wait_after_preconditions  # type: ignore[method-assign]
+            value = review.execute(
+                ReviewActionRequest(
+                    record_type="ddr_report",
+                    record_id=report_id,
+                    action=action,
+                    actor=actor,
+                    expected_status="CANDIDATE",
+                    expected_revision=1,
+                    expected_current=True,
+                    expected_updated_at=expected_updated_at,
+                    reason=f"Independent process review by {actor}",
+                )
+            )
+            result_queue.put(("success", value.status))  # type: ignore[attr-defined]
+        else:
+            raise AssertionError(f"unsupported test worker action: {action}")
+    except (ValidationError, ReviewActionError) as exc:
+        result_queue.put(("stale", str(exc)))  # type: ignore[attr-defined]
+    except BaseException as exc:  # noqa: BLE001 - parent test reports worker failures
+        result_queue.put(("error", f"{type(exc).__name__}: {exc}"))  # type: ignore[attr-defined]
+    finally:
+        database.dispose()
+
+
+def _run_process_race(db, *, report_id: str, token: str, action: str, actors: tuple[str, str]):
+    import multiprocessing
+
+    assert db.engine.dialect.name == "sqlite"
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    workers = [
+        context.Process(
+            target=_independent_ddr_transition_process,
+            args=(db.url, report_id, token, action, barrier, results, actor),
+        )
+        for actor in actors
+    ]
+    outcomes = []
+    try:
+        for worker in workers:
+            worker.start()
+        outcomes = [results.get(timeout=45) for _ in workers]
+        for worker in workers:
+            worker.join(timeout=30)
+        assert [worker.exitcode for worker in workers] == [0, 0]
+        assert all(not worker.is_alive() for worker in workers)
+    finally:
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(timeout=5)
+        results.close()
+        results.join_thread()
+    assert all(worker.exitcode is not None for worker in workers)
+    successes = [value for state, value in outcomes if state == "success"]
+    stale = [value for state, value in outcomes if state == "stale"]
+    errors = [value for state, value in outcomes if state == "error"]
+    assert errors == [], errors
+    assert len(successes) == 1 and len(stale) == 1, outcomes
+    return successes[0], stale[0]
+
+
 def _activities() -> list[dict[str, str]]:
     return [
         {
@@ -717,6 +822,101 @@ def test_ddr_operation_review_uses_the_same_atomic_claim_without_confirming_its_
         operation = session.get(WellOperation, operation_id)
         assert report is not None and report.status == "CANDIDATE"
         assert operation is not None and operation.status == "CONFIRMED"
+
+
+def test_same_ddr_submission_snapshot_is_claimed_once_across_independent_processes(
+    db, committed_well_id
+) -> None:
+    """Two spawned writers cannot create duplicate operations from one DRAFT token."""
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-08",
+        activities=[{"operation_type": "drilling", "label": "One authored activity"}],
+        actor="author-1",
+        reason="Create cross-process submit case",
+    )
+    success, stale = _run_process_race(
+        db,
+        report_id=draft["report_id"],
+        token=draft["updated_at"],
+        action="submit",
+        actors=("author-1", "author-1"),
+    )
+    assert success == "SUBMITTED"
+    assert "changed since it was loaded" in stale
+    persisted = service.get(draft["report_id"])
+    assert persisted["authoring_state"] == "SUBMITTED"
+    assert len(persisted["activities"]) == 1
+    operation_id = persisted["activities"][0]["operation_id"]
+    assert operation_id
+    with db.read_only() as session:
+        operations = list(
+            session.scalars(
+                select(WellOperation).where(WellOperation.report_id == draft["report_id"])
+            )
+        )
+        events = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.subject_type == "ddr_report",
+                    AuditEvent.subject_id == draft["report_id"],
+                )
+            )
+        )
+    assert len(operations) == 1 and operations[0].id == operation_id
+    assert operations[0].status == "CANDIDATE"
+    assert [event.action for event in events].count("ddr.submitted") == 1
+    with db.engine.connect() as connection:
+        assert list(connection.execute(text("PRAGMA foreign_key_check"))) == []
+        assert connection.execute(text("PRAGMA integrity_check")).scalar_one() == "ok"
+
+
+def test_same_ddr_review_snapshot_is_claimed_once_across_independent_processes(
+    db, committed_well_id
+) -> None:
+    """Conflicting process-level decisions yield one audit disposition and no operation promotion."""
+    service = DdrAuthoringService(db)
+    draft = service.create_draft(
+        well_id=committed_well_id,
+        report_date="2026-11-08",
+        activities=[{"operation_type": "drilling", "label": "Candidate operation"}],
+        actor="author-1",
+        reason="Create cross-process review case",
+    )
+    submitted = service.submit(
+        draft["report_id"],
+        expected_updated_at=draft["updated_at"],
+        actor="author-1",
+        reason="Submit before concurrent independent review",
+    )
+    success, stale = _run_process_race(
+        db,
+        report_id=draft["report_id"],
+        token=submitted["updated_at"],
+        action="confirm",
+        actors=("reviewer-1", "reviewer-2"),
+    )
+    assert success == "CONFIRMED"
+    assert "stale" in stale
+    persisted = service.get(draft["report_id"])
+    assert persisted["status"] == "CONFIRMED"
+    with db.read_only() as session:
+        operations = list(
+            session.scalars(
+                select(WellOperation).where(WellOperation.report_id == draft["report_id"])
+            )
+        )
+    assert len(operations) == 1 and operations[0].status == "CANDIDATE"
+    decision_provenance = [
+        item for item in persisted["provenance"] if item.get("source_kind") == "review_decision"
+    ]
+    assert len(decision_provenance) == 1
+    assert decision_provenance[0]["actor"] in {"reviewer-1", "reviewer-2"}
+    assert decision_provenance[0]["reason"].startswith("Independent process review by")
+    with db.engine.connect() as connection:
+        assert list(connection.execute(text("PRAGMA foreign_key_check"))) == []
+        assert connection.execute(text("PRAGMA integrity_check")).scalar_one() == "ok"
 
 
 def test_same_ddr_snapshot_is_claimed_once_across_independent_sqlite_processes(

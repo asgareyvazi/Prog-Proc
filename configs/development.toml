@@ -63,13 +63,15 @@ capability_probe = true               # gates `drillintel ai status`; doctor nev
 openai_api_key = "OPENAI_API_KEY"
 
 [mineru]
-# auto = use MinerU when a runtime is reachable, otherwise fall back.
+# auto uses a compatible local CLI; legacy HTTP is only considered when endpoint is explicit.
 # Other modes: cli | http | disabled
 mode = "auto"
 binary = "mineru"                     # v4 mineru-kit is auto-selected when installed alongside mineru
 backend = "pipeline"                  # legacy CLI only
-tier = "basic"                       # v4 mineru-kit tier; model setup/download is external
-endpoint = "http://127.0.0.1:8000"
+tier = "basic"                       # v4 mineru-kit tier
+model_source = "local"              # preinstalled models only; remote model fetch requires explicit change
+endpoint = ""                         # set explicitly to opt into legacy HTTP availability probes
+http_parse_path = "/file_parse"
 timeout_seconds = 900
 # Routing heuristic: prefer MinerU for complex/text-layer-poor PDFs.
 prefer_when_pages_above = 12

@@ -21,6 +21,7 @@ import tomllib
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Final
+from urllib.parse import unquote
 
 from ..core.errors import ConfigurationError
 
@@ -111,7 +112,12 @@ class MineruSettings:
     binary: str = "mineru"
     backend: str = "pipeline"  # legacy MinerU CLI backend
     tier: str = "basic"  # MinerU 4.x mineru-kit parsing tier
-    endpoint: str = "http://127.0.0.1:8000"
+    model_source: str = (
+        "local"  # local prevents implicit model downloads; remote sources require opt-in
+    )
+    # HTTP probing is opt-in; an unset endpoint never contacts a local service.
+    endpoint: str = ""
+    http_parse_path: str = "/file_parse"
     timeout_seconds: float = 900.0
     prefer_when_pages_above: int = 12
     prefer_when_table_rows_above: int = 25
@@ -368,6 +374,22 @@ class Settings:
                 problems.append(
                     f"{dotted} must be one of {', '.join(sorted(allowed))}, got {value!r}"
                 )
+        parse_path = str(self.mineru.http_parse_path or "")
+        decoded_path = unquote(parse_path)
+        path_parts = decoded_path.split("/")
+        if (
+            not decoded_path.startswith("/")
+            or decoded_path.startswith("//")
+            or "\\" in decoded_path
+            or "?" in decoded_path
+            or "#" in decoded_path
+            or any(ord(character) < 32 for character in decoded_path)
+            or any(part in {".", ".."} for part in path_parts)
+        ):
+            problems.append(
+                "mineru.http_parse_path must be an absolute path without query, fragment, "
+                "backslash, or dot segments"
+            )
         # Lists that must not be empty or duplicated: the authority ladder decides
         # conflicts, so a gap or a repeat there is a correctness bug, not a style issue.
         hierarchy = list(self.authority.hierarchy or [])
@@ -438,6 +460,7 @@ class Settings:
                 "binary": self.mineru.binary,
                 "backend": self.mineru.backend,
                 "tier": self.mineru.tier,
+                "model_source": self.mineru.model_source,
             },
             "authority_hierarchy": list(self.authority.hierarchy),
             "overrides": list(self.applied_overrides),
@@ -613,6 +636,7 @@ _CHOICES: dict[str, frozenset[str]] = {
         }
     ),
     "mineru.tier": frozenset({"flash", "basic", "standard", "advanced"}),
+    "mineru.model_source": frozenset({"local", "auto", "huggingface", "modelscope"}),
     "search.vector_store": frozenset({"auto", "sqlite-vec", "memory", "none"}),
     "logging.level": frozenset({"debug", "info", "warning", "error", "critical"}),
     "logging.format": frozenset({"text", "json"}),

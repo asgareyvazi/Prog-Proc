@@ -716,6 +716,13 @@ def test_daily_ddr_workbench_creates_saves_reviews_reopens_and_compares_revision
         )
         assert not service.get(report["report_id"])["is_current"]
         assert window.ddr_compare_button.isEnabled()
+        # A lineage reference with an unavailable history row remains inspectable and is reported,
+        # rather than silently hiding the comparison control or guessing a predecessor.
+        parent_record = window._ddr_records_by_id.pop(report["report_id"])
+        assert window.ddr_compare_button.isEnabled()
+        window.ddr_compare_button.click()
+        assert "not in loaded history" in window.ddr_compare_tree.topLevelItem(0).text(1)
+        window._ddr_records_by_id[report["report_id"]] = parent_record
         window.ddr_compare_button.click()
         assert window.ddr_compare_tree.topLevelItemCount() == 1
         compared = window.ddr_compare_tree.topLevelItem(0)
@@ -725,8 +732,11 @@ def test_daily_ddr_workbench_creates_saves_reviews_reopens_and_compares_revision
             item = pending.pop()
             labels.extend((item.text(0), item.text(1)))
             pending.extend(item.child(i) for i in range(item.childCount()))
-        assert "summary" in labels and "CHANGED" in labels
+        assert "summary" in labels and "modified" in labels
         assert "report_date_text" in labels
+        assert "Read-only revision comparison — not an approval" in labels
+        assert "Activities (authored sequence; no calculation)" in labels
+        assert "Sequence order" in labels
         assert "Authored provenance" in labels
         assert "Corrected the submitted summary" in labels
 

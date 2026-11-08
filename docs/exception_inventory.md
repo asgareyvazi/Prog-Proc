@@ -8,8 +8,8 @@ to be found by somebody else.
 
 | file | line | catches | kind | reason |
 | --- | --- | --- | --- | --- |
-| `src/drilling_intelligence/cli/app.py` | 4383 | `Exception` | reported |  |
-| `src/drilling_intelligence/cli/app.py` | 4360 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 4473 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 4450 | `Exception` | reported |  |
 | `src/drilling_intelligence/core/provenance.py` | 397 | `Exception` | reported | pragma: no cover; defensive, third-party readers |
 | `src/drilling_intelligence/core/provenance.py` | 429 | `Exception` | suppressed | tolerate legacy/corrupt rows rather than fail a whole listing |
 | `src/drilling_intelligence/core/redact.py` | 220 | `Exception` | reported | a diagnostic may not raise, by definition |
@@ -62,8 +62,10 @@ to be found by somebody else.
 | `src/drilling_intelligence/ingestion/pipeline.py` | 562 | `Exception` | reported | the run record is best-effort |
 | `src/drilling_intelligence/ingestion/pipeline.py` | 504 | `Exception` | reported | indexing must never fail ingestion |
 | `src/drilling_intelligence/integrations/base.py` | 141 | `Exception` | reported | subprocess boundary |
-| `src/drilling_intelligence/integrations/base.py` | 221 | `Exception` | reported | a response that is not JSON has no payload |
-| `src/drilling_intelligence/integrations/mineru/adapter.py` | 84 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/integrations/base.py` | 228 | `Exception` | reported | a response that is not JSON has no payload |
+| `src/drilling_intelligence/integrations/mineru/adapter.py` | 118 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/integrations/mineru/client.py` | 297 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/integrations/mineru/qualification.py` | 324 | `Exception` | reported | external parser/runtime boundary |
 | `src/drilling_intelligence/knowledge/conflicts.py` | 151 | `Exception` | suppressed | an unresolvable unit makes this not a quantity |
 | `src/drilling_intelligence/knowledge/conflicts.py` | 290 | `Exception` | suppressed | a candidate with unreadable provenance is still a candidate |
 | `src/drilling_intelligence/knowledge/conflicts.py` | 120 | `Exception` | reported | an unresolvable unit is not a match for anything |
@@ -87,10 +89,10 @@ to be found by somebody else.
 | `src/drilling_intelligence/search/service.py` | 699 | `Exception` | reported | an unwritable data directory must not stop the app |
 | `src/drilling_intelligence/ui/controller.py` | 105 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
-| `src/drilling_intelligence/ui/main_window.py` | 1021 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
-| `src/drilling_intelligence/ui/main_window.py` | 1635 | `Exception` | reported | export must not crash the window |
-| `src/drilling_intelligence/ui/main_window.py` | 2592 | `Exception` | reported | keep selection/read rendering usable |
-| `src/drilling_intelligence/ui/main_window.py` | 2785 | `Exception` | reported | preserve read-side selection on capability errors |
+| `src/drilling_intelligence/ui/main_window.py` | 1030 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
+| `src/drilling_intelligence/ui/main_window.py` | 1644 | `Exception` | reported | export must not crash the window |
+| `src/drilling_intelligence/ui/main_window.py` | 2709 | `Exception` | reported | keep selection/read rendering usable |
+| `src/drilling_intelligence/ui/main_window.py` | 2902 | `Exception` | reported | preserve read-side selection on capability errors |
 | `src/drilling_intelligence/ui/worker.py` | 70 | `Exception` | reported | thread boundary reports failures without hiding them |
 | `src/drilling_intelligence/ui/worker.py` | 130 | `Exception` | reported | report unexpected worker failures to the UI |
 | `src/drilling_intelligence/ui/worker.py` | 219 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |
@@ -118,6 +120,6 @@ to be found by somebody else.
 
 | kind | count |
 | --- | --- |
-| re-raised | 12 |
-| reported | 65 |
+| re-raised | 13 |
+| reported | 66 |
 | suppressed | 28 |
