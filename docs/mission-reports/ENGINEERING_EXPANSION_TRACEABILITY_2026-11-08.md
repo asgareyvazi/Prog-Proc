@@ -1,6 +1,6 @@
 # Engineering-expansion traceability matrix (pre-implementation)
 
-**Mission baseline:** authorized branch `arena/5957b76d-prog-proc`; local/remote tip `d4b2fc4256b7107ae1c857e64eb871d3dec50b7c`; `main` observed at `85122e1a98087db4495b820a9a0ffae9009b7819`; only pre-existing local difference is the protected, unstaged deletion `out/performance.json`. No implementation changes have been made at the time of this matrix.
+**Mission baseline (reconciled before implementation):** authorized branch `arena/5957b76d-prog-proc`; initial checkout HEAD was `317c55365319af61138000664293ae2d84e27a6e`, while the remote feature ref was already at descendant `d4b2fc4256b7107ae1c857e64eb871d3dec50b7c`. After confirming ancestry, the local branch ref and index were fast-forwarded to `d4b2fc4` without writing the worktree, so protected `out/performance.json` stayed absent and later appeared as an unstaged deletion. `main` and `origin/main` both remained `85122e1a98087db4495b820a9a0ffae9009b7819`. Initial status was 98 modified tracked files and 123 untracked paths because the checkout lagged the remote feature ref; after reconciliation, only the mission changes and protected deletion remained. No stash was created. No feature implementation had been made when this matrix was drafted.
 
 This matrix is based on source, test, configuration, UI, migration, workflow, and current-facing documentation inspection. Earlier mission reports are historical pointers only; their claims are not accepted as this mission's proof.
 
