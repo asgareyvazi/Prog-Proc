@@ -412,6 +412,226 @@ jobs:
             pytest-run-state.txt
           if-no-files-found: warn
 
+  pytest-shard-collection:
+    name: Ubuntu 26.04 Qt full-suite collection
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_OPENGL: software
+      QT_QPA_PLATFORM: offscreen
+      QT_X11_NO_MITSHM: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1 libegl1 libglib2.0-0 libdbus-1-3 libfontconfig1 libx11-6 \
+            libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-shm0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+            libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxtst6 libnss3 libsm6 libice6
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+      - name: Install (editable, Qt-enabled)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,ui]"
+      - name: Collect complete pytest universe
+        run: >-
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest --collect-only -q
+          --strict-markers -p tools.pytest_shard
+          --progproc-collection-manifest pytest-collection.json
+          --progproc-head-sha "${GITHUB_SHA}"
+          --progproc-run-id "${GITHUB_RUN_ID}"
+          --progproc-run-attempt "${GITHUB_RUN_ATTEMPT}"
+          --progproc-repository "${GITHUB_REPOSITORY}"
+          --progproc-workflow "${GITHUB_WORKFLOW}"
+          --progproc-workflow-ref "${GITHUB_WORKFLOW_REF}"
+      - name: Publish canonical collection manifest
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ubuntu2604-qt-collection-a${{ github.run_attempt }}
+          path: pytest-collection.json
+          if-no-files-found: error
+          retention-days: 7
+
+  pytest-shards:
+    name: Ubuntu 26.04 Qt full-suite shard ${{ matrix.index }} of 4
+    needs: pytest-shard-collection
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - index: 0
+            artifact_index: "00"
+          - index: 1
+            artifact_index: "01"
+          - index: 2
+            artifact_index: "02"
+          - index: 3
+            artifact_index: "03"
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_OPENGL: software
+      QT_QPA_PLATFORM: offscreen
+      QT_X11_NO_MITSHM: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+      PYTEST_TOTALS_PATH: pytest-totals.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1 libegl1 libglib2.0-0 libdbus-1-3 libfontconfig1 libx11-6 \
+            libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-shm0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+            libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxtst6 libnss3 libsm6 libice6
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+      - name: Install (editable, Qt-enabled)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,ui]"
+      - name: Download this attempt's canonical collection
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ubuntu2604-qt-collection-a${{ github.run_attempt }}
+          path: canonical-collection
+      - name: Initialize shard process evidence
+        run: echo "NOT RUN — shard pytest step has not started" > pytest-run-state.txt
+      - name: Run sharded Qt-enabled full suite
+        run: >-
+          xvfb-run -a -s "-screen 0 1280x1024x24" python tools/ci_pytest.py
+          --output pytest-output.txt --exit-file pytest-exit.txt
+          --state-file pytest-run-state.txt -- --junitxml=pytest-junit.xml
+          -p tools.pytest_shard
+          --progproc-collection-manifest observed-collection.json
+          --progproc-expected-manifest canonical-collection/pytest-collection.json
+          --progproc-selection-result shard-selection.json
+          --progproc-shard-result shard-execution.json
+          --progproc-shard-index "${{ matrix.index }}"
+          --progproc-shard-count 4
+          --progproc-head-sha "${GITHUB_SHA}"
+          --progproc-run-id "${GITHUB_RUN_ID}"
+          --progproc-run-attempt "${GITHUB_RUN_ATTEMPT}"
+          --progproc-repository "${GITHUB_REPOSITORY}"
+          --progproc-workflow "${GITHUB_WORKFLOW}"
+          --progproc-workflow-ref "${GITHUB_WORKFLOW_REF}"
+      - name: Validate shard pytest totals
+        if: always()
+        run: |
+          if [ ! -f pytest-run-state.txt ] || grep -q '^NOT RUN' pytest-run-state.txt; then
+            echo "INCOMPLETE: shard pytest never started" >&2
+            exit 1
+          fi
+          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml \
+            --exit-file pytest-exit.txt --output pytest-output.txt --state-file pytest-run-state.txt
+      - name: Publish run-bound shard evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ubuntu2604-qt-shard-${{ matrix.artifact_index }}-of-04-a${{ github.run_attempt }}
+          path: |
+            observed-collection.json
+            shard-selection.json
+            shard-execution.json
+            pytest-totals.json
+            pytest-junit.xml
+            pytest-exit.txt
+            pytest-run-state.txt
+            pytest-output.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+  pytest-shard-evidence:
+    name: Ubuntu 26.04 Qt shard evidence reconciliation
+    if: always()
+    needs: [pytest-shard-collection, pytest-shards]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Install package for evidence validation
+        run: python -m pip install -e .
+      - name: Retrieve this run's GitHub API and artifact evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m tools.pytest_shard_artifacts \
+            --repository "${GITHUB_REPOSITORY}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --attempt "${GITHUB_RUN_ATTEMPT}" \
+            --sha "${GITHUB_SHA}" \
+            --workflow "${GITHUB_WORKFLOW}" \
+            --shard-count 4 \
+            --output-dir github-shard-evidence
+      - name: Reconcile exact-once shard coverage and outcomes
+        if: always()
+        run: |
+          python -m tools.pytest_shard_report \
+            --shard-root github-shard-evidence \
+            --archive-root github-shard-evidence/archives \
+            --extracted-root github-shard-evidence/extracted \
+            --run github-shard-evidence/run.json \
+            --jobs github-shard-evidence/jobs.json \
+            --artifacts github-shard-evidence/artifacts.json \
+            --sha "${GITHUB_SHA}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --workflow "${GITHUB_WORKFLOW}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --attempt "${GITHUB_RUN_ATTEMPT}" \
+            --shard-count 4 \
+            --allow-in-progress-run \
+            --output-json pytest-shard-report.json \
+            --output-markdown pytest-shard-report.md \
+            --combined-junit pytest-shard-combined.xml \
+            --combined-stats pytest-shard-combined-stats.json \
+            --combined-output pytest-shard-combined-output.txt \
+            --combined-exit pytest-shard-combined-exit.txt \
+            --combined-state pytest-shard-combined-state.txt
+      - name: Publish final shard reconciliation report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ubuntu2604-qt-shard-report-a${{ github.run_attempt }}
+          path: |
+            pytest-shard-report.json
+            pytest-shard-report.md
+            pytest-shard-combined.xml
+            pytest-shard-combined-stats.json
+            pytest-shard-combined-output.txt
+            pytest-shard-combined-exit.txt
+            pytest-shard-combined-state.txt
+          if-no-files-found: warn
+          retention-days: 7
+
   pytest-matrix-report:
     name: Linux and Ubuntu 26.04 full-suite attribution reports
     if: always()
