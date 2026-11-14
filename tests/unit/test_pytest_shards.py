@@ -579,7 +579,24 @@ def test_pytest_plugin_emits_exact_once_real_execution_records(tmp_path: Path) -
     ]
     canonical = tmp_path / "manifest.json"
     first = subprocess.run(
-        [*base, "--progproc-collection-manifest", str(canonical), str(suite)],
+        [
+            *base,
+            "--progproc-collection-manifest",
+            str(canonical),
+            "--progproc-head-sha",
+            "LOCAL",
+            "--progproc-run-id",
+            "LOCAL",
+            "--progproc-run-attempt",
+            "1",
+            "--progproc-repository",
+            "LOCAL",
+            "--progproc-workflow",
+            "LOCAL",
+            "--progproc-workflow-ref",
+            "LOCAL",
+            str(suite),
+        ],
         cwd=root,
         check=False,
         env=env,

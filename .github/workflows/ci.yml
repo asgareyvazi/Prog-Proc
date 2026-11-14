@@ -567,7 +567,7 @@ jobs:
     name: Ubuntu 26.04 Qt shard evidence reconciliation
     if: always()
     needs: [pytest-shard-collection, pytest-shards]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     permissions:
       actions: read
@@ -592,6 +592,11 @@ jobs:
             --workflow "${GITHUB_WORKFLOW}" \
             --shard-count 4 \
             --output-dir github-shard-evidence
+      - name: Initialize fail-closed reconciliation report
+        if: always()
+        run: |
+          printf '%s\n' '{"schema_version":2,"status":"INCOMPLETE","complete":false,"error":"reconciliation did not produce a report"}' > pytest-shard-report.json
+          printf '%s\n' '# Ubuntu 26.04 Qt-enabled pytest shard report' '' '**INCOMPLETE** — reconciliation did not produce a report.' > pytest-shard-report.md
       - name: Reconcile exact-once shard coverage and outcomes
         if: always()
         run: |
