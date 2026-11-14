@@ -12,7 +12,7 @@
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
-# Generated on 2026-11-07.
+# Generated on 2026-10-20.
 
 boolean.py==5.0
 CacheControl==0.14.4
@@ -20,10 +20,10 @@ certifi==2026.10.23
 charset-normalizer==3.5.2
 cyclonedx-python-lib==11.12.0
 defusedxml==0.7.1
-filelock==4.2.9
+filelock==4.2.10
 idna==3.20
 license-expression==30.4.4
-markdown-it-py==4.2.0
+markdown-it-py==4.3.0
 mdurl==0.1.2
 msgpack==1.2.4
 packageurl-python==0.17.6
