@@ -8,9 +8,11 @@ import copy
 import hashlib
 import json
 import math
+import os
 import re
 import stat
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
@@ -18,7 +20,7 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from tools.pytest_shard import assigned_nodeids, validate_manifest
+from tools.pytest_shard_contract import assigned_nodeids, canonical, validate_manifest
 from tools.pytest_totals import (
     disagreements,
     read_exit_file,
@@ -65,12 +67,6 @@ def _read_json(path: Path, label: str) -> Any:
         raise AggregateError(f"{label} is unreadable or malformed") from exc
 
 
-def _canonical(value: dict[str, Any]) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
-
-
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -80,7 +76,7 @@ def _sha256(path: Path) -> str:
 
 
 def _digest_ids(nodeids: list[str]) -> str:
-    return hashlib.sha256(_canonical({"nodeids": nodeids})).hexdigest()
+    return hashlib.sha256(canonical({"nodeids": nodeids})).hexdigest()
 
 
 def _records(path: Path, key: str, label: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -92,7 +88,15 @@ def _records(path: Path, key: str, label: str) -> tuple[dict[str, Any], list[dic
 
 
 def _run_identity(
-    run: dict[str, Any], *, repository: str, workflow: str, sha: str, run_id: str, attempt: str
+    run: dict[str, Any],
+    *,
+    repository: str,
+    workflow: str,
+    branch: str,
+    workflow_ref: str,
+    sha: str,
+    run_id: str,
+    attempt: str,
 ) -> int:
     repo = run.get("repository")
     if not isinstance(repo, dict) or repo.get("full_name") != repository:
@@ -106,19 +110,27 @@ def _run_identity(
         and run.get("head_sha") == sha
         and run.get("name") == workflow
         and run.get("path") == _WORKFLOW_PATH
+        and run.get("head_branch") == branch
     ):
         raise AggregateError(
-            "GitHub workflow run identity does not match repository/workflow/SHA/run/attempt"
+            "GitHub workflow run identity does not match repository/workflow/branch/SHA/run/attempt"
         )
     if run.get("status") == "cancelled" or run.get("conclusion") == "cancelled":
-        raise AggregateError("GitHub workflow run was cancelled", status="INCOMPLETE")
+        raise AggregateError("GitHub workflow run was cancelled", status="CANCELLED")
+    if run.get("conclusion") == "skipped":
+        raise AggregateError(
+            "GitHub workflow run was skipped before qualification", status="NOT RUN"
+        )
     if not isinstance(run.get("status"), str) or run.get("status") not in {
         "in_progress",
         "completed",
     }:
-        raise AggregateError(
-            "GitHub workflow run is not in a reportable state", status="INCOMPLETE"
+        status = (
+            "NOT RUN"
+            if run.get("status") in {"queued", "requested", "waiting", "pending"}
+            else "INCOMPLETE"
         )
+        raise AggregateError("GitHub workflow run is not in a reportable state", status=status)
     return repo_id
 
 
@@ -158,17 +170,23 @@ def _step_issues(
         )
         if len(found) != 1 or found[0].get("status") != "completed":
             incomplete.append(f"{label}: required step {name!r} did not complete")
+        elif found[0].get("conclusion") == "cancelled":
+            raise AggregateError(
+                f"{label}: required step {name!r} was cancelled", status="CANCELLED"
+            )
+        elif found[0].get("conclusion") == "skipped":
+            raise AggregateError(f"{label}: required step {name!r} did not run", status="NOT RUN")
         elif found[0].get("conclusion") != "success":
             failed.append(
                 f"{label}: required step {name!r} concluded {found[0].get('conclusion')!r}"
             )
     status = job.get("status")
     conclusion = job.get("conclusion")
-    if (
-        status != "completed"
-        or not isinstance(conclusion, str)
-        or conclusion in {"cancelled", "skipped", "timed_out"}
-    ):
+    if status == "cancelled" or conclusion == "cancelled":
+        raise AggregateError(f"{label}: job was cancelled", status="CANCELLED")
+    if status == "skipped" or conclusion == "skipped":
+        raise AggregateError(f"{label}: job did not run", status="NOT RUN")
+    if status != "completed" or not isinstance(conclusion, str) or conclusion == "timed_out":
         incomplete.append(f"{label}: job status/conclusion is {status!r}/{conclusion!r}")
     elif conclusion != "success":
         failed.append(f"{label}: job concluded {conclusion!r}")
@@ -374,13 +392,29 @@ def _classify_reports(reports: object, assigned: list[str]) -> Counter[str]:
     return counts
 
 
-def _write_json(path: Path, data: dict[str, Any]) -> None:
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Atomically replace one output file using a same-directory temporary."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".partial")
-    temporary.write_text(
-        json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".partial", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        Path(temporary).replace(path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write(path, text.encode("utf-8"))
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    _atomic_write(
+        path,
+        (json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
     )
-    temporary.replace(path)
 
 
 def _write_junit(path: Path, suites: list[ET.Element], totals: dict[str, int | float]) -> None:
@@ -396,10 +430,7 @@ def _write_junit(path: Path, suites: list[ET.Element], totals: dict[str, int | f
     )
     for suite in suites:
         root.append(copy.deepcopy(suite))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".partial")
-    ET.ElementTree(root).write(temporary, encoding="utf-8", xml_declaration=True)
-    temporary.replace(path)
+    _atomic_write(path, ET.tostring(root, encoding="utf-8", xml_declaration=True))
 
 
 def aggregate(
@@ -414,6 +445,8 @@ def aggregate(
     expected_sha: str,
     repository: str,
     workflow: str,
+    branch: str,
+    workflow_ref: str,
     run_id: str,
     attempt: str,
     shard_count: int,
@@ -433,6 +466,8 @@ def aggregate(
         run,
         repository=repository,
         workflow=workflow,
+        branch=branch,
+        workflow_ref=workflow_ref,
         sha=expected_sha,
         run_id=run_id,
         attempt=attempt,
@@ -525,6 +560,8 @@ def aggregate(
     nodeids = manifest["nodeids"]
     if not nodeids:
         raise AggregateError("canonical test collection is empty")
+    if manifest.get("workflow_ref") != workflow_ref:
+        raise AggregateError("canonical collection workflow ref does not match this run")
     if (
         manifest.get("implementation") != "CPython"
         or not manifest.get("python_version", "").startswith("3.14.")
@@ -720,20 +757,16 @@ def aggregate(
     combined = {**totals, "exit": 0 if status == "PASS" else 1, "runtime": runtime_sum}
     _write_junit(combined_junit, suites, combined)
     _write_json(combined_stats, combined)
-    combined_exit.parent.mkdir(parents=True, exist_ok=True)
-    combined_exit.write_text(f"{combined['exit']}\n", encoding="utf-8", newline="\n")
-    combined_state.write_text(
+    _atomic_write_text(combined_exit, f"{combined['exit']}\n")
+    _atomic_write_text(
+        combined_state,
         (f"COMPLETED exit={combined['exit']}" if status != "INCOMPLETE" else "INCOMPLETE") + "\n",
-        encoding="utf-8",
-        newline="\n",
     )
-    combined_output.parent.mkdir(parents=True, exist_ok=True)
-    combined_output.write_text(
+    _atomic_write_text(
+        combined_output,
         f"shards: {shard_count}/{shard_count}\ncollection_sha256: {manifest['manifest_sha256']}\nnodeids: {len(nodeids)}\n"
         + "\n".join(f"{k}: {totals[k]}" for k in _TOTALS)
         + f"\nruntime_sum_seconds: {runtime_sum}\n",
-        encoding="utf-8",
-        newline="\n",
     )
     report = {
         "schema_version": _SCHEMA,
@@ -742,6 +775,8 @@ def aggregate(
         "repository": repository,
         "workflow": workflow,
         "workflow_path": run.get("path"),
+        "branch": branch,
+        "workflow_ref": workflow_ref,
         "head_sha": expected_sha,
         "run_id": str(run_id),
         "run_attempt": str(attempt),
@@ -780,6 +815,7 @@ def aggregate(
         f"- Result: **{status}**",
         f"- Repository: `{repository}`",
         f"- Workflow: `{workflow}`; run `{run_id}` attempt `{attempt}`",
+        f"- Branch: `{branch}`; workflow ref: `{workflow_ref}`",
         f"- Exact SHA: `{expected_sha}`",
         f"- Workflow conclusion verified: {'yes' if report['workflow_conclusion_verified'] else 'no — final run status must be checked after this report job'}",
         f"- Python: `{manifest['python_version']}`; pytest: `{manifest['pytest_version']}`; Qt enabled: **yes**",
@@ -803,7 +839,7 @@ def aggregate(
         if all_skips
         else ["- None."]
     )
-    output_markdown.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    _atomic_write_text(output_markdown, "\n".join(lines) + "\n")
     return report
 
 
@@ -814,17 +850,17 @@ def _failure_report(args: argparse.Namespace, status: str, message: str) -> None
         "complete": False,
         "repository": args.repository,
         "workflow": args.workflow,
+        "branch": args.branch,
+        "workflow_ref": args.workflow_ref,
         "head_sha": args.sha,
         "run_id": str(args.run_id),
         "run_attempt": str(args.attempt),
         "error": message,
     }
     _write_json(args.output_json, payload)
-    args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
-    args.output_markdown.write_text(
+    _atomic_write_text(
+        args.output_markdown,
         f"# Ubuntu 26.04 Qt-enabled pytest shard report\n\n**{status}** — {message}\n",
-        encoding="utf-8",
-        newline="\n",
     )
 
 
@@ -840,6 +876,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sha", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--workflow", required=True)
+    parser.add_argument("--branch", required=True)
+    parser.add_argument("--workflow-ref", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--attempt", required=True)
     parser.add_argument("--shard-count", type=int, required=True)
@@ -864,6 +902,8 @@ def main(argv: list[str] | None = None) -> int:
             expected_sha=args.sha,
             repository=args.repository,
             workflow=args.workflow,
+            branch=args.branch,
+            workflow_ref=args.workflow_ref,
             run_id=args.run_id,
             attempt=args.attempt,
             shard_count=args.shard_count,

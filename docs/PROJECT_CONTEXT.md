@@ -1,5 +1,12 @@
 # مرجع زمینهٔ پروژه — Prog-Proc
 
+## وضعیت تکمیلی مأموریت جاری — continuation در clone ایزوله
+
+- این continuation در clone ایزولهٔ `/tmp/Prog-Proc-mission` روی branch مجاز `arena/5957b76d-prog-proc` انجام می‌شود؛ remote branch هنگام شروع این مرحله روی `e20ae73fa31ed620941b401b7db4b6310cdffece` بود. Checkout اصلی `/home/user/Prog-Proc` با HEAD `317c55365319af61138000664293ae2d84e27a6e` دست‌نخورده مانده است و backup forensic آن در گزارش مأموریت ثبت شده.
+- **هنوز uncommitted و NOT QUALIFIED:** exact-SHA API re-fetch برای `e20ae73...` نشان داد Linux run `43588683636` شکست خورده و Windows run `43588683629` موفق بوده. تمام shard jobs Linux موفق گزارش شده‌اند، اما reconciliation job `132431293588` شکست دارد. Annotation فقط exit code 1 را مشخص می‌کند؛ artifact payload و logs به دلیل redirect به host خارج از allowlist قابل دریافت نبودند. علت failure نامعلوم است و شاردینگ هنوز qualify نشده است. شواهد پیشین به SHA جدید منتقل نمی‌شوند.
+- Continuation، JSON/Markdown DDR comparison export را با overwrite ایمن و UI save action افزوده است؛ guide: [`DDR_COMPARISON_OPERATOR_GUIDE.md`](DDR_COMPARISON_OPERATOR_GUIDE.md). Final combined focused regression selection: 132 collected, 131 passed, 1 Qt UI test skipped چون `libGL.so.1` در host موجود نیست. lint، format، compileall، full configured mypy (44 files)، پنج constraint checks و exception review (108 handlers) موفق‌اند. این‌ها local checks هستند، نه CI qualification.
+- اجرای exact-SHA Linux/Windows CI روی commit نهایی هنوز **PENDING** است. Full suite نهایی، shard evidence qualification و artifact inspection برای final SHA باز هستند. `out/performance.json` در clone همچنان حذف unstaged است و نباید restore/stage/commit شود؛ owner data نامعلوم دست‌نخورده می‌ماند.
+
 ## آخرین وضعیت مأموریت مهندسی
 
 - **وضعیت سند:** مرجع جاری محصول؛ گزارش مأموریت و شواهد exact-SHA معیار نتیجه‌اند، نه این خلاصه به‌تنهایی.

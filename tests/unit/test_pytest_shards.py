@@ -30,6 +30,7 @@ from tools.pytest_totals import _XPASS_MESSAGE
 
 _REPOSITORY = "asgareyvazi/Prog-Proc"
 _WORKFLOW = "CI"
+_BRANCH = "arena/5957b76d-prog-proc"
 _SHA = "a" * 40
 _RUN_ID = "42"
 _ATTEMPT = "1"
@@ -195,6 +196,7 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
             "id": int(_RUN_ID),
             "run_attempt": int(_ATTEMPT),
             "head_sha": _SHA,
+            "head_branch": _BRANCH,
             "name": _WORKFLOW,
             "path": ".github/workflows/ci.yml",
             "status": "completed",
@@ -219,6 +221,7 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
         "attempt": _ATTEMPT,
         "repository": _REPOSITORY,
         "workflow": _WORKFLOW,
+        "workflow_ref": manifest["workflow_ref"],
         "shard_count": shard_count,
     }
 
@@ -237,6 +240,8 @@ def _run(
         expected_sha=fixture["sha"],
         repository=fixture["repository"],
         workflow=fixture["workflow"],
+        branch=_BRANCH,
+        workflow_ref=fixture["workflow_ref"],
         run_id=fixture["run_id"],
         attempt=fixture["attempt"],
         shard_count=fixture["shard_count"],
@@ -270,6 +275,99 @@ def _refresh(fixture: dict[str, Any], index: int) -> None:
     artifact["size_in_bytes"] = archive.stat().st_size
     artifact["digest"] = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
     _write(fixture["artifacts_path"], {"artifacts": fixture["artifacts"]})
+
+
+def test_report_cli_and_valid_aggregation_work_without_pytest(tmp_path: Path) -> None:
+    """Run report CLI and an end-to-end fixture with site packages disabled."""
+    root = Path(__file__).resolve().parents[2]
+    fixture = _fixture(tmp_path / "fixture")
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join((str(root), str(root / "src"))),
+    }
+    no_pytest = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "import importlib.util, sys; assert importlib.util.find_spec('pytest') is None; "
+            "import tools.pytest_shard_contract; assert 'pytest' not in sys.modules",
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert no_pytest.returncode == 0, no_pytest.stderr
+
+    help_result = subprocess.run(
+        [sys.executable, "-S", "-m", "tools.pytest_shard_report", "--help"],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--shard-count" in help_result.stdout
+    assert "pytest" not in help_result.stderr.lower()
+
+    out = tmp_path / "minimal-install"
+    command = [
+        sys.executable,
+        "-S",
+        "-m",
+        "tools.pytest_shard_report",
+        "--shard-root",
+        str(fixture["payloads"]),
+        "--archive-root",
+        str(fixture["archive_root"]),
+        "--extracted-root",
+        str(out / "extracted"),
+        "--run",
+        str(fixture["run_path"]),
+        "--jobs",
+        str(fixture["jobs_path"]),
+        "--artifacts",
+        str(fixture["artifacts_path"]),
+        "--sha",
+        fixture["sha"],
+        "--repository",
+        fixture["repository"],
+        "--workflow",
+        fixture["workflow"],
+        "--branch",
+        _BRANCH,
+        "--workflow-ref",
+        fixture["workflow_ref"],
+        "--run-id",
+        fixture["run_id"],
+        "--attempt",
+        fixture["attempt"],
+        "--shard-count",
+        str(fixture["shard_count"]),
+        "--output-json",
+        str(out / "report.json"),
+        "--output-markdown",
+        str(out / "report.md"),
+        "--combined-junit",
+        str(out / "combined.xml"),
+        "--combined-stats",
+        str(out / "combined-stats.json"),
+        "--combined-output",
+        str(out / "combined-output.txt"),
+        "--combined-exit",
+        str(out / "combined-exit.txt"),
+        "--combined-state",
+        str(out / "combined-state.txt"),
+    ]
+    result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "PASS"
+    assert report["collected_nodeids"] == report["covered_nodeids"] == 16
+    assert report["totals"]["passed"] == 16
 
 
 def test_sharding_is_stable_complete_disjoint_and_balanced_for_2860_ids() -> None:
@@ -314,6 +412,56 @@ def test_manifest_digest_identity_and_boolean_node_count() -> None:
         _manifest_payload(["same", "same"], head_sha="x", run_id="1", run_attempt="1")
 
 
+@pytest.mark.parametrize(
+    ("identity", "expected", "label"),
+    [
+        ("expected_run_id", "wrong-run", "run ID"),
+        ("expected_attempt", "2", "attempt"),
+        ("expected_sha", "b" * 40, "SHA"),
+        ("expected_repository", "other/repo", "repository"),
+        ("expected_workflow", "other-workflow", "workflow"),
+    ],
+)
+def test_manifest_all_run_identity_fields_fail_closed(
+    identity: str, expected: str, label: str
+) -> None:
+    manifest = _manifest_payload(
+        ["one"],
+        head_sha=_SHA,
+        run_id=_RUN_ID,
+        run_attempt=_ATTEMPT,
+        repository=_REPOSITORY,
+        workflow=_WORKFLOW,
+    )
+    with pytest.raises(ValueError, match=label):
+        validate_manifest(manifest, **{identity: expected})
+
+
+def test_wrong_branch_and_workflow_ref_never_qualify(tmp_path: Path) -> None:
+    branch = _fixture(tmp_path / "wrong-branch")
+    run = json.loads(branch["run_path"].read_text(encoding="utf-8"))
+    run["head_branch"] = "unexpected-branch"
+    _write(branch["run_path"], run)
+    with pytest.raises(AggregateError, match="branch"):
+        _run(tmp_path / "wrong-branch", branch)
+
+    ref = _fixture(tmp_path / "wrong-workflow-ref")
+    manifest_path = ref["payloads"] / "ubuntu2604-qt-collection-a1" / "pytest-collection.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["workflow_ref"] = "asgareyvazi/Prog-Proc/.github/workflows/ci.yml@refs/heads/other"
+    manifest.pop("manifest_sha256")
+    manifest["manifest_sha256"] = hashlib.sha256(_canonical(manifest)).hexdigest()
+    _write(manifest_path, manifest)
+    archive = ref["archive_root"] / "101.zip"
+    _zip(ref["payloads"] / "ubuntu2604-qt-collection-a1", archive)
+    artifact = _artifact(ref, "ubuntu2604-qt-collection-a1")
+    artifact["size_in_bytes"] = archive.stat().st_size
+    artifact["digest"] = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+    _write(ref["artifacts_path"], {"artifacts": ref["artifacts"]})
+    with pytest.raises(AggregateError, match="workflow ref"):
+        _run(tmp_path / "wrong-workflow-ref", ref)
+
+
 def test_real_api_metadata_archives_and_exact_once_coverage_pass(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     result = _run(tmp_path, fixture)
@@ -355,6 +503,7 @@ def test_in_progress_is_incomplete_unless_report_job_explicitly_allows_pending_r
         ("name", "other"),
         ("path", ".github/workflows/ci-windows.yml"),
         ("status", "cancelled"),
+        ("head_branch", "other-branch"),
     ],
 )
 def test_wrong_or_cancelled_run_identity_never_qualifies(
@@ -440,12 +589,104 @@ def test_duplicate_ids_and_unexpected_attempt_artifacts_are_rejected(tmp_path: P
         _run(other, fixture2)
 
 
-def test_cancelled_shard_is_incomplete_and_failed_test_is_fail(tmp_path: Path) -> None:
+def test_duplicate_artifact_name_and_corrupted_zip_are_rejected(tmp_path: Path) -> None:
+    duplicate = _fixture(tmp_path / "duplicate")
+    original = _artifact(duplicate, "ubuntu2604-qt-shard-00-of-02-a1")
+    duplicate["artifacts"].append({**original, "id": 999})
+    _write(duplicate["artifacts_path"], {"artifacts": duplicate["artifacts"]})
+    with pytest.raises(AggregateError, match="exactly one current-run artifact"):
+        _run(tmp_path / "duplicate", duplicate)
+
+    corrupted = _fixture(tmp_path / "corrupted")
+    artifact = _artifact(corrupted, "ubuntu2604-qt-shard-00-of-02-a1")
+    archive = corrupted["archive_root"] / f"{artifact['id']}.zip"
+    archive.write_bytes(b"not a ZIP archive")
+    artifact["size_in_bytes"] = archive.stat().st_size
+    artifact["digest"] = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+    _write(corrupted["artifacts_path"], {"artifacts": corrupted["artifacts"]})
+    with pytest.raises(AggregateError, match="is unreadable"):
+        _run(tmp_path / "corrupted", corrupted)
+
+
+def test_duplicate_zip_member_and_missing_or_malformed_junit_fail_closed(
+    tmp_path: Path,
+) -> None:
+    duplicate = _fixture(tmp_path / "duplicate-member")
+    artifact = _artifact(duplicate, "ubuntu2604-qt-shard-00-of-02-a1")
+    folder = _folder(duplicate, 0)
+    archive = duplicate["archive_root"] / f"{artifact['id']}.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+        for item in sorted(folder.iterdir()):
+            if item.name != "pytest-junit.xml":
+                output.write(item, item.name)
+        output.write(folder / "pytest-junit.xml", "pytest-junit.xml")
+        output.write(folder / "pytest-junit.xml", "pytest-junit.xml")
+    artifact["size_in_bytes"] = archive.stat().st_size
+    artifact["digest"] = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+    _write(duplicate["artifacts_path"], {"artifacts": duplicate["artifacts"]})
+    with pytest.raises(AggregateError, match="unexpected or duplicate"):
+        _run(tmp_path / "duplicate-member", duplicate)
+
+    missing = _fixture(tmp_path / "missing-junit")
+    _folder(missing, 0).joinpath("pytest-junit.xml").unlink()
+    _refresh(missing, 0)
+    with pytest.raises(AggregateError, match="lacks required files"):
+        _run(tmp_path / "missing-junit", missing)
+
+    malformed = _fixture(tmp_path / "malformed-junit")
+    _folder(malformed, 0).joinpath("pytest-junit.xml").write_text("<not-xml", encoding="utf-8")
+    _refresh(malformed, 0)
+    with pytest.raises(AggregateError, match="JUnit file is missing or malformed"):
+        _run(tmp_path / "malformed-junit", malformed)
+
+
+@pytest.mark.parametrize("failed_phase", ["setup", "teardown"])
+def test_setup_and_teardown_failures_are_counted_as_errors(
+    tmp_path: Path, failed_phase: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    folder = _folder(fixture, 0)
+    execution_path = folder / "shard-execution.json"
+    execution = json.loads(execution_path.read_text(encoding="utf-8"))
+    nodeid = next(iter(execution["reports"]))
+    phases = [
+        {"when": "setup", "outcome": "passed"},
+        {"when": "call", "outcome": "passed"},
+        {"when": "teardown", "outcome": "passed"},
+    ]
+    phases[next(i for i, phase in enumerate(phases) if phase["when"] == failed_phase)][
+        "outcome"
+    ] = "failed"
+    execution["reports"][nodeid] = phases
+    execution["pytest_exit_status"] = 1
+    _write(execution_path, execution)
+    totals_path = folder / "pytest-totals.json"
+    totals = json.loads(totals_path.read_text(encoding="utf-8"))
+    totals.update(passed=totals["passed"] - 1, errors=1, exit=1)
+    _write(totals_path, totals)
+    (folder / "pytest-exit.txt").write_text("1\n", encoding="utf-8")
+    (folder / "pytest-run-state.txt").write_text("COMPLETED exit=1\n", encoding="utf-8")
+    junit_path = folder / "pytest-junit.xml"
+    junit = junit_path.read_text(encoding="utf-8").replace('errors="0"', 'errors="1"', 1)
+    test_index = int(nodeid.split("test_case_")[1].split(".py")[0])
+    case = f'<testcase classname="tests.unit.test_{test_index}" name="test_case_{test_index}" />'
+    junit = junit.replace(
+        case, case[:-3] + '><error message="synthetic setup or teardown failure" /></testcase>'
+    )
+    junit_path.write_text(junit, encoding="utf-8")
+    _refresh(fixture, 0)
+    result = _run(tmp_path, fixture)
+    assert result["status"] == "FAIL"
+    assert result["totals"]["errors"] == 1
+
+
+def test_cancelled_shard_is_classified_and_failed_test_is_fail(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     fixture["jobs"][1]["conclusion"] = "cancelled"
     _write(fixture["jobs_path"], {"jobs": fixture["jobs"]})
-    result = _run(tmp_path, fixture)
-    assert result["status"] == "INCOMPLETE"
+    with pytest.raises(AggregateError) as cancelled:
+        _run(tmp_path, fixture)
+    assert cancelled.value.status == "CANCELLED"
     other = tmp_path / "failed"
     fixture2 = _fixture(other)
     job = fixture2["jobs"][1]
@@ -475,6 +716,26 @@ def test_cancelled_shard_is_incomplete_and_failed_test_is_fail(tmp_path: Path) -
     failed = _run(other, fixture2)
     assert failed["status"] == "FAIL"
     assert failed["totals"]["failed"] == 1
+
+
+def test_skipped_workflow_run_is_classified_not_run(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    run = json.loads(fixture["run_path"].read_text(encoding="utf-8"))
+    run.update(status="completed", conclusion="skipped")
+    _write(fixture["run_path"], run)
+    with pytest.raises(AggregateError) as not_run:
+        _run(tmp_path, fixture)
+    assert not_run.value.status == "NOT RUN"
+
+
+def test_skipped_shard_job_is_classified_not_run(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    fixture["jobs"][1]["status"] = "completed"
+    fixture["jobs"][1]["conclusion"] = "skipped"
+    _write(fixture["jobs_path"], {"jobs": fixture["jobs"]})
+    with pytest.raises(AggregateError) as not_run:
+        _run(tmp_path, fixture)
+    assert not_run.value.status == "NOT RUN"
 
 
 def test_any_skip_or_xfail_prevents_pass(tmp_path: Path) -> None:
@@ -733,6 +994,10 @@ def test_cli_creates_classified_failure_report_for_missing_run_json(
         _REPOSITORY,
         "--workflow",
         _WORKFLOW,
+        "--branch",
+        _BRANCH,
+        "--workflow-ref",
+        "asgareyvazi/Prog-Proc/.github/workflows/ci.yml@refs/heads/arena/5957b76d-prog-proc",
         "--run-id",
         _RUN_ID,
         "--attempt",

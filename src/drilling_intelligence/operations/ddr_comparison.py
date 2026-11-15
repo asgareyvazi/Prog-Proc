@@ -8,9 +8,14 @@ as ambiguous instead of inventing a pairing. No engineering interpretation is pe
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import tempfile
 from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 _FIELD_KEYS = (
@@ -387,4 +392,213 @@ def _activity_values(row: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(str(row.get(key)) for key in _ACTIVITY_KEYS)
 
 
-__all__ = ["compare_ddr_revisions"]
+_EXPORT_SCHEMA = "prog-proc.ddr-comparison/v1"
+_PROVENANCE_KEYS = (
+    "report_id",
+    "revision_number",
+    "supersedes_report_id",
+    "well_id",
+    "status",
+    "authoring_state",
+    "is_current",
+    "provenance",
+)
+
+
+def ddr_comparison_export_payload(
+    previous: Mapping[str, Any],
+    successor: Mapping[str, Any],
+    comparison: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create the stable, provenance-preserving JSON/Markdown export model."""
+    result = comparison if comparison is not None else compare_ddr_revisions(previous, successor)
+    items = result.get("activities", {}).get("items", [])
+    return {
+        "schema": _EXPORT_SCHEMA,
+        "purpose": "read-only comparison of authored DDR revisions; not review or approval",
+        "read_only": True,
+        "approval_evaluated": False,
+        "ok": result.get("status") == "OK",
+        "predecessor": {key: previous.get(key) for key in _PROVENANCE_KEYS},
+        "successor": {key: successor.get(key) for key in _PROVENANCE_KEYS},
+        "comparison": dict(result),
+        "truncation": {
+            "truncated": False,
+            "included_activity_items": len(items) if isinstance(items, list) else 0,
+            "omitted_activity_items": 0,
+        },
+    }
+
+
+def render_ddr_comparison_json(payload: Mapping[str, Any]) -> str:
+    """Render deterministic UTF-8 JSON with a trailing newline."""
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def _json_fence(value: Any) -> str:
+    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+    longest = max((len(run) for run in re.findall(r"`+", rendered)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}json\n{rendered}\n{fence}"
+
+
+def render_ddr_comparison_markdown(payload: Mapping[str, Any]) -> str:
+    """Render every comparison item and provenance entry without truncation."""
+    comparison = payload.get("comparison")
+    if not isinstance(comparison, Mapping):
+        raise TypeError("DDR comparison export payload has no comparison object")
+    predecessor = payload.get("predecessor")
+    successor = payload.get("successor")
+    if not isinstance(predecessor, Mapping) or not isinstance(successor, Mapping):
+        raise TypeError("DDR comparison export payload has malformed source revisions")
+    lines = [
+        "# DDR revision comparison",
+        "",
+        "> Read-only comparison of authored text. This is not a review decision or approval.",
+        "",
+        f"- Schema: `{payload.get('schema')}`",
+        f"- Status: **{comparison.get('status')}**; conclusive: **{str(comparison.get('conclusive')).lower()}**",
+        f"- Has changes: `{comparison.get('has_changes')}`",
+        "- Approval evaluated: **no**",
+        "",
+        *(
+            ["> Ambiguous activity alignments are left unpaired; no pairing was guessed.", ""]
+            if comparison.get("status") == "AMBIGUOUS"
+            else []
+        ),
+        "## Source revisions",
+        "",
+    ]
+    for label, record in (("Predecessor", predecessor), ("Successor", successor)):
+        lines.extend(
+            [
+                f"### {label}",
+                "",
+                f"- Report ID: `{record.get('report_id')}`",
+                f"- Revision: `{record.get('revision_number')}`",
+                f"- Supersedes: `{record.get('supersedes_report_id')}`",
+                f"- Well ID: `{record.get('well_id')}`",
+                f"- Status / authoring state: `{record.get('status')}` / `{record.get('authoring_state')}`",
+                f"- Current revision: `{record.get('is_current')}`",
+                "- Declared provenance (not authentication):",
+                "",
+                _json_fence(record.get("provenance")),
+                "",
+            ]
+        )
+    lines.extend(["## Authored fields", ""])
+    fields = comparison.get("fields")
+    if not isinstance(fields, list):
+        raise TypeError("DDR comparison export fields are malformed")
+    for item in fields:
+        if not isinstance(item, Mapping):
+            raise TypeError("DDR comparison export field row is malformed")
+        lines.extend(
+            [
+                f"### {item.get('field')} — {item.get('status')}",
+                "",
+                "Predecessor:",
+                "",
+                _json_fence(item.get("previous")),
+                "",
+                "Successor:",
+                "",
+                _json_fence(item.get("successor")),
+                "",
+            ]
+        )
+    activities = comparison.get("activities")
+    if not isinstance(activities, Mapping):
+        raise TypeError("DDR comparison export activities are malformed")
+    items = activities.get("items")
+    if not isinstance(items, list):
+        raise TypeError("DDR comparison export activity items are malformed")
+    lines.extend(
+        [
+            "## Activities (authored order; no engineering interpretation)",
+            "",
+            f"- Activity comparison status: `{activities.get('status')}`",
+            f"- Activity counts: `{json.dumps(activities.get('counts', {}), sort_keys=True)}`",
+            f"- Reordered: `{str(activities.get('order_changed')).lower()}`",
+            f"- Included items: {len(items)}; omitted items: 0; truncated: no",
+            "",
+        ]
+    )
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, Mapping):
+            raise TypeError("DDR comparison export activity row is malformed")
+        lines.extend(
+            [
+                f"### Activity comparison {index}: {item.get('status')}",
+                "",
+                f"- Predecessor positions: `{item.get('previous_positions', [])}`",
+                f"- Successor positions: `{item.get('successor_positions', [])}`",
+                f"- Match basis: `{item.get('match_basis', 'not assigned')}`",
+                f"- Ambiguity/limitation: `{item.get('reason', 'none recorded')}`",
+                "- Predecessor authored row(s):",
+                "",
+                _json_fence(item.get("previous")),
+                "",
+                "- Successor authored row(s):",
+                "",
+                _json_fence(item.get("successor")),
+                "",
+            ]
+        )
+    issues = comparison.get("issues")
+    lines.extend(["## Limitations and diagnostics", ""])
+    lines.extend(
+        [f"- {issue}" for issue in issues]
+        if isinstance(issues, list) and issues
+        else ["- None recorded."]
+    )
+    lines.extend(["", "This export does not evaluate independent review or approval.", ""])
+    return "\n".join(lines)
+
+
+def write_ddr_comparison_export(
+    payload: Mapping[str, Any],
+    destination: str | Path,
+    *,
+    output_format: str,
+    overwrite: bool = False,
+) -> Path:
+    """Atomically write JSON or Markdown, refusing to clobber unless requested."""
+    if output_format == "json":
+        content = render_ddr_comparison_json(payload)
+    elif output_format == "markdown":
+        content = render_ddr_comparison_markdown(payload)
+    else:
+        raise ValueError("DDR comparison export format must be json or markdown")
+    path = Path(destination).expanduser()
+    parent = path.parent
+    if not parent.is_dir():
+        raise FileNotFoundError("DDR comparison output directory does not exist")
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".partial", dir=parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if overwrite:
+            Path(temporary).replace(path)
+        else:
+            try:
+                os.link(temporary, path)
+            except FileExistsError as exc:
+                raise FileExistsError(
+                    "DDR comparison output exists; choose another path or explicitly allow overwrite"
+                ) from exc
+            Path(temporary).unlink()
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return path
+
+
+__all__ = [
+    "compare_ddr_revisions",
+    "ddr_comparison_export_payload",
+    "render_ddr_comparison_json",
+    "render_ddr_comparison_markdown",
+    "write_ddr_comparison_export",
+]

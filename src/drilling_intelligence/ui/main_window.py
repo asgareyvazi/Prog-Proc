@@ -61,7 +61,11 @@ from ..core.errors import (
     WorkspaceError,
 )
 from ..database.integrity import KnowledgeIntegrityError
-from ..operations.ddr_comparison import compare_ddr_revisions
+from ..operations.ddr_comparison import (
+    compare_ddr_revisions,
+    ddr_comparison_export_payload,
+    write_ddr_comparison_export,
+)
 from ..reporting.exhibits import exhibits_from_comparison
 from ..reporting.html import write_report_html
 from ..review import (
@@ -237,6 +241,7 @@ class MainWindow(QMainWindow):
         self._global_busy = False
         self._closing = False
         self._selected_ddr_record: dict[str, Any] | None = None
+        self._ddr_comparison_export_payload: dict[str, Any] | None = None
         self._ddr_records_by_id: dict[str, dict[str, Any]] = {}
         self._selected_record: ReviewRecord | None = None
         self._record_actions: tuple[ReviewAction, ...] = ()
@@ -539,6 +544,10 @@ class MainWindow(QMainWindow):
         self.ddr_compare_button = QPushButton("Compare with prior revision")
         self.ddr_compare_button.clicked.connect(self._ddr_compare_selected_revision)
         buttons.addWidget(self.ddr_compare_button)
+        self.ddr_compare_export_button = QPushButton("Export comparison")
+        self.ddr_compare_export_button.setEnabled(False)
+        self.ddr_compare_export_button.clicked.connect(self._ddr_export_comparison_dialog)
+        buttons.addWidget(self.ddr_compare_export_button)
         self.ddr_refresh_button = QPushButton("Refresh")
         self.ddr_refresh_button.clicked.connect(self._refresh_ddr_reports)
         buttons.addWidget(self.ddr_refresh_button)
@@ -2291,6 +2300,8 @@ class MainWindow(QMainWindow):
 
     def _ddr_set_record(self, record: dict[str, Any] | None) -> None:
         self._selected_ddr_record = dict(record) if record else None
+        self._ddr_comparison_export_payload = None
+        self.ddr_compare_export_button.setEnabled(False)
         self.ddr_compare_tree.clear()
         if record is None:
             self.ddr_date_input.clear()
@@ -2325,6 +2336,8 @@ class MainWindow(QMainWindow):
         current = self._selected_ddr_record or {}
         parent_id = str(current.get("supersedes_report_id") or "")
         previous = self._ddr_records_by_id.get(parent_id)
+        self._ddr_comparison_export_payload = None
+        self.ddr_compare_export_button.setEnabled(False)
         self.ddr_compare_tree.clear()
         if not parent_id:
             QTreeWidgetItem(
@@ -2345,6 +2358,10 @@ class MainWindow(QMainWindow):
             return
 
         comparison = compare_ddr_revisions(previous, current)
+        self._ddr_comparison_export_payload = ddr_comparison_export_payload(
+            previous, current, comparison
+        )
+        self.ddr_compare_export_button.setEnabled(True)
         before = comparison["previous"]
         after = comparison["successor"]
         root = QTreeWidgetItem(
@@ -2547,6 +2564,64 @@ class MainWindow(QMainWindow):
             "no approval or engineering value was inferred."
         )
 
+    def _ddr_export_comparison_dialog(self) -> None:
+        if self._ddr_comparison_export_payload is None:
+            self._set_status("Compare a predecessor and successor before exporting.", error=True)
+            return
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export DDR comparison",
+            "ddr-comparison.json",
+            "JSON (*.json);;Markdown (*.md)",
+        )
+        if not path:
+            return
+        export_format = "json" if selected_filter.startswith("JSON") else "markdown"
+        suffixes = {"json": {".json"}, "markdown": {".md", ".markdown"}}
+        target = Path(path)
+        if target.suffix and target.suffix.lower() not in suffixes[export_format]:
+            self._set_status(
+                f"Export extension does not match the selected {export_format} format.",
+                error=True,
+            )
+            return
+        if not target.suffix:
+            target = target.with_suffix(".json" if export_format == "json" else ".md")
+        overwrite = False
+        if target.exists():
+            answer = QMessageBox.question(
+                self,
+                "Replace comparison export?",
+                "This file already exists. Replace it with the complete comparison export?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._set_status("Comparison export cancelled; the existing file was not changed.")
+                return
+            overwrite = True
+        try:
+            self.export_ddr_comparison(
+                str(target), output_format=export_format, overwrite=overwrite
+            )
+        except (OSError, ValueError, ValidationError) as exc:
+            self._set_status(f"DDR comparison export failed: {exc}", error=True)
+
+    def export_ddr_comparison(
+        self, path: str, *, output_format: str, overwrite: bool = False
+    ) -> str:
+        """Atomically export the last rendered comparison without querying or mutating DDR state."""
+        payload = self._ddr_comparison_export_payload
+        if payload is None:
+            raise ValidationError(
+                "no DDR comparison is loaded", hint="compare revisions before exporting"
+            )
+        written = write_ddr_comparison_export(
+            payload, path, output_format=output_format, overwrite=overwrite
+        )
+        self._set_status(f"Read-only DDR comparison exported to {written} ({output_format}).")
+        return str(written)
+
     def _ddr_update_controls(self) -> None:
         available = self.controller.workspace is not None and bool(self.well_combo.currentData())
         busy = self._ddr_thread is not None
@@ -2576,6 +2651,9 @@ class MainWindow(QMainWindow):
         # the comparison panel then explains the missing predecessor instead of hiding it.
         has_parent = bool(record.get("supersedes_report_id"))
         self.ddr_compare_button.setEnabled(available and not busy and has_parent)
+        self.ddr_compare_export_button.setEnabled(
+            available and not busy and self._ddr_comparison_export_payload is not None
+        )
         self.ddr_refresh_button.setEnabled(available and not busy and not self._ddr_new_draft_mode)
         self.ddr_add_activity_button.setEnabled(editing and not busy and not self._global_busy)
         self.ddr_remove_activity_button.setEnabled(editing and not busy and not self._global_busy)

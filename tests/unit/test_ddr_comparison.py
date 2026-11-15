@@ -254,3 +254,81 @@ def test_large_history_is_compared_without_truncating_the_result() -> None:
     assert len(result["activities"]["items"]) == 400
     assert result["activities"]["items"][-1]["status"] == "MODIFIED"
     assert result["activities"]["items"][-1]["successor"]["label"] == "Corrected final line — Δ"
+
+
+def test_json_and_markdown_exports_are_deterministic_complete_and_atomic(tmp_path) -> None:
+    import json
+
+    import pytest
+
+    from drilling_intelligence.operations.ddr_comparison import (
+        ddr_comparison_export_payload,
+        render_ddr_comparison_json,
+        render_ddr_comparison_markdown,
+        write_ddr_comparison_export,
+    )
+
+    previous = _record("pred-α", [_activity(1, "Repeated | text"), _activity(2, "Repeated | text")])
+    successor = _record("succ-β", [_activity(9, "Repeated | text")])
+    previous.update(
+        is_current=False,
+        revision_number=4,
+        supersedes_report_id="older-id",
+        well_id="well-1",
+        provenance=[
+            {"actor": "declared-author", "path": "source.pdf", "reason": "operator record"}
+        ],
+    )
+    successor.update(
+        is_current=True,
+        revision_number=5,
+        supersedes_report_id="pred-α",
+        well_id="well-1",
+        provenance=[{"actor": "declared-reviewer", "source_id": "source-2"}],
+    )
+    comparison = compare_ddr_revisions(previous, successor)
+    payload = ddr_comparison_export_payload(previous, successor, comparison)
+
+    rendered_json = render_ddr_comparison_json(payload)
+    assert rendered_json == render_ddr_comparison_json(payload)
+    parsed = json.loads(rendered_json)
+    assert parsed["schema"] == "prog-proc.ddr-comparison/v1"
+    assert parsed["predecessor"]["report_id"] == "pred-α"
+    assert parsed["predecessor"]["provenance"] == previous["provenance"]
+    assert parsed["successor"]["provenance"] == successor["provenance"]
+    assert parsed["comparison"]["status"] == "AMBIGUOUS"
+    assert parsed["comparison"]["activities"]["items"][0]["status"] == "AMBIGUOUS"
+    assert parsed["truncation"] == {
+        "truncated": False,
+        "included_activity_items": 1,
+        "omitted_activity_items": 0,
+    }
+
+    markdown = render_ddr_comparison_markdown(payload)
+    assert markdown == render_ddr_comparison_markdown(payload)
+    assert "not a review decision or approval" in markdown
+    assert "Current revision: `False`" in markdown
+    assert "Current revision: `True`" in markdown
+    assert "pred-α" in markdown and "succ-β" in markdown
+    assert "Repeated | text" in markdown
+    assert "AMBIGUOUS" in markdown
+    assert "omitted items: 0; truncated: no" in markdown
+    assert "source.pdf" in markdown
+
+    destination = tmp_path / "comparison.json"
+    assert write_ddr_comparison_export(payload, destination, output_format="json") == destination
+    original = destination.read_bytes()
+    with pytest.raises(FileExistsError, match="explicitly allow overwrite"):
+        write_ddr_comparison_export(payload, destination, output_format="markdown")
+    assert destination.read_bytes() == original
+    assert list(tmp_path.glob("*.partial")) == []
+
+    destination.write_text("owner file", encoding="utf-8")
+    write_ddr_comparison_export(payload, destination, output_format="markdown", overwrite=True)
+    assert destination.read_text(encoding="utf-8") == markdown
+    assert list(tmp_path.glob("*.partial")) == []
+
+    with pytest.raises(FileNotFoundError, match="output directory does not exist"):
+        write_ddr_comparison_export(
+            payload, tmp_path / "missing" / "report.json", output_format="json"
+        )

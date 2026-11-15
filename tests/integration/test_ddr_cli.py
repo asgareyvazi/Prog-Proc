@@ -542,6 +542,85 @@ def test_cli_ddr_compare_is_scoped_read_only_stable_and_reports_ambiguity(
         "UNCHANGED",
     ]
     assert comparison["activities"]["items"][1]["successor"]["label"] == "Inserted"
+
+    json_path = workspace.root / "ddr-comparison.json"
+    export_result = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "json",
+        "--output",
+        str(json_path),
+    )
+    assert export_result["format"] == "json"
+    assert export_result["read_only"] is True
+    exported_json = json.loads(json_path.read_text(encoding="utf-8"))
+    assert exported_json["schema"] == "prog-proc.ddr-comparison/v1"
+    assert exported_json["predecessor"]["report_id"] == predecessor["report_id"]
+    assert exported_json["successor"]["report_id"] == successor["report_id"]
+    assert (
+        exported_json["comparison"]["activities"]["items"][1]["successor"]["description"]
+        == "Exact insert"
+    )
+    assert exported_json["truncation"]["omitted_activity_items"] == 0
+
+    original_export = json_path.read_bytes()
+    refusal = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "json",
+        "--output",
+        str(json_path),
+        expect=1,
+    )
+    assert "explicitly allow overwrite" in refusal["message"]
+    assert json_path.read_bytes() == original_export
+
+    markdown_path = workspace.root / "ddr-comparison.md"
+    markdown_result = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "markdown",
+        "--output",
+        str(markdown_path),
+    )
+    assert markdown_result["format"] == "markdown"
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "not a review decision or approval" in markdown
+    assert "Exact insert" in markdown
+    assert "omitted items: 0; truncated: no" in markdown
+
+    stdout_json = _call_human(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "json",
+    )
+    assert json.loads(stdout_json)["schema"] == "prog-proc.ddr-comparison/v1"
+    stdout_markdown = _call_human(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "markdown",
+    )
+    assert "# DDR revision comparison" in stdout_markdown
     assert _sqlite_fingerprint(workspace.database) == before
 
     mismatched = _call(
@@ -589,3 +668,20 @@ def test_cli_ddr_compare_is_scoped_read_only_stable_and_reports_ambiguity(
     assert ambiguous["ok"] is False
     assert ambiguous["comparison"]["status"] == "AMBIGUOUS"
     assert ambiguous["comparison"]["has_changes"] is None
+    ambiguous_markdown_path = workspace.root / "ambiguous-ddr-comparison.md"
+    _call(
+        workspace,
+        "ddr",
+        "compare",
+        repeated["report_id"],
+        repeated_successor["report_id"],
+        "--format",
+        "markdown",
+        "--output",
+        str(ambiguous_markdown_path),
+        expect=3,
+    )
+    ambiguous_markdown = ambiguous_markdown_path.read_text(encoding="utf-8")
+    assert "AMBIGUOUS" in ambiguous_markdown
+    assert "Repeated" in ambiguous_markdown
+    assert "no pairing was guessed" in ambiguous_markdown.lower()
