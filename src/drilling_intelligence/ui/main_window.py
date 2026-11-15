@@ -716,7 +716,9 @@ class MainWindow(QMainWindow):
                 )
             )
         )
-        self.sections_table.selectionModel().currentChanged.connect(self._section_selection_changed)
+        section_selection = self.sections_table.selectionModel()
+        section_selection.currentChanged.connect(self._section_selection_changed)
+        section_selection.selectionChanged.connect(self._section_rows_selection_changed)
         self.sections_detail = self._new_detail_tree()
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.sections_table)
@@ -2803,10 +2805,28 @@ class MainWindow(QMainWindow):
         self.records_proxy.set_text(self.record_text_filter.text())
 
     @Slot(QModelIndex, QModelIndex)
-    def _section_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
-        """Show the selected section DTO verbatim, including source provenance."""
-        payload = self.sections_model.row_payload(current.row()) if current.isValid() else None
-        _fill_tree(self.sections_detail, payload)
+    def _section_selection_changed(self, _current: QModelIndex, _previous: QModelIndex) -> None:
+        """Render the row selected by either the current index or row selection."""
+        self._render_selected_section()
+
+    @Slot(object, object)
+    def _section_rows_selection_changed(self, _selected: object, _deselected: object) -> None:
+        """Keep programmatic row selection and user selection on the same read path."""
+        self._render_selected_section()
+
+    def _render_selected_section(self) -> None:
+        selection = self.sections_table.selectionModel()
+        selected_rows = selection.selectedRows()
+        if len(selected_rows) != 1:
+            _fill_tree(self.sections_detail, None)
+            return
+        current = selection.currentIndex()
+        selected = (
+            current
+            if current.isValid() and current.row() == selected_rows[0].row()
+            else selected_rows[0]
+        )
+        _fill_tree(self.sections_detail, self.sections_model.row_payload(selected.row()))
 
     @Slot(QModelIndex, QModelIndex)
     def _record_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
@@ -3104,6 +3124,8 @@ class MainWindow(QMainWindow):
         self._selected_conflict = None
         self._set_record_actions(())
         self._set_conflict_actions(())
+        self.sections_table.clearSelection()
+        self.sections_table.setCurrentIndex(QModelIndex())
         _fill_tree(self.sections_detail, None)
         _fill_tree(self.record_detail, None)
         _fill_tree(self.conflict_detail, None)

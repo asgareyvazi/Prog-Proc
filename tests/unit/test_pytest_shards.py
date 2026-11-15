@@ -15,6 +15,7 @@ from email.message import Message
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from xml.sax.saxutils import quoteattr
 
 import pytest
 from tools.pytest_shard import (
@@ -35,6 +36,13 @@ _SHA = "a" * 40
 _RUN_ID = "42"
 _ATTEMPT = "1"
 _SHARDS = 2
+_POSTGRESQL_SKIP_NODEID = (
+    "tests/integration/test_phase1_finalization.py::test_postgresql_claim_is_qualified_or_withdrawn"
+)
+_POSTGRESQL_SKIP_REASON = (
+    "PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; "
+    "no disposable PostgreSQL service job exists."
+)
 
 
 def _write(path: Path, value: Any) -> None:
@@ -67,8 +75,20 @@ def _job(name: str, job_id: int, steps: list[str], conclusion: str = "success") 
     }
 
 
-def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
-    nodeids = [f"tests/unit/test_{i}.py::test_case_{i}" for i in range(16)]
+def _fixture(
+    tmp_path: Path,
+    shard_count: int = _SHARDS,
+    *,
+    skip_records: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    skip_records = dict(skip_records or {})
+    if len(skip_records) > 16:
+        raise ValueError("synthetic fixture cannot contain more than 16 skips")
+    ordinary_nodeids = [f"tests/unit/test_{i}.py::test_case_{i}" for i in range(16)]
+    nodeids = [
+        *skip_records,
+        *[nodeid for nodeid in ordinary_nodeids if nodeid not in skip_records],
+    ][:16]
     manifest = _manifest_payload(
         nodeids,
         head_sha=_SHA,
@@ -133,11 +153,22 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
             "assigned_nodeids": assigned,
             "pytest_exit_status": 0,
             "reports": {
-                nodeid: [
-                    {"when": "setup", "outcome": "passed"},
-                    {"when": "call", "outcome": "passed"},
-                    {"when": "teardown", "outcome": "passed"},
-                ]
+                nodeid: (
+                    [
+                        {"when": "setup", "outcome": "passed"},
+                        {
+                            "when": "call",
+                            "outcome": "skipped",
+                            "skip_reason": skip_records[nodeid],
+                        },
+                    ]
+                    if nodeid in skip_records
+                    else [
+                        {"when": "setup", "outcome": "passed"},
+                        {"when": "call", "outcome": "passed"},
+                        {"when": "teardown", "outcome": "passed"},
+                    ]
+                )
                 for nodeid in assigned
             },
         }
@@ -149,10 +180,10 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
             folder / "pytest-totals.json",
             {
                 "collected": len(assigned),
-                "passed": len(assigned),
+                "passed": len(assigned) - sum(nodeid in skip_records for nodeid in assigned),
                 "failed": 0,
                 "errors": 0,
-                "skipped": 0,
+                "skipped": sum(nodeid in skip_records for nodeid in assigned),
                 "xfailed": 0,
                 "xpassed": 0,
                 "exit": 0,
@@ -162,13 +193,28 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
         (folder / "pytest-exit.txt").write_text("0\n", encoding="utf-8")
         (folder / "pytest-run-state.txt").write_text("COMPLETED exit=0\n", encoding="utf-8")
         (folder / "pytest-output.txt").write_text("synthetic fixture\n", encoding="utf-8")
-        cases = "".join(
-            f'<testcase classname="tests.unit.test_{i}" name="test_case_{i}" />'
-            for i in range(len(nodeids))
-            if nodeids[i] in assigned
-        )
+        case_rows = []
+        for nodeid in assigned:
+            module_path, *parts = nodeid.split("::")
+            classname = module_path.removesuffix(".py").replace("/", ".")
+            if len(parts) > 1:
+                classname += "." + ".".join(parts[:-1])
+            case_name = parts[-1]
+            if nodeid in skip_records:
+                reason = skip_records[nodeid]
+                case_rows.append(
+                    f"<testcase classname={quoteattr(classname)} name={quoteattr(case_name)}>"
+                    f'<skipped type="pytest.skip" message={quoteattr(reason)} />'
+                    "</testcase>"
+                )
+            else:
+                case_rows.append(
+                    f"<testcase classname={quoteattr(classname)} name={quoteattr(case_name)} />"
+                )
+        cases = "".join(case_rows)
+        shard_skipped = sum(nodeid in skip_records for nodeid in assigned)
         (folder / "pytest-junit.xml").write_text(
-            f'<testsuite tests="{len(assigned)}" failures="0" errors="0" skipped="0" time="3.25">{cases}</testsuite>',
+            f'<testsuite tests="{len(assigned)}" failures="0" errors="0" skipped="{shard_skipped}" time="3.25">{cases}</testsuite>',
             encoding="utf-8",
         )
         specifications.append((name, 201 + index))
@@ -760,6 +806,136 @@ def test_any_skip_or_xfail_prevents_pass(tmp_path: Path) -> None:
     result = _run(tmp_path, fixture)
     assert result["status"] == "FAIL"
     assert result["totals"]["skipped"] == 1
+
+
+def test_exact_postgresql_boundary_skip_is_counted_and_qualifies_the_complete_run(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(
+        tmp_path,
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    result = _run(tmp_path, fixture)
+
+    assert result["status"] == "PASS"
+    assert result["complete"] is True
+    assert result["collected_nodeids"] == result["covered_nodeids"] == 16
+    assert result["totals"]["passed"] == 15
+    assert result["totals"]["skipped"] == 1
+    assert result["totals"]["failed"] == result["totals"]["errors"] == 0
+    assert result["skips"] == [
+        {
+            "classname": "tests.integration.test_phase1_finalization",
+            "name": "test_postgresql_claim_is_qualified_or_withdrawn",
+            "reason": _POSTGRESQL_SKIP_REASON,
+            "type": "pytest.skip",
+        }
+    ]
+    from xml.etree import ElementTree as ET
+
+    combined = ET.parse(tmp_path / "combined.xml").getroot()  # noqa: S314 - generated in this test
+    cases = [case for case in combined.iter("testcase") if case.find("skipped") is not None]
+    assert len(cases) == 1
+    assert cases[0].get("name") == "test_postgresql_claim_is_qualified_or_withdrawn"
+    assert cases[0].find("skipped").get("message") == _POSTGRESQL_SKIP_REASON
+    assert (tmp_path / "combined-exit.txt").read_text(encoding="utf-8") == "0\n"
+
+
+def test_qt_aggregator_rejects_nonexact_or_additional_skip(tmp_path: Path) -> None:
+    changed_reason = _fixture(
+        tmp_path / "changed-reason",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON + " changed"},
+    )
+    result = _run(tmp_path / "changed-reason", changed_reason)
+    assert result["status"] == "FAIL"
+    assert result["totals"]["skipped"] == 1
+
+    wrong_identity = _fixture(
+        tmp_path / "wrong-identity",
+        skip_records={
+            "tests/integration/test_phase1_finalization.py::test_other": _POSTGRESQL_SKIP_REASON
+        },
+    )
+    result = _run(tmp_path / "wrong-identity", wrong_identity)
+    assert result["status"] == "FAIL"
+    assert result["totals"]["skipped"] == 1
+
+    extra_skip = _fixture(
+        tmp_path / "extra-skip",
+        skip_records={
+            _POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON,
+            "tests/unit/test_unrelated.py::test_unrelated": "unapproved reason",
+        },
+    )
+    result = _run(tmp_path / "extra-skip", extra_skip)
+    assert result["status"] == "FAIL"
+    assert result["totals"]["skipped"] == 2
+    assert any("unexpected Qt-enabled skips" in issue for issue in result["issues"])
+
+
+def test_qt_aggregator_requires_skip_evidence_and_consistent_terminal_outcomes(
+    tmp_path: Path,
+) -> None:
+    missing_process = _fixture(
+        tmp_path / "missing-process",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    folder = _folder(missing_process, 0)
+    execution = json.loads((folder / "shard-execution.json").read_text(encoding="utf-8"))
+    execution["reports"][_POSTGRESQL_SKIP_NODEID] = [
+        {"when": "setup", "outcome": "passed"},
+        {"when": "call", "outcome": "passed"},
+        {"when": "teardown", "outcome": "passed"},
+    ]
+    _write(folder / "shard-execution.json", execution)
+    _refresh(missing_process, 0)
+    with pytest.raises(AggregateError, match="process reports disagree on passed"):
+        _run(tmp_path / "missing-process", missing_process)
+
+    duplicate_process = _fixture(
+        tmp_path / "duplicate-process",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    folder = _folder(duplicate_process, 0)
+    execution = json.loads((folder / "shard-execution.json").read_text(encoding="utf-8"))
+    execution["reports"][_POSTGRESQL_SKIP_NODEID].append(
+        dict(execution["reports"][_POSTGRESQL_SKIP_NODEID][1])
+    )
+    _write(folder / "shard-execution.json", execution)
+    _refresh(duplicate_process, 0)
+    with pytest.raises(AggregateError, match="duplicate phase"):
+        _run(tmp_path / "duplicate-process", duplicate_process)
+
+    contradictory_junit = _fixture(
+        tmp_path / "contradictory-junit",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    folder = _folder(contradictory_junit, 0)
+    junit_path = folder / "pytest-junit.xml"
+    junit_path.write_text(
+        junit_path.read_text(encoding="utf-8").replace(
+            _POSTGRESQL_SKIP_REASON, "different JUnit reason"
+        ),
+        encoding="utf-8",
+    )
+    _refresh(contradictory_junit, 0)
+    result = _run(tmp_path / "contradictory-junit", contradictory_junit)
+    assert result["status"] == "FAIL"
+    assert any("unexpected Qt-enabled skips" in issue for issue in result["issues"])
+
+    contradictory_stats = _fixture(
+        tmp_path / "contradictory-stats",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    folder = _folder(contradictory_stats, 0)
+    stats_path = folder / "pytest-totals.json"
+    stats = json.loads(stats_path.read_text(encoding="utf-8"))
+    stats["passed"] += 1
+    stats["skipped"] = 0
+    _write(stats_path, stats)
+    _refresh(contradictory_stats, 0)
+    with pytest.raises(AggregateError, match="process reports disagree on passed"):
+        _run(tmp_path / "contradictory-stats", contradictory_stats)
 
 
 def test_wrong_partition_missing_reports_and_bad_process_state_are_rejected(tmp_path: Path) -> None:

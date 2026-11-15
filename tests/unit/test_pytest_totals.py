@@ -13,11 +13,13 @@ from tools.pytest_totals import (
     disagreements,
     failed_test_cases,
     format_totals,
+    is_unqualified_backend_boundary_skip,
     main,
     notice_lines,
     publish,
     read_exit_file,
     skip_is_expected,
+    skip_is_expected_qt_enabled,
     totals_from_junit,
     totals_from_stats,
 )
@@ -202,6 +204,30 @@ def test_all_tests_skipped_is_not_a_passing_suite(tmp_path: Path) -> None:
     exit_file.write_text("0\n", encoding="utf-8")
     assert publish(stats, junit, exit_file, summary) == 1
     assert "all tests skipped: no test executed" in summary.read_text(encoding="utf-8")
+
+
+def test_qt_enabled_skip_policy_allows_only_exact_boundary_and_documented_platform_reasons() -> (
+    None
+):
+    from tools.pytest_totals import _UNQUALIFIED_BACKEND_SKIP
+
+    module, name, reason = _UNQUALIFIED_BACKEND_SKIP
+    assert is_unqualified_backend_boundary_skip(module, name, reason)
+    assert skip_is_expected_qt_enabled(module, name, reason)
+    assert not skip_is_expected_qt_enabled(module, name, reason + " extra")
+    assert not skip_is_expected_qt_enabled(module, "another_test", reason)
+    assert not skip_is_expected_qt_enabled("tests.integration.other", name, reason)
+    assert not skip_is_expected_qt_enabled("tests.integration.other", "test_postgresql", reason)
+    assert not skip_is_expected_qt_enabled(module, name, "PostgreSQL is qualified")
+    assert skip_is_expected_qt_enabled(
+        "tests.integration.path_boundary",
+        "test_symlink_policy",
+        "this platform does not support symlinks",
+    )
+    assert not skip_is_expected_qt_enabled(
+        "tests.integration.path_boundary", "test_symlink_policy", "platform issue"
+    )
+    assert not skip_is_expected_qt_enabled("tests.integration.anything", "test_x", "unknown reason")
 
 
 def _clean_junit(tests: int = 2, failed: int = 0, skipped: int = 0) -> str:

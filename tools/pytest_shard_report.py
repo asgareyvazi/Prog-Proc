@@ -22,7 +22,9 @@ from typing import Any
 
 from tools.pytest_shard_contract import assigned_nodeids, canonical, validate_manifest
 from tools.pytest_totals import (
+    _UNQUALIFIED_BACKEND_SKIP,
     disagreements,
+    is_unqualified_backend_boundary_skip,
     read_exit_file,
     totals_from_junit,
     unexpected_skips_qt_enabled,
@@ -378,6 +380,8 @@ def _classify_reports(reports: object, assigned: list[str]) -> Counter[str]:
             raise AggregateError(f"test node {nodeid!r} has an unknown phase outcome")
         failed = [p for p in phases if p["outcome"] == "failed"]
         skipped = [p for p in phases if p["outcome"] == "skipped"]
+        if any(not isinstance(p.get("skip_reason"), str) or not p["skip_reason"] for p in skipped):
+            raise AggregateError(f"test node {nodeid!r} has skipped execution without a reason")
         passed = [p for p in phases if p["outcome"] == "passed"]
         if failed:
             counts["errors" if any(p["when"] != "call" for p in failed) else "failed"] += 1
@@ -390,6 +394,34 @@ def _classify_reports(reports: object, assigned: list[str]) -> Counter[str]:
         else:
             raise AggregateError(f"test node {nodeid!r} lacks a terminal pytest phase")
     return counts
+
+
+def _is_single_approved_backend_skip(reports: object, junit_skips: list[dict[str, str]]) -> bool:
+    """Require one exact policy skip to agree across node ID, process, and JUnit."""
+    if not isinstance(reports, dict) or len(junit_skips) != 1:
+        return False
+    junit_skip = junit_skips[0]
+    if not is_unqualified_backend_boundary_skip(
+        junit_skip.get("classname", ""), junit_skip.get("name", ""), junit_skip.get("reason", "")
+    ):
+        return False
+    module, name, reason = _UNQUALIFIED_BACKEND_SKIP
+    expected_nodeid = f"{module.replace('.', '/')}.py::{name}"
+    process_skips: list[tuple[str, dict[str, Any]]] = []
+    for nodeid, phases in reports.items():
+        if not isinstance(nodeid, str) or not isinstance(phases, list):
+            return False
+        for phase in phases:
+            if isinstance(phase, dict) and phase.get("outcome") == "skipped":
+                process_skips.append((nodeid, phase))
+    if len(process_skips) != 1:
+        return False
+    nodeid, phase = process_skips[0]
+    return (
+        nodeid == expected_nodeid
+        and phase.get("when") == "call"
+        and phase.get("skip_reason") == reason
+    )
 
 
 def _atomic_write(path: Path, data: bytes) -> None:
@@ -706,9 +738,14 @@ def aggregate(
             )
         if stats["collected"] != len(assigned):
             raise AggregateError(f"shard {index} totals do not account for all assigned node IDs")
-        if stats["skipped"] or stats["xfailed"]:
+        approved_backend_skip = _is_single_approved_backend_skip(execution.get("reports"), skips)
+        if (stats["skipped"] or stats["xfailed"]) and not (
+            stats["skipped"] == 1 and stats["xfailed"] == 0 and approved_backend_skip
+        ):
             fail_issues.append(
-                f"shard {index} did not execute every test normally: skipped={stats['skipped']} xfailed={stats['xfailed']}"
+                f"shard {index} did not execute every test normally outside the sole "
+                f"documented PostgreSQL boundary skip: skipped={stats['skipped']} "
+                f"xfailed={stats['xfailed']}"
             )
         if stats["failed"] or stats["errors"] or stats["xpassed"] or shell_exit != 0:
             fail_issues.append(

@@ -57,6 +57,8 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
     qt_app, workspace
 ) -> None:
     """A real workspace and real DomainReviewService feed every major read-only view."""
+    from PySide6.QtCore import QModelIndex, Qt
+    from PySide6.QtTest import QTest
     from tests.fixtures.fieldops import add_casing_program, ingest, promote, well_id_for
 
     from drilling_intelligence.review import DomainReviewRequest, DomainReviewService
@@ -89,18 +91,54 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
         assert window.conflicts_model.rowCount() == len(current.conflicts)
         assert "CURRENT" in window.overview_counts.text()
 
+        window.show()
+        _select_navigation_page(window, "Sections")
+        qt_app.processEvents()
         source_section = next(
             (index, row)
             for index in range(window.sections_model.row_count)
             if (row := window.sections_model.row_payload(index)) and row.get("provenance")
         )
         section_index, section_payload = source_section
+        selection_model = window.sections_table.selectionModel()
+        current_events: list[tuple[int, int]] = []
+        selection_events: list[tuple[int, int]] = []
+        selection_model.currentChanged.connect(
+            lambda current, previous: current_events.append(
+                (
+                    current.row() if current.isValid() else -1,
+                    previous.row() if previous.isValid() else -1,
+                )
+            )
+        )
+        selection_model.selectionChanged.connect(
+            lambda selected, deselected: selection_events.append(
+                (selected.indexes().__len__(), deselected.indexes().__len__())
+            )
+        )
+
+        # selectRow is a supported selection-model operation but may not move
+        # the current index on every Qt version. Details must follow the row
+        # selection signal as well as currentChanged.
+        selection_model.clearSelection()
+        window.sections_table.setCurrentIndex(QModelIndex())
         window.sections_table.selectRow(section_index)
         qt_app.processEvents()
+        selected_rows = [index.row() for index in selection_model.selectedRows()]
+        assert selected_rows == [section_index], {
+            "current_row": selection_model.currentIndex().row()
+            if selection_model.currentIndex().isValid()
+            else -1,
+            "selected_rows": selected_rows,
+            "current_changed_events": current_events,
+            "selection_changed_events": selection_events,
+        }
+        assert selection_events
         section_detail_keys = {
             window.sections_detail.topLevelItem(index).text(0)
             for index in range(window.sections_detail.topLevelItemCount())
         }
+        assert section_detail_keys == {str(key) for key in section_payload}
         assert {"id", "origin", "provenance", "planned_duration_days"}.issubset(section_detail_keys)
         provenance_item = next(
             window.sections_detail.topLevelItem(index)
@@ -109,6 +147,81 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
         )
         assert provenance_item.childCount() > 0
         assert section_payload["provenance"], "the selected source section retains provenance"
+
+        # Verify an actual mouse click and keyboard navigation update exact
+        # row DTOs, not just a stale current index.
+        selection_model.clearSelection()
+        window.sections_table.setCurrentIndex(QModelIndex())
+        qt_app.processEvents()
+        target = window.sections_model.index(section_index, 0)
+        window.sections_table.scrollTo(target)
+        qt_app.processEvents()
+        QTest.mouseClick(
+            window.sections_table.viewport(),
+            Qt.MouseButton.LeftButton,
+            pos=window.sections_table.visualRect(target).center(),
+        )
+        qt_app.processEvents()
+        assert [index.row() for index in selection_model.selectedRows()] == [section_index]
+        clicked_name = window.sections_model.row_payload(section_index)["name"]
+        details = {
+            window.sections_detail.topLevelItem(index).text(0): window.sections_detail.topLevelItem(
+                index
+            ).text(1)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert details["name"] == str(clicked_name)
+
+        window.sections_table.setFocus()
+        row_count = window.sections_model.row_count
+        assert row_count > 1
+        expected_keyboard_row = (
+            section_index - 1 if section_index == row_count - 1 else section_index + 1
+        )
+        navigation_key = Qt.Key.Key_Up if section_index == row_count - 1 else Qt.Key.Key_Down
+        QTest.keyClick(window.sections_table, navigation_key)
+        qt_app.processEvents()
+        keyboard_rows = [index.row() for index in selection_model.selectedRows()]
+        assert keyboard_rows == [expected_keyboard_row]
+        keyboard_payload = window.sections_model.row_payload(keyboard_rows[0])
+        assert keyboard_payload is not None
+        details = {
+            window.sections_detail.topLevelItem(index).text(0): window.sections_detail.topLevelItem(
+                index
+            ).text(1)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert details["name"] == str(keyboard_payload["name"])
+
+        selection_model.clearSelection()
+        qt_app.processEvents()
+        assert window.sections_detail.topLevelItem(0).text(1) == "No detail selected."
+
+        window.sections_table.sortByColumn(1, Qt.SortOrder.DescendingOrder)
+        qt_app.processEvents()
+        assert not selection_model.selectedRows()
+        assert window.sections_detail.topLevelItem(0).text(1) == "No detail selected."
+        sorted_payload = window.sections_model.row_payload(0)
+        assert sorted_payload is not None
+        window.sections_table.selectRow(0)
+        qt_app.processEvents()
+        details = {
+            window.sections_detail.topLevelItem(index).text(0): window.sections_detail.topLevelItem(
+                index
+            ).text(1)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert details["name"] == str(sorted_payload["name"])
+        window.sections_table.setCurrentIndex(window.sections_model.index(0, 0))
+        qt_app.processEvents()
+        details = {
+            window.sections_detail.topLevelItem(index).text(0): window.sections_detail.topLevelItem(
+                index
+            ).text(1)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert details["name"] == str(sorted_payload["name"])
+        assert _database_fingerprint(controller.workspace) == before
 
         if window.records_model.rowCount():
             window.records_table.selectRow(0)
@@ -122,6 +235,8 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
             not record.current for record in history.records
         )
         assert window.lifecycle_combo.currentData() == "history"
+        assert not selection_model.selectedRows()
+        assert window.sections_detail.topLevelItem(0).text(1) == "No detail selected."
 
         verified = service.review(
             DomainReviewRequest(well_id=well_id, lifecycle="current", verify_citations=True)
@@ -131,6 +246,8 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
         assert verified.citation_audit is not None
         assert "Citation audit completed" in window.evidence_summary.text()
         assert window.audit_model.rowCount() == len(verified.citation_audit["checks"])
+        assert not selection_model.selectedRows()
+        assert window.sections_detail.topLevelItem(0).text(1) == "No detail selected."
     finally:
         # Release, do not only close.  The application fixture is
         # session-scoped, so a window that is only closed stays alive until
