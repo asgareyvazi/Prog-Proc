@@ -620,6 +620,33 @@ def test_archive_digest_size_and_foreign_run_are_rejected(tmp_path: Path) -> Non
         _run(other, fixture2)
 
 
+def test_optional_reconciliation_report_artifact_is_allowed_but_identity_checked(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path / "report-present")
+    report_artifact = {
+        **_artifact(fixture, "ubuntu2604-qt-shard-00-of-02-a1"),
+        "id": 999,
+        "name": "ubuntu2604-qt-shard-report-a1",
+    }
+    fixture["artifacts"].append(report_artifact)
+    _write(fixture["artifacts_path"], {"artifacts": fixture["artifacts"]})
+    assert _run(tmp_path / "report-present", fixture)["status"] == "PASS"
+
+    foreign = tmp_path / "report-foreign"
+    fixture2 = _fixture(foreign)
+    report_artifact = {
+        **_artifact(fixture2, "ubuntu2604-qt-shard-00-of-02-a1"),
+        "id": 999,
+        "name": "ubuntu2604-qt-shard-report-a1",
+    }
+    report_artifact["workflow_run"]["head_sha"] = "b" * 40
+    fixture2["artifacts"].append(report_artifact)
+    _write(fixture2["artifacts_path"], {"artifacts": fixture2["artifacts"]})
+    with pytest.raises(AggregateError, match="another run or SHA"):
+        _run(foreign, fixture2)
+
+
 def test_duplicate_ids_and_unexpected_attempt_artifacts_are_rejected(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     _artifact(fixture, "ubuntu2604-qt-shard-00-of-02-a1")["id"] = 101

@@ -188,11 +188,17 @@ def collect(
     shard_count: int,
     output_dir: Path,
     token: str,
+    additional_artifact_names: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise FetchError("repository must be owner/name")
     if not run_id.isdecimal() or not attempt.isdecimal() or shard_count < 2:
         raise FetchError("run ID, attempt, or shard count is invalid")
+    allowed_additional = {f"ubuntu2604-qt-shard-report-a{attempt}"}
+    if any(name not in allowed_additional for name in additional_artifact_names):
+        raise FetchError("additional artifact name is outside the bounded shard-report allowlist")
+    if len(additional_artifact_names) != len(set(additional_artifact_names)):
+        raise FetchError("additional artifact names contain duplicates")
     base = f"{_API}/repos/{repository}/actions/runs/{run_id}"
     run, _ = _json_request(base, token)
     jobs = _paginated_list(f"{base}/jobs", "jobs", token)
@@ -207,6 +213,7 @@ def collect(
     expected_names.update(
         f"ubuntu2604-qt-shard-{i:02d}-of-{shard_count:02d}-a{attempt}" for i in range(shard_count)
     )
+    expected_names.update(additional_artifact_names)
     records = artifacts.get("artifacts", [])
     downloads: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -281,6 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workflow", required=True)
     parser.add_argument("--shard-count", type=int, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--additional-artifact-name", action="append", default=[])
     args = parser.parse_args(argv)
     token = os.environ.get("GH_TOKEN")
     if not token:
@@ -296,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
             shard_count=args.shard_count,
             output_dir=args.output_dir,
             token=token,
+            additional_artifact_names=tuple(args.additional_artifact_name),
         )
     except FetchError as exc:
         print(f"INCOMPLETE: {exc}", file=sys.stderr)

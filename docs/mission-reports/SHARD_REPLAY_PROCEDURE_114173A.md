@@ -1,6 +1,20 @@
-# Forensic replay procedure — shard run 43695755434 (attempt 1)
+# Forensic replay procedure — historical Linux shard run 43695755434 (attempt 1)
 
-**Purpose:** offline re-evaluation of the original Linux shard artifacts using the corrected local `tools.pytest_shard_report` code. This is not a rerun of GitHub Actions and must not be reported as the original workflow passing.
+## Purpose and interpretation
+
+Replay the original failed run's collection manifest, four shard artifacts, and failed reconciliation-report artifact using the current read-only GitHub evidence tools. The replay must verify bytes against GitHub API size/SHA-256, run/job/artifact identity, exact-once assignment/execution, JUnit/process skip reasons, and original totals. It must preserve the historical result as **FAIL**: successful forensic reproduction does not convert the old workflow into a pass. No source/audit/DB data is changed.
+
+The sandbox cannot fetch GitHub Actions storage redirects: direct downloads ended with `EOF` at `productionresultssa*.blob.core.windows.net`, outside the sandbox egress allowlist. To finish the replay from a network-capable authorized runner without loosening egress policy, the current CI workflow contains a manually selected, read-only replay job, guarded to this branch and fixed run identity. On the authorized branch, trigger it with:
+
+```bash
+gh workflow run ci.yml \
+  --ref arena/5957b76d-prog-proc \
+  -f replay_historical_shards=true
+```
+
+GitHub runs the normal Linux CI jobs as well as the opt-in replay job for this workflow-dispatch event. The `GH_TOKEN` is the scoped workflow token with `actions: read`; it is not printed or stored. The replay downloads six bounded artifacts (collection, four shards, and original reconciliation report), rechecks API digest/size, aggregates current evidence, validates the original failed report, and uploads only `downloads.json`, replay JSON/Markdown, and combined stats. Raw archives and extracted test payloads stay in the ephemeral runner and are not re-uploaded.
+
+The replay workflow job returns success only when the artifacts were fetched and verified, the offline report preserves the historical `FAIL`, and the known skip wrapper mismatch is reproduced. This job result means **forensic replay complete**, not that the historical CI passed or the old skip was a passing test.
 
 ## Immutable run identity
 
@@ -11,7 +25,7 @@
 - Run/attempt: `43695755434` / `1`
 - Expected workflow ref: `asgareyvazi/Prog-Proc/.github/workflows/ci.yml@refs/heads/arena/5957b76d-prog-proc`
 
-Artifact metadata from the GitHub API:
+Artifact metadata from GitHub API:
 
 | Artifact | ID | Bytes | API SHA-256 |
 |---|---:|---:|---|
@@ -20,54 +34,20 @@ Artifact metadata from the GitHub API:
 | `ubuntu2604-qt-shard-01-of-04-a1` | `14155155156` | `144,870` | `7265b15a3a61557df1bdee2653c8a902828186e6d13a42f44b22860308d2dd27` |
 | `ubuntu2604-qt-shard-02-of-04-a1` | `14154935699` | `143,338` | `4204e0461e2187162e8b19afa7e2f8ef961e3c09d34765fd56f2ff7d1aaec5a3` |
 | `ubuntu2604-qt-shard-03-of-04-a1` | `14154004233` | `142,003` | `062f3f34389f16c1f3341b88f36ce8df2fb97d4492e2e48f4b901a0c434d254a` |
-| `ubuntu2604-qt-shard-report-a1` (historical failed report; retain separately) | `14154880825` | `81,488` | `7852477463a5425edc4693a1c82da109fa5253823d5f483c559bfd09ef67e5d9` |
+| `ubuntu2604-qt-shard-report-a1` | `14154880825` | `81,488` | `7852477463a5425edc4693a1c82da109fa5253823d5f483c559bfd09ef67e5d9` |
 
-The expected original aggregate was 2,893 node IDs assigned exactly once; 2,892 passed, one policy skip, zero failures/errors/xfails/xpasses. The single skip is `tests.integration.test_phase1_finalization::test_postgresql_claim_is_qualified_or_withdrawn`, with canonical reason `PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; no disposable PostgreSQL service job exists.` The original process sidecar included the pytest display prefix `Skipped: `; this replay must determine whether the corrected plugin/report accepts the original payload. Keep the original failed report artifact and this result distinct.
+The historical report said 2,893 node IDs, 2,892 passed, one skip, and zero failures/errors/xfails/xpasses. Expected skip identity: `tests.integration.test_phase1_finalization::test_postgresql_claim_is_qualified_or_withdrawn`. Canonical JUnit reason: `PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; no disposable PostgreSQL service job exists.` The original process sidecar retained exactly one pytest display wrapper, `Skipped: `, before that reason. Replay verifies this mismatch and exact-once coverage; it must not normalize the authored JUnit reason or infer qualification for PostgreSQL.
 
-## Reproducible command sequence
+## Expected machine-checked replay assertions
 
-Run from the reviewed commit containing the normalization correction. `GH_TOKEN` must be the already-authorized read-only GitHub Actions token; do not print or store it in a report. The repository's artifact tool verifies each raw ZIP against API byte size and digest before aggregation.
+The dedicated `tools.pytest_shard_replay` command verifies:
 
-```bash
-set -euo pipefail
-REPLAY=/tmp/prog-proc-replay-43695755434-a1
-mkdir -p "$(dirname "$REPLAY")"
-GH_TOKEN="${GH_TOKEN:-$(gh auth token)}" python -m tools.pytest_shard_artifacts \
-  --repository asgareyvazi/Prog-Proc \
-  --run-id 43695755434 \
-  --attempt 1 \
-  --sha 114173a489e8a0d5b56cdfe6f63efd14701e9d65 \
-  --workflow CI \
-  --shard-count 4 \
-  --output-dir "$REPLAY"
+- All six artifact names occur exactly once, are unexpired, and downloaded bytes match each API size and SHA-256.
+- The run is exactly repository `asgareyvazi/Prog-Proc`, workflow `CI`, branch above, run/attempt `43695755434/1`, SHA above, completed with original conclusion `failure`.
+- Collection is 2,893 IDs, all assigned and executed exactly once; aggregate totals are 2,892 passed, 1 skipped, 0 failed/errors/xfails/xpasses.
+- JUnit contains exactly the documented PostgreSQL policy skip and canonical reason; the sidecar contains the same node ID/call phase but the single display prefix mismatch.
+- The archived original report is itself checksum-verified, safely extracted, and bound to the same run/SHA/attempt; both archived and regenerated reports retain `FAIL` and the known issue. The workflow run's later conclusion remains separately verified from the original report.
 
-python -m tools.pytest_shard_report \
-  --shard-root "$REPLAY" \
-  --archive-root "$REPLAY/archives" \
-  --extracted-root "$REPLAY/extracted" \
-  --run "$REPLAY/run.json" \
-  --jobs "$REPLAY/jobs.json" \
-  --artifacts "$REPLAY/artifacts.json" \
-  --sha 114173a489e8a0d5b56cdfe6f63efd14701e9d65 \
-  --repository asgareyvazi/Prog-Proc \
-  --workflow CI \
-  --branch arena/5957b76d-prog-proc \
-  --workflow-ref asgareyvazi/Prog-Proc/.github/workflows/ci.yml@refs/heads/arena/5957b76d-prog-proc \
-  --run-id 43695755434 \
-  --attempt 1 \
-  --shard-count 4 \
-  --allow-in-progress-run \
-  --output-json "$REPLAY/replay-report.json" \
-  --output-markdown "$REPLAY/replay-report.md" \
-  --combined-junit "$REPLAY/replay-combined.xml" \
-  --combined-stats "$REPLAY/replay-stats.json" \
-  --combined-output "$REPLAY/replay-output.txt" \
-  --combined-exit "$REPLAY/replay-exit.txt" \
-  --combined-state "$REPLAY/replay-state.txt"
-```
+## Current replay execution record
 
-Before calling the replay PASS, independently confirm `downloads.json` has an empty failures array; check collection, all four shard node-ID assignments and execution reports, original artifact IDs/digests/sizes, exact policy identity and reason in both process and JUnit, and combined totals `passed=2892`, `skipped=1`, `failed=0`, `errors=0`. `run_completion_verified=false` and `workflow_conclusion_verified=false` are expected on an offline replay report; do not infer the original run's conclusion from replay success.
-
-## Status in this continuation
-
-**NOT RUN / BLOCKED:** the original continuation process identifier and its previous `/tmp` clone/report bundle were absent when resumed. The original owner checkout was not touched. Attempts to download the report artifact with `gh run download` failed with `EOF` after GitHub redirected to `productionresultssa*.blob.core.windows.net`, a host outside this sandbox's allowed outbound hosts. The API metadata above is available, but the raw artifact ZIP bytes were not present locally; no historical replay result is claimed. The procedure is retained for an authorized runner where the artifact redirect can complete.
+**Pending:** the opt-in CI job must be dispatched from `arena/5957b76d-prog-proc` after its workflow and replay verifier are pushed. Local direct artifact retrieval remains blocked as above. Record the replay workflow run ID, attempt, final job conclusion, and metadata-only output artifact ID here after it completes; do not mark replay complete from local tests or API metadata alone.

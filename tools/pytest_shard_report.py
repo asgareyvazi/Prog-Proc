@@ -541,6 +541,8 @@ def aggregate(
     expected_artifact_names.update(
         f"ubuntu2604-qt-shard-{i:02d}-of-{shard_count:02d}-a{attempt}" for i in range(shard_count)
     )
+    optional_report_name = f"ubuntu2604-qt-shard-report-a{attempt}"
+    accepted_artifact_names = expected_artifact_names | {optional_report_name}
     expected_artifacts = [
         row
         for row in artifacts
@@ -557,10 +559,22 @@ def aggregate(
         if isinstance(row.get("name"), str)
         and row["name"].startswith("ubuntu2604-qt-shard-")
         and row["name"].endswith(f"-a{attempt}")
-        and row["name"] not in expected_artifact_names
+        and row["name"] not in accepted_artifact_names
     ]
     if unexpected:
         raise AggregateError(f"unexpected shard artifacts for this attempt: {sorted(unexpected)}")
+    optional_reports = [row for row in artifacts if row.get("name") == optional_report_name]
+    if len(optional_reports) > 1:
+        raise AggregateError("optional shard reconciliation report artifact is duplicated")
+    if optional_reports:
+        _artifact(
+            artifacts,
+            name=optional_report_name,
+            repo_id=repo_id,
+            sha=expected_sha,
+            run_id=run_id,
+            attempt=attempt,
+        )
 
     collector_name = _COLLECTION_JOB
     collector = _job(
