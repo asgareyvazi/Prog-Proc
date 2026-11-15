@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -64,6 +65,7 @@ from ..database.integrity import KnowledgeIntegrityError
 from ..operations.ddr_comparison import (
     compare_ddr_revisions,
     ddr_comparison_export_payload,
+    redact_ddr_comparison_source_paths,
     write_ddr_comparison_export,
 )
 from ..reporting.exhibits import exhibits_from_comparison
@@ -2589,6 +2591,21 @@ class MainWindow(QMainWindow):
             return
         if not target.suffix:
             target = target.with_suffix(".json" if export_format == "json" else ".md")
+        privacy_choice, accepted = QInputDialog.getItem(
+            self,
+            "Source-path privacy",
+            "Choose what the exported comparison contains:",
+            [
+                "Full fidelity — include recorded local source paths",
+                "Shareable copy — redact local source paths",
+            ],
+            0,
+            False,
+        )
+        if not accepted:
+            self._set_status("Comparison export cancelled; no file was written.")
+            return
+        redact_source_paths = privacy_choice.startswith("Shareable copy")
         overwrite = False
         if target.exists():
             answer = QMessageBox.question(
@@ -2604,24 +2621,37 @@ class MainWindow(QMainWindow):
             overwrite = True
         try:
             self.export_ddr_comparison(
-                str(target), output_format=export_format, overwrite=overwrite
+                str(target),
+                output_format=export_format,
+                overwrite=overwrite,
+                redact_source_paths=redact_source_paths,
             )
         except (OSError, ValueError, ValidationError) as exc:
             self._set_status(f"DDR comparison export failed: {exc}", error=True)
 
     def export_ddr_comparison(
-        self, path: str, *, output_format: str, overwrite: bool = False
+        self,
+        path: str,
+        *,
+        output_format: str,
+        overwrite: bool = False,
+        redact_source_paths: bool = False,
     ) -> str:
-        """Atomically export the last rendered comparison without querying or mutating DDR state."""
+        """Atomically export the comparison without querying or mutating DDR state."""
         payload = self._ddr_comparison_export_payload
         if payload is None:
             raise ValidationError(
                 "no DDR comparison is loaded", hint="compare revisions before exporting"
             )
+        if redact_source_paths:
+            payload = redact_ddr_comparison_source_paths(payload)
         written = write_ddr_comparison_export(
             payload, path, output_format=output_format, overwrite=overwrite
         )
-        self._set_status(f"Read-only DDR comparison exported to {written} ({output_format}).")
+        privacy = "redacted shareable copy" if redact_source_paths else "full-fidelity copy"
+        self._set_status(
+            f"Read-only DDR comparison exported to {written} ({output_format}; {privacy})."
+        )
         return str(written)
 
     def _ddr_update_controls(self) -> None:

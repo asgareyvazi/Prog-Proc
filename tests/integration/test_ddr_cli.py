@@ -514,6 +514,19 @@ def test_cli_ddr_compare_is_scoped_read_only_stable_and_reports_ambiguity(
         actor="declared-author",
         reason="Insert one explicitly authored activity",
     )
+    # Exercise imported/legacy path-bearing provenance while keeping the
+    # comparison/export operation itself read-only.
+    with workspace.database.unit_of_work() as session:
+        stored = session.get(DdrReport, predecessor["report_id"])
+        assert stored is not None
+        stored.provenance = [
+            {
+                "source_kind": "manual_authoring",
+                "actor": "declared-author",
+                "reason": "original source retained",
+                "path": r"C:\\Private\\DDR source.pdf",
+            }
+        ]
 
     before = _sqlite_fingerprint(workspace.database)
     first = _call(
@@ -566,6 +579,48 @@ def test_cli_ddr_compare_is_scoped_read_only_stable_and_reports_ambiguity(
         == "Exact insert"
     )
     assert exported_json["truncation"]["omitted_activity_items"] == 0
+    private_source_path = exported_json["predecessor"]["provenance"][0]["path"]
+    assert private_source_path == r"C:\\Private\\DDR source.pdf"
+
+    redacted_json_path = workspace.root / "ddr-comparison-shareable.json"
+    redacted_result = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "json",
+        "--output",
+        str(redacted_json_path),
+        "--redact-source-paths",
+    )
+    redacted_json = json.loads(redacted_json_path.read_text(encoding="utf-8"))
+    assert redacted_result["source_path_redaction_applied"] is True
+    assert redacted_json["redaction"]["applied"] is True
+    assert redacted_json["redaction"]["policy"] == "prog-proc.ddr-local-source-paths/v1"
+    assert redacted_json["predecessor"]["provenance"][0]["path"] == ("[REDACTED LOCAL SOURCE PATH]")
+    assert private_source_path not in redacted_json_path.read_text(encoding="utf-8")
+    assert redacted_json["comparison"] == exported_json["comparison"]
+
+    redacted_markdown_path = workspace.root / "ddr-comparison-shareable.md"
+    _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "markdown",
+        "--output",
+        str(redacted_markdown_path),
+        "--redact-source-paths",
+    )
+    redacted_markdown = redacted_markdown_path.read_text(encoding="utf-8")
+    assert "Source-path redaction: **applied**" in redacted_markdown
+    assert private_source_path not in redacted_markdown
+    assert "Exact insert" in redacted_markdown
+    assert _sqlite_fingerprint(workspace.database) == before
 
     original_export = json_path.read_bytes()
     refusal = _call(

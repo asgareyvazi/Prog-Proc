@@ -89,9 +89,20 @@ def _read_json(path: Path) -> Any:
 
 
 def _skip_reason(report: Any) -> str:
+    """Return pytest's authored skip reason without its known display wrapper.
+
+    For ``pytest.skip(reason)`` pytest 8/9 exposes ``longrepr`` as a tuple
+    whose final item is ``"Skipped: " + reason``.  Remove that one exact
+    wrapper only for this observed tuple representation.  Other longrepr
+    shapes are returned verbatim; in particular an authored reason beginning
+    with the same text is retained after removing only pytest's outer prefix.
+    """
     longrepr = getattr(report, "longrepr", None)
     if isinstance(longrepr, tuple) and len(longrepr) >= 3:
-        return str(longrepr[-1])
+        reason = str(longrepr[-1])
+        if reason.startswith("Skipped: "):
+            return reason[len("Skipped: ") :]
+        return reason
     crash = getattr(longrepr, "reprcrash", None)
     if crash is not None:
         return str(getattr(crash, "message", ""))

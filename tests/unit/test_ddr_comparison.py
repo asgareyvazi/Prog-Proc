@@ -332,3 +332,83 @@ def test_json_and_markdown_exports_are_deterministic_complete_and_atomic(tmp_pat
         write_ddr_comparison_export(
             payload, tmp_path / "missing" / "report.json", output_format="json"
         )
+
+
+def test_redacted_shareable_export_covers_supported_local_paths_without_mutation(tmp_path) -> None:
+    import json
+
+    from drilling_intelligence.operations.ddr_comparison import (
+        ddr_comparison_export_payload,
+        redact_ddr_comparison_source_paths,
+        render_ddr_comparison_json,
+        render_ddr_comparison_markdown,
+        write_ddr_comparison_export,
+    )
+
+    values = [
+        r"C:\\Users\\operator\\secret.pdf",
+        r"\\\\drill-server\\share\\report.pdf",
+        "/home/operator/private/report.pdf",
+        "relative/source.pdf",
+        "file:///Users/operator/DDR%20report.pdf",
+        "file://drill-server/share/remote-report.pdf",
+    ]
+    previous = _record("pred", [_activity(1, "Authored summary remains exact")])
+    successor = _record("succ", [_activity(1, "Authored summary remains exact")])
+    previous["provenance"] = [
+        {
+            "path": values[0],
+            "source_path": values[1],
+            "source_relative_path": values[3],
+            "nested": {
+                "file_path": values[2],
+                "metadata": [
+                    {"source_uri": values[4], "file_uri": values[5]},
+                    {"reason": f"Imported from {values[0]}"},
+                ],
+            },
+            "other_path": "/keep/non-source-field",
+            "actor": "declared-author",
+        }
+    ]
+    successor["provenance"] = [{"source_id": "non-path-provenance"}]
+    comparison = compare_ddr_revisions(previous, successor)
+    payload = ddr_comparison_export_payload(previous, successor, comparison)
+    before = deepcopy(payload)
+
+    redacted = redact_ddr_comparison_source_paths(payload)
+    assert payload == before
+    assert redacted["comparison"] == before["comparison"]
+    assert redacted["predecessor"]["provenance"][0]["path"] == "[REDACTED LOCAL SOURCE PATH]"
+    assert redacted["predecessor"]["provenance"][0]["source_path"] == "[REDACTED LOCAL SOURCE PATH]"
+    nested = redacted["predecessor"]["provenance"][0]["nested"]
+    assert nested["file_path"] == "[REDACTED LOCAL SOURCE PATH]"
+    assert nested["metadata"][0]["source_uri"] == "[REDACTED LOCAL SOURCE PATH]"
+    assert nested["metadata"][0]["file_uri"] == "[REDACTED LOCAL SOURCE PATH]"
+    assert nested["metadata"][1]["reason"] == ("Imported from [REDACTED LOCAL SOURCE PATH]")
+    assert redacted["predecessor"]["provenance"][0]["other_path"] == "/keep/non-source-field"
+    assert redacted["predecessor"]["provenance"][0]["actor"] == "declared-author"
+    assert redacted["redaction"] == {
+        "applied": True,
+        "policy": "prog-proc.ddr-local-source-paths/v1",
+        "redacted_source_path_fields": len(values),
+    }
+
+    encoded = render_ddr_comparison_json(redacted)
+    markdown = render_ddr_comparison_markdown(redacted)
+    for secret in values:
+        assert secret not in encoded
+        assert secret not in markdown
+    assert "/Users/operator/DDR report.pdf" not in encoded
+    assert "Source-path redaction: **applied**" in markdown
+    assert "Authored summary remains exact" in encoded
+    assert "declared-author" in markdown
+
+    json_path = tmp_path / "shareable.json"
+    md_path = tmp_path / "shareable.md"
+    write_ddr_comparison_export(redacted, json_path, output_format="json")
+    write_ddr_comparison_export(redacted, md_path, output_format="markdown")
+    assert json.loads(json_path.read_text(encoding="utf-8"))["redaction"]["applied"] is True
+    saved_markdown = md_path.read_text(encoding="utf-8")
+    assert "[REDACTED LOCAL SOURCE PATH]" in saved_markdown
+    assert all(secret not in saved_markdown for secret in values)

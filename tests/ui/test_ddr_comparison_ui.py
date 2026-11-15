@@ -42,7 +42,7 @@ def _tree_text(window: Any) -> list[str]:
 
 
 def test_ui_shows_ambiguity_and_exports_complete_read_only_comparisons(
-    qt_app, workspace, committed_well_id: str, tmp_path
+    qt_app, workspace, committed_well_id: str, tmp_path, monkeypatch
 ) -> None:
     from drilling_intelligence.operations.ddr import DdrAuthoringService
     from drilling_intelligence.ui.controller import ReviewController
@@ -155,6 +155,36 @@ def test_ui_shows_ambiguity_and_exports_complete_read_only_comparisons(
         assert exported["predecessor"]["report_id"] == predecessor["report_id"]
         assert exported["successor"]["report_id"] == successor["report_id"]
         assert exported["successor"]["provenance"][0]["path"] == "/private/unrelated/source.pdf"
+        shareable_json = tmp_path / "ui-comparison-shareable.json"
+        window.export_ddr_comparison(
+            str(shareable_json), output_format="json", redact_source_paths=True
+        )
+        shareable = json.loads(shareable_json.read_text(encoding="utf-8"))
+        assert shareable["redaction"]["applied"] is True
+        assert shareable["successor"]["provenance"][0]["path"] == ("[REDACTED LOCAL SOURCE PATH]")
+        assert "/private/unrelated/source.pdf" not in shareable_json.read_text(encoding="utf-8")
+        assert shareable["comparison"] == exported["comparison"]
+        assert (
+            exported["comparison"]["activities"]["items"]
+            == shareable["comparison"]["activities"]["items"]
+        )
+        from PySide6.QtWidgets import QFileDialog, QInputDialog
+
+        dialog_export = tmp_path / "ui-dialog-shareable.json"
+        monkeypatch.setattr(
+            QFileDialog,
+            "getSaveFileName",
+            lambda *_args: (str(dialog_export), "JSON (*.json)"),
+        )
+        monkeypatch.setattr(
+            QInputDialog,
+            "getItem",
+            lambda *_args: ("Shareable copy — redact local source paths", True),
+        )
+        window._ddr_export_comparison_dialog()
+        dialog_payload = json.loads(dialog_export.read_text(encoding="utf-8"))
+        assert dialog_payload["redaction"]["applied"] is True
+        assert "/private/unrelated/source.pdf" not in dialog_export.read_text(encoding="utf-8")
         assert exported["truncation"] == {
             "truncated": False,
             "included_activity_items": 200,

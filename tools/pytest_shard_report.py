@@ -31,6 +31,7 @@ from tools.pytest_totals import (
 )
 
 _SCHEMA = 2
+_REPORT_SCHEMA = 3
 _TOTALS = ("collected", "passed", "failed", "errors", "skipped", "xfailed", "xpassed")
 _WORKFLOW_PATH = ".github/workflows/ci.yml"
 _COLLECTION_JOB = "Ubuntu 26.04 Qt full-suite collection"
@@ -401,6 +402,8 @@ def _is_single_approved_backend_skip(reports: object, junit_skips: list[dict[str
     if not isinstance(reports, dict) or len(junit_skips) != 1:
         return False
     junit_skip = junit_skips[0]
+    if junit_skip.get("type") != "pytest.skip":
+        return False
     if not is_unqualified_backend_boundary_skip(
         junit_skip.get("classname", ""), junit_skip.get("name", ""), junit_skip.get("reason", "")
     ):
@@ -409,10 +412,23 @@ def _is_single_approved_backend_skip(reports: object, junit_skips: list[dict[str
     expected_nodeid = f"{module.replace('.', '/')}.py::{name}"
     process_skips: list[tuple[str, dict[str, Any]]] = []
     for nodeid, phases in reports.items():
-        if not isinstance(nodeid, str) or not isinstance(phases, list):
+        if not isinstance(nodeid, str) or not isinstance(phases, list) or not phases:
             return False
+        phase_names: set[str] = set()
         for phase in phases:
-            if isinstance(phase, dict) and phase.get("outcome") == "skipped":
+            if not isinstance(phase, dict):
+                return False
+            when, outcome = phase.get("when"), phase.get("outcome")
+            if when not in {"setup", "call", "teardown"} or when in phase_names:
+                return False
+            phase_names.add(when)
+            if outcome not in {"passed", "failed", "skipped"} or phase.get("wasxfail"):
+                return False
+            if outcome == "failed":
+                return False
+            if outcome == "skipped":
+                if not isinstance(phase.get("skip_reason"), str) or not phase["skip_reason"]:
+                    return False
                 process_skips.append((nodeid, phase))
     if len(process_skips) != 1:
         return False
@@ -421,6 +437,14 @@ def _is_single_approved_backend_skip(reports: object, junit_skips: list[dict[str
         nodeid == expected_nodeid
         and phase.get("when") == "call"
         and phase.get("skip_reason") == reason
+        and all(
+            not (when == "call" and outcome == "passed")
+            for when, outcome in (
+                (item.get("when"), item.get("outcome"))
+                for item in reports.get(expected_nodeid, [])
+                if isinstance(item, dict)
+            )
+        )
     )
 
 
@@ -608,6 +632,9 @@ def aggregate(
     runtime_sum = 0.0
     seen: set[str] = set()
     all_skips: list[dict[str, str]] = []
+    process_skip_reasons: list[dict[str, str]] = []
+    outcome_qualification = True
+    permitted_skip_policy = True
     for index in range(shard_count):
         job_name = f"Ubuntu 26.04 Qt full-suite shard {index} of {shard_count}"
         job = _job(
@@ -739,20 +766,38 @@ def aggregate(
         if stats["collected"] != len(assigned):
             raise AggregateError(f"shard {index} totals do not account for all assigned node IDs")
         approved_backend_skip = _is_single_approved_backend_skip(execution.get("reports"), skips)
+        execution_reports = execution.get("reports")
+        if isinstance(execution_reports, dict):
+            for nodeid, phases in execution_reports.items():
+                if isinstance(nodeid, str) and isinstance(phases, list):
+                    process_skip_reasons.extend(
+                        {
+                            "nodeid": nodeid,
+                            "when": str(phase.get("when", "")),
+                            "reason": str(phase.get("skip_reason", "")),
+                        }
+                        for phase in phases
+                        if isinstance(phase, dict) and phase.get("outcome") == "skipped"
+                    )
         if (stats["skipped"] or stats["xfailed"]) and not (
             stats["skipped"] == 1 and stats["xfailed"] == 0 and approved_backend_skip
         ):
+            outcome_qualification = False
+            permitted_skip_policy = False
             fail_issues.append(
                 f"shard {index} did not execute every test normally outside the sole "
                 f"documented PostgreSQL boundary skip: skipped={stats['skipped']} "
                 f"xfailed={stats['xfailed']}"
             )
         if stats["failed"] or stats["errors"] or stats["xpassed"] or shell_exit != 0:
+            outcome_qualification = False
             fail_issues.append(
                 f"shard {index} failed: failed={stats['failed']} errors={stats['errors']} xpassed={stats['xpassed']} exit={shell_exit}"
             )
         unexpected = unexpected_skips_qt_enabled(folder / "pytest-junit.xml")
         if unexpected:
+            outcome_qualification = False
+            permitted_skip_policy = False
             fail_issues.append(f"shard {index} has unexpected Qt-enabled skips: {unexpected[:10]}")
         for key in _TOTALS:
             totals[key] += int(stats[key])
@@ -782,6 +827,18 @@ def aggregate(
         raise AggregateError("shard partition does not cover the collection exactly")
     if totals["collected"] != len(nodeids):
         raise AggregateError("combined totals do not equal canonical collection count")
+    if totals["skipped"] > 1:
+        fail_issues.append(
+            f"full shard run contains {totals['skipped']} skips; at most the one exact "
+            "documented PostgreSQL boundary skip is permitted"
+        )
+        permitted_skip_policy = False
+        outcome_qualification = False
+    coverage_complete = len(nodeids) == len(seen) == totals["collected"]
+    exact_once_assignment = coverage_complete
+    # Every shard's process report key set has already been checked against its
+    # canonical deterministic assignment by _classify_reports().
+    exact_once_execution = coverage_complete
 
     run_status = run.get("status")
     if run_status != "completed":
@@ -806,9 +863,28 @@ def aggregate(
         + f"\nruntime_sum_seconds: {runtime_sum}\n",
     )
     report = {
-        "schema_version": _SCHEMA,
+        "schema_version": _REPORT_SCHEMA,
         "status": status,
+        "overall_status": status,
         "complete": not incomplete_issues,
+        "coverage_complete": coverage_complete,
+        "exact_once_assignment": exact_once_assignment,
+        "exact_once_execution": exact_once_execution,
+        "outcome_qualification": outcome_qualification,
+        "permitted_skip_policy": {
+            "qualified": permitted_skip_policy,
+            "observed_junit_skip_count": len(all_skips),
+            "approved_skip": all_skips[0]
+            if len(all_skips) == 1
+            and is_unqualified_backend_boundary_skip(
+                all_skips[0].get("classname", ""),
+                all_skips[0].get("name", ""),
+                all_skips[0].get("reason", ""),
+            )
+            else None,
+            "process_sidecar_skips": process_skip_reasons,
+        },
+        "exact_once_coverage": coverage_complete,
         "repository": repository,
         "workflow": workflow,
         "workflow_path": run.get("path"),
@@ -818,6 +894,7 @@ def aggregate(
         "run_id": str(run_id),
         "run_attempt": str(attempt),
         "run_status_at_aggregation": run_status,
+        "run_completion_verified": run_status == "completed",
         "workflow_conclusion_verified": run_status == "completed"
         and run.get("conclusion") == "success",
         "workflow_run_completion_pending": run_status != "completed",
@@ -849,7 +926,10 @@ def aggregate(
     lines = [
         "# Ubuntu 26.04 Qt-enabled pytest shard report",
         "",
-        f"- Result: **{status}**",
+        f"- Overall status: **{status}**",
+        f"- Coverage complete: **{'yes' if coverage_complete else 'no'}**; exact-once assignment: **{'yes' if exact_once_assignment else 'no'}**; exact-once execution: **{'yes' if exact_once_execution else 'no'}**",
+        f"- Outcome qualification: **{'yes' if outcome_qualification else 'no'}**; permitted-skip policy: **{'yes' if permitted_skip_policy else 'no'}**",
+        f"- Workflow run completion verified: **{'yes' if run_status == 'completed' else 'no'}**",
         f"- Repository: `{repository}`",
         f"- Workflow: `{workflow}`; run `{run_id}` attempt `{attempt}`",
         f"- Branch: `{branch}`; workflow ref: `{workflow_ref}`",
@@ -882,9 +962,23 @@ def aggregate(
 
 def _failure_report(args: argparse.Namespace, status: str, message: str) -> None:
     payload = {
-        "schema_version": _SCHEMA,
+        "schema_version": _REPORT_SCHEMA,
         "status": status,
+        "overall_status": status,
         "complete": False,
+        "coverage_complete": False,
+        "exact_once_coverage": False,
+        "exact_once_assignment": False,
+        "exact_once_execution": False,
+        "outcome_qualification": False,
+        "permitted_skip_policy": {
+            "qualified": False,
+            "observed_junit_skip_count": None,
+            "approved_skip": None,
+            "process_sidecar_skips": [],
+        },
+        "run_completion_verified": False,
+        "workflow_conclusion_verified": False,
         "repository": args.repository,
         "workflow": args.workflow,
         "branch": args.branch,

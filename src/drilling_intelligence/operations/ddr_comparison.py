@@ -8,6 +8,7 @@ as ambiguous instead of inventing a pairing. No engineering interpretation is pe
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 _FIELD_KEYS = (
     "report_date",
@@ -430,6 +432,93 @@ def ddr_comparison_export_payload(
     }
 
 
+_LOCAL_SOURCE_PATH_KEYS = frozenset(
+    {"path", "source_path", "source_relative_path", "file_path", "source_uri", "file_uri"}
+)
+_REDACTED_SOURCE_PATH = "[REDACTED LOCAL SOURCE PATH]"
+_REDACTION_POLICY = "prog-proc.ddr-local-source-paths/v1"
+
+
+def redact_ddr_comparison_source_paths(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a shareable copy with documented local provenance paths redacted.
+
+    Only the explicit provenance keys ``path``, ``source_path``,
+    ``source_relative_path``, ``file_path``, ``source_uri``, and ``file_uri``
+    are treated as source-location fields. Matching is exact by key (not a
+    substring search), and recursion covers nested mapping/list metadata.
+    File URIs, POSIX absolute and relative paths, Windows drive paths, and UNC
+    paths are all treated as local references when stored in one of these
+    fields. Any exact duplicate reference in another provenance string or
+    diagnostic is replaced too; authored DDR text and comparison results are
+    otherwise left unchanged.
+    """
+    result = copy.deepcopy(dict(payload))
+    discovered: list[str] = []
+    redacted_count = 0
+
+    def redact_fields(value: Any, *, source_key: bool = False) -> Any:
+        nonlocal redacted_count
+        if isinstance(value, Mapping):
+            copied: dict[Any, Any] = {}
+            for key, item in value.items():
+                is_source_key = isinstance(key, str) and key in _LOCAL_SOURCE_PATH_KEYS
+                copied[key] = redact_fields(item, source_key=is_source_key)
+            return copied
+        if isinstance(value, list):
+            return [redact_fields(item, source_key=source_key) for item in value]
+        if source_key and isinstance(value, str) and value:
+            discovered.append(value)
+            redacted_count += 1
+            return _REDACTED_SOURCE_PATH
+        return value
+
+    for side in ("predecessor", "successor"):
+        record = result.get(side)
+        if isinstance(record, dict) and "provenance" in record:
+            record["provenance"] = redact_fields(record["provenance"])
+
+    variants: set[str] = set()
+    for value in discovered:
+        variants.add(value)
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.scheme.lower() == "file":
+            decoded = unquote(parsed.path)
+            if parsed.netloc:
+                decoded = f"//{parsed.netloc}{decoded}"
+            variants.update({decoded, decoded.replace("/", "\\"), decoded.replace("\\", "/")})
+        else:
+            variants.update({value.replace("/", "\\"), value.replace("\\", "/")})
+    ordered_variants = sorted((item for item in variants if item), key=len, reverse=True)
+
+    def scrub_duplicate_references(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {key: scrub_duplicate_references(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [scrub_duplicate_references(item) for item in value]
+        if isinstance(value, str):
+            for reference in ordered_variants:
+                value = value.replace(reference, _REDACTED_SOURCE_PATH)
+            return value
+        return value
+
+    for side in ("predecessor", "successor"):
+        record = result.get(side)
+        if isinstance(record, dict) and "provenance" in record:
+            record["provenance"] = scrub_duplicate_references(record["provenance"])
+    comparison = result.get("comparison")
+    if isinstance(comparison, dict) and isinstance(comparison.get("issues"), list):
+        comparison["issues"] = scrub_duplicate_references(comparison["issues"])
+    result["redaction"] = {
+        "applied": True,
+        "policy": _REDACTION_POLICY,
+        "redacted_source_path_fields": redacted_count,
+    }
+    return result
+
+
 def render_ddr_comparison_json(payload: Mapping[str, Any]) -> str:
     """Render deterministic UTF-8 JSON with a trailing newline."""
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
@@ -460,6 +549,15 @@ def render_ddr_comparison_markdown(payload: Mapping[str, Any]) -> str:
         f"- Status: **{comparison.get('status')}**; conclusive: **{str(comparison.get('conclusive')).lower()}**",
         f"- Has changes: `{comparison.get('has_changes')}`",
         "- Approval evaluated: **no**",
+        *(
+            [
+                "- Source-path redaction: **applied**; policy "
+                f"`{payload.get('redaction', {}).get('policy')}`; this is a shareable copy."
+            ]
+            if isinstance(payload.get("redaction"), Mapping)
+            and payload.get("redaction", {}).get("applied") is True
+            else []
+        ),
         "",
         *(
             ["> Ambiguous activity alignments are left unpaired; no pairing was guessed.", ""]
@@ -598,6 +696,7 @@ def write_ddr_comparison_export(
 __all__ = [
     "compare_ddr_revisions",
     "ddr_comparison_export_payload",
+    "redact_ddr_comparison_source_paths",
     "render_ddr_comparison_json",
     "render_ddr_comparison_markdown",
     "write_ddr_comparison_export",

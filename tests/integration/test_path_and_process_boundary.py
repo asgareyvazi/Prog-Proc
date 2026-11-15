@@ -210,7 +210,9 @@ def test_a_missing_executable_is_reported_not_raised(tmp_path: Path) -> None:
     assert "not found" in result["stderr"].lower(), result["stderr"]
 
 
-def test_a_malformed_http_endpoint_is_refused_as_configuration_not_fetched(tmp_path: Path) -> None:
+def test_a_malformed_http_endpoint_is_refused_as_configuration_not_fetched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An endpoint that is not a URL must not be reinterpreted as a local file path.
 
     The MinerU prober only ever passes the endpoint to the HTTP helper, so a value like
@@ -230,6 +232,14 @@ def test_a_malformed_http_endpoint_is_refused_as_configuration_not_fetched(tmp_p
     discovery_mod.http_json = handler
     try:
         settings = Settings.load()
+
+        def deny_local_file_open(*_args, **_kwargs):
+            raise AssertionError("an HTTP endpoint must never be opened as a local file")
+
+        import builtins
+
+        monkeypatch.setattr(builtins, "open", deny_local_file_open)
+        monkeypatch.setattr(Path, "open", deny_local_file_open)
         for endpoint in ("../../etc/passwd", "file:///etc/passwd", "not a url"):
             settings.mineru.mode = "http"
             settings.mineru.endpoint = endpoint
@@ -240,7 +250,6 @@ def test_a_malformed_http_endpoint_is_refused_as_configuration_not_fetched(tmp_p
             # Whatever was attempted, it was attempted over HTTP with the endpoint as a prefix -
             # never opened as a path.
             assert all(url.startswith(endpoint) for url in fetched), fetched
-            assert not Path(endpoint).exists() or endpoint != "../../etc/passwd"
     finally:
         discovery_mod.http_json = original
     assert os.environ.get("MINERU_EXTRA") is None

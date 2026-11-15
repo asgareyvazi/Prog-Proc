@@ -539,6 +539,12 @@ def test_in_progress_is_incomplete_unless_report_job_explicitly_allows_pending_r
     assert result["status"] == "PASS"
     assert result["workflow_conclusion_verified"] is False
     assert result["workflow_run_completion_pending"] is True
+    assert result["run_completion_verified"] is False
+    assert result["coverage_complete"] is True
+    assert result["exact_once_assignment"] is True
+    assert result["exact_once_execution"] is True
+    assert result["outcome_qualification"] is True
+    assert result["overall_status"] == "PASS"
 
 
 @pytest.mark.parametrize(
@@ -823,6 +829,18 @@ def test_exact_postgresql_boundary_skip_is_counted_and_qualifies_the_complete_ru
     assert result["totals"]["passed"] == 15
     assert result["totals"]["skipped"] == 1
     assert result["totals"]["failed"] == result["totals"]["errors"] == 0
+    assert result["coverage_complete"] is True
+    assert result["exact_once_assignment"] is True
+    assert result["exact_once_execution"] is True
+    assert result["outcome_qualification"] is True
+    assert result["permitted_skip_policy"]["qualified"] is True
+    assert result["permitted_skip_policy"]["approved_skip"]["reason"] == _POSTGRESQL_SKIP_REASON
+    assert result["permitted_skip_policy"]["process_sidecar_skips"][0]["reason"] == (
+        _POSTGRESQL_SKIP_REASON
+    )
+    assert result["run_completion_verified"] is True
+    assert result["workflow_conclusion_verified"] is True
+    assert result["overall_status"] == "PASS"
     assert result["skips"] == [
         {
             "classname": "tests.integration.test_phase1_finalization",
