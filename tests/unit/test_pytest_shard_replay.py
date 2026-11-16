@@ -13,9 +13,11 @@ import pytest
 from tools.pytest_shard_artifacts import FetchError, collect
 from tools.pytest_shard_replay import (
     _HISTORICAL_ARTIFACTS,
+    _POSTGRESQL_REASON,
     ReplayError,
     _emit_safe_download_diagnostic,
     _emit_safe_replay_diagnostic,
+    _emit_safe_sidecar_diagnostic,
     _safe_download_diagnostic,
     _validate_archived_report,
     _validate_replay,
@@ -266,6 +268,33 @@ def test_replay_failure_diagnostic_only_exposes_internal_error_messages(
     assert capsys.readouterr().err.strip() == annotation
     assert _emit_safe_replay_diagnostic(ValueError("token=never-echo-this")) is None
     assert capsys.readouterr().err == ""
+
+
+def test_sidecar_diagnostic_exposes_only_allowlisted_comparison_facts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    report = {
+        "permitted_skip_policy": {
+            "process_sidecar_skips": [
+                {
+                    "nodeid": "tests/integration/test_phase1_finalization::test_postgresql_claim_is_qualified_or_withdrawn",
+                    "when": "call",
+                    "reason": "Skipped: " + _POSTGRESQL_REASON,
+                }
+            ]
+        },
+        "skips": [{"reason": _POSTGRESQL_REASON}],
+    }
+    (tmp_path / "replay-report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    annotation = _emit_safe_sidecar_diagnostic(tmp_path)
+
+    output = capsys.readouterr().err
+    assert annotation is not None
+    assert '"process_reason_class": "expected_wrapped_reason"' in annotation
+    assert '"junit_reason_is_canonical": true' in annotation
+    assert _POSTGRESQL_REASON not in output
+    assert "Skipped:" not in output
 
 
 def test_artifact_fetcher_rejects_pinned_metadata_before_downloading_bytes(tmp_path: Path) -> None:

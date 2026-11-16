@@ -431,6 +431,44 @@ def _emit_safe_download_diagnostic(output_dir: Path) -> str | None:
     return message
 
 
+def _emit_safe_sidecar_diagnostic(output_dir: Path) -> str | None:
+    """Report skip comparison facts, never the untrusted sidecar text itself."""
+    try:
+        report = json.loads((output_dir / "replay-report.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
+        return None
+    policy = report.get("permitted_skip_policy") if isinstance(report, dict) else None
+    process_skips = policy.get("process_sidecar_skips") if isinstance(policy, dict) else None
+    junit_skips = report.get("skips") if isinstance(report, dict) else None
+    if not isinstance(process_skips, list) or not isinstance(junit_skips, list):
+        return None
+    process = process_skips[0] if len(process_skips) == 1 else None
+    junit = junit_skips[0] if len(junit_skips) == 1 else None
+    process_reason = process.get("reason") if isinstance(process, dict) else None
+    junit_reason = junit.get("reason") if isinstance(junit, dict) else None
+    if process_reason == f"Skipped: {_POSTGRESQL_REASON}":
+        reason_class = "expected_wrapped_reason"
+    elif process_reason == _POSTGRESQL_REASON:
+        reason_class = "canonical_reason_without_wrapper"
+    elif isinstance(process_reason, str):
+        reason_class = "other_reason"
+    else:
+        reason_class = "missing_reason"
+    facts = {
+        "process_skip_count": len(process_skips),
+        "junit_skip_count": len(junit_skips),
+        "nodeid_matches": isinstance(process, dict) and process.get("nodeid") == _POSTGRESQL_NODEID,
+        "phase_is_call": isinstance(process, dict) and process.get("when") == "call",
+        "process_reason_class": reason_class,
+        "process_reason_starts_with_pytest_wrapper": isinstance(process_reason, str)
+        and process_reason.startswith("Skipped: "),
+        "junit_reason_is_canonical": junit_reason == _POSTGRESQL_REASON,
+    }
+    annotation = f"::notice::SAFE SIDECAR COMPARISON FACTS: {json.dumps(facts, sort_keys=True)}"
+    print(annotation, file=sys.stderr)
+    return annotation
+
+
 def _emit_safe_replay_diagnostic(exc: BaseException) -> str | None:
     """Expose only fixed, internally authored replay/fetch messages to Actions checks."""
     if not isinstance(exc, (FetchError, ReplayError)):
@@ -460,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         _emit_safe_download_diagnostic(args.output_dir)
         _emit_safe_replay_diagnostic(exc)
+        _emit_safe_sidecar_diagnostic(args.output_dir)
         return 1
     print(
         "HISTORICAL REPLAY VERIFIED: artifact bytes and identities match GitHub API; "
