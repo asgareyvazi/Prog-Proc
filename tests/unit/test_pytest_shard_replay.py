@@ -14,6 +14,7 @@ from tools.pytest_shard_artifacts import FetchError, collect
 from tools.pytest_shard_replay import (
     _HISTORICAL_ARTIFACTS,
     ReplayError,
+    _safe_download_diagnostic,
     _validate_archived_report,
     _validate_replay,
 )
@@ -204,6 +205,28 @@ def test_artifact_fetcher_verifies_and_records_the_optional_failed_report(tmp_pa
     assert all(
         item["matches_api_digest"] and item["matches_api_size"] for item in saved["downloaded"]
     )
+
+
+def test_safe_artifact_diagnostic_reports_categories_without_echoing_untrusted_text(
+    tmp_path: Path,
+) -> None:
+    report = {
+        "downloaded": [],
+        "failures": [
+            "ubuntu2604-qt-shard-00-of-04-a1: signed artifact download failed",
+            "untrusted-name: https://attacker.example/?sig=do-not-echo",
+        ],
+    }
+    (tmp_path / "downloads.json").write_text(json.dumps(report), encoding="utf-8")
+
+    summary = _safe_download_diagnostic(tmp_path)
+
+    assert summary is not None
+    assert '"downloaded_count": 0' in summary
+    assert '"failure_count": 2' in summary
+    assert '"signed artifact download failed": 1' in summary
+    assert "attacker.example" not in summary
+    assert "do-not-echo" not in summary
 
 
 def test_artifact_fetcher_rejects_pinned_metadata_before_downloading_bytes(tmp_path: Path) -> None:

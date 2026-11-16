@@ -353,6 +353,74 @@ def replay(output_dir: Path, token: str) -> dict[str, Any]:
     }
 
 
+def _safe_download_diagnostic(output_dir: Path) -> str | None:
+    """Summarize known failure categories without exposing URLs or credentials."""
+    path = output_dir / "downloads.json"
+    try:
+        evidence = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
+        return None
+    if not isinstance(evidence, dict):
+        return None
+    downloaded = evidence.get("downloaded")
+    failures = evidence.get("failures")
+    if not isinstance(downloaded, list) or not isinstance(failures, list):
+        return None
+    safe_messages = {
+        "signed artifact storage returned an HTTP error",
+        "artifact redirect chain is missing a target or exceeds its limit",
+        "refusing a malformed artifact storage URL",
+        "refusing an untrusted artifact storage redirect",
+        "GitHub artifact request failed",
+        "signed artifact download failed",
+        "artifact redirect chain did not produce a response",
+        "artifact archive destination already exists",
+        "artifact archive exceeds the configured size limit",
+        "artifact archive download was empty",
+        "missing numeric API artifact ID",
+        "expired or expiration is unknown",
+        "API artifact size is malformed",
+        "API artifact SHA-256 digest is malformed",
+        "GitHub API metadata differs from pinned historical evidence",
+        "downloaded bytes do not match API digest and size",
+    }
+    counts: dict[str, int] = {}
+    for failure in failures:
+        if not isinstance(failure, str):
+            category = "malformed failure record"
+        else:
+            _, separator, detail = failure.partition(": ")
+            if not separator:
+                category = "unclassified artifact fetch failure"
+            elif detail in safe_messages:
+                category = detail
+            elif detail.startswith("expected one API artifact record, found "):
+                suffix = detail.removeprefix("expected one API artifact record, found ")
+                category = (
+                    f"expected one API artifact record, found {suffix}"
+                    if suffix.isdecimal()
+                    else "unclassified artifact fetch failure"
+                )
+            elif detail.startswith("GitHub artifact API returned HTTP "):
+                code = detail.removeprefix("GitHub artifact API returned HTTP ")
+                category = (
+                    f"GitHub artifact API returned HTTP {code}"
+                    if code.isdecimal()
+                    else ("unclassified artifact fetch failure")
+                )
+            else:
+                category = "unclassified artifact fetch failure"
+        counts[category] = counts.get(category, 0) + 1
+    return json.dumps(
+        {
+            "downloaded_count": len(downloaded),
+            "failure_count": len(failures),
+            "failure_categories": counts,
+        },
+        sort_keys=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -368,6 +436,9 @@ def main(argv: list[str] | None = None) -> int:
             f"INCOMPLETE: historical replay could not be verified ({type(exc).__name__})",
             file=sys.stderr,
         )
+        diagnostic = _safe_download_diagnostic(args.output_dir)
+        if diagnostic is not None:
+            print(f"SAFE ARTIFACT FETCH DIAGNOSTIC: {diagnostic}", file=sys.stderr)
         return 1
     print(
         "HISTORICAL REPLAY VERIFIED: artifact bytes and identities match GitHub API; "
