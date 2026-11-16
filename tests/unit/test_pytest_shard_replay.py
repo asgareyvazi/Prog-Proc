@@ -14,6 +14,7 @@ from tools.pytest_shard_artifacts import FetchError, collect
 from tools.pytest_shard_replay import (
     _HISTORICAL_ARTIFACTS,
     ReplayError,
+    _emit_safe_download_diagnostic,
     _safe_download_diagnostic,
     _validate_archived_report,
     _validate_replay,
@@ -227,6 +228,29 @@ def test_safe_artifact_diagnostic_reports_categories_without_echoing_untrusted_t
     assert '"signed artifact download failed": 1' in summary
     assert "attacker.example" not in summary
     assert "do-not-echo" not in summary
+
+
+def test_safe_artifact_diagnostic_is_a_sanitized_actions_annotation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    evidence = {
+        "downloaded": [],
+        "failures": [
+            "ubuntu2604-qt-shard-00-of-04-a1: signed artifact download failed",
+            "untrusted-name: https://attacker.example/?sig=do-not-echo",
+        ],
+    }
+    (tmp_path / "downloads.json").write_text(json.dumps(evidence), encoding="utf-8")
+
+    annotation = _emit_safe_download_diagnostic(tmp_path)
+
+    output = capsys.readouterr().err
+    assert annotation is not None and annotation.startswith(
+        "::notice::SAFE ARTIFACT FETCH DIAGNOSTIC:"
+    )
+    assert output.strip() == annotation
+    assert "attacker.example" not in output
+    assert "do-not-echo" not in output
 
 
 def test_artifact_fetcher_rejects_pinned_metadata_before_downloading_bytes(tmp_path: Path) -> None:

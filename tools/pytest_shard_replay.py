@@ -421,6 +421,16 @@ def _safe_download_diagnostic(output_dir: Path) -> str | None:
     )
 
 
+def _emit_safe_download_diagnostic(output_dir: Path) -> str | None:
+    """Publish only allowlisted fetch categories as a GitHub Actions annotation."""
+    diagnostic = _safe_download_diagnostic(output_dir)
+    if diagnostic is None:
+        return None
+    message = f"::notice::SAFE ARTIFACT FETCH DIAGNOSTIC: {diagnostic}"
+    print(message, file=sys.stderr)
+    return message
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -436,9 +446,7 @@ def main(argv: list[str] | None = None) -> int:
             f"INCOMPLETE: historical replay could not be verified ({type(exc).__name__})",
             file=sys.stderr,
         )
-        diagnostic = _safe_download_diagnostic(args.output_dir)
-        if diagnostic is not None:
-            print(f"SAFE ARTIFACT FETCH DIAGNOSTIC: {diagnostic}", file=sys.stderr)
+        _emit_safe_download_diagnostic(args.output_dir)
         return 1
     print(
         "HISTORICAL REPLAY VERIFIED: artifact bytes and identities match GitHub API; "
