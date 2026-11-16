@@ -431,6 +431,18 @@ def _emit_safe_download_diagnostic(output_dir: Path) -> str | None:
     return message
 
 
+def _emit_safe_replay_diagnostic(exc: BaseException) -> str | None:
+    """Expose only fixed, internally authored replay/fetch messages to Actions checks."""
+    if not isinstance(exc, (FetchError, ReplayError)):
+        return None
+    message = str(exc)
+    if not message or "\n" in message or len(message) > 240:
+        return None
+    annotation = f"::notice::SAFE REPLAY DIAGNOSTIC: {message}"
+    print(annotation, file=sys.stderr)
+    return annotation
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -447,6 +459,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         _emit_safe_download_diagnostic(args.output_dir)
+        _emit_safe_replay_diagnostic(exc)
         return 1
     print(
         "HISTORICAL REPLAY VERIFIED: artifact bytes and identities match GitHub API; "

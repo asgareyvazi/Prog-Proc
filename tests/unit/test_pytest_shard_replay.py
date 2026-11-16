@@ -15,6 +15,7 @@ from tools.pytest_shard_replay import (
     _HISTORICAL_ARTIFACTS,
     ReplayError,
     _emit_safe_download_diagnostic,
+    _emit_safe_replay_diagnostic,
     _safe_download_diagnostic,
     _validate_archived_report,
     _validate_replay,
@@ -251,6 +252,20 @@ def test_safe_artifact_diagnostic_is_a_sanitized_actions_annotation(
     assert output.strip() == annotation
     assert "attacker.example" not in output
     assert "do-not-echo" not in output
+
+
+def test_replay_failure_diagnostic_only_exposes_internal_error_messages(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    annotation = _emit_safe_replay_diagnostic(
+        ReplayError("historical shard totals differ from the bounded target")
+    )
+    assert annotation == (
+        "::notice::SAFE REPLAY DIAGNOSTIC: historical shard totals differ from the bounded target"
+    )
+    assert capsys.readouterr().err.strip() == annotation
+    assert _emit_safe_replay_diagnostic(ValueError("token=never-echo-this")) is None
+    assert capsys.readouterr().err == ""
 
 
 def test_artifact_fetcher_rejects_pinned_metadata_before_downloading_bytes(tmp_path: Path) -> None:
