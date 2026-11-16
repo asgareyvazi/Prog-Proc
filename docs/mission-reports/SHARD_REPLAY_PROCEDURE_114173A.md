@@ -48,6 +48,6 @@ The dedicated `tools.pytest_shard_replay` command verifies:
 - JUnit contains exactly the documented PostgreSQL policy skip and canonical reason; the sidecar contains the same node ID/call phase but the single display prefix mismatch.
 - The archived original report is itself checksum-verified, safely extracted, and bound to the same run/SHA/attempt; both archived and regenerated reports retain `FAIL` and the known issue. The workflow run's later conclusion remains separately verified from the original report.
 
-## Current replay execution record
+## Execution record requirements
 
-**Pending:** the opt-in CI job must be dispatched from `arena/5957b76d-prog-proc` after its workflow and replay verifier are pushed. Local direct artifact retrieval remains blocked as above. Record the replay workflow run ID, attempt, final job conclusion, and metadata-only output artifact ID here after it completes; do not mark replay complete from local tests or API metadata alone.
+The mission closeout must record the workflow-dispatch run ID and attempt, the exact head SHA and branch, the replay job conclusion, and the metadata-only output artifact ID. The replay is complete only when that exact workflow-dispatch replay job succeeds and all six artifact payloads have been fetched and verified; local tests or API metadata alone are insufficient. Keep the closeout bound to the SHA actually dispatched; do not copy evidence to another SHA.
