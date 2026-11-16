@@ -13,6 +13,7 @@ import pytest
 from tools.pytest_shard_artifacts import FetchError, collect
 from tools.pytest_shard_replay import (
     _HISTORICAL_ARTIFACTS,
+    _POSTGRESQL_NODEID,
     _POSTGRESQL_REASON,
     ReplayError,
     _emit_safe_download_diagnostic,
@@ -80,10 +81,7 @@ def _evidence() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
             "observed_junit_skip_count": 1,
             "process_sidecar_skips": [
                 {
-                    "nodeid": (
-                        "tests.integration.test_phase1_finalization::"
-                        "test_postgresql_claim_is_qualified_or_withdrawn"
-                    ),
+                    "nodeid": _POSTGRESQL_NODEID,
                     "when": "call",
                     "reason": f"Skipped: {_REASON}",
                 }
@@ -277,7 +275,7 @@ def test_sidecar_diagnostic_exposes_only_allowlisted_comparison_facts(
         "permitted_skip_policy": {
             "process_sidecar_skips": [
                 {
-                    "nodeid": "tests/integration/test_phase1_finalization::test_postgresql_claim_is_qualified_or_withdrawn",
+                    "nodeid": _POSTGRESQL_NODEID,
                     "when": "call",
                     "reason": "Skipped: " + _POSTGRESQL_REASON,
                 }

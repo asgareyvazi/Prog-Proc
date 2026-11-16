@@ -21,7 +21,7 @@ from tools.pytest_shard_artifacts import FetchError, collect
 from tools.pytest_shard_report import _extract
 
 _POSTGRESQL_NODEID = (
-    "tests.integration.test_phase1_finalization::test_postgresql_claim_is_qualified_or_withdrawn"
+    "tests/integration/test_phase1_finalization.py::test_postgresql_claim_is_qualified_or_withdrawn"
 )
 _POSTGRESQL_REASON = (
     "PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; "

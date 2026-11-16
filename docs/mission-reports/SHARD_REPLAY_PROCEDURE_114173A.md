@@ -36,7 +36,7 @@ Artifact metadata from GitHub API:
 | `ubuntu2604-qt-shard-03-of-04-a1` | `14154004233` | `142,003` | `062f3f34389f16c1f3341b88f36ce8df2fb97d4492e2e48f4b901a0c434d254a` |
 | `ubuntu2604-qt-shard-report-a1` | `14154880825` | `81,488` | `7852477463a5425edc4693a1c82da109fa5253823d5f483c559bfd09ef67e5d9` |
 
-The historical report said 2,893 node IDs, 2,892 passed, one skip, and zero failures/errors/xfails/xpasses. Expected skip identity: `tests.integration.test_phase1_finalization::test_postgresql_claim_is_qualified_or_withdrawn`. Canonical JUnit reason: `PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; no disposable PostgreSQL service job exists.` The original process sidecar retained exactly one pytest display wrapper, `Skipped: `, before that reason. Replay verifies this mismatch and exact-once coverage; it must not normalize the authored JUnit reason or infer qualification for PostgreSQL.
+The historical report said 2,893 node IDs, 2,892 passed, one skip, and zero failures/errors/xfails/xpasses. The JUnit identity is classname `tests.integration.test_phase1_finalization` plus name `test_postgresql_claim_is_qualified_or_withdrawn`; the native pytest process-sidecar node ID is `tests/integration/test_phase1_finalization.py::test_postgresql_claim_is_qualified_or_withdrawn`. Canonical JUnit reason: `PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; no disposable PostgreSQL service job exists.` The original process sidecar retained exactly one pytest display wrapper, `Skipped: `, before that reason. Replay verifies this mismatch and exact-once coverage; it must not normalize the authored JUnit reason or infer qualification for PostgreSQL.
 
 ## Expected machine-checked replay assertions
 
