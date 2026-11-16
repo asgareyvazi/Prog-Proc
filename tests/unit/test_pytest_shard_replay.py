@@ -206,6 +206,59 @@ def test_artifact_fetcher_verifies_and_records_the_optional_failed_report(tmp_pa
     )
 
 
+def test_artifact_fetcher_rejects_pinned_metadata_before_downloading_bytes(tmp_path: Path) -> None:
+    rows = []
+    dummy_auth_value = "test-only-noncredential"
+    mismatched_name = "ubuntu2604-qt-shard-00-of-04-a1"
+    for name, (artifact_id, size, digest) in _HISTORICAL_ARTIFACTS.items():
+        rows.append(
+            {
+                "id": artifact_id,
+                "name": name,
+                "size_in_bytes": size,
+                "digest": f"sha256:{'0' * 64}" if name == mismatched_name else f"sha256:{digest}",
+                "expired": False,
+            }
+        )
+
+    def json_response(url: str, _token: str):
+        if "/artifacts?" in url:
+            return {"total_count": len(rows), "artifacts": rows}, None
+        if "/jobs?" in url:
+            return {"total_count": 0, "jobs": []}, None
+        return {"id": 43695755434}, None
+
+    calls: list[int] = []
+
+    def download(url: str, _token: str, destination: Path):
+        artifact_id = int(url.rsplit("/", 2)[-2])
+        calls.append(artifact_id)
+        destination.write_bytes(b"z")
+        return 1, hashlib.sha256(b"z").hexdigest()
+
+    with (
+        patch("tools.pytest_shard_artifacts._json_request", side_effect=json_response),
+        patch("tools.pytest_shard_artifacts._download_zip", side_effect=download),
+        pytest.raises(FetchError, match="could not be verified"),
+    ):
+        collect(
+            repository="asgareyvazi/Prog-Proc",
+            run_id="43695755434",
+            attempt="1",
+            expected_sha=_RUN["head_sha"],
+            workflow="CI",
+            shard_count=4,
+            output_dir=tmp_path / "pinned",
+            token=dummy_auth_value,
+            additional_artifact_names=("ubuntu2604-qt-shard-report-a1",),
+            expected_artifact_metadata=_HISTORICAL_ARTIFACTS,
+        )
+
+    assert _HISTORICAL_ARTIFACTS[mismatched_name][0] not in calls
+    saved = json.loads((tmp_path / "pinned" / "downloads.json").read_text(encoding="utf-8"))
+    assert any(mismatched_name in item for item in saved["failures"])
+
+
 def test_historical_replay_accepts_expected_failure_and_reproduced_wrapper_mismatch() -> None:
     report, downloads, run = _evidence()
 

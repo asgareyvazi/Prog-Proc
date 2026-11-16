@@ -26,7 +26,7 @@ from tools.pytest_shard import (
     validate_manifest,
 )
 from tools.pytest_shard_artifacts import FetchError, _download_zip, _json_request
-from tools.pytest_shard_report import AggregateError, aggregate, main
+from tools.pytest_shard_report import AggregateError, _extract, aggregate, main
 from tools.pytest_totals import _XPASS_MESSAGE
 
 _REPOSITORY = "asgareyvazi/Prog-Proc"
@@ -1039,6 +1039,33 @@ def test_zip_path_traversal_and_symlinks_are_rejected(tmp_path: Path) -> None:
         _run(other, fixture2)
 
 
+def test_zip_member_count_is_bounded_before_extraction(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archives"
+    extracted_root = tmp_path / "extracted"
+    archive_root.mkdir()
+    archive = archive_root / "17.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr("first.json", "{}")
+        bundle.writestr("second.json", "{}")
+    artifact = {
+        "id": 17,
+        "name": "bounded-members",
+        "size_in_bytes": archive.stat().st_size,
+        "digest": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest(),
+    }
+    with (
+        patch("tools.pytest_shard_report._MAX_ARCHIVE_MEMBERS", 1),
+        pytest.raises(AggregateError, match="too many members"),
+    ):
+        _extract(
+            artifact,
+            archive_root=archive_root,
+            extracted_root=extracted_root,
+            allowed={"first.json", "second.json"},
+        )
+    assert not list(extracted_root.rglob("*.json"))
+
+
 def test_pytest_plugin_emits_exact_once_real_execution_records(tmp_path: Path) -> None:
     suite = tmp_path / "suite"
     suite.mkdir()
@@ -1137,59 +1164,92 @@ def test_github_json_api_host_guard_precedes_network() -> None:
         opener.assert_not_called()
 
 
-def test_artifact_redirect_does_not_forward_token_and_requires_https(tmp_path: Path) -> None:
-    headers = Message()
-    headers["Location"] = "https://signed.example/artifact.zip?sig=opaque"
-    redirect = urllib.error.HTTPError(
-        "https://api.github.com/artifact", 302, "Found", headers, io.BytesIO()
+def test_artifact_redirect_is_allowlisted_tls_only_and_never_forwards_token(
+    tmp_path: Path,
+) -> None:
+    api_url = "https://api.github.com/repos/a/b/actions/artifacts/1/zip"
+    storage_url = (
+        "https://productionresultssa3.blob.core.windows.net/container/artifact.zip?sig=opaque"
     )
+    headers = Message()
+    headers["Location"] = storage_url
+    redirect = urllib.error.HTTPError(api_url, 302, "Found", headers, io.BytesIO())
+    response = io.BytesIO(b"synthetic zip bytes")
+    captured: list[Any] = []
 
     class Redirecting:
         def open(self, request: Any, timeout: int) -> Any:
-            assert request.get_header("Authorization") == "Bearer token"
-            raise redirect
-
-    response = io.BytesIO(b"synthetic zip bytes")
-    captured: dict[str, Any] = {}
-
-    def download(request: Any, timeout: int) -> io.BytesIO:
-        captured["request"] = request
-        return response
+            captured.append(request)
+            if request.full_url == api_url:
+                assert request.get_header("Authorization") == "Bearer token"
+                raise redirect
+            assert request.full_url == storage_url
+            assert request.get_header("Authorization") is None
+            return response
 
     dest = tmp_path / "artifact.zip"
-    with (
-        patch(
-            "tools.pytest_shard_artifacts.urllib.request.build_opener", return_value=Redirecting()
-        ),
-        patch("tools.pytest_shard_artifacts.urllib.request.urlopen", side_effect=download),
+    with patch(
+        "tools.pytest_shard_artifacts.urllib.request.build_opener", return_value=Redirecting()
     ):
-        size, digest = _download_zip(
-            "https://api.github.com/repos/a/b/actions/artifacts/1/zip", "token", dest
-        )
+        size, digest = _download_zip(api_url, "token", dest)
     assert size == len(b"synthetic zip bytes")
     assert digest == hashlib.sha256(dest.read_bytes()).hexdigest()
-    assert captured["request"].get_header("Authorization") is None
-    bad_headers = Message()
-    bad_headers["Location"] = "http://bad.example/artifact"
-    bad = urllib.error.HTTPError(
-        "https://api.github.com/artifact", 302, "Found", bad_headers, io.BytesIO()
+    assert len(captured) == 2
+    assert captured[1].get_header("Authorization") is None
+
+    for bad_location in (
+        "http://productionresultssa3.blob.core.windows.net/artifact.zip",
+        "https://attacker.example/artifact.zip?sig=opaque",
+        "https://user:secret@productionresultssa3.blob.core.windows.net/artifact.zip",
+        "https://productionresultssa3.blob.core.windows.net:444/artifact.zip",
+    ):
+        bad_headers = Message()
+        bad_headers["Location"] = bad_location
+        bad_redirect = urllib.error.HTTPError(api_url, 302, "Found", bad_headers, io.BytesIO())
+
+        class BadRedirect:
+            def __init__(self, redirect: urllib.error.HTTPError) -> None:
+                self.redirect = redirect
+
+            def open(self, request: Any, timeout: int) -> Any:
+                raise self.redirect
+
+        with (
+            patch(
+                "tools.pytest_shard_artifacts.urllib.request.build_opener",
+                return_value=BadRedirect(bad_redirect),
+            ),
+            pytest.raises(FetchError, match="untrusted artifact storage redirect"),
+        ):
+            _download_zip(api_url, "token", tmp_path / f"bad-{len(bad_location)}.zip")
+
+
+def test_artifact_storage_redirect_chain_stays_bounded_and_allowlisted(tmp_path: Path) -> None:
+    api_url = "https://api.github.com/repos/a/b/actions/artifacts/3/zip"
+    storage_url = "https://productionresultssa3.blob.core.windows.net/container/a.zip?sig=one"
+    headers = Message()
+    headers["Location"] = storage_url
+    first_redirect = urllib.error.HTTPError(api_url, 302, "Found", headers, io.BytesIO())
+    second_headers = Message()
+    second_headers["Location"] = "https://attacker.example/collect"
+    second_redirect = urllib.error.HTTPError(
+        storage_url, 302, "Found", second_headers, io.BytesIO()
     )
 
-    class BadRedirect:
+    class RedirectTwice:
         def open(self, request: Any, timeout: int) -> Any:
-            raise bad
+            if request.full_url == api_url:
+                raise first_redirect
+            raise second_redirect
 
     with (
         patch(
-            "tools.pytest_shard_artifacts.urllib.request.build_opener", return_value=BadRedirect()
+            "tools.pytest_shard_artifacts.urllib.request.build_opener",
+            return_value=RedirectTwice(),
         ),
-        pytest.raises(FetchError, match="insecure or malformed"),
+        pytest.raises(FetchError, match="untrusted artifact storage redirect"),
     ):
-        _download_zip(
-            "https://api.github.com/repos/a/b/actions/artifacts/2/zip",
-            "token",
-            tmp_path / "bad.zip",
-        )
+        _download_zip(api_url, "token", tmp_path / "redirected.zip")
 
 
 def test_cli_creates_classified_failure_report_for_missing_run_json(

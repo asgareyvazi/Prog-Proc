@@ -245,6 +245,7 @@ def replay(output_dir: Path, token: str) -> dict[str, Any]:
         output_dir=output_dir,
         token=token,
         additional_artifact_names=(_HISTORICAL_REPORT_NAME,),
+        expected_artifact_metadata=_HISTORICAL_ARTIFACTS,
     )
     report_json = output_dir / "replay-report.json"
     report_md = output_dir / "replay-report.md"

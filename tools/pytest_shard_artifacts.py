@@ -13,12 +13,13 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 _API = "https://api.github.com"
 _MAX_JSON_BYTES = 32 * 1024 * 1024
-_MAX_ARCHIVE_BYTES = 1024 * 1024 * 1024
+_MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 
 
 class FetchError(ValueError):
@@ -42,6 +43,25 @@ def _assert_api_url(url: str) -> None:
         or parsed.password
     ):
         raise FetchError("refusing a non-GitHub API URL")
+
+
+def _assert_artifact_storage_url(url: str) -> None:
+    """Allow only GitHub Actions' signed Azure artifact-storage redirect hosts."""
+    parsed = urllib.parse.urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise FetchError("refusing a malformed artifact storage URL") from exc
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or port not in {None, 443}
+        or parsed.username
+        or parsed.password
+        or re.fullmatch(r"productionresultssa[a-z0-9-]+[.]blob[.]core[.]windows[.]net", host)
+        is None
+    ):
+        raise FetchError("refusing an untrusted artifact storage redirect")
 
 
 def _json_request(url: str, token: str) -> tuple[dict[str, Any], Any]:
@@ -118,38 +138,50 @@ def _paginated_list(url: str, key: str, token: str) -> dict[str, Any]:
 
 def _download_zip(api_url: str, token: str, destination: Path) -> tuple[int, str]:
     _assert_api_url(api_url)
-    request = urllib.request.Request(  # noqa: S310 - scheme and api.github.com host validated above
-        api_url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "Prog-Proc-pytest-shard-evidence",
-        },
-    )
-    try:
-        response = urllib.request.build_opener(_NoRedirect()).open(request, timeout=60)
-    except urllib.error.HTTPError as exc:
-        if exc.code not in {301, 302, 303, 307, 308}:
-            raise FetchError(f"GitHub artifact API returned HTTP {exc.code}") from exc
-        location = exc.headers.get("Location")
-        exc.close()
-        if not location:
-            raise FetchError("GitHub artifact redirect had no location") from exc
-        target = urllib.parse.urljoin(api_url, location)
-        parts = urllib.parse.urlsplit(target)
-        if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
-            raise FetchError("refusing an insecure or malformed artifact redirect") from None
-        # The storage URL is signed. Never forward the GitHub bearer token.
-        clean_request = urllib.request.Request(  # noqa: S310 - HTTPS signed redirect, no credentials
-            target, headers={"User-Agent": "Prog-Proc-pytest-shard-evidence"}
+    opener = urllib.request.build_opener(_NoRedirect())
+    request_url = api_url
+    response: Any = None
+    for redirect_count in range(3):
+        headers = {"User-Agent": "Prog-Proc-pytest-shard-evidence"}
+        if request_url == api_url:
+            headers.update(
+                {
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                }
+            )
+        else:
+            _assert_artifact_storage_url(request_url)
+        request = urllib.request.Request(  # noqa: S310 - API/storage URL is validated per hop
+            request_url, headers=headers
         )
         try:
-            response = urllib.request.urlopen(clean_request, timeout=120)  # noqa: S310 - HTTPS signed redirect, no credentials
-        except (urllib.error.URLError, TimeoutError, OSError) as redirect_exc:
-            raise FetchError("signed artifact download failed") from redirect_exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise FetchError("GitHub artifact request failed") from exc
+            response = opener.open(request, timeout=60 if request_url == api_url else 120)
+            break
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {301, 302, 303, 307, 308}:
+                if request_url == api_url:
+                    raise FetchError(f"GitHub artifact API returned HTTP {exc.code}") from exc
+                raise FetchError("signed artifact storage returned an HTTP error") from exc
+            location = exc.headers.get("Location")
+            exc.close()
+            if not location or redirect_count == 2:
+                raise FetchError(
+                    "artifact redirect chain is missing a target or exceeds its limit"
+                ) from None
+            target = urllib.parse.urljoin(request_url, location)
+            _assert_artifact_storage_url(target)
+            request_url = target
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            message = (
+                "GitHub artifact request failed"
+                if request_url == api_url
+                else "signed artifact download failed"
+            )
+            raise FetchError(message) from exc
+    if response is None:
+        raise FetchError("artifact redirect chain did not produce a response")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():
@@ -189,6 +221,7 @@ def collect(
     output_dir: Path,
     token: str,
     additional_artifact_names: tuple[str, ...] = (),
+    expected_artifact_metadata: Mapping[str, tuple[int, int, str]] | None = None,
 ) -> dict[str, Any]:
     if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise FetchError("repository must be owner/name")
@@ -214,6 +247,21 @@ def collect(
         f"ubuntu2604-qt-shard-{i:02d}-of-{shard_count:02d}-a{attempt}" for i in range(shard_count)
     )
     expected_names.update(additional_artifact_names)
+    pinned_metadata = dict(expected_artifact_metadata or {})
+    if not set(pinned_metadata) <= expected_names:
+        raise FetchError("pinned artifact metadata names exceed the bounded artifact inventory")
+    if any(
+        not isinstance(value, tuple)
+        or len(value) != 3
+        or type(value[0]) is not int
+        or value[0] < 1
+        or type(value[1]) is not int
+        or value[1] < 1
+        or not isinstance(value[2], str)
+        or re.fullmatch(r"[0-9a-f]{64}", value[2]) is None
+        for value in pinned_metadata.values()
+    ):
+        raise FetchError("pinned artifact metadata is malformed")
     records = artifacts.get("artifacts", [])
     downloads: list[dict[str, Any]] = []
     failures: list[str] = []
@@ -240,6 +288,14 @@ def collect(
             or re.fullmatch(r"sha256:[0-9a-fA-F]{64}", expected_digest) is None
         ):
             failures.append(f"{name}: API artifact SHA-256 digest is malformed")
+            continue
+        pinned = pinned_metadata.get(name)
+        if pinned is not None and (
+            artifact_id != pinned[0]
+            or expected_size != pinned[1]
+            or expected_digest.lower() != f"sha256:{pinned[2]}"
+        ):
+            failures.append(f"{name}: GitHub API metadata differs from pinned historical evidence")
             continue
         endpoint = f"{_API}/repos/{repository}/actions/artifacts/{artifact_id}/zip"
         try:

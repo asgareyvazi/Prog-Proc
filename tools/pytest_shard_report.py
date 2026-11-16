@@ -51,6 +51,7 @@ _SHARD_FILES = {
 }
 _MAX_FILE_BYTES = 128 * 1024 * 1024
 _MAX_UNCOMPRESSED = 512 * 1024 * 1024
+_MAX_ARCHIVE_MEMBERS = 1024
 
 
 class AggregateError(ValueError):
@@ -255,7 +256,10 @@ def _extract(
     total = 0
     try:
         with zipfile.ZipFile(archive) as bundle:
-            for info in bundle.infolist():
+            members = bundle.infolist()
+            if len(members) > _MAX_ARCHIVE_MEMBERS:
+                raise AggregateError("artifact ZIP contains too many members")
+            for info in members:
                 member = PurePosixPath(info.filename)
                 if info.is_dir():
                     if member.is_absolute() or ".." in member.parts:
