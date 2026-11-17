@@ -2040,6 +2040,71 @@ class ProgramTarget(Base, TimestampMixin):
     attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
+class ProgramSection(Base, TimestampMixin):
+    """One authored, revision-owned section of a drilling program.
+
+    This is deliberately separate from ``ProgramTarget``: prose/design basis and the planned
+    numeric target are related but not interchangeable records. A revision copies its sections so
+    approved historical content remains immutable by convention and by the service boundary.
+    """
+
+    __tablename__ = "program_section"
+    __table_args__ = (
+        UniqueConstraint("program_id", "sequence", name="uq_program_section_sequence"),
+        CheckConstraint("sequence > 0", name="ck_program_section_sequence_positive"),
+        CheckConstraint(
+            "completion_state IN ('MISSING','DRAFT','SOURCE_PROVIDED','EXTRACTED_UNVERIFIED',"
+            "'TECHNICALLY_REVIEWED','APPROVED','NOT_APPLICABLE','OWNER_DECISION_REQUIRED')",
+            name="ck_program_section_completion_state",
+        ),
+        Index("ix_program_section_program", "program_id", "sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    program_id: Mapped[str] = mapped_column(
+        ForeignKey("drilling_program.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    section_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    completion_state: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
+    source_reference: Mapped[str | None] = mapped_column(String(500))
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+
+
+class ProcedureStep(Base, TimestampMixin):
+    """A structured, ordered instruction owned by one exact procedure revision."""
+
+    __tablename__ = "procedure_step"
+    __table_args__ = (
+        UniqueConstraint("procedure_id", "sequence", name="uq_procedure_step_sequence"),
+        CheckConstraint("sequence > 0", name="ck_procedure_step_sequence_positive"),
+        Index("ix_procedure_step_procedure", "procedure_id", "sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    procedure_id: Mapped[str] = mapped_column(
+        ForeignKey("procedure_record.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    responsible_role: Mapped[str | None] = mapped_column(String(160))
+    equipment: Mapped[str | None] = mapped_column(Text)
+    preconditions: Mapped[str | None] = mapped_column(Text)
+    parameters: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
+    expected_result: Mapped[str | None] = mapped_column(Text)
+    acceptance_criteria: Mapped[str | None] = mapped_column(Text)
+    evidence_required: Mapped[str | None] = mapped_column(Text)
+    hold_point: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    safety_controls: Mapped[str | None] = mapped_column(Text)
+    contingency: Mapped[str | None] = mapped_column(Text)
+    source_reference: Mapped[str | None] = mapped_column(String(500))
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
+
+
 class RiskRecord(Base, TimestampMixin):
     """A risk, with its assessment kept exactly as the source stated it.
 
@@ -2796,6 +2861,8 @@ __all__ = [
     "NptRecord",
     "ProblemOccurrence",
     "ProcedureRecord",
+    "ProcedureStep",
+    "ProgramSection",
     "ProgramTarget",
     "Project",
     "Recommendation",

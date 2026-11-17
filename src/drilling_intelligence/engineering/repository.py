@@ -72,6 +72,8 @@ from ..database.models import (
     LessonLearned,
     NptRecord,
     ProcedureRecord,
+    ProcedureStep,
+    ProgramSection,
     ProgramTarget,
     Project,
     RiskRecord,
@@ -553,6 +555,29 @@ class EngineeringRepository:
         source.status = str(ProcedureLifecycle.SUPERSEDED)
         self.session.add(row)
         self.session.flush()
+        for step in self.list_procedure_steps(source.id):
+            self.session.add(
+                ProcedureStep(
+                    id=new_id("step"),
+                    procedure_id=row.id,
+                    sequence=step.sequence,
+                    title=step.title,
+                    instructions=step.instructions,
+                    responsible_role=step.responsible_role,
+                    equipment=step.equipment,
+                    preconditions=step.preconditions,
+                    parameters=list(step.parameters or []),
+                    expected_result=step.expected_result,
+                    acceptance_criteria=step.acceptance_criteria,
+                    evidence_required=step.evidence_required,
+                    hold_point=step.hold_point,
+                    safety_controls=step.safety_controls,
+                    contingency=step.contingency,
+                    source_reference=step.source_reference,
+                    provenance=list(step.provenance or []),
+                )
+            )
+        self.session.flush()
         return row
 
     def set_procedure_status(
@@ -964,6 +989,21 @@ class EngineeringRepository:
                     attributes=dict(target.attributes or {}),
                 )
             )
+        for section in self.list_program_sections(source.id):
+            self.session.add(
+                ProgramSection(
+                    id=new_id("psec"),
+                    program_id=row.id,
+                    sequence=section.sequence,
+                    section_key=section.section_key,
+                    title=section.title,
+                    content=section.content,
+                    completion_state=section.completion_state,
+                    source_reference=section.source_reference,
+                    provenance=list(section.provenance or []),
+                    origin=str(section.origin),
+                )
+            )
         self.session.flush()
         return row
 
@@ -1135,6 +1175,122 @@ class EngineeringRepository:
                 .where(ProgramTarget.program_id == str(program_id))
                 .order_by(ProgramTarget.sequence, ProgramTarget.name, ProgramTarget.id)
             ).scalars()
+        )
+
+    def add_program_section(
+        self,
+        program_id: str,
+        *,
+        sequence: int,
+        section_key: str,
+        title: str,
+        content: str = "",
+        completion_state: str = "DRAFT",
+        source_reference: str = "",
+        provenance: Sequence[Mapping[str, Any]] | None = None,
+        origin: str = KnowledgeOrigin.MANUAL.value,
+    ) -> ProgramSection:
+        program = self.get_program(program_id)
+        if not program.is_current or str(program.status) != str(ProgramLifecycle.DRAFT):
+            raise ValidationError("Program sections can only be added to a current DRAFT revision")
+        key = snake_token(section_key)
+        if not key or not str(title or "").strip():
+            raise ValidationError("a Program section needs a key and a title")
+        allowed_states = {
+            "MISSING",
+            "DRAFT",
+            "SOURCE_PROVIDED",
+            "EXTRACTED_UNVERIFIED",
+            "NOT_APPLICABLE",
+            "OWNER_DECISION_REQUIRED",
+        }
+        state = str(completion_state or "DRAFT").strip().upper()
+        if state not in allowed_states:
+            raise ValidationError(
+                "unknown Program section completion state", allowed=sorted(allowed_states)
+            )
+        row = ProgramSection(
+            id=new_id("psec"),
+            program_id=program.id,
+            sequence=int(sequence),
+            section_key=key,
+            title=str(title).strip()[:240],
+            content=str(content or ""),
+            completion_state=state,
+            source_reference=str(source_reference or "").strip() or None,
+            provenance=[dict(item) for item in provenance or ()],
+            origin=str(getattr(origin, "value", origin)),
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_program_sections(self, program_id: str) -> list[ProgramSection]:
+        self.get_program(program_id)
+        return list(
+            self.session.scalars(
+                select(ProgramSection)
+                .where(ProgramSection.program_id == str(program_id))
+                .order_by(ProgramSection.sequence, ProgramSection.id)
+            )
+        )
+
+    def add_procedure_step(
+        self,
+        procedure_id: str,
+        *,
+        sequence: int,
+        title: str,
+        instructions: str,
+        responsible_role: str = "",
+        equipment: str = "",
+        preconditions: str = "",
+        parameters: Sequence[Mapping[str, Any]] | None = None,
+        expected_result: str = "",
+        acceptance_criteria: str = "",
+        evidence_required: str = "",
+        hold_point: bool = False,
+        safety_controls: str = "",
+        contingency: str = "",
+        source_reference: str = "",
+        provenance: Sequence[Mapping[str, Any]] | None = None,
+    ) -> ProcedureStep:
+        procedure = self.get_procedure(procedure_id)
+        if not procedure.is_current or str(procedure.status) != str(ProcedureLifecycle.DRAFT):
+            raise ValidationError("Procedure steps can only be added to a current DRAFT revision")
+        if not str(title or "").strip():
+            raise ValidationError("a Procedure step needs a title")
+        row = ProcedureStep(
+            id=new_id("step"),
+            procedure_id=procedure.id,
+            sequence=int(sequence),
+            title=str(title).strip()[:240],
+            instructions=str(instructions or ""),
+            responsible_role=str(responsible_role or "").strip() or None,
+            equipment=str(equipment or "").strip() or None,
+            preconditions=str(preconditions or "").strip() or None,
+            parameters=[dict(item) for item in parameters or ()],
+            expected_result=str(expected_result or "").strip() or None,
+            acceptance_criteria=str(acceptance_criteria or "").strip() or None,
+            evidence_required=str(evidence_required or "").strip() or None,
+            hold_point=bool(hold_point),
+            safety_controls=str(safety_controls or "").strip() or None,
+            contingency=str(contingency or "").strip() or None,
+            source_reference=str(source_reference or "").strip() or None,
+            provenance=[dict(item) for item in provenance or ()],
+        )
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def list_procedure_steps(self, procedure_id: str) -> list[ProcedureStep]:
+        self.get_procedure(procedure_id)
+        return list(
+            self.session.scalars(
+                select(ProcedureStep)
+                .where(ProcedureStep.procedure_id == str(procedure_id))
+                .order_by(ProcedureStep.sequence, ProcedureStep.id)
+            )
         )
 
     def programs_for_well(

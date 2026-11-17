@@ -51,6 +51,7 @@ from ..database.workspace_archive import (
     restore_workspace_archive,
 )
 from ..documents.repository import DocumentRepository
+from ..engineering.authoring_cli import add_program_procedure_commands
 from ..engineering.repository import PLAN_ACTUAL_METRICS
 from ..ingestion.pipeline import IngestionPipeline
 from ..search.service import SearchService, build_index
@@ -4521,6 +4522,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_analyze_command(sub, common)
     _add_patterns_command(sub, common)
     _add_lessons_command(sub, common)
+    add_program_procedure_commands(sub, common)
 
     return parser
 

@@ -36,6 +36,8 @@ REQUIRED_TABLES = {
     "source",
     "extraction",
     "audit_event",
+    "program_section",
+    "procedure_step",
 }
 
 
