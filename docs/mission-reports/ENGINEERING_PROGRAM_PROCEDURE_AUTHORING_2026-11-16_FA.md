@@ -35,7 +35,11 @@
 
 ## Git و CI
 
-در لحظهٔ تهیهٔ این گزارش هیچ stage، commit یا push برای تغییرات جاری انجام نشده است. چون clone کاری ایزوله است، گزارش وضعیت stage/commit/push به branch متصل Arena یا سلامت نهایی workspace اصلی بدون بررسی Git دقیق مجاز نیست. همچنین تا زمانی که SHA نهایی دقیق با CIهای Linux و Windows و در صورت لزوم replay واقعی تطبیق داده نشود، نتایج CI پیشین را نباید به این تغییرات نسبت داد.
+اولین پیاده‌سازی به‌صورت commit `8add9067fd3d4565edd964146bc8cfc330a9e5aa` به branch مجاز push شد. Exact-SHA workflow Linux `44031899454` شکست خورد: چند تست migration/doctor و Windows run-card هنوز head `0026` را انتظار داشتند و pin-check به‌علت انتشار نسخه‌های جدید در PyPI گزارش drift داد (ابتدا `SQLAlchemy 2.1.8` در برابر metadata `2.1.9`). Historical replay job در همان dispatch موفق شد؛ این موفقیت، CI محصول را سبز نمی‌کند. Windows run همان SHA در زمان این گزارش شکست run-card داشت که علتش stale expected revision بود.
+
+اصلاحات جاری migration assertions، `METADATA_REVISION`، `WINDOWS_ACCEPTANCE_RUN_CARD.ps1` و docs به `0027` منتقل شده‌اند. Lockهای `runtime`, `development`, `ui`, و `audit` از طریق ابزار رسمی `tools/constraints.py --set` به metadata جاری تجدید و همهٔ پنج `--check`ها پاس شده‌اند؛ این یک تصمیم صریح pin refresh است. اصلاحات هنوز commit/push و CI exact-SHA نهایی نشده‌اند؛ نتایج SHA قبلی نباید به آن‌ها منتقل شوند.
+
+در clone این مرحله `out/performance.json` حاضر است و به‌عنوان فایل tracked در base commit دیده می‌شود؛ با انتظار پیشین مبنی بر حذف محلی unstaged مطابقت ندارد. این فایل عمداً تغییر/حذف، stage یا commit نشده و محتوایش باز نشده است. وضعیت clone اصلی از این مشاهده استنتاج نمی‌شود.
 
 ## اسناد
 

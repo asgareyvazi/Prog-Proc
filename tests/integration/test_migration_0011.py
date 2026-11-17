@@ -50,6 +50,8 @@ LATER_MIGRATION_TABLES = (
     "intake_queue_item",  # 0024
     "intake_registration",  # 0025
     "ddr_activity",  # 0026
+    "program_section",  # 0027
+    "procedure_step",  # 0027
     "casing_run",  # 0014
     "cement_job",  # 0015
     "well_control_event",  # 0017

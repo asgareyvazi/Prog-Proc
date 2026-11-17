@@ -188,6 +188,8 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
                     "intake_queue_item",
                     "intake_registration",
                     "ddr_activity",
+                    "program_section",
+                    "procedure_step",
                     "bit_record",
                     "survey_run",
                     "survey_station",

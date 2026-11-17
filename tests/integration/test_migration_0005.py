@@ -81,10 +81,12 @@ LATER_MIGRATION_COLUMNS = (
     "ddr_report.is_current",  # 0026
     "well_operation.is_current",  # 0026
 )
-LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015, 0024, 0025, 0026
+LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015, 0024, 0025, 0026, 0027
     "intake_queue_item",
     "intake_registration",
     "ddr_activity",
+    "program_section",
+    "procedure_step",
     "problem_definition",
     "mud_report",
     "mud_measurement",

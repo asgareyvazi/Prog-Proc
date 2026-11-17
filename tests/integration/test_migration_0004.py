@@ -586,6 +586,9 @@ def test_the_downgrade_removes_the_domain_and_keeps_the_workspace(tmp_path) -> N
                 "intake_registration",
                 # 0026: authoring activity is a separate durable table.
                 "ddr_activity",
+                # 0027: structured authoring children.
+                "program_section",
+                "procedure_step",
             )
         ), diff
 

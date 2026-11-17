@@ -130,7 +130,7 @@ def test_code_key_is_authoritative_and_partial_unique_exists(tmp_path: Path):
         eng = ws.database.engine
         insp = inspect(eng)
         cols = {c["name"] for c in insp.get_columns("lesson_learned")}
-        assert "code_key" in cols, "code_key column must exist at head 0026"
+        assert "code_key" in cols, "code_key column must exist at head 0027"
         # Check index in sqlite_master has correct predicate
         with eng.connect() as conn:
             row = conn.execute(
@@ -228,7 +228,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
                 ).fetchone()
                 is not None
             )
-        assert current_revision(eng) == "0026"
+        assert current_revision(eng) == "0027"
     finally:
         eng.dispose()
 
@@ -239,7 +239,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
         upgrade(eng2)
         # Second upgrade should be no-op
         upgrade(eng2)
-        assert current_revision(eng2) == "0026"
+        assert current_revision(eng2) == "0027"
     finally:
         eng2.dispose()
 
@@ -262,7 +262,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
                 )
             )
         upgrade(eng3)  # to head 0022
-        assert current_revision(eng3) == "0026"
+        assert current_revision(eng3) == "0027"
         with eng3.connect() as conn:
             row = conn.execute(
                 __import__("sqlalchemy").text(
@@ -292,7 +292,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
             # stamp remains 0021, so upgrade will see wrong index and repair
         # Now upgrade should detect incorrect definition and repair
         upgrade(eng4)
-        assert current_revision(eng4) == "0026"
+        assert current_revision(eng4) == "0027"
         with eng4.connect() as conn:
             row = conn.execute(
                 __import__("sqlalchemy").text(
@@ -317,7 +317,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
 
         assert "code_key" not in {c["name"] for c in insp_e(eng5).get_columns("lesson_learned")}
         upgrade(eng5)
-        assert current_revision(eng5) == "0026"
+        assert current_revision(eng5) == "0027"
         assert "code_key" in {c["name"] for c in insp_e(eng5).get_columns("lesson_learned")}
     finally:
         eng5.dispose()
@@ -851,9 +851,9 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
     from drilling_intelligence.cli.app import main as cli_main
     from drilling_intelligence.database.migrations import METADATA_REVISION
 
-    assert METADATA_REVISION == "0026", f"METADATA_REVISION must be 0026, got {METADATA_REVISION}"
+    assert METADATA_REVISION == "0027", f"METADATA_REVISION must be 0027, got {METADATA_REVISION}"
 
-    # Workspace create must bootstrap via metadata and stamp 0026
+    # Workspace create must bootstrap via metadata and stamp 0027
     ws_root = tmp_path / "ws-bootstrap"
     assert cli_main(["workspace", "create", str(ws_root)]) == 0
     # DB is lazily created on first open/doctor, not on create alone
@@ -872,12 +872,12 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
     conn = sqlite3.connect(db_path)
     try:
         ver = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert ver[0] == "0026", f"wheel bootstrap must stamp 0026, got {ver[0]}"
+        assert ver[0] == "0027", f"wheel bootstrap must stamp 0027, got {ver[0]}"
         assert ver[0] == METADATA_REVISION
     finally:
         conn.close()
 
-    # Doctor truthfulness: up_to_date true, current==head==0026
+    # Doctor truthfulness: up_to_date true, current==head==0027
     out, err = io.StringIO(), io.StringIO()
     saved = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = out, err
@@ -887,7 +887,7 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
         sys.stdout, sys.stderr = saved
     payload = json.loads(out.getvalue())
     assert code == 0
-    assert payload["schema"]["current"] == "0026"
-    assert payload["schema"]["head"] == "0026" if "head" in payload["schema"] else True
+    assert payload["schema"]["current"] == "0027"
+    assert payload["schema"]["head"] == "0027" if "head" in payload["schema"] else True
     assert payload["schema"]["up_to_date"] is True
     assert payload["findings"] == []

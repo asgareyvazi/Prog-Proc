@@ -12,7 +12,7 @@
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
-# Generated on 2026-10-20.
+# Generated on 2026-11-17.
 
 alembic==1.20.1
 anyio==4.16.0
@@ -43,5 +43,5 @@ pytest-cov==7.1.0
 pytest==9.2.0
 python-docx==1.2.0
 ruff==0.17.5
-SQLAlchemy==2.1.8
+SQLAlchemy==2.1.9
 typing_extensions==4.16.0
