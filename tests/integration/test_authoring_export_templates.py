@@ -183,3 +183,59 @@ def test_list_templates_covers_both_kinds() -> None:
     assert "standard_operational_procedure" in procedures
     with pytest.raises(ValidationError, match="must be 'program' or 'procedure'"):
         list_templates("widgets")
+
+
+def test_draft_from_document_anchors_without_inferring(session, hierarchy) -> None:
+    from drilling_intelligence.database.models import Document, DocumentVersion
+    from drilling_intelligence.engineering.source_to_draft import create_draft_from_document
+
+    document = Document(
+        id="doc-src-1",
+        identity_path="programs/src.docx",
+        filename="src.docx",
+        sha256="a" * 64,
+    )
+    version = DocumentVersion(
+        id="ver-src-1",
+        document_id=document.id,
+        version_number=1,
+        source_path="programs/src.docx",
+        sha256="b" * 64,
+        is_current=True,
+    )
+    session.add_all([document, version])
+    session.flush()
+
+    service = EngineeringAuthoringService(session)
+    repo = EngineeringRepository(session)
+    record = create_draft_from_document(
+        service,
+        "program",
+        "doc-src-1",
+        document_version_id="ver-src-1",
+        content={
+            "title": "Draft from source",
+            "author": "author-a",
+            "well_id": hierarchy["well"].id,
+        },
+    )
+    assert str(record.status) == "DRAFT"
+    assert record.document_id == "doc-src-1"
+    assert record.document_version_id == "ver-src-1"
+    for section in repo.list_program_sections(record.id):
+        assert section.completion_state == "EXTRACTED_UNVERIFIED"
+        assert section.source_reference.startswith("document:doc-src-1#ver-src-1")
+    assert service.validate_program(record.id)["ready_for_review"] is False
+
+
+def test_draft_from_document_refuses_unknown_document(session) -> None:
+    from drilling_intelligence.engineering.source_to_draft import create_draft_from_document
+
+    service = EngineeringAuthoringService(session)
+    with pytest.raises(ValidationError, match="source document not found"):
+        create_draft_from_document(
+            service,
+            "procedure",
+            "doc-missing",
+            content={"title": "x", "created_by": "a"},
+        )

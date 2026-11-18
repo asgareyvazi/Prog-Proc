@@ -109,6 +109,25 @@ drillintel procedures program-link <PROCEDURE_ID> --workspace <WORKSPACE> --json
 drillintel programs linked-procedures <PROGRAM_ID> --workspace <WORKSPACE> --json
 ```
 
+## Templates and source-document-to-draft
+
+Controlled templates supply structure only - ordered sections/steps with empty content and an explicit `OWNER_DECISION_REQUIRED` state or `PLACEHOLDER` instruction. No engineering value is ever inferred from a template. `draft-from-document` anchors a DRAFT to a registered source document: the record stores `document_id`/`document_version_id` and every section/step is marked `EXTRACTED_UNVERIFIED` with provenance pointing at the exact document version.
+
+```sh
+drillintel programs templates --workspace <WORKSPACE> --json
+drillintel programs create-from-template --template standard_drilling_program --content identity.json --workspace <WORKSPACE> --json
+drillintel procedures draft-from-document --document <DOC_ID> [--document-version <VER_ID>] --content identity.json --workspace <WORKSPACE> --json
+```
+
+## Controlled export
+
+`export` writes one exact revision to JSON, HTML, DOCX or PDF. The export is read-only against the workspace, atomic, and refuses to overwrite an existing file. A DRAFT revision is watermarked `DRAFT - NOT APPROVED`; actor strings are labelled as declared attribution, not authentication.
+
+```sh
+drillintel programs export <ID> --format docx --out program-rev1.docx --workspace <WORKSPACE> --json
+drillintel procedures export <ID> --format pdf --out procedure-rev1.pdf --workspace <WORKSPACE> --json
+```
+
 ## Not yet provided
 
-No writable Qt Program/Procedure editor, templates, section/step removal policy, controlled DOCX/PDF publishing, source-document-to-draft mapper, full conflict impact analysis, or operational applicability view is included in this headless slice. The database has no arbitrary calculation engine; only `npt.hours_rollup` V1 executes. See [`ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md`](ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md) for capability status, required evidence and release sequence.
+No writable Qt Program/Procedure editor, section/step removal policy, full conflict impact analysis, or operational applicability view is included in this headless slice. The database has no arbitrary calculation engine; only `npt.hours_rollup` V1 executes. See [`ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md`](ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md) for capability status, required evidence and release sequence.

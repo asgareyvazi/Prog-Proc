@@ -258,6 +258,19 @@ def _add_authoring_group(sub: Any, common: list[Any], kind: str, handler: Any) -
     )
     from_template.set_defaults(handler=handler)
 
+    from_document = actions.add_parser(
+        "draft-from-document",
+        help="anchor a DRAFT to a registered source document (EXTRACTED_UNVERIFIED, no inference)",
+        parents=[common],
+    )
+    from_document.add_argument("--document", dest="document_id", required=True)
+    from_document.add_argument("--document-version", dest="document_version_id", default=None)
+    from_document.add_argument("--template", default=None)
+    from_document.add_argument(
+        "--content", required=True, help="bounded strict JSON object with identity fields"
+    )
+    from_document.set_defaults(handler=handler)
+
     for name in ("submit", "review", "approve", "reject"):
         action = actions.add_parser(name, help=f"{name} this exact revision", parents=[common])
         action.add_argument("record_id")
@@ -832,6 +845,32 @@ def command_program_procedure(args: Any) -> int:
             lines = [
                 f"Created DRAFT {kind[:-1]} rev {record.revision} from template {args.template!r} "
                 "(structure only; no inferred engineering values)."
+            ]
+        elif action == "draft-from-document":
+            from .source_to_draft import create_draft_from_document
+
+            content = read_json(args.content)
+            record = create_draft_from_document(
+                service,
+                kind,
+                args.document_id,
+                document_version_id=args.document_version_id,
+                template=args.template,
+                content=content,
+            )
+            payload = {
+                "id": record.id,
+                "revision": record.revision,
+                "status": str(record.status),
+                "origin": record.origin,
+                "document_id": record.document_id,
+                "document_version_id": record.document_version_id,
+                "updated_at": service._token(record),
+                "note": "structure anchored to source document; all content EXTRACTED_UNVERIFIED",
+            }
+            lines = [
+                f"Created DRAFT {kind[:-1]} rev {record.revision} from document "
+                f"{args.document_id}; no content inferred or verified."
             ]
         elif action == "export":
             from .export import export_record

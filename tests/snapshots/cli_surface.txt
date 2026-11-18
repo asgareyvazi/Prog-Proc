@@ -1068,6 +1068,19 @@ command  programs create-from-template
     arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
     arg --template dest=template type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg --content dest=content type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  programs draft-from-document
+  prog drillintel programs draft-from-document
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --document dest=document_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --document-version dest=document_version_id type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --template dest=template type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --content dest=content type=- nargs=None default=None required=True choices=- action=_StoreAction
 command  programs submit
   prog drillintel programs submit
   description -
@@ -1323,6 +1336,19 @@ command  procedures create-from-template
     arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
     arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
     arg --template dest=template type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --content dest=content type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  procedures draft-from-document
+  prog drillintel procedures draft-from-document
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --document dest=document_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --document-version dest=document_version_id type=- nargs=None default=None required=False choices=- action=_StoreAction
+    arg --template dest=template type=- nargs=None default=None required=False choices=- action=_StoreAction
     arg --content dest=content type=- nargs=None default=None required=True choices=- action=_StoreAction
 command  procedures submit
   prog drillintel procedures submit
