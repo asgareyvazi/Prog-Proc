@@ -240,6 +240,11 @@ def _add_authoring_group(sub: Any, common: list[Any], kind: str, handler: Any) -
     export.add_argument("record_id")
     export.add_argument("--format", required=True, choices=["json", "html", "docx", "pdf"])
     export.add_argument("--out", required=True, help="destination path; must not already exist")
+    export.add_argument(
+        "--redact",
+        action="store_true",
+        help="opt-in source-path redaction (policy path-redaction-v1); default is full fidelity",
+    )
     export.set_defaults(handler=handler)
 
     templates = actions.add_parser(
@@ -881,6 +886,7 @@ def command_program_procedure(args: Any) -> int:
                 args.record_id,
                 fmt=args.format,
                 out_path=args.out,
+                redact=bool(getattr(args, "redact", False)),
             )
             lines = [
                 f"Exported {payload['record_type']} rev {payload['revision']} "

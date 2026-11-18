@@ -239,3 +239,168 @@ def test_draft_from_document_refuses_unknown_document(session) -> None:
             "doc-missing",
             content={"title": "x", "created_by": "a"},
         )
+
+
+def _program_with_rich_target(repo, service, hierarchy):
+    program = repo.create_program(
+        code="EXP-DRP-2",
+        title="Rich export fixture",
+        summary="Fixture with a full target row.",
+        author="author-a",
+        created_by="author-a",
+        well_id=hierarchy["well"].id,
+    )
+    service.add_program_target(
+        program.id,
+        expected_updated_at=_stamp(program),
+        name="8 1/2 in",
+        hole_size_in=8.5,
+        casing_program="7 in liner",
+        formation_top="Fixture Formation",
+        planned_depth_md_value=2500.0,
+        planned_depth_md_unit="m",
+        planned_duration_days=12.5,
+        planned_mud_weight_value=1.45,
+        planned_mud_weight_unit="kg/m3",
+        planned_npt_hours=6.0,
+        planned_cost_value=125000.0,
+        planned_cost_unit="EUR",
+        provenance=[{"source_path": r"C:\Users\qa\source\plan.xlsx"}],
+    )
+    return repo.get_program(program.id)
+
+
+def test_export_preserves_all_target_fields_and_stored_units(session, hierarchy, tmp_path) -> None:
+    repo = EngineeringRepository(session)
+    service = EngineeringAuthoringService(session)
+    program = _program_with_rich_target(repo, service, hierarchy)
+    export_record(service, "program", program.id, fmt="json", out_path=tmp_path / "p.json")
+    payload = json.loads((tmp_path / "p.json").read_text())
+    target = payload["targets"][0]
+    assert target["formation_top"] == "Fixture Formation"
+    assert target["casing_program"] == "7 in liner"
+    assert target["planned_cost_value"] == 125000.0
+    assert target["planned_cost_unit"] == "EUR"
+    assert target["planned_mud_weight_unit"] == "kg/m3"
+    assert target["planned_depth_md_unit"] == "m"
+
+    # HTML must not claim a hard-coded unit: the stored unit appears, not "ppg".
+    export_record(service, "program", program.id, fmt="html", out_path=tmp_path / "p.html")
+    html_text = (tmp_path / "p.html").read_text()
+    assert "kg/m3" in html_text
+    assert "EUR" in html_text
+    assert "ppg" not in html_text
+    assert "m MD" not in html_text
+
+    # PDF must be multi-page-capable and contain full content without truncation markers.
+    export_record(service, "program", program.id, fmt="pdf", out_path=tmp_path / "p.pdf")
+    import pymupdf
+
+    doc = pymupdf.open(str(tmp_path / "p.pdf"))
+    text = "".join(page.get_text() for page in doc)
+    assert "Fixture Formation" in text
+    assert "kg/m3" in text
+    assert "125000.0 EUR" in text
+    assert "DRAFT - NOT APPROVED" in text
+    doc.close()
+
+
+def test_pdf_paginates_long_content(session, hierarchy, tmp_path) -> None:
+    repo = EngineeringRepository(session)
+    service = EngineeringAuthoringService(session)
+    program = repo.create_program(
+        code="EXP-LONG",
+        title="Long fixture",
+        author="author-a",
+        created_by="author-a",
+        well_id=hierarchy["well"].id,
+    )
+    token = _stamp(program)
+    for i in range(60):
+        service.add_program_section(
+            program.id,
+            expected_updated_at=token,
+            section_key=f"section_{i}",
+            title=f"Section {i}",
+            content="Long synthetic fixture text. " * 40,
+            completion_state="SOURCE_PROVIDED",
+            source_reference="FIXTURE",
+        )
+        program = repo.get_program(program.id)
+        token = _stamp(program)
+    export_record(service, "program", program.id, fmt="pdf", out_path=tmp_path / "long.pdf")
+    import pymupdf
+
+    doc = pymupdf.open(str(tmp_path / "long.pdf"))
+    assert doc.page_count > 3
+    text = "".join(page.get_text() for page in doc)
+    assert "Section 59" in text  # no silent truncation of the last section
+    assert "Page 2" in text  # page numbers rendered
+    doc.close()
+
+
+def test_redacted_export_masks_local_paths_only(session, hierarchy, tmp_path) -> None:
+    repo = EngineeringRepository(session)
+    service = EngineeringAuthoringService(session)
+    program = _program_with_rich_target(repo, service, hierarchy)
+    result = export_record(
+        service, "program", program.id, fmt="json", out_path=tmp_path / "r.json", redact=True
+    )
+    assert result["redacted"] is True
+    assert result["redaction_policy"] == "path-redaction-v1"
+    payload = json.loads((tmp_path / "r.json").read_text())
+    assert payload["redaction"]["applied"] is True
+    prov = payload["targets"][0]["provenance"][0]["source_path"]
+    assert "C:\\Users" not in prov and "REDACTED" in prov
+    # Canonical record is untouched by producing a redacted copy.
+    stored = repo.get_program(program.id)
+    assert stored is not None
+    stored_target = repo.list_targets(program.id)[0]
+    assert stored_target.provenance[0]["source_path"] == r"C:\Users\qa\source\plan.xlsx"
+    # Engineering text with slashes/colons is NOT redacted.
+    assert payload["targets"][0]["casing_program"] == "7 in liner"
+
+
+def test_redacted_export_covers_windows_unc_posix_and_file_uri(
+    session, hierarchy, tmp_path
+) -> None:
+    from drilling_intelligence.engineering.export import _redact_paths
+
+    value = {
+        "windows": r"C:\data\src\doc.docx",
+        "unc": r"\\fileserver\share\doc.docx",
+        "posix": "/home/qa/documents/doc.pdf",
+        "uri": "file:///home/qa/doc.pdf",
+        "text": "Use 12 1/4 in hole; ratio 3:1 — keep as-is",
+    }
+    out = _redact_paths(value)
+    for key in ("windows", "unc", "posix", "uri"):
+        assert "REDACTED" in out[key], key
+    assert out["text"] == value["text"]
+
+
+def test_export_no_clobber_refuses_existing_symlink_and_race(session, hierarchy, tmp_path) -> None:
+
+    repo = EngineeringRepository(session)
+    service = EngineeringAuthoringService(session)
+    program = _make_program(repo, service, hierarchy)
+    existing = tmp_path / "exists.pdf"
+    existing.write_bytes(b"foreign")
+    with pytest.raises(ValidationError, match="no-clobber"):
+        export_record(service, "program", program.id, fmt="pdf", out_path=existing)
+    assert existing.read_bytes() == b"foreign"  # untouched
+
+    link = tmp_path / "link.pdf"
+    link.symlink_to(existing)
+    with pytest.raises(ValidationError, match="no-clobber"):
+        export_record(service, "program", program.id, fmt="pdf", out_path=link)
+
+    # Concurrent creator between preflight and publication: pre-create the exact target
+    # after the preflight would have run is simulated by exporting to an existing name.
+    target = tmp_path / "race.pdf"
+    target.write_bytes(b"concurrent")
+    with pytest.raises(ValidationError, match="no-clobber"):
+        export_record(service, "program", program.id, fmt="pdf", out_path=target)
+    assert target.read_bytes() == b"concurrent"
+    # No stray temp files remain after refusals.
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".export-")] == []

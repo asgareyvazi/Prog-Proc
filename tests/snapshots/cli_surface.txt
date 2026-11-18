@@ -1048,6 +1048,7 @@ command  programs export
     arg (record_id) dest=record_id type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg --format dest=format type=- nargs=None default=None required=True choices=docx|html|json|pdf action=_StoreAction
     arg --out dest=out type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --redact dest=redact type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
 command  programs templates
   prog drillintel programs templates
   description -
@@ -1317,6 +1318,7 @@ command  procedures export
     arg (record_id) dest=record_id type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg --format dest=format type=- nargs=None default=None required=True choices=docx|html|json|pdf action=_StoreAction
     arg --out dest=out type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --redact dest=redact type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
 command  procedures templates
   prog drillintel procedures templates
   description -
