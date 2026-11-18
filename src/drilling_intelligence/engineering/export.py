@@ -362,11 +362,9 @@ def export_record(
         else:
             _render_pdf(payload, tmp)
         tmp.replace(target)
-    except BaseException:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+    except Exception:
+        # Cleanup-only handler: remove the partial temp file, then re-raise unchanged.
+        tmp.unlink(missing_ok=True)
         raise
     return {
         "record_type": kind,
