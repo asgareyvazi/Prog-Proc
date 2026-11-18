@@ -206,6 +206,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.controller = controller or ReviewController()
         self._review: DomainReview | None = None
+        self._section_render_pending = False
         self._well_choices: tuple[WellChoice, ...] = ()
         self._review_thread: QThread | None = None
         self._review_worker: ReviewWorker | None = None
@@ -2845,9 +2846,25 @@ class MainWindow(QMainWindow):
         self._render_selected_section()
 
     def _render_selected_section(self) -> None:
+        # currentChanged and selectionChanged can arrive in either order during one
+        # programmatic selectRow()/sort/reset, and each intermediate state is a valid
+        # but transient snapshot.  Coalesce them into one render on the event loop so
+        # the detail tree always reflects the final selection state, never a
+        # half-applied one.
+        if self._section_render_pending:
+            return
+        self._section_render_pending = True
+        QTimer.singleShot(0, self._render_selected_section_now)
+
+    def _render_selected_section_now(self) -> None:
+        self._section_render_pending = False
         selection = self.sections_table.selectionModel()
         selected_rows = selection.selectedRows()
         if len(selected_rows) != 1:
+            current = selection.currentIndex()
+            if current.isValid():
+                _fill_tree(self.sections_detail, self.sections_model.row_payload(current.row()))
+                return
             _fill_tree(self.sections_detail, None)
             return
         current = selection.currentIndex()
