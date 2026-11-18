@@ -373,16 +373,19 @@ class MainWindow(QMainWindow):
         _configure_table(table, model)
         return table, model
 
+    def _current_workspace(self) -> Any:
+        return self.controller.workspace
+
     def _build_program_builder_page(self) -> None:
         from .authoring_pages import ProgramBuilderPage
 
-        self.program_builder_page = ProgramBuilderPage(lambda: self.controller.workspace)
+        self.program_builder_page = ProgramBuilderPage(self._current_workspace)
         self.pages.addWidget(self.program_builder_page)
 
     def _build_procedure_builder_page(self) -> None:
         from .authoring_pages import ProcedureBuilderPage
 
-        self.procedure_builder_page = ProcedureBuilderPage(lambda: self.controller.workspace)
+        self.procedure_builder_page = ProcedureBuilderPage(self._current_workspace)
         self.pages.addWidget(self.procedure_builder_page)
 
     def _build_overview_page(self) -> None:

@@ -5,7 +5,7 @@
 - Migrationهای `0027` و `0028` (لینک دقیق Program↔Procedure revision با NONE/LINKED/STALE و بدون auto-relink) در head هستند؛ head Alembic `0028` است.
 - قابلیت‌های headless: authoring service کامل (sections/targets/steps، freshness token، validate، submit/review/decide، revise، compare)، templateهای فقط‌ساختاری، `draft-from-document` (صرفاً لینک ساختاری به سند — استخراج واقعی محتوا نیست)، و export JSON/HTML/DOCX/PDF با watermark DRAFT، fidelity کامل، unitهای ذخیره‌شده، redaction opt-in (`path-redaction-v1`) و انتشار race-safe no-clobber.
 - Qt: صفحات **Program Builder** و **Procedure Builder** اضافه شدند (`ui/authoring_pages.py`) — ویرایشگر واقعی با persistence؛ ۴ تست offscreen جدید + ۳۱ تست workbench موجود سبز هستند. Screenshots فیزیکی به‌علت فقدان libGL در host هنوز NOT RUN است.
-- `out/performance.json` دست‌نخورده (blob `df63b57fb2a3ff6c78ee7d974d62e074cd303601`).
+- `out/performance.json` دست‌نخورده (همان blob.tracked remoto؛ بدون تغییر).
 - CI exact-SHA برای SHA جاری (`b52a917`) در زمان snapshot در حال اجراست؛证据 نهایی در گزارش پایانی مأموریت ثبت می‌شود.
 
 ## Classes
