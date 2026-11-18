@@ -18,7 +18,8 @@ to be found by somebody else.
 | `src/drilling_intelligence/database/session.py` | 85 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/database/session.py` | 121 | `Exception` | suppressed | absent table simply means "no data" |
 | `src/drilling_intelligence/documents/registry.py` | 400 | `Exception` | reported | third-party parser boundary |
-| `src/drilling_intelligence/engineering/export.py` | 365 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/engineering/export.py` | 615 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/engineering/export.py` | 562 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/engineering/service.py` | 126 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/evidence/verify.py` | 297 | `Exception` | reported | a malformed record is reported, not fatal |
 | `src/drilling_intelligence/evidence/verify.py` | 192 | `Exception` | reported |  |
@@ -89,12 +90,28 @@ to be found by somebody else.
 | `src/drilling_intelligence/search/index.py` | 1401 | `Exception` | reported | a malformed expression means "use the scan" |
 | `src/drilling_intelligence/search/service.py` | 615 | `Exception` | reported | a malformed record is reported, not fatal |
 | `src/drilling_intelligence/search/service.py` | 699 | `Exception` | reported | an unwritable data directory must not stop the app |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 272 | `Exception` | reported | surfaced to the user, not swallowed |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 330 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 355 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 378 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 395 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 415 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 438 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 603 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 612 | `Exception` | suppressed | no workspace yet |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 675 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 702 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 725 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 750 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 765 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 785 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 810 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/controller.py` | 105 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
-| `src/drilling_intelligence/ui/main_window.py` | 1044 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
-| `src/drilling_intelligence/ui/main_window.py` | 1658 | `Exception` | reported | export must not crash the window |
-| `src/drilling_intelligence/ui/main_window.py` | 2891 | `Exception` | reported | keep selection/read rendering usable |
-| `src/drilling_intelligence/ui/main_window.py` | 3084 | `Exception` | reported | preserve read-side selection on capability errors |
+| `src/drilling_intelligence/ui/main_window.py` | 1060 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
+| `src/drilling_intelligence/ui/main_window.py` | 1674 | `Exception` | reported | export must not crash the window |
+| `src/drilling_intelligence/ui/main_window.py` | 2907 | `Exception` | reported | keep selection/read rendering usable |
+| `src/drilling_intelligence/ui/main_window.py` | 3100 | `Exception` | reported | preserve read-side selection on capability errors |
 | `src/drilling_intelligence/ui/worker.py` | 70 | `Exception` | reported | thread boundary reports failures without hiding them |
 | `src/drilling_intelligence/ui/worker.py` | 130 | `Exception` | reported | report unexpected worker failures to the UI |
 | `src/drilling_intelligence/ui/worker.py` | 219 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |
@@ -122,6 +139,6 @@ to be found by somebody else.
 
 | kind | count |
 | --- | --- |
-| re-raised | 14 |
-| reported | 67 |
-| suppressed | 28 |
+| re-raised | 15 |
+| reported | 82 |
+| suppressed | 29 |
