@@ -1,6 +1,8 @@
 # Engineering Program and Procedure Capability Plan
 
-**Authority:** current engineering capability inventory and ordered roadmap for Prog-Proc. Historical reports remain historical evidence; this plan does not retroactively reclassify them. **Product state remains local-first, single-user, Pre-Alpha.** This plan is source-grounded at repository tip `7b045178df7452785e3485e5a81443062b639763`; the current mission changes in the working tree have not yet been committed or CI-qualified.
+**Authority:** current engineering capability inventory and ordered roadmap for Prog-Proc. Historical reports remain historical evidence; this plan does not retroactively reclassify them. **Product state remains local-first, single-user, Pre-Alpha.**
+
+**Current snapshot (2026-11-18, UTC):** source-grounded at branch tip `b52a917f460492f18f275abacb875bc9735355a4` (`arena/5957b76d-prog-proc`). Prior verified baseline `2dc7ddde7d595729f98e67485449514a277b07fc` passed exact-SHA Linux CI run `44279805151` and Windows CI run `44279805136` (both success) plus historical replay run `44299260397` (replay job `134784363027` success; original historical failure run `43695755434` on `114173a4` remains failure). Migrations 0027+0028 are the Alembic head. Headless authoring (sections/targets/steps, lifecycle, templates, source-anchored drafts, controlled JSON/HTML/DOCX/PDF export with redaction and race-safe no-clobber) is implemented and tested; **Qt Program Builder / Procedure Builder pages are now implemented** (`src/drilling_intelligence/ui/authoring_pages.py`, 4 offscreen UI tests). Physical-display screenshots remain NOT RUN in the libGL-less sandbox. Exact-SHA CI for the current tip is running at snapshot time.
 
 ## 1. Existing engineering capabilities from the project's beginning
 

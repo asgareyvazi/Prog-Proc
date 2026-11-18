@@ -2,12 +2,14 @@
 
 ## Snapshot مأموریت جاری — ادامهٔ Program / Procedure
 
-- مخزن و branch مجاز: `asgareyvazi/Prog-Proc`, `arena/5957b76d-prog-proc`. Base اعلام‌شده در branch note: `317c55365319af61138000664293ae2d84e27a6e`. کار در clone ایزولهٔ `/tmp/Prog-Proc-mission` انجام می‌شود؛ branch دیگری، `main` یا تنظیمات GitHub تغییر نکرده است.
-- پیاده‌سازی headless Program/Procedure authoring به‌عنوان commit `8add9067fd3d4565edd964146bc8cfc330a9e5aa` push شد. Exact-SHA Linux workflow `44031899454` شکست خورد: migration/schema expectationهای تست‌های قدیمی هنوز `0026` فرض می‌کردند، dependency constraints با metadata جاری PyPI در `SQLAlchemy 2.1.9` drift داشتند، و Windows PowerShell run-card هنوز head `0026` را اعلام می‌کرد. Historical replay در همان dispatch موفق بود. این شکست‌ها به‌عنوان **FAIL** ثبت شدند؛ هیچ skip یا assertion تضعیف نشد.
-- اصلاحات پیگیری در حال انجام است: تست‌ها و مستندات head به `0027` منتقل شده‌اند، جدول‌های جدید در انتظارات تاریخی migration ثبت شده‌اند، run-card Windows اصلاح شده و پنج lock set با دستور رسمی `tools/constraints.py --set` به metadata جاری رفرش شده‌اند. اجرای محلی selection مرتبط: **116 passed, 1 skipped**؛ skip را PASS حساب نمی‌کنیم. Ruff check، format check (369 فایل)، compileall و پنج constraint check نیز موفق‌اند. اجرای کامل محلی به‌علت سقف 30 دقیقه incomplete ماند؛ CI exact-SHA جدید هنوز لازم است.
-- قابلیت جدید: migration SQLite `0027`، Program sections/targets و Procedure steps نسخه‌دار، سخت‌گیرانهٔ headless JSON CLI برای create/update/reorder/validate/submit/review/approve/reject/revise/compare، stale-write protection و checklist ساختاری. جزئیات، محدودیت‌ها و roadmap واحد در [`ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md`](ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md) و [`PROGRAM_PROCEDURE_AUTHORING_CLI.md`](PROGRAM_PROCEDURE_AUTHORING_CLI.md) است. Qt authoring UI، template، controlled export و exact-revision Program→Procedure link هنوز ارائه نشده‌اند؛ این برش تأیید مهندسی نیست.
-- وضعیت Git محافظت‌شده: در این clone فایل `out/performance.json` **موجود و در HEAD پایه tracked** است و status آن را تغییرنکرده نشان می‌دهد؛ با وضعیت قبلیِ «حذف محلی unstaged» تطبیق ندارد. فایل عمداً دست‌نخورده مانده و در هیچ stage/commit قرار نگرفته است. بنابراین شرط غیبت آن در این clone برآورده نیست و دربارهٔ فایل checkout اصلی نتیجه‌گیری نمی‌شود.
-- SQLite تنها backend qualified است؛ PostgreSQL **NOT QUALIFIED**. NPT roll-up V1 تنها calculation اجرایی مجاز است. OCR/MinerU واقعی **NOT RUN / NOT QUALIFIED**؛ پذیرش فیزیکی Windows **NOT RUN**؛ M2–M5/O-02/O-03 و دیگر گیت‌های owner همچنان owner-gated هستند. Actor string هویت احراز‌شده نیست.
+## Snapshot جاری — 2026-11-18 (UTC)، SHA نوک شاخه `b52a917f460492f18f275abacb875bc9735355a4`
+
+- Baseline تأییدشدهٔ قبلی: `2dc7ddde7d595729f98e67485449514a277b07fc` — Linux run `44279805151` و Windows run `44279805136` هر دو success (2,951 collected؛ 0 failed)، و historical replay run `44299260397` (job `134784363027`) success با artifact `14425148074`؛ run تاریخی `43695755434` روی `114173a4` همچنان failure ثبت شده است.
+- Migrationهای `0027` و `0028` (لینک دقیق Program↔Procedure revision با NONE/LINKED/STALE و بدون auto-relink) در head هستند؛ head Alembic `0028` است.
+- قابلیت‌های headless: authoring service کامل (sections/targets/steps، freshness token، validate، submit/review/decide، revise، compare)، templateهای فقط‌ساختاری، `draft-from-document` (صرفاً لینک ساختاری به سند — استخراج واقعی محتوا نیست)، و export JSON/HTML/DOCX/PDF با watermark DRAFT، fidelity کامل، unitهای ذخیره‌شده، redaction opt-in (`path-redaction-v1`) و انتشار race-safe no-clobber.
+- Qt: صفحات **Program Builder** و **Procedure Builder** اضافه شدند (`ui/authoring_pages.py`) — ویرایشگر واقعی با persistence؛ ۴ تست offscreen جدید + ۳۱ تست workbench موجود سبز هستند. Screenshots فیزیکی به‌علت فقدان libGL در host هنوز NOT RUN است.
+- `out/performance.json` دست‌نخورده (blob `df63b57fb2a3ff6c78ee7d974d62e074cd303601`).
+- CI exact-SHA برای SHA جاری (`b52a917`) در زمان snapshot در حال اجراست؛证据 نهایی در گزارش پایانی مأموریت ثبت می‌شود.
 
 ## وضعیت تکمیلی مأموریت قبلی — تاریخی؛ superseded by snapshot above
 

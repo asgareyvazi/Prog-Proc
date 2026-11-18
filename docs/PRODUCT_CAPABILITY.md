@@ -1,18 +1,12 @@
 # Product capability inventory
+## Snapshot جاری — 2026-11-18 (UTC)، SHA نوک شاخه `b52a917f460492f18f275abacb875bc9735355a4`
 
-> **Latest engineering-expansion verification — code/test SHA `075d5919ebd8a5e600e3c806b73bc560203f52c5`:** Prog-Proc remains local-first, single-user and **Pre-Alpha**; SQLite alone is qualified, PostgreSQL is **NOT QUALIFIED**, and the 26-class taxonomy remains unchanged. Exact-SHA Linux [run `42466023039`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42466023039) and Windows [run `42466023072`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42466023072) both passed. Linux CPython 3.11/3.14 each collected 2,824 (2,763 passed, 61 skipped, 0 failed); Ubuntu 26.04/3.14 collected 2,824 (2,823 passed, 1 skipped, 0 failed); Windows CPython 3.11/3.14 each collected 2,824 (2,761 passed, 63 skipped, 0 failed). Windows Qt offscreen UI passed 29/29 on both runtimes and six Windows stability lanes passed 15/15 attempts; physical Windows display acceptance remains **NOT RUN**. A prior Windows run on SHA `85f6a825d08ce10431f5d4e8081114b65bfab331` correctly caught non-deterministic zlib output in the synthetic PNG; the fix is included and verified by both workflows on `075d5919…`. Focused local tests passed 169/169 with eight PySide6-dependent UI tests skipped; skip reasons in full-suite CI annotations are not all available, so skips are not counted as passes. Real MinerU inference and OCR accuracy remain **NOT RUN / NOT QUALIFIED**. Owner-gated M2–M5/O-02/O-03, PostgreSQL, authentication/multi-user, physical workstation acceptance, and production/DR remain outside qualification. Per-SHA evidence and status distinctions are in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and the [current Persian mission report](mission-reports/AUTONOMOUS_MISSION_2026-11-08_ENGINEERING_EXPANSION_FA.md); see also the [continuation prompt](mission-reports/CONTINUATION_PROMPT_AUTONOMOUS_ENGINEERING_FA.md).
-
-
-**Current continuation:** The Program/Procedure first authoring slice is now present on branch `arena/5957b76d-prog-proc`. Its implementation SHA `8add9067fd3d4565edd964146bc8cfc330a9e5aa` was pushed, but exact-SHA CI run `44031899454` exposed stale migration-head expectations and dependency-lock drift; the corrective test/docs/pin work is not yet final-SHA qualified. Historical evidence below remains tied to its cited SHA. The current feature roadmap and capability status are in [`ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md`](ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md).\n\n**Status:** source-derived inventory and finite milestone list
-**As of:** implementation SHA `075d5919ebd8a5e600e3c806b73bc560203f52c5`; exact-SHA workflows linked above (this inventory does not substitute for the mission report).
-**Authority for document classes:** [`DOCUMENT_DOMAIN_COVERAGE.md`](DOCUMENT_DOMAIN_COVERAGE.md)
-
-This file is not a second domain matrix and not a progress percentage. Document
-classifications, handlers, and certification levels stay in the coverage matrix.
-The classes below are what the source and tests show for the rest of the product.
-
-A README row is not proof. Each class cites the code that implements it and a
-test that exercises it, or says that the evidence is only a schema or a comment.
+- Baseline تأییدشدهٔ قبلی: `2dc7ddde7d595729f98e67485449514a277b07fc` — Linux run `44279805151` و Windows run `44279805136` هر دو success (2,951 collected؛ 0 failed)، و historical replay run `44299260397` (job `134784363027`) success با artifact `14425148074`؛ run تاریخی `43695755434` روی `114173a4` همچنان failure ثبت شده است.
+- Migrationهای `0027` و `0028` (لینک دقیق Program↔Procedure revision با NONE/LINKED/STALE و بدون auto-relink) در head هستند؛ head Alembic `0028` است.
+- قابلیت‌های headless: authoring service کامل (sections/targets/steps، freshness token، validate، submit/review/decide، revise، compare)، templateهای فقط‌ساختاری، `draft-from-document` (صرفاً لینک ساختاری به سند — استخراج واقعی محتوا نیست)، و export JSON/HTML/DOCX/PDF با watermark DRAFT، fidelity کامل، unitهای ذخیره‌شده، redaction opt-in (`path-redaction-v1`) و انتشار race-safe no-clobber.
+- Qt: صفحات **Program Builder** و **Procedure Builder** اضافه شدند (`ui/authoring_pages.py`) — ویرایشگر واقعی با persistence؛ ۴ تست offscreen جدید + ۳۱ تست workbench موجود سبز هستند. Screenshots فیزیکی به‌علت فقدان libGL در host هنوز NOT RUN است.
+- `out/performance.json` دست‌نخورده (blob `df63b57fb2a3ff6c78ee7d974d62e074cd303601`).
+- CI exact-SHA برای SHA جاری (`b52a917`) در زمان snapshot در حال اجراست؛证据 نهایی در گزارش پایانی مأموریت ثبت می‌شود.
 
 ## Classes
 
