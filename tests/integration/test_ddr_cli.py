@@ -514,6 +514,19 @@ def test_cli_ddr_compare_is_scoped_read_only_stable_and_reports_ambiguity(
         actor="declared-author",
         reason="Insert one explicitly authored activity",
     )
+    # Exercise imported/legacy path-bearing provenance while keeping the
+    # comparison/export operation itself read-only.
+    with workspace.database.unit_of_work() as session:
+        stored = session.get(DdrReport, predecessor["report_id"])
+        assert stored is not None
+        stored.provenance = [
+            {
+                "source_kind": "manual_authoring",
+                "actor": "declared-author",
+                "reason": "original source retained",
+                "path": r"C:\\Private\\DDR source.pdf",
+            }
+        ]
 
     before = _sqlite_fingerprint(workspace.database)
     first = _call(
@@ -542,6 +555,127 @@ def test_cli_ddr_compare_is_scoped_read_only_stable_and_reports_ambiguity(
         "UNCHANGED",
     ]
     assert comparison["activities"]["items"][1]["successor"]["label"] == "Inserted"
+
+    json_path = workspace.root / "ddr-comparison.json"
+    export_result = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "json",
+        "--output",
+        str(json_path),
+    )
+    assert export_result["format"] == "json"
+    assert export_result["read_only"] is True
+    exported_json = json.loads(json_path.read_text(encoding="utf-8"))
+    assert exported_json["schema"] == "prog-proc.ddr-comparison/v1"
+    assert exported_json["predecessor"]["report_id"] == predecessor["report_id"]
+    assert exported_json["successor"]["report_id"] == successor["report_id"]
+    assert (
+        exported_json["comparison"]["activities"]["items"][1]["successor"]["description"]
+        == "Exact insert"
+    )
+    assert exported_json["truncation"]["omitted_activity_items"] == 0
+    private_source_path = exported_json["predecessor"]["provenance"][0]["path"]
+    assert private_source_path == r"C:\\Private\\DDR source.pdf"
+
+    redacted_json_path = workspace.root / "ddr-comparison-shareable.json"
+    redacted_result = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "json",
+        "--output",
+        str(redacted_json_path),
+        "--redact-source-paths",
+    )
+    redacted_json = json.loads(redacted_json_path.read_text(encoding="utf-8"))
+    assert redacted_result["source_path_redaction_applied"] is True
+    assert redacted_json["redaction"]["applied"] is True
+    assert redacted_json["redaction"]["policy"] == "prog-proc.ddr-local-source-paths/v1"
+    assert redacted_json["predecessor"]["provenance"][0]["path"] == ("[REDACTED LOCAL SOURCE PATH]")
+    assert private_source_path not in redacted_json_path.read_text(encoding="utf-8")
+    assert redacted_json["comparison"] == exported_json["comparison"]
+
+    redacted_markdown_path = workspace.root / "ddr-comparison-shareable.md"
+    _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "markdown",
+        "--output",
+        str(redacted_markdown_path),
+        "--redact-source-paths",
+    )
+    redacted_markdown = redacted_markdown_path.read_text(encoding="utf-8")
+    assert "Source-path redaction: **applied**" in redacted_markdown
+    assert private_source_path not in redacted_markdown
+    assert "Exact insert" in redacted_markdown
+    assert _sqlite_fingerprint(workspace.database) == before
+
+    original_export = json_path.read_bytes()
+    refusal = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "json",
+        "--output",
+        str(json_path),
+        expect=1,
+    )
+    assert "explicitly allow overwrite" in refusal["message"]
+    assert json_path.read_bytes() == original_export
+
+    markdown_path = workspace.root / "ddr-comparison.md"
+    markdown_result = _call(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "markdown",
+        "--output",
+        str(markdown_path),
+    )
+    assert markdown_result["format"] == "markdown"
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert "not a review decision or approval" in markdown
+    assert "Exact insert" in markdown
+    assert "omitted items: 0; truncated: no" in markdown
+
+    stdout_json = _call_human(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "json",
+    )
+    assert json.loads(stdout_json)["schema"] == "prog-proc.ddr-comparison/v1"
+    stdout_markdown = _call_human(
+        workspace,
+        "ddr",
+        "compare",
+        predecessor["report_id"],
+        successor["report_id"],
+        "--format",
+        "markdown",
+    )
+    assert "# DDR revision comparison" in stdout_markdown
     assert _sqlite_fingerprint(workspace.database) == before
 
     mismatched = _call(
@@ -589,3 +723,20 @@ def test_cli_ddr_compare_is_scoped_read_only_stable_and_reports_ambiguity(
     assert ambiguous["ok"] is False
     assert ambiguous["comparison"]["status"] == "AMBIGUOUS"
     assert ambiguous["comparison"]["has_changes"] is None
+    ambiguous_markdown_path = workspace.root / "ambiguous-ddr-comparison.md"
+    _call(
+        workspace,
+        "ddr",
+        "compare",
+        repeated["report_id"],
+        repeated_successor["report_id"],
+        "--format",
+        "markdown",
+        "--output",
+        str(ambiguous_markdown_path),
+        expect=3,
+    )
+    ambiguous_markdown = ambiguous_markdown_path.read_text(encoding="utf-8")
+    assert "AMBIGUOUS" in ambiguous_markdown
+    assert "Repeated" in ambiguous_markdown
+    assert "no pairing was guessed" in ambiguous_markdown.lower()

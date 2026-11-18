@@ -101,6 +101,7 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
             window.sections_detail.topLevelItem(index).text(0)
             for index in range(window.sections_detail.topLevelItemCount())
         }
+        assert section_detail_keys == {str(key) for key in section_payload}
         assert {"id", "origin", "provenance", "planned_duration_days"}.issubset(section_detail_keys)
         provenance_item = next(
             window.sections_detail.topLevelItem(index)
@@ -122,6 +123,8 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
             not record.current for record in history.records
         )
         assert window.lifecycle_combo.currentData() == "history"
+        assert not window.sections_table.selectionModel().selectedRows()
+        assert window.sections_detail.topLevelItem(0).text(1) == "No detail selected."
 
         verified = service.review(
             DomainReviewRequest(well_id=well_id, lifecycle="current", verify_citations=True)
@@ -131,6 +134,8 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
         assert verified.citation_audit is not None
         assert "Citation audit completed" in window.evidence_summary.text()
         assert window.audit_model.rowCount() == len(verified.citation_audit["checks"])
+        assert not window.sections_table.selectionModel().selectedRows()
+        assert window.sections_detail.topLevelItem(0).text(1) == "No detail selected."
     finally:
         # Release, do not only close.  The application fixture is
         # session-scoped, so a window that is only closed stays alive until
@@ -143,6 +148,159 @@ def test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail(
         qt_app.processEvents()
 
     assert before == _database_fingerprint(workspace)
+
+
+def test_section_detail_tracks_mouse_keyboard_sort_and_clear_selection(qt_app, workspace) -> None:
+    """Real row, pointer, and keyboard selections render their current section DTO."""
+    from PySide6.QtCore import QModelIndex, Qt
+    from PySide6.QtTest import QTest
+    from tests.fixtures.fieldops import add_casing_program, ingest, promote, well_id_for
+
+    from drilling_intelligence.review import DomainReviewRequest, DomainReviewService
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import MainWindow
+
+    ingest(workspace)
+    promote(workspace)
+    add_casing_program(workspace)
+    well_id = well_id_for(workspace, "A-3")
+    before = _database_fingerprint(workspace)
+    controller = ReviewController()
+    assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
+    window = MainWindow(controller)
+    try:
+        choices = controller.list_wells()
+        assert any(choice.well_id == well_id for choice in choices)
+        window.well_combo.addItem("A-3", well_id)
+        service = DomainReviewService.for_workspace(controller.workspace)
+        current = service.review(DomainReviewRequest(well_id=well_id, lifecycle="current"))
+        window.set_review(current)
+        window.show()
+        _select_navigation_page(window, "Sections")
+        qt_app.processEvents()
+
+        source_section = next(
+            (index, row)
+            for index in range(window.sections_model.row_count)
+            if (row := window.sections_model.row_payload(index)) and row.get("provenance")
+        )
+        section_index, section_payload = source_section
+        selection_model = window.sections_table.selectionModel()
+        selection_events: list[int] = []
+        selection_model.selectionChanged.connect(
+            lambda selected, deselected: selection_events.append(
+                len(selected.indexes()) + len(deselected.indexes())
+            )
+        )
+
+        # A row selection must render its complete real DTO even when the
+        # current index has been explicitly cleared first.
+        selection_model.clearSelection()
+        window.sections_table.setCurrentIndex(QModelIndex())
+        window.sections_table.selectRow(section_index)
+        qt_app.processEvents()
+        assert [index.row() for index in selection_model.selectedRows()] == [section_index]
+        assert selection_events
+        details = {
+            window.sections_detail.topLevelItem(index).text(0): window.sections_detail.topLevelItem(
+                index
+            ).text(1)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert details["name"] == str(section_payload["name"])
+        provenance_item = next(
+            window.sections_detail.topLevelItem(index)
+            for index in range(window.sections_detail.topLevelItemCount())
+            if window.sections_detail.topLevelItem(index).text(0) == "provenance"
+        )
+        assert provenance_item.childCount() > 0
+        assert section_payload["provenance"], "the selected source section retains provenance"
+
+        # Click and keyboard movement must follow the selected DTO, not a stale index.
+        selection_model.clearSelection()
+        window.sections_table.setCurrentIndex(QModelIndex())
+        qt_app.processEvents()
+        target = window.sections_model.index(section_index, 0)
+        window.sections_table.scrollTo(target)
+        qt_app.processEvents()
+        QTest.mouseClick(
+            window.sections_table.viewport(),
+            Qt.MouseButton.LeftButton,
+            pos=window.sections_table.visualRect(target).center(),
+        )
+        qt_app.processEvents()
+        assert [index.row() for index in selection_model.selectedRows()] == [section_index]
+        clicked_name = window.sections_model.row_payload(section_index)["name"]
+        details = {
+            window.sections_detail.topLevelItem(index).text(0): window.sections_detail.topLevelItem(
+                index
+            ).text(1)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert details["name"] == str(clicked_name)
+
+        row_count = window.sections_model.row_count
+        assert row_count > 1
+        expected_keyboard_row = (
+            section_index - 1 if section_index == row_count - 1 else section_index + 1
+        )
+        navigation_key = Qt.Key.Key_Up if section_index == row_count - 1 else Qt.Key.Key_Down
+        window.sections_table.setFocus()
+        QTest.keyClick(window.sections_table, navigation_key)
+        qt_app.processEvents()
+        keyboard_rows = [index.row() for index in selection_model.selectedRows()]
+        assert keyboard_rows == [expected_keyboard_row]
+        keyboard_payload = window.sections_model.row_payload(keyboard_rows[0])
+        assert keyboard_payload is not None
+        details = {
+            window.sections_detail.topLevelItem(index).text(0): window.sections_detail.topLevelItem(
+                index
+            ).text(1)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert details["name"] == str(keyboard_payload["name"])
+
+        selection_model.clearSelection()
+        qt_app.processEvents()
+        assert window.sections_detail.topLevelItem(0).text(1) == "No detail selected."
+
+        window.sections_table.sortByColumn(1, Qt.SortOrder.DescendingOrder)
+        qt_app.processEvents()
+        assert not selection_model.selectedRows()
+        assert window.sections_detail.topLevelItem(0).text(1) == "No detail selected."
+        sorted_payload = window.sections_model.row_payload(0)
+        assert sorted_payload is not None
+        window.sections_table.selectRow(0)
+        qt_app.processEvents()
+        details = {
+            window.sections_detail.topLevelItem(index).text(0): window.sections_detail.topLevelItem(
+                index
+            ).text(1)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert details["name"] == str(sorted_payload["name"])
+        window.sections_table.setCurrentIndex(window.sections_model.index(0, 0))
+        qt_app.processEvents()
+        details = {
+            window.sections_detail.topLevelItem(index).text(0): window.sections_detail.topLevelItem(
+                index
+            ).text(1)
+            for index in range(window.sections_detail.topLevelItemCount())
+        }
+        assert details["name"] == str(sorted_payload["name"])
+
+        window.set_review(service.review(DomainReviewRequest(well_id=well_id, lifecycle="history")))
+        qt_app.processEvents()
+        assert not selection_model.selectedRows()
+        assert window.sections_detail.topLevelItem(0).text(1) == "No detail selected."
+        assert _database_fingerprint(controller.workspace) == before
+    finally:
+        from drilling_intelligence.ui.lifetime import release_top_level_widgets
+
+        release_top_level_widgets(qt_app)
+        qt_app.processEvents()
+
+    assert _database_fingerprint(workspace) == before
 
 
 def test_presentation_filter_conflict_detail_and_explicit_error_states(qt_app) -> None:

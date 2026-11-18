@@ -10,23 +10,29 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
-import sys
 import tempfile
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-_SCHEMA_VERSION = 2
-_ASSIGNMENT_ALGORITHM = "sha256-nodeid-modulo-v1"
-
-
-def _canonical(payload: dict[str, Any]) -> bytes:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+from tools.pytest_shard_contract import (
+    ASSIGNMENT_ALGORITHM as _ASSIGNMENT_ALGORITHM,
+)
+from tools.pytest_shard_contract import (
+    SCHEMA_VERSION as _SCHEMA_VERSION,
+)
+from tools.pytest_shard_contract import (
+    assigned_nodeids,
+    shard_for,
+    validate_manifest,
+)
+from tools.pytest_shard_contract import (
+    canonical as _canonical,
+)
+from tools.pytest_shard_contract import (
+    manifest_payload as _contract_manifest_payload,
+)
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -62,118 +68,17 @@ def _manifest_payload(
     workflow_ref: str = "LOCAL",
     pytest_config_sha256: str | None = None,
 ) -> dict[str, Any]:
-    if any(not isinstance(nodeid, str) or not nodeid for nodeid in nodeids):
-        raise ValueError("collection contains an empty or non-string node id")
-    duplicates = sorted(nodeid for nodeid, count in Counter(nodeids).items() if count > 1)
-    if duplicates:
-        raise ValueError(f"collection contains duplicate node IDs: {duplicates[:5]}")
-    body: dict[str, Any] = {
-        "schema_version": _SCHEMA_VERSION,
-        "repository": repository,
-        "workflow": workflow,
-        "workflow_ref": workflow_ref,
-        "head_sha": head_sha,
-        "run_id": str(run_id),
-        "run_attempt": str(run_attempt),
-        "platform": sys.platform,
-        "platform_system": platform.system(),
-        "platform_machine": platform.machine(),
-        "python_version": platform.python_version(),
-        "implementation": platform.python_implementation(),
-        "pytest_version": pytest.__version__,
-        "pytest_config_sha256": pytest_config_sha256 or _ini_digest(None),
-        "assignment_algorithm": _ASSIGNMENT_ALGORITHM,
-        "node_count": len(nodeids),
-        "nodeids_sha256": hashlib.sha256(_canonical({"nodeids": nodeids})).hexdigest(),
-        "nodeids": nodeids,
-    }
-    body["manifest_sha256"] = hashlib.sha256(_canonical(body)).hexdigest()
-    return body
-
-
-def validate_manifest(
-    manifest: object,
-    *,
-    expected_sha: str | None = None,
-    expected_run_id: str | None = None,
-    expected_attempt: str | None = None,
-    expected_repository: str | None = None,
-    expected_workflow: str | None = None,
-) -> dict[str, Any]:
-    if (
-        not isinstance(manifest, dict)
-        or type(manifest.get("schema_version")) is not int
-        or manifest.get("schema_version") != _SCHEMA_VERSION
-    ):
-        raise ValueError("collection manifest has an unsupported schema")
-    body = dict(manifest)
-    claimed = body.pop("manifest_sha256", None)
-    if not isinstance(claimed, str) or hashlib.sha256(_canonical(body)).hexdigest() != claimed:
-        raise ValueError("collection manifest digest mismatch")
-    strings = (
-        "repository",
-        "workflow",
-        "workflow_ref",
-        "head_sha",
-        "run_id",
-        "run_attempt",
-        "platform",
-        "platform_system",
-        "python_version",
-        "implementation",
-        "pytest_version",
-        "pytest_config_sha256",
-        "assignment_algorithm",
-        "nodeids_sha256",
+    return _contract_manifest_payload(
+        nodeids,
+        head_sha=head_sha,
+        run_id=run_id,
+        run_attempt=run_attempt,
+        repository=repository,
+        workflow=workflow,
+        workflow_ref=workflow_ref,
+        pytest_version=pytest.__version__,
+        pytest_config_sha256=pytest_config_sha256 or _ini_digest(None),
     )
-    if any(not isinstance(body.get(key), str) or not body[key] for key in strings):
-        raise ValueError("collection manifest identity fields are malformed")
-    if body["assignment_algorithm"] != _ASSIGNMENT_ALGORITHM:
-        raise ValueError("collection manifest assignment algorithm is unsupported")
-    nodeids = body.get("nodeids")
-    if not isinstance(nodeids, list) or any(
-        not isinstance(item, str) or not item for item in nodeids
-    ):
-        raise ValueError("collection manifest node IDs are malformed")
-    if len(nodeids) != len(set(nodeids)):
-        raise ValueError("collection manifest contains duplicate node IDs")
-    count = body.get("node_count")
-    if type(count) is not int or count != len(nodeids):
-        raise ValueError("collection manifest node count mismatch")
-    if hashlib.sha256(_canonical({"nodeids": nodeids})).hexdigest() != body["nodeids_sha256"]:
-        raise ValueError("collection node-ID digest mismatch")
-    for field, expected, label in (
-        ("head_sha", expected_sha, "SHA"),
-        ("run_id", expected_run_id, "run ID"),
-        ("run_attempt", expected_attempt, "attempt"),
-        ("repository", expected_repository, "repository"),
-        ("workflow", expected_workflow, "workflow"),
-    ):
-        if expected is not None and str(body.get(field)) != str(expected):
-            raise ValueError(f"collection manifest {label} does not match this run")
-    return dict(manifest)
-
-
-def shard_for(nodeid: str, shard_count: int) -> int:
-    if not isinstance(nodeid, str) or not nodeid:
-        raise ValueError("node ID must be a non-empty string")
-    if isinstance(shard_count, bool) or not isinstance(shard_count, int) or shard_count < 1:
-        raise ValueError("shard count must be a positive integer")
-    try:
-        digest = hashlib.sha256(nodeid.encode("utf-8")).digest()
-    except UnicodeEncodeError as exc:
-        raise ValueError("node ID cannot be encoded as UTF-8") from exc
-    return int.from_bytes(digest, "big") % shard_count
-
-
-def assigned_nodeids(nodeids: list[str], shard_index: int, shard_count: int) -> list[str]:
-    if isinstance(shard_index, bool) or not isinstance(shard_index, int):
-        raise TypeError("shard index must be an integer")
-    if isinstance(shard_count, bool) or not isinstance(shard_count, int) or shard_count < 1:
-        raise ValueError("shard count must be a positive integer")
-    if not 0 <= shard_index < shard_count:
-        raise ValueError("shard index must be within the shard count")
-    return [nodeid for nodeid in nodeids if shard_for(nodeid, shard_count) == shard_index]
 
 
 def _read_json(path: Path) -> Any:
@@ -184,9 +89,20 @@ def _read_json(path: Path) -> Any:
 
 
 def _skip_reason(report: Any) -> str:
+    """Return pytest's authored skip reason without its known display wrapper.
+
+    For ``pytest.skip(reason)`` pytest 8/9 exposes ``longrepr`` as a tuple
+    whose final item is ``"Skipped: " + reason``.  Remove that one exact
+    wrapper only for this observed tuple representation.  Other longrepr
+    shapes are returned verbatim; in particular an authored reason beginning
+    with the same text is retained after removing only pytest's outer prefix.
+    """
     longrepr = getattr(report, "longrepr", None)
     if isinstance(longrepr, tuple) and len(longrepr) >= 3:
-        return str(longrepr[-1])
+        reason = str(longrepr[-1])
+        if reason.startswith("Skipped: "):
+            return reason[len("Skipped: ") :]
+        return reason
     crash = getattr(longrepr, "reprcrash", None)
     if crash is not None:
         return str(getattr(crash, "message", ""))

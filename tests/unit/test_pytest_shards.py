@@ -15,6 +15,7 @@ from email.message import Message
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from xml.sax.saxutils import quoteattr
 
 import pytest
 from tools.pytest_shard import (
@@ -25,15 +26,23 @@ from tools.pytest_shard import (
     validate_manifest,
 )
 from tools.pytest_shard_artifacts import FetchError, _download_zip, _json_request
-from tools.pytest_shard_report import AggregateError, aggregate, main
+from tools.pytest_shard_report import AggregateError, _extract, aggregate, main
 from tools.pytest_totals import _XPASS_MESSAGE
 
 _REPOSITORY = "asgareyvazi/Prog-Proc"
 _WORKFLOW = "CI"
+_BRANCH = "arena/5957b76d-prog-proc"
 _SHA = "a" * 40
 _RUN_ID = "42"
 _ATTEMPT = "1"
 _SHARDS = 2
+_POSTGRESQL_SKIP_NODEID = (
+    "tests/integration/test_phase1_finalization.py::test_postgresql_claim_is_qualified_or_withdrawn"
+)
+_POSTGRESQL_SKIP_REASON = (
+    "PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; "
+    "no disposable PostgreSQL service job exists."
+)
 
 
 def _write(path: Path, value: Any) -> None:
@@ -66,8 +75,20 @@ def _job(name: str, job_id: int, steps: list[str], conclusion: str = "success") 
     }
 
 
-def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
-    nodeids = [f"tests/unit/test_{i}.py::test_case_{i}" for i in range(16)]
+def _fixture(
+    tmp_path: Path,
+    shard_count: int = _SHARDS,
+    *,
+    skip_records: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    skip_records = dict(skip_records or {})
+    if len(skip_records) > 16:
+        raise ValueError("synthetic fixture cannot contain more than 16 skips")
+    ordinary_nodeids = [f"tests/unit/test_{i}.py::test_case_{i}" for i in range(16)]
+    nodeids = [
+        *skip_records,
+        *[nodeid for nodeid in ordinary_nodeids if nodeid not in skip_records],
+    ][:16]
     manifest = _manifest_payload(
         nodeids,
         head_sha=_SHA,
@@ -132,11 +153,22 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
             "assigned_nodeids": assigned,
             "pytest_exit_status": 0,
             "reports": {
-                nodeid: [
-                    {"when": "setup", "outcome": "passed"},
-                    {"when": "call", "outcome": "passed"},
-                    {"when": "teardown", "outcome": "passed"},
-                ]
+                nodeid: (
+                    [
+                        {"when": "setup", "outcome": "passed"},
+                        {
+                            "when": "call",
+                            "outcome": "skipped",
+                            "skip_reason": skip_records[nodeid],
+                        },
+                    ]
+                    if nodeid in skip_records
+                    else [
+                        {"when": "setup", "outcome": "passed"},
+                        {"when": "call", "outcome": "passed"},
+                        {"when": "teardown", "outcome": "passed"},
+                    ]
+                )
                 for nodeid in assigned
             },
         }
@@ -148,10 +180,10 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
             folder / "pytest-totals.json",
             {
                 "collected": len(assigned),
-                "passed": len(assigned),
+                "passed": len(assigned) - sum(nodeid in skip_records for nodeid in assigned),
                 "failed": 0,
                 "errors": 0,
-                "skipped": 0,
+                "skipped": sum(nodeid in skip_records for nodeid in assigned),
                 "xfailed": 0,
                 "xpassed": 0,
                 "exit": 0,
@@ -161,13 +193,28 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
         (folder / "pytest-exit.txt").write_text("0\n", encoding="utf-8")
         (folder / "pytest-run-state.txt").write_text("COMPLETED exit=0\n", encoding="utf-8")
         (folder / "pytest-output.txt").write_text("synthetic fixture\n", encoding="utf-8")
-        cases = "".join(
-            f'<testcase classname="tests.unit.test_{i}" name="test_case_{i}" />'
-            for i in range(len(nodeids))
-            if nodeids[i] in assigned
-        )
+        case_rows = []
+        for nodeid in assigned:
+            module_path, *parts = nodeid.split("::")
+            classname = module_path.removesuffix(".py").replace("/", ".")
+            if len(parts) > 1:
+                classname += "." + ".".join(parts[:-1])
+            case_name = parts[-1]
+            if nodeid in skip_records:
+                reason = skip_records[nodeid]
+                case_rows.append(
+                    f"<testcase classname={quoteattr(classname)} name={quoteattr(case_name)}>"
+                    f'<skipped type="pytest.skip" message={quoteattr(reason)} />'
+                    "</testcase>"
+                )
+            else:
+                case_rows.append(
+                    f"<testcase classname={quoteattr(classname)} name={quoteattr(case_name)} />"
+                )
+        cases = "".join(case_rows)
+        shard_skipped = sum(nodeid in skip_records for nodeid in assigned)
         (folder / "pytest-junit.xml").write_text(
-            f'<testsuite tests="{len(assigned)}" failures="0" errors="0" skipped="0" time="3.25">{cases}</testsuite>',
+            f'<testsuite tests="{len(assigned)}" failures="0" errors="0" skipped="{shard_skipped}" time="3.25">{cases}</testsuite>',
             encoding="utf-8",
         )
         specifications.append((name, 201 + index))
@@ -195,6 +242,7 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
             "id": int(_RUN_ID),
             "run_attempt": int(_ATTEMPT),
             "head_sha": _SHA,
+            "head_branch": _BRANCH,
             "name": _WORKFLOW,
             "path": ".github/workflows/ci.yml",
             "status": "completed",
@@ -219,6 +267,7 @@ def _fixture(tmp_path: Path, shard_count: int = _SHARDS) -> dict[str, Any]:
         "attempt": _ATTEMPT,
         "repository": _REPOSITORY,
         "workflow": _WORKFLOW,
+        "workflow_ref": manifest["workflow_ref"],
         "shard_count": shard_count,
     }
 
@@ -237,6 +286,8 @@ def _run(
         expected_sha=fixture["sha"],
         repository=fixture["repository"],
         workflow=fixture["workflow"],
+        branch=_BRANCH,
+        workflow_ref=fixture["workflow_ref"],
         run_id=fixture["run_id"],
         attempt=fixture["attempt"],
         shard_count=fixture["shard_count"],
@@ -270,6 +321,99 @@ def _refresh(fixture: dict[str, Any], index: int) -> None:
     artifact["size_in_bytes"] = archive.stat().st_size
     artifact["digest"] = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
     _write(fixture["artifacts_path"], {"artifacts": fixture["artifacts"]})
+
+
+def test_report_cli_and_valid_aggregation_work_without_pytest(tmp_path: Path) -> None:
+    """Run report CLI and an end-to-end fixture with site packages disabled."""
+    root = Path(__file__).resolve().parents[2]
+    fixture = _fixture(tmp_path / "fixture")
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join((str(root), str(root / "src"))),
+    }
+    no_pytest = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "import importlib.util, sys; assert importlib.util.find_spec('pytest') is None; "
+            "import tools.pytest_shard_contract; assert 'pytest' not in sys.modules",
+        ],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert no_pytest.returncode == 0, no_pytest.stderr
+
+    help_result = subprocess.run(
+        [sys.executable, "-S", "-m", "tools.pytest_shard_report", "--help"],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    assert "--shard-count" in help_result.stdout
+    assert "pytest" not in help_result.stderr.lower()
+
+    out = tmp_path / "minimal-install"
+    command = [
+        sys.executable,
+        "-S",
+        "-m",
+        "tools.pytest_shard_report",
+        "--shard-root",
+        str(fixture["payloads"]),
+        "--archive-root",
+        str(fixture["archive_root"]),
+        "--extracted-root",
+        str(out / "extracted"),
+        "--run",
+        str(fixture["run_path"]),
+        "--jobs",
+        str(fixture["jobs_path"]),
+        "--artifacts",
+        str(fixture["artifacts_path"]),
+        "--sha",
+        fixture["sha"],
+        "--repository",
+        fixture["repository"],
+        "--workflow",
+        fixture["workflow"],
+        "--branch",
+        _BRANCH,
+        "--workflow-ref",
+        fixture["workflow_ref"],
+        "--run-id",
+        fixture["run_id"],
+        "--attempt",
+        fixture["attempt"],
+        "--shard-count",
+        str(fixture["shard_count"]),
+        "--output-json",
+        str(out / "report.json"),
+        "--output-markdown",
+        str(out / "report.md"),
+        "--combined-junit",
+        str(out / "combined.xml"),
+        "--combined-stats",
+        str(out / "combined-stats.json"),
+        "--combined-output",
+        str(out / "combined-output.txt"),
+        "--combined-exit",
+        str(out / "combined-exit.txt"),
+        "--combined-state",
+        str(out / "combined-state.txt"),
+    ]
+    result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "PASS"
+    assert report["collected_nodeids"] == report["covered_nodeids"] == 16
+    assert report["totals"]["passed"] == 16
 
 
 def test_sharding_is_stable_complete_disjoint_and_balanced_for_2860_ids() -> None:
@@ -314,6 +458,56 @@ def test_manifest_digest_identity_and_boolean_node_count() -> None:
         _manifest_payload(["same", "same"], head_sha="x", run_id="1", run_attempt="1")
 
 
+@pytest.mark.parametrize(
+    ("identity", "expected", "label"),
+    [
+        ("expected_run_id", "wrong-run", "run ID"),
+        ("expected_attempt", "2", "attempt"),
+        ("expected_sha", "b" * 40, "SHA"),
+        ("expected_repository", "other/repo", "repository"),
+        ("expected_workflow", "other-workflow", "workflow"),
+    ],
+)
+def test_manifest_all_run_identity_fields_fail_closed(
+    identity: str, expected: str, label: str
+) -> None:
+    manifest = _manifest_payload(
+        ["one"],
+        head_sha=_SHA,
+        run_id=_RUN_ID,
+        run_attempt=_ATTEMPT,
+        repository=_REPOSITORY,
+        workflow=_WORKFLOW,
+    )
+    with pytest.raises(ValueError, match=label):
+        validate_manifest(manifest, **{identity: expected})
+
+
+def test_wrong_branch_and_workflow_ref_never_qualify(tmp_path: Path) -> None:
+    branch = _fixture(tmp_path / "wrong-branch")
+    run = json.loads(branch["run_path"].read_text(encoding="utf-8"))
+    run["head_branch"] = "unexpected-branch"
+    _write(branch["run_path"], run)
+    with pytest.raises(AggregateError, match="branch"):
+        _run(tmp_path / "wrong-branch", branch)
+
+    ref = _fixture(tmp_path / "wrong-workflow-ref")
+    manifest_path = ref["payloads"] / "ubuntu2604-qt-collection-a1" / "pytest-collection.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["workflow_ref"] = "asgareyvazi/Prog-Proc/.github/workflows/ci.yml@refs/heads/other"
+    manifest.pop("manifest_sha256")
+    manifest["manifest_sha256"] = hashlib.sha256(_canonical(manifest)).hexdigest()
+    _write(manifest_path, manifest)
+    archive = ref["archive_root"] / "101.zip"
+    _zip(ref["payloads"] / "ubuntu2604-qt-collection-a1", archive)
+    artifact = _artifact(ref, "ubuntu2604-qt-collection-a1")
+    artifact["size_in_bytes"] = archive.stat().st_size
+    artifact["digest"] = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+    _write(ref["artifacts_path"], {"artifacts": ref["artifacts"]})
+    with pytest.raises(AggregateError, match="workflow ref"):
+        _run(tmp_path / "wrong-workflow-ref", ref)
+
+
 def test_real_api_metadata_archives_and_exact_once_coverage_pass(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     result = _run(tmp_path, fixture)
@@ -345,6 +539,12 @@ def test_in_progress_is_incomplete_unless_report_job_explicitly_allows_pending_r
     assert result["status"] == "PASS"
     assert result["workflow_conclusion_verified"] is False
     assert result["workflow_run_completion_pending"] is True
+    assert result["run_completion_verified"] is False
+    assert result["coverage_complete"] is True
+    assert result["exact_once_assignment"] is True
+    assert result["exact_once_execution"] is True
+    assert result["outcome_qualification"] is True
+    assert result["overall_status"] == "PASS"
 
 
 @pytest.mark.parametrize(
@@ -355,6 +555,7 @@ def test_in_progress_is_incomplete_unless_report_job_explicitly_allows_pending_r
         ("name", "other"),
         ("path", ".github/workflows/ci-windows.yml"),
         ("status", "cancelled"),
+        ("head_branch", "other-branch"),
     ],
 )
 def test_wrong_or_cancelled_run_identity_never_qualifies(
@@ -419,6 +620,33 @@ def test_archive_digest_size_and_foreign_run_are_rejected(tmp_path: Path) -> Non
         _run(other, fixture2)
 
 
+def test_optional_reconciliation_report_artifact_is_allowed_but_identity_checked(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path / "report-present")
+    report_artifact = {
+        **_artifact(fixture, "ubuntu2604-qt-shard-00-of-02-a1"),
+        "id": 999,
+        "name": "ubuntu2604-qt-shard-report-a1",
+    }
+    fixture["artifacts"].append(report_artifact)
+    _write(fixture["artifacts_path"], {"artifacts": fixture["artifacts"]})
+    assert _run(tmp_path / "report-present", fixture)["status"] == "PASS"
+
+    foreign = tmp_path / "report-foreign"
+    fixture2 = _fixture(foreign)
+    report_artifact = {
+        **_artifact(fixture2, "ubuntu2604-qt-shard-00-of-02-a1"),
+        "id": 999,
+        "name": "ubuntu2604-qt-shard-report-a1",
+    }
+    report_artifact["workflow_run"]["head_sha"] = "b" * 40
+    fixture2["artifacts"].append(report_artifact)
+    _write(fixture2["artifacts_path"], {"artifacts": fixture2["artifacts"]})
+    with pytest.raises(AggregateError, match="another run or SHA"):
+        _run(foreign, fixture2)
+
+
 def test_duplicate_ids_and_unexpected_attempt_artifacts_are_rejected(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     _artifact(fixture, "ubuntu2604-qt-shard-00-of-02-a1")["id"] = 101
@@ -440,12 +668,104 @@ def test_duplicate_ids_and_unexpected_attempt_artifacts_are_rejected(tmp_path: P
         _run(other, fixture2)
 
 
-def test_cancelled_shard_is_incomplete_and_failed_test_is_fail(tmp_path: Path) -> None:
+def test_duplicate_artifact_name_and_corrupted_zip_are_rejected(tmp_path: Path) -> None:
+    duplicate = _fixture(tmp_path / "duplicate")
+    original = _artifact(duplicate, "ubuntu2604-qt-shard-00-of-02-a1")
+    duplicate["artifacts"].append({**original, "id": 999})
+    _write(duplicate["artifacts_path"], {"artifacts": duplicate["artifacts"]})
+    with pytest.raises(AggregateError, match="exactly one current-run artifact"):
+        _run(tmp_path / "duplicate", duplicate)
+
+    corrupted = _fixture(tmp_path / "corrupted")
+    artifact = _artifact(corrupted, "ubuntu2604-qt-shard-00-of-02-a1")
+    archive = corrupted["archive_root"] / f"{artifact['id']}.zip"
+    archive.write_bytes(b"not a ZIP archive")
+    artifact["size_in_bytes"] = archive.stat().st_size
+    artifact["digest"] = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+    _write(corrupted["artifacts_path"], {"artifacts": corrupted["artifacts"]})
+    with pytest.raises(AggregateError, match="is unreadable"):
+        _run(tmp_path / "corrupted", corrupted)
+
+
+def test_duplicate_zip_member_and_missing_or_malformed_junit_fail_closed(
+    tmp_path: Path,
+) -> None:
+    duplicate = _fixture(tmp_path / "duplicate-member")
+    artifact = _artifact(duplicate, "ubuntu2604-qt-shard-00-of-02-a1")
+    folder = _folder(duplicate, 0)
+    archive = duplicate["archive_root"] / f"{artifact['id']}.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
+        for item in sorted(folder.iterdir()):
+            if item.name != "pytest-junit.xml":
+                output.write(item, item.name)
+        output.write(folder / "pytest-junit.xml", "pytest-junit.xml")
+        output.write(folder / "pytest-junit.xml", "pytest-junit.xml")
+    artifact["size_in_bytes"] = archive.stat().st_size
+    artifact["digest"] = "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest()
+    _write(duplicate["artifacts_path"], {"artifacts": duplicate["artifacts"]})
+    with pytest.raises(AggregateError, match="unexpected or duplicate"):
+        _run(tmp_path / "duplicate-member", duplicate)
+
+    missing = _fixture(tmp_path / "missing-junit")
+    _folder(missing, 0).joinpath("pytest-junit.xml").unlink()
+    _refresh(missing, 0)
+    with pytest.raises(AggregateError, match="lacks required files"):
+        _run(tmp_path / "missing-junit", missing)
+
+    malformed = _fixture(tmp_path / "malformed-junit")
+    _folder(malformed, 0).joinpath("pytest-junit.xml").write_text("<not-xml", encoding="utf-8")
+    _refresh(malformed, 0)
+    with pytest.raises(AggregateError, match="JUnit file is missing or malformed"):
+        _run(tmp_path / "malformed-junit", malformed)
+
+
+@pytest.mark.parametrize("failed_phase", ["setup", "teardown"])
+def test_setup_and_teardown_failures_are_counted_as_errors(
+    tmp_path: Path, failed_phase: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    folder = _folder(fixture, 0)
+    execution_path = folder / "shard-execution.json"
+    execution = json.loads(execution_path.read_text(encoding="utf-8"))
+    nodeid = next(iter(execution["reports"]))
+    phases = [
+        {"when": "setup", "outcome": "passed"},
+        {"when": "call", "outcome": "passed"},
+        {"when": "teardown", "outcome": "passed"},
+    ]
+    phases[next(i for i, phase in enumerate(phases) if phase["when"] == failed_phase)][
+        "outcome"
+    ] = "failed"
+    execution["reports"][nodeid] = phases
+    execution["pytest_exit_status"] = 1
+    _write(execution_path, execution)
+    totals_path = folder / "pytest-totals.json"
+    totals = json.loads(totals_path.read_text(encoding="utf-8"))
+    totals.update(passed=totals["passed"] - 1, errors=1, exit=1)
+    _write(totals_path, totals)
+    (folder / "pytest-exit.txt").write_text("1\n", encoding="utf-8")
+    (folder / "pytest-run-state.txt").write_text("COMPLETED exit=1\n", encoding="utf-8")
+    junit_path = folder / "pytest-junit.xml"
+    junit = junit_path.read_text(encoding="utf-8").replace('errors="0"', 'errors="1"', 1)
+    test_index = int(nodeid.split("test_case_")[1].split(".py")[0])
+    case = f'<testcase classname="tests.unit.test_{test_index}" name="test_case_{test_index}" />'
+    junit = junit.replace(
+        case, case[:-3] + '><error message="synthetic setup or teardown failure" /></testcase>'
+    )
+    junit_path.write_text(junit, encoding="utf-8")
+    _refresh(fixture, 0)
+    result = _run(tmp_path, fixture)
+    assert result["status"] == "FAIL"
+    assert result["totals"]["errors"] == 1
+
+
+def test_cancelled_shard_is_classified_and_failed_test_is_fail(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     fixture["jobs"][1]["conclusion"] = "cancelled"
     _write(fixture["jobs_path"], {"jobs": fixture["jobs"]})
-    result = _run(tmp_path, fixture)
-    assert result["status"] == "INCOMPLETE"
+    with pytest.raises(AggregateError) as cancelled:
+        _run(tmp_path, fixture)
+    assert cancelled.value.status == "CANCELLED"
     other = tmp_path / "failed"
     fixture2 = _fixture(other)
     job = fixture2["jobs"][1]
@@ -477,6 +797,26 @@ def test_cancelled_shard_is_incomplete_and_failed_test_is_fail(tmp_path: Path) -
     assert failed["totals"]["failed"] == 1
 
 
+def test_skipped_workflow_run_is_classified_not_run(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    run = json.loads(fixture["run_path"].read_text(encoding="utf-8"))
+    run.update(status="completed", conclusion="skipped")
+    _write(fixture["run_path"], run)
+    with pytest.raises(AggregateError) as not_run:
+        _run(tmp_path, fixture)
+    assert not_run.value.status == "NOT RUN"
+
+
+def test_skipped_shard_job_is_classified_not_run(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    fixture["jobs"][1]["status"] = "completed"
+    fixture["jobs"][1]["conclusion"] = "skipped"
+    _write(fixture["jobs_path"], {"jobs": fixture["jobs"]})
+    with pytest.raises(AggregateError) as not_run:
+        _run(tmp_path, fixture)
+    assert not_run.value.status == "NOT RUN"
+
+
 def test_any_skip_or_xfail_prevents_pass(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     folder = _folder(fixture, 0)
@@ -499,6 +839,148 @@ def test_any_skip_or_xfail_prevents_pass(tmp_path: Path) -> None:
     result = _run(tmp_path, fixture)
     assert result["status"] == "FAIL"
     assert result["totals"]["skipped"] == 1
+
+
+def test_exact_postgresql_boundary_skip_is_counted_and_qualifies_the_complete_run(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(
+        tmp_path,
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    result = _run(tmp_path, fixture)
+
+    assert result["status"] == "PASS"
+    assert result["complete"] is True
+    assert result["collected_nodeids"] == result["covered_nodeids"] == 16
+    assert result["totals"]["passed"] == 15
+    assert result["totals"]["skipped"] == 1
+    assert result["totals"]["failed"] == result["totals"]["errors"] == 0
+    assert result["coverage_complete"] is True
+    assert result["exact_once_assignment"] is True
+    assert result["exact_once_execution"] is True
+    assert result["outcome_qualification"] is True
+    assert result["permitted_skip_policy"]["qualified"] is True
+    assert result["permitted_skip_policy"]["approved_skip"]["reason"] == _POSTGRESQL_SKIP_REASON
+    assert result["permitted_skip_policy"]["process_sidecar_skips"][0]["reason"] == (
+        _POSTGRESQL_SKIP_REASON
+    )
+    assert result["run_completion_verified"] is True
+    assert result["workflow_conclusion_verified"] is True
+    assert result["overall_status"] == "PASS"
+    assert result["skips"] == [
+        {
+            "classname": "tests.integration.test_phase1_finalization",
+            "name": "test_postgresql_claim_is_qualified_or_withdrawn",
+            "reason": _POSTGRESQL_SKIP_REASON,
+            "type": "pytest.skip",
+        }
+    ]
+    from xml.etree import ElementTree as ET
+
+    combined = ET.parse(tmp_path / "combined.xml").getroot()  # noqa: S314 - generated in this test
+    cases = [case for case in combined.iter("testcase") if case.find("skipped") is not None]
+    assert len(cases) == 1
+    assert cases[0].get("name") == "test_postgresql_claim_is_qualified_or_withdrawn"
+    assert cases[0].find("skipped").get("message") == _POSTGRESQL_SKIP_REASON
+    assert (tmp_path / "combined-exit.txt").read_text(encoding="utf-8") == "0\n"
+
+
+def test_qt_aggregator_rejects_nonexact_or_additional_skip(tmp_path: Path) -> None:
+    changed_reason = _fixture(
+        tmp_path / "changed-reason",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON + " changed"},
+    )
+    result = _run(tmp_path / "changed-reason", changed_reason)
+    assert result["status"] == "FAIL"
+    assert result["totals"]["skipped"] == 1
+
+    wrong_identity = _fixture(
+        tmp_path / "wrong-identity",
+        skip_records={
+            "tests/integration/test_phase1_finalization.py::test_other": _POSTGRESQL_SKIP_REASON
+        },
+    )
+    result = _run(tmp_path / "wrong-identity", wrong_identity)
+    assert result["status"] == "FAIL"
+    assert result["totals"]["skipped"] == 1
+
+    extra_skip = _fixture(
+        tmp_path / "extra-skip",
+        skip_records={
+            _POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON,
+            "tests/unit/test_unrelated.py::test_unrelated": "unapproved reason",
+        },
+    )
+    result = _run(tmp_path / "extra-skip", extra_skip)
+    assert result["status"] == "FAIL"
+    assert result["totals"]["skipped"] == 2
+    assert any("unexpected Qt-enabled skips" in issue for issue in result["issues"])
+
+
+def test_qt_aggregator_requires_skip_evidence_and_consistent_terminal_outcomes(
+    tmp_path: Path,
+) -> None:
+    missing_process = _fixture(
+        tmp_path / "missing-process",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    folder = _folder(missing_process, 0)
+    execution = json.loads((folder / "shard-execution.json").read_text(encoding="utf-8"))
+    execution["reports"][_POSTGRESQL_SKIP_NODEID] = [
+        {"when": "setup", "outcome": "passed"},
+        {"when": "call", "outcome": "passed"},
+        {"when": "teardown", "outcome": "passed"},
+    ]
+    _write(folder / "shard-execution.json", execution)
+    _refresh(missing_process, 0)
+    with pytest.raises(AggregateError, match="process reports disagree on passed"):
+        _run(tmp_path / "missing-process", missing_process)
+
+    duplicate_process = _fixture(
+        tmp_path / "duplicate-process",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    folder = _folder(duplicate_process, 0)
+    execution = json.loads((folder / "shard-execution.json").read_text(encoding="utf-8"))
+    execution["reports"][_POSTGRESQL_SKIP_NODEID].append(
+        dict(execution["reports"][_POSTGRESQL_SKIP_NODEID][1])
+    )
+    _write(folder / "shard-execution.json", execution)
+    _refresh(duplicate_process, 0)
+    with pytest.raises(AggregateError, match="duplicate phase"):
+        _run(tmp_path / "duplicate-process", duplicate_process)
+
+    contradictory_junit = _fixture(
+        tmp_path / "contradictory-junit",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    folder = _folder(contradictory_junit, 0)
+    junit_path = folder / "pytest-junit.xml"
+    junit_path.write_text(
+        junit_path.read_text(encoding="utf-8").replace(
+            _POSTGRESQL_SKIP_REASON, "different JUnit reason"
+        ),
+        encoding="utf-8",
+    )
+    _refresh(contradictory_junit, 0)
+    result = _run(tmp_path / "contradictory-junit", contradictory_junit)
+    assert result["status"] == "FAIL"
+    assert any("unexpected Qt-enabled skips" in issue for issue in result["issues"])
+
+    contradictory_stats = _fixture(
+        tmp_path / "contradictory-stats",
+        skip_records={_POSTGRESQL_SKIP_NODEID: _POSTGRESQL_SKIP_REASON},
+    )
+    folder = _folder(contradictory_stats, 0)
+    stats_path = folder / "pytest-totals.json"
+    stats = json.loads(stats_path.read_text(encoding="utf-8"))
+    stats["passed"] += 1
+    stats["skipped"] = 0
+    _write(stats_path, stats)
+    _refresh(contradictory_stats, 0)
+    with pytest.raises(AggregateError, match="process reports disagree on passed"):
+        _run(tmp_path / "contradictory-stats", contradictory_stats)
 
 
 def test_wrong_partition_missing_reports_and_bad_process_state_are_rejected(tmp_path: Path) -> None:
@@ -555,6 +1037,33 @@ def test_zip_path_traversal_and_symlinks_are_rejected(tmp_path: Path) -> None:
     _write(fixture2["artifacts_path"], {"artifacts": fixture2["artifacts"]})
     with pytest.raises(AggregateError, match="symlink"):
         _run(other, fixture2)
+
+
+def test_zip_member_count_is_bounded_before_extraction(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archives"
+    extracted_root = tmp_path / "extracted"
+    archive_root.mkdir()
+    archive = archive_root / "17.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr("first.json", "{}")
+        bundle.writestr("second.json", "{}")
+    artifact = {
+        "id": 17,
+        "name": "bounded-members",
+        "size_in_bytes": archive.stat().st_size,
+        "digest": "sha256:" + hashlib.sha256(archive.read_bytes()).hexdigest(),
+    }
+    with (
+        patch("tools.pytest_shard_report._MAX_ARCHIVE_MEMBERS", 1),
+        pytest.raises(AggregateError, match="too many members"),
+    ):
+        _extract(
+            artifact,
+            archive_root=archive_root,
+            extracted_root=extracted_root,
+            allowed={"first.json", "second.json"},
+        )
+    assert not list(extracted_root.rglob("*.json"))
 
 
 def test_pytest_plugin_emits_exact_once_real_execution_records(tmp_path: Path) -> None:
@@ -655,59 +1164,92 @@ def test_github_json_api_host_guard_precedes_network() -> None:
         opener.assert_not_called()
 
 
-def test_artifact_redirect_does_not_forward_token_and_requires_https(tmp_path: Path) -> None:
-    headers = Message()
-    headers["Location"] = "https://signed.example/artifact.zip?sig=opaque"
-    redirect = urllib.error.HTTPError(
-        "https://api.github.com/artifact", 302, "Found", headers, io.BytesIO()
+def test_artifact_redirect_is_allowlisted_tls_only_and_never_forwards_token(
+    tmp_path: Path,
+) -> None:
+    api_url = "https://api.github.com/repos/a/b/actions/artifacts/1/zip"
+    storage_url = (
+        "https://productionresultssa3.blob.core.windows.net/container/artifact.zip?sig=opaque"
     )
+    headers = Message()
+    headers["Location"] = storage_url
+    redirect = urllib.error.HTTPError(api_url, 302, "Found", headers, io.BytesIO())
+    response = io.BytesIO(b"synthetic zip bytes")
+    captured: list[Any] = []
 
     class Redirecting:
         def open(self, request: Any, timeout: int) -> Any:
-            assert request.get_header("Authorization") == "Bearer token"
-            raise redirect
-
-    response = io.BytesIO(b"synthetic zip bytes")
-    captured: dict[str, Any] = {}
-
-    def download(request: Any, timeout: int) -> io.BytesIO:
-        captured["request"] = request
-        return response
+            captured.append(request)
+            if request.full_url == api_url:
+                assert request.get_header("Authorization") == "Bearer token"
+                raise redirect
+            assert request.full_url == storage_url
+            assert request.get_header("Authorization") is None
+            return response
 
     dest = tmp_path / "artifact.zip"
-    with (
-        patch(
-            "tools.pytest_shard_artifacts.urllib.request.build_opener", return_value=Redirecting()
-        ),
-        patch("tools.pytest_shard_artifacts.urllib.request.urlopen", side_effect=download),
+    with patch(
+        "tools.pytest_shard_artifacts.urllib.request.build_opener", return_value=Redirecting()
     ):
-        size, digest = _download_zip(
-            "https://api.github.com/repos/a/b/actions/artifacts/1/zip", "token", dest
-        )
+        size, digest = _download_zip(api_url, "token", dest)
     assert size == len(b"synthetic zip bytes")
     assert digest == hashlib.sha256(dest.read_bytes()).hexdigest()
-    assert captured["request"].get_header("Authorization") is None
-    bad_headers = Message()
-    bad_headers["Location"] = "http://bad.example/artifact"
-    bad = urllib.error.HTTPError(
-        "https://api.github.com/artifact", 302, "Found", bad_headers, io.BytesIO()
+    assert len(captured) == 2
+    assert captured[1].get_header("Authorization") is None
+
+    for bad_location in (
+        "http://productionresultssa3.blob.core.windows.net/artifact.zip",
+        "https://attacker.example/artifact.zip?sig=opaque",
+        "https://user:secret@productionresultssa3.blob.core.windows.net/artifact.zip",
+        "https://productionresultssa3.blob.core.windows.net:444/artifact.zip",
+    ):
+        bad_headers = Message()
+        bad_headers["Location"] = bad_location
+        bad_redirect = urllib.error.HTTPError(api_url, 302, "Found", bad_headers, io.BytesIO())
+
+        class BadRedirect:
+            def __init__(self, redirect: urllib.error.HTTPError) -> None:
+                self.redirect = redirect
+
+            def open(self, request: Any, timeout: int) -> Any:
+                raise self.redirect
+
+        with (
+            patch(
+                "tools.pytest_shard_artifacts.urllib.request.build_opener",
+                return_value=BadRedirect(bad_redirect),
+            ),
+            pytest.raises(FetchError, match="untrusted artifact storage redirect"),
+        ):
+            _download_zip(api_url, "token", tmp_path / f"bad-{len(bad_location)}.zip")
+
+
+def test_artifact_storage_redirect_chain_stays_bounded_and_allowlisted(tmp_path: Path) -> None:
+    api_url = "https://api.github.com/repos/a/b/actions/artifacts/3/zip"
+    storage_url = "https://productionresultssa3.blob.core.windows.net/container/a.zip?sig=one"
+    headers = Message()
+    headers["Location"] = storage_url
+    first_redirect = urllib.error.HTTPError(api_url, 302, "Found", headers, io.BytesIO())
+    second_headers = Message()
+    second_headers["Location"] = "https://attacker.example/collect"
+    second_redirect = urllib.error.HTTPError(
+        storage_url, 302, "Found", second_headers, io.BytesIO()
     )
 
-    class BadRedirect:
+    class RedirectTwice:
         def open(self, request: Any, timeout: int) -> Any:
-            raise bad
+            if request.full_url == api_url:
+                raise first_redirect
+            raise second_redirect
 
     with (
         patch(
-            "tools.pytest_shard_artifacts.urllib.request.build_opener", return_value=BadRedirect()
+            "tools.pytest_shard_artifacts.urllib.request.build_opener",
+            return_value=RedirectTwice(),
         ),
-        pytest.raises(FetchError, match="insecure or malformed"),
+        pytest.raises(FetchError, match="untrusted artifact storage redirect"),
     ):
-        _download_zip(
-            "https://api.github.com/repos/a/b/actions/artifacts/2/zip",
-            "token",
-            tmp_path / "bad.zip",
-        )
+        _download_zip(api_url, "token", tmp_path / "redirected.zip")
 
 
 def test_cli_creates_classified_failure_report_for_missing_run_json(
@@ -733,6 +1275,10 @@ def test_cli_creates_classified_failure_report_for_missing_run_json(
         _REPOSITORY,
         "--workflow",
         _WORKFLOW,
+        "--branch",
+        _BRANCH,
+        "--workflow-ref",
+        "asgareyvazi/Prog-Proc/.github/workflows/ci.yml@refs/heads/arena/5957b76d-prog-proc",
         "--run-id",
         _RUN_ID,
         "--attempt",

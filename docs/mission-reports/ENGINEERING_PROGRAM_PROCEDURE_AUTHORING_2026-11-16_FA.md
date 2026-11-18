@@ -48,11 +48,3 @@
 - مرور کلی README اصلاح شده تا وضعیت این برش را از baseline تأییدشده جدا کند.
 
 این گزارش عمداً ادعای کامل‌بودن workflow، اجرای migration عملیاتی، qualification نهایی، یا تولید برنامه/دستور حفاری ایمن را مطرح نمی‌کند.
-
-## Addendum: انتقال به checkout branch فعال و Windows stale-token fix
-
-برای ادامهٔ کار روی checkout الزامیِ همین branch (base `317c55365319af61138000664293ae2d84e27a6e`)، feature files و migration `0027` از implementation commit `8add906` به worktree منتقل شدند؛ schema/test/constraint corrections مرتبط از `b0adfe6` نیز گزینشی اعمال شدند. Branch عوض نشد و تغییرات قبلیِ متعدد در worktree حفظ شدند.
-
-Windows CPython 3.11 failure در test مربوط به stale-write از یک فرض نامعتبر دربارهٔ پیشروی wall-clock می‌آمد. اکنون `_touch` در `EngineeringAuthoringService`، اگر `datetime.now(UTC)` از `updated_at` موجود جلوتر نباشد، token را دقیقاً دست‌کم یک microsecond جلو می‌برد؛ همهٔ مسیرهای content/section/target/step، submit، review و decision از آن استفاده می‌کنند. Regression test یک timestamp آینده‌دار نسبت به ساعت اجرای تست قرار می‌دهد تا clock non-advancement/backward را قطعی شبیه‌سازی کند؛ انتظار exception را حذف یا skip نکرده است.
-
-نتیجهٔ انتخابی روی checkout فعال: **107 passed, 1 skipped** در Program/Procedure authoring، CLI، migration/history expectations، backup/intake smoke و CLI-surface tests. Skip برابر pass نیست. Ruff check روی فایل‌های feature/test منتخب نیز موفق شد. این نتایج local هستند؛ exact-SHA Linux/Windows CI برای این worktree هنوز **NOT RUN** است. Physical Windows acceptance نیز **NOT RUN**. هنوز stage/commit/push انجام نشده است.

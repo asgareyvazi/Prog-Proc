@@ -8,9 +8,11 @@ import copy
 import hashlib
 import json
 import math
+import os
 import re
 import stat
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
 import zlib
@@ -18,15 +20,18 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from tools.pytest_shard import assigned_nodeids, validate_manifest
+from tools.pytest_shard_contract import assigned_nodeids, canonical, validate_manifest
 from tools.pytest_totals import (
+    _UNQUALIFIED_BACKEND_SKIP,
     disagreements,
+    is_unqualified_backend_boundary_skip,
     read_exit_file,
     totals_from_junit,
     unexpected_skips_qt_enabled,
 )
 
 _SCHEMA = 2
+_REPORT_SCHEMA = 3
 _TOTALS = ("collected", "passed", "failed", "errors", "skipped", "xfailed", "xpassed")
 _WORKFLOW_PATH = ".github/workflows/ci.yml"
 _COLLECTION_JOB = "Ubuntu 26.04 Qt full-suite collection"
@@ -46,6 +51,7 @@ _SHARD_FILES = {
 }
 _MAX_FILE_BYTES = 128 * 1024 * 1024
 _MAX_UNCOMPRESSED = 512 * 1024 * 1024
+_MAX_ARCHIVE_MEMBERS = 1024
 
 
 class AggregateError(ValueError):
@@ -65,12 +71,6 @@ def _read_json(path: Path, label: str) -> Any:
         raise AggregateError(f"{label} is unreadable or malformed") from exc
 
 
-def _canonical(value: dict[str, Any]) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
-
-
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -80,7 +80,7 @@ def _sha256(path: Path) -> str:
 
 
 def _digest_ids(nodeids: list[str]) -> str:
-    return hashlib.sha256(_canonical({"nodeids": nodeids})).hexdigest()
+    return hashlib.sha256(canonical({"nodeids": nodeids})).hexdigest()
 
 
 def _records(path: Path, key: str, label: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -92,7 +92,15 @@ def _records(path: Path, key: str, label: str) -> tuple[dict[str, Any], list[dic
 
 
 def _run_identity(
-    run: dict[str, Any], *, repository: str, workflow: str, sha: str, run_id: str, attempt: str
+    run: dict[str, Any],
+    *,
+    repository: str,
+    workflow: str,
+    branch: str,
+    workflow_ref: str,
+    sha: str,
+    run_id: str,
+    attempt: str,
 ) -> int:
     repo = run.get("repository")
     if not isinstance(repo, dict) or repo.get("full_name") != repository:
@@ -106,19 +114,27 @@ def _run_identity(
         and run.get("head_sha") == sha
         and run.get("name") == workflow
         and run.get("path") == _WORKFLOW_PATH
+        and run.get("head_branch") == branch
     ):
         raise AggregateError(
-            "GitHub workflow run identity does not match repository/workflow/SHA/run/attempt"
+            "GitHub workflow run identity does not match repository/workflow/branch/SHA/run/attempt"
         )
     if run.get("status") == "cancelled" or run.get("conclusion") == "cancelled":
-        raise AggregateError("GitHub workflow run was cancelled", status="INCOMPLETE")
+        raise AggregateError("GitHub workflow run was cancelled", status="CANCELLED")
+    if run.get("conclusion") == "skipped":
+        raise AggregateError(
+            "GitHub workflow run was skipped before qualification", status="NOT RUN"
+        )
     if not isinstance(run.get("status"), str) or run.get("status") not in {
         "in_progress",
         "completed",
     }:
-        raise AggregateError(
-            "GitHub workflow run is not in a reportable state", status="INCOMPLETE"
+        status = (
+            "NOT RUN"
+            if run.get("status") in {"queued", "requested", "waiting", "pending"}
+            else "INCOMPLETE"
         )
+        raise AggregateError("GitHub workflow run is not in a reportable state", status=status)
     return repo_id
 
 
@@ -158,17 +174,23 @@ def _step_issues(
         )
         if len(found) != 1 or found[0].get("status") != "completed":
             incomplete.append(f"{label}: required step {name!r} did not complete")
+        elif found[0].get("conclusion") == "cancelled":
+            raise AggregateError(
+                f"{label}: required step {name!r} was cancelled", status="CANCELLED"
+            )
+        elif found[0].get("conclusion") == "skipped":
+            raise AggregateError(f"{label}: required step {name!r} did not run", status="NOT RUN")
         elif found[0].get("conclusion") != "success":
             failed.append(
                 f"{label}: required step {name!r} concluded {found[0].get('conclusion')!r}"
             )
     status = job.get("status")
     conclusion = job.get("conclusion")
-    if (
-        status != "completed"
-        or not isinstance(conclusion, str)
-        or conclusion in {"cancelled", "skipped", "timed_out"}
-    ):
+    if status == "cancelled" or conclusion == "cancelled":
+        raise AggregateError(f"{label}: job was cancelled", status="CANCELLED")
+    if status == "skipped" or conclusion == "skipped":
+        raise AggregateError(f"{label}: job did not run", status="NOT RUN")
+    if status != "completed" or not isinstance(conclusion, str) or conclusion == "timed_out":
         incomplete.append(f"{label}: job status/conclusion is {status!r}/{conclusion!r}")
     elif conclusion != "success":
         failed.append(f"{label}: job concluded {conclusion!r}")
@@ -234,7 +256,10 @@ def _extract(
     total = 0
     try:
         with zipfile.ZipFile(archive) as bundle:
-            for info in bundle.infolist():
+            members = bundle.infolist()
+            if len(members) > _MAX_ARCHIVE_MEMBERS:
+                raise AggregateError("artifact ZIP contains too many members")
+            for info in members:
                 member = PurePosixPath(info.filename)
                 if info.is_dir():
                     if member.is_absolute() or ".." in member.parts:
@@ -360,6 +385,8 @@ def _classify_reports(reports: object, assigned: list[str]) -> Counter[str]:
             raise AggregateError(f"test node {nodeid!r} has an unknown phase outcome")
         failed = [p for p in phases if p["outcome"] == "failed"]
         skipped = [p for p in phases if p["outcome"] == "skipped"]
+        if any(not isinstance(p.get("skip_reason"), str) or not p["skip_reason"] for p in skipped):
+            raise AggregateError(f"test node {nodeid!r} has skipped execution without a reason")
         passed = [p for p in phases if p["outcome"] == "passed"]
         if failed:
             counts["errors" if any(p["when"] != "call" for p in failed) else "failed"] += 1
@@ -374,13 +401,80 @@ def _classify_reports(reports: object, assigned: list[str]) -> Counter[str]:
     return counts
 
 
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".partial")
-    temporary.write_text(
-        json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+def _is_single_approved_backend_skip(reports: object, junit_skips: list[dict[str, str]]) -> bool:
+    """Require one exact policy skip to agree across node ID, process, and JUnit."""
+    if not isinstance(reports, dict) or len(junit_skips) != 1:
+        return False
+    junit_skip = junit_skips[0]
+    if junit_skip.get("type") != "pytest.skip":
+        return False
+    if not is_unqualified_backend_boundary_skip(
+        junit_skip.get("classname", ""), junit_skip.get("name", ""), junit_skip.get("reason", "")
+    ):
+        return False
+    module, name, reason = _UNQUALIFIED_BACKEND_SKIP
+    expected_nodeid = f"{module.replace('.', '/')}.py::{name}"
+    process_skips: list[tuple[str, dict[str, Any]]] = []
+    for nodeid, phases in reports.items():
+        if not isinstance(nodeid, str) or not isinstance(phases, list) or not phases:
+            return False
+        phase_names: set[str] = set()
+        for phase in phases:
+            if not isinstance(phase, dict):
+                return False
+            when, outcome = phase.get("when"), phase.get("outcome")
+            if when not in {"setup", "call", "teardown"} or when in phase_names:
+                return False
+            phase_names.add(when)
+            if outcome not in {"passed", "failed", "skipped"} or phase.get("wasxfail"):
+                return False
+            if outcome == "failed":
+                return False
+            if outcome == "skipped":
+                if not isinstance(phase.get("skip_reason"), str) or not phase["skip_reason"]:
+                    return False
+                process_skips.append((nodeid, phase))
+    if len(process_skips) != 1:
+        return False
+    nodeid, phase = process_skips[0]
+    return (
+        nodeid == expected_nodeid
+        and phase.get("when") == "call"
+        and phase.get("skip_reason") == reason
+        and all(
+            not (when == "call" and outcome == "passed")
+            for when, outcome in (
+                (item.get("when"), item.get("outcome"))
+                for item in reports.get(expected_nodeid, [])
+                if isinstance(item, dict)
+            )
+        )
     )
-    temporary.replace(path)
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Atomically replace one output file using a same-directory temporary."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".partial", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        Path(temporary).replace(path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write(path, text.encode("utf-8"))
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    _atomic_write(
+        path,
+        (json.dumps(data, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+    )
 
 
 def _write_junit(path: Path, suites: list[ET.Element], totals: dict[str, int | float]) -> None:
@@ -396,10 +490,7 @@ def _write_junit(path: Path, suites: list[ET.Element], totals: dict[str, int | f
     )
     for suite in suites:
         root.append(copy.deepcopy(suite))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".partial")
-    ET.ElementTree(root).write(temporary, encoding="utf-8", xml_declaration=True)
-    temporary.replace(path)
+    _atomic_write(path, ET.tostring(root, encoding="utf-8", xml_declaration=True))
 
 
 def aggregate(
@@ -414,6 +505,8 @@ def aggregate(
     expected_sha: str,
     repository: str,
     workflow: str,
+    branch: str,
+    workflow_ref: str,
     run_id: str,
     attempt: str,
     shard_count: int,
@@ -433,6 +526,8 @@ def aggregate(
         run,
         repository=repository,
         workflow=workflow,
+        branch=branch,
+        workflow_ref=workflow_ref,
         sha=expected_sha,
         run_id=run_id,
         attempt=attempt,
@@ -450,6 +545,8 @@ def aggregate(
     expected_artifact_names.update(
         f"ubuntu2604-qt-shard-{i:02d}-of-{shard_count:02d}-a{attempt}" for i in range(shard_count)
     )
+    optional_report_name = f"ubuntu2604-qt-shard-report-a{attempt}"
+    accepted_artifact_names = expected_artifact_names | {optional_report_name}
     expected_artifacts = [
         row
         for row in artifacts
@@ -466,10 +563,22 @@ def aggregate(
         if isinstance(row.get("name"), str)
         and row["name"].startswith("ubuntu2604-qt-shard-")
         and row["name"].endswith(f"-a{attempt}")
-        and row["name"] not in expected_artifact_names
+        and row["name"] not in accepted_artifact_names
     ]
     if unexpected:
         raise AggregateError(f"unexpected shard artifacts for this attempt: {sorted(unexpected)}")
+    optional_reports = [row for row in artifacts if row.get("name") == optional_report_name]
+    if len(optional_reports) > 1:
+        raise AggregateError("optional shard reconciliation report artifact is duplicated")
+    if optional_reports:
+        _artifact(
+            artifacts,
+            name=optional_report_name,
+            repo_id=repo_id,
+            sha=expected_sha,
+            run_id=run_id,
+            attempt=attempt,
+        )
 
     collector_name = _COLLECTION_JOB
     collector = _job(
@@ -525,6 +634,8 @@ def aggregate(
     nodeids = manifest["nodeids"]
     if not nodeids:
         raise AggregateError("canonical test collection is empty")
+    if manifest.get("workflow_ref") != workflow_ref:
+        raise AggregateError("canonical collection workflow ref does not match this run")
     if (
         manifest.get("implementation") != "CPython"
         or not manifest.get("python_version", "").startswith("3.14.")
@@ -539,6 +650,9 @@ def aggregate(
     runtime_sum = 0.0
     seen: set[str] = set()
     all_skips: list[dict[str, str]] = []
+    process_skip_reasons: list[dict[str, str]] = []
+    outcome_qualification = True
+    permitted_skip_policy = True
     for index in range(shard_count):
         job_name = f"Ubuntu 26.04 Qt full-suite shard {index} of {shard_count}"
         job = _job(
@@ -669,16 +783,39 @@ def aggregate(
             )
         if stats["collected"] != len(assigned):
             raise AggregateError(f"shard {index} totals do not account for all assigned node IDs")
-        if stats["skipped"] or stats["xfailed"]:
+        approved_backend_skip = _is_single_approved_backend_skip(execution.get("reports"), skips)
+        execution_reports = execution.get("reports")
+        if isinstance(execution_reports, dict):
+            for nodeid, phases in execution_reports.items():
+                if isinstance(nodeid, str) and isinstance(phases, list):
+                    process_skip_reasons.extend(
+                        {
+                            "nodeid": nodeid,
+                            "when": str(phase.get("when", "")),
+                            "reason": str(phase.get("skip_reason", "")),
+                        }
+                        for phase in phases
+                        if isinstance(phase, dict) and phase.get("outcome") == "skipped"
+                    )
+        if (stats["skipped"] or stats["xfailed"]) and not (
+            stats["skipped"] == 1 and stats["xfailed"] == 0 and approved_backend_skip
+        ):
+            outcome_qualification = False
+            permitted_skip_policy = False
             fail_issues.append(
-                f"shard {index} did not execute every test normally: skipped={stats['skipped']} xfailed={stats['xfailed']}"
+                f"shard {index} did not execute every test normally outside the sole "
+                f"documented PostgreSQL boundary skip: skipped={stats['skipped']} "
+                f"xfailed={stats['xfailed']}"
             )
         if stats["failed"] or stats["errors"] or stats["xpassed"] or shell_exit != 0:
+            outcome_qualification = False
             fail_issues.append(
                 f"shard {index} failed: failed={stats['failed']} errors={stats['errors']} xpassed={stats['xpassed']} exit={shell_exit}"
             )
         unexpected = unexpected_skips_qt_enabled(folder / "pytest-junit.xml")
         if unexpected:
+            outcome_qualification = False
+            permitted_skip_policy = False
             fail_issues.append(f"shard {index} has unexpected Qt-enabled skips: {unexpected[:10]}")
         for key in _TOTALS:
             totals[key] += int(stats[key])
@@ -708,6 +845,18 @@ def aggregate(
         raise AggregateError("shard partition does not cover the collection exactly")
     if totals["collected"] != len(nodeids):
         raise AggregateError("combined totals do not equal canonical collection count")
+    if totals["skipped"] > 1:
+        fail_issues.append(
+            f"full shard run contains {totals['skipped']} skips; at most the one exact "
+            "documented PostgreSQL boundary skip is permitted"
+        )
+        permitted_skip_policy = False
+        outcome_qualification = False
+    coverage_complete = len(nodeids) == len(seen) == totals["collected"]
+    exact_once_assignment = coverage_complete
+    # Every shard's process report key set has already been checked against its
+    # canonical deterministic assignment by _classify_reports().
+    exact_once_execution = coverage_complete
 
     run_status = run.get("status")
     if run_status != "completed":
@@ -720,32 +869,50 @@ def aggregate(
     combined = {**totals, "exit": 0 if status == "PASS" else 1, "runtime": runtime_sum}
     _write_junit(combined_junit, suites, combined)
     _write_json(combined_stats, combined)
-    combined_exit.parent.mkdir(parents=True, exist_ok=True)
-    combined_exit.write_text(f"{combined['exit']}\n", encoding="utf-8", newline="\n")
-    combined_state.write_text(
+    _atomic_write_text(combined_exit, f"{combined['exit']}\n")
+    _atomic_write_text(
+        combined_state,
         (f"COMPLETED exit={combined['exit']}" if status != "INCOMPLETE" else "INCOMPLETE") + "\n",
-        encoding="utf-8",
-        newline="\n",
     )
-    combined_output.parent.mkdir(parents=True, exist_ok=True)
-    combined_output.write_text(
+    _atomic_write_text(
+        combined_output,
         f"shards: {shard_count}/{shard_count}\ncollection_sha256: {manifest['manifest_sha256']}\nnodeids: {len(nodeids)}\n"
         + "\n".join(f"{k}: {totals[k]}" for k in _TOTALS)
         + f"\nruntime_sum_seconds: {runtime_sum}\n",
-        encoding="utf-8",
-        newline="\n",
     )
     report = {
-        "schema_version": _SCHEMA,
+        "schema_version": _REPORT_SCHEMA,
         "status": status,
+        "overall_status": status,
         "complete": not incomplete_issues,
+        "coverage_complete": coverage_complete,
+        "exact_once_assignment": exact_once_assignment,
+        "exact_once_execution": exact_once_execution,
+        "outcome_qualification": outcome_qualification,
+        "permitted_skip_policy": {
+            "qualified": permitted_skip_policy,
+            "observed_junit_skip_count": len(all_skips),
+            "approved_skip": all_skips[0]
+            if len(all_skips) == 1
+            and is_unqualified_backend_boundary_skip(
+                all_skips[0].get("classname", ""),
+                all_skips[0].get("name", ""),
+                all_skips[0].get("reason", ""),
+            )
+            else None,
+            "process_sidecar_skips": process_skip_reasons,
+        },
+        "exact_once_coverage": coverage_complete,
         "repository": repository,
         "workflow": workflow,
         "workflow_path": run.get("path"),
+        "branch": branch,
+        "workflow_ref": workflow_ref,
         "head_sha": expected_sha,
         "run_id": str(run_id),
         "run_attempt": str(attempt),
         "run_status_at_aggregation": run_status,
+        "run_completion_verified": run_status == "completed",
         "workflow_conclusion_verified": run_status == "completed"
         and run.get("conclusion") == "success",
         "workflow_run_completion_pending": run_status != "completed",
@@ -777,9 +944,13 @@ def aggregate(
     lines = [
         "# Ubuntu 26.04 Qt-enabled pytest shard report",
         "",
-        f"- Result: **{status}**",
+        f"- Overall status: **{status}**",
+        f"- Coverage complete: **{'yes' if coverage_complete else 'no'}**; exact-once assignment: **{'yes' if exact_once_assignment else 'no'}**; exact-once execution: **{'yes' if exact_once_execution else 'no'}**",
+        f"- Outcome qualification: **{'yes' if outcome_qualification else 'no'}**; permitted-skip policy: **{'yes' if permitted_skip_policy else 'no'}**",
+        f"- Workflow run completion verified: **{'yes' if run_status == 'completed' else 'no'}**",
         f"- Repository: `{repository}`",
         f"- Workflow: `{workflow}`; run `{run_id}` attempt `{attempt}`",
+        f"- Branch: `{branch}`; workflow ref: `{workflow_ref}`",
         f"- Exact SHA: `{expected_sha}`",
         f"- Workflow conclusion verified: {'yes' if report['workflow_conclusion_verified'] else 'no — final run status must be checked after this report job'}",
         f"- Python: `{manifest['python_version']}`; pytest: `{manifest['pytest_version']}`; Qt enabled: **yes**",
@@ -803,28 +974,42 @@ def aggregate(
         if all_skips
         else ["- None."]
     )
-    output_markdown.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    _atomic_write_text(output_markdown, "\n".join(lines) + "\n")
     return report
 
 
 def _failure_report(args: argparse.Namespace, status: str, message: str) -> None:
     payload = {
-        "schema_version": _SCHEMA,
+        "schema_version": _REPORT_SCHEMA,
         "status": status,
+        "overall_status": status,
         "complete": False,
+        "coverage_complete": False,
+        "exact_once_coverage": False,
+        "exact_once_assignment": False,
+        "exact_once_execution": False,
+        "outcome_qualification": False,
+        "permitted_skip_policy": {
+            "qualified": False,
+            "observed_junit_skip_count": None,
+            "approved_skip": None,
+            "process_sidecar_skips": [],
+        },
+        "run_completion_verified": False,
+        "workflow_conclusion_verified": False,
         "repository": args.repository,
         "workflow": args.workflow,
+        "branch": args.branch,
+        "workflow_ref": args.workflow_ref,
         "head_sha": args.sha,
         "run_id": str(args.run_id),
         "run_attempt": str(args.attempt),
         "error": message,
     }
     _write_json(args.output_json, payload)
-    args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
-    args.output_markdown.write_text(
+    _atomic_write_text(
+        args.output_markdown,
         f"# Ubuntu 26.04 Qt-enabled pytest shard report\n\n**{status}** — {message}\n",
-        encoding="utf-8",
-        newline="\n",
     )
 
 
@@ -840,6 +1025,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sha", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--workflow", required=True)
+    parser.add_argument("--branch", required=True)
+    parser.add_argument("--workflow-ref", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--attempt", required=True)
     parser.add_argument("--shard-count", type=int, required=True)
@@ -864,6 +1051,8 @@ def main(argv: list[str] | None = None) -> int:
             expected_sha=args.sha,
             repository=args.repository,
             workflow=args.workflow,
+            branch=args.branch,
+            workflow_ref=args.workflow_ref,
             run_id=args.run_id,
             attempt=args.attempt,
             shard_count=args.shard_count,

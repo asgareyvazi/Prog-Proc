@@ -8,6 +8,12 @@ on:
     branches: ["**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      replay_historical_shards:
+        description: "Fetch and audit the original failed Linux shard artifacts for run 43695755434"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -412,6 +418,12 @@ jobs:
             pytest-run-state.txt
           if-no-files-found: warn
 
+  # Intentional second execution path: ubuntu-2604-cp314 above preserves the
+  # standalone Qt-enabled full-suite gate and its conventional totals, while
+  # this collection plus four shards independently proves deterministic,
+  # exact-once partition coverage and emits run-bound evidence. Neither gate
+  # substitutes for the other; the additional runner time buys a separate
+  # sharding/reconciliation assertion without changing the existing matrix.
   pytest-shard-collection:
     name: Ubuntu 26.04 Qt full-suite collection
     runs-on: ubuntu-26.04
@@ -577,8 +589,22 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14"
-      - name: Install package for evidence validation
-        run: python -m pip install -e .
+      - name: Install base package for evidence validation
+        run: python -m pip install -c constraints/runtime.txt -e .
+      - name: Verify evidence CLI in base install without pytest
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import subprocess
+          import sys
+
+          if importlib.util.find_spec("pytest") is not None:
+              raise SystemExit("base evidence environment unexpectedly contains pytest")
+          subprocess.run(
+              [sys.executable, "-m", "tools.pytest_shard_report", "--help"],
+              check=True,
+          )
+          PY
       - name: Retrieve this run's GitHub API and artifact evidence
         if: always()
         env:
@@ -610,6 +636,8 @@ jobs:
             --sha "${GITHUB_SHA}" \
             --repository "${GITHUB_REPOSITORY}" \
             --workflow "${GITHUB_WORKFLOW}" \
+            --branch "${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}" \
+            --workflow-ref "${GITHUB_WORKFLOW_REF}" \
             --run-id "${GITHUB_RUN_ID}" \
             --attempt "${GITHUB_RUN_ATTEMPT}" \
             --shard-count 4 \
@@ -621,6 +649,14 @@ jobs:
             --combined-output pytest-shard-combined-output.txt \
             --combined-exit pytest-shard-combined-exit.txt \
             --combined-state pytest-shard-combined-state.txt
+      - name: Add reconciliation evidence to the GitHub check summary
+        if: always()
+        run: |
+          if test -s pytest-shard-report.md; then
+            cat pytest-shard-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' '**NOT RUN** — no shard reconciliation Markdown report was produced.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Publish final shard reconciliation report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -694,6 +730,16 @@ jobs:
             --artifacts-json pytest-artifacts-api.json \
             --output-json pytest-matrix-report-ubuntu-2604-cp3.14.json \
             --output-markdown pytest-matrix-report-ubuntu-2604-cp3.14.md
+      - name: Add full-suite attribution to the GitHub check summary
+        if: always()
+        run: |
+          for report in pytest-matrix-report-linux.md pytest-matrix-report-ubuntu-2604-cp3.14.md; do
+            if test -s "$report"; then
+              cat "$report" >> "$GITHUB_STEP_SUMMARY"
+            else
+              printf '**NOT RUN** — missing `%s`.\n\n' "$report" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
       - name: Publish Linux matrix report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -1044,3 +1090,47 @@ jobs:
           name: qt-ubuntu-2604-logs
           path: qt-logs/
           if-no-files-found: error
+
+  historical-shard-replay:
+    name: Replay historical Linux shard evidence (read-only)
+    if: github.event_name == 'workflow_dispatch' && inputs.replay_historical_shards
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Bind replay to the authorized branch and bounded historical target
+        env:
+          GH_REF: ${{ github.ref }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          test "$GH_REF" = "refs/heads/arena/5957b76d-prog-proc"
+          test "$GH_REPOSITORY" = "asgareyvazi/Prog-Proc"
+      - name: Download and replay historical artifacts from GitHub Actions storage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: src
+        run: |
+          set -euo pipefail
+          python -m tools.pytest_shard_replay \
+            --output-dir "$RUNNER_TEMP/prog-proc-historical-replay-43695755434-a1"
+      - name: Publish metadata-only replay evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: historical-shard-replay-43695755434-a1
+          path: |
+            ${{ runner.temp }}/prog-proc-historical-replay-43695755434-a1/downloads.json
+            ${{ runner.temp }}/prog-proc-historical-replay-43695755434-a1/replay-report.json
+            ${{ runner.temp }}/prog-proc-historical-replay-43695755434-a1/replay-report.md
+            ${{ runner.temp }}/prog-proc-historical-replay-43695755434-a1/replay-stats.json
+          if-no-files-found: warn
+          retention-days: 90

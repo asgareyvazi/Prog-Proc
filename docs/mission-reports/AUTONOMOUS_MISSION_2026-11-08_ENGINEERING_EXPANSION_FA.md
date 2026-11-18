@@ -1,7 +1,5 @@
 # گزارش نهایی مأموریت مهندسی و توسعهٔ امن — Prog-Proc
 
-> **یادداشت آرشیوی (2026-10-20):** این گزارش نتیجهٔ زیرمأموریت قبلی روی SHA `075d5919ebd8a5e600e3c806b73bc560203f52c5` و فقط runهای همان SHA را ثبت می‌کند. DDR comparison assurance فعلی، نتایج SHAهای `512aa333…`, `41f04d6…`, `b1deab1…` و runهای تازه را در [`AUTONOMOUS_MISSION_2026-10-20_DDR_COMPARISON_ASSURANCE_FA.md`](AUTONOMOUS_MISSION_2026-10-20_DDR_COMPARISON_ASSURANCE_FA.md) ثبت می‌کند؛ این سند قدیمی گواهی tip یا CI جاری نیست.
-
 **تاریخ اجرای ثبت‌شده:** 2026-10-20 UTC (تاریخ سیستم مأموریت)
 **شاخهٔ مجاز:** `arena/5957b76d-prog-proc`
 **وضعیت کلی:** کار مهندسی در محدودهٔ مصوب انجام، بازبینی، commit و push شد. **OCR واقعی، پذیرش فیزیکی Windows و تصمیم‌های owner-gated همچنان اجرا/تأیید نشده‌اند.** محصول **Pre-Alpha** باقی می‌ماند.
@@ -13,7 +11,7 @@
 | حوزه | نتیجه | مرز ادعا |
 |---|---|---|
 | MinerU transport و قرارداد HTTP | **DONE — کد و آزمون‌های مرزی** | Auto وقتی CLI معتبر انتخاب شده است به HTTP اضافی نمی‌رود؛ mode صریح جدا و fail-closed است؛ HTTP فقط قرارداد legacy multipart + JSON را می‌پذیرد. HTTP زنده با سرویس واقعی در این مأموریت اجرا نشد. |
-| آثار MinerU، provenance و normalization | **DONE — کد و آزمون‌های مرزی** | خروجی scratch هر اجرا محدود و پاک‌سازی قابل‌گزارش است؛ مسیر scratch در metadata ثبت نمی‌شود. مسیر منبع می‌تواند از طریق فیلد عمومی provenance به نام `metadata.path` باقی بماند؛ این با command/error metadata مینرو یکی نیست. confidence، bbox، متن خالی و خروجی ناقص جعل یا بی‌صدا پذیرفته نمی‌شوند. |
+| آثار MinerU، provenance و normalization | **DONE — کد و آزمون‌های مرزی** | خروجی موقت هر اجرا محدود و پاک‌سازی قابل‌گزارش است؛ مسیر scratch/فایل منبع در metadata ثبت نمی‌شود؛ confidence، bbox، متن خالی و خروجی ناقص جعل یا بی‌صدا پذیرفته نمی‌شوند. |
 | readiness/qualification CLI و fixture OCR مصنوعی | **DONE — ابزار؛ inference واقعی NOT RUN** | `drillintel mineru validate --json` تفکیک READY/NOT_READY، مدل و OCR را نگه می‌دارد. Fixture/ground truth و CER/WER مصنوعی وجود دارد؛ هیچ‌کدام معیار دقت OCR واقعی یا میدانی نیست. |
 | افزودن یک workflow امن و قابل‌استفاده | **DONE** | `drillintel config validate --json` پیکربندی مؤثر را بدون بازکردن workspace/database یا probe شبکه اعتبارسنجی می‌کند. |
 | concurrency نویسندگی DDR | **DONE — process-level SQLite assurance** | آزمون‌ها process و connection مستقل، SQLite فایل‌محور موقت، timeout/join محدود، خروج تمیز worker و invariantهای persisted را به‌کار می‌برند. این کار authentication یا هویت مستقل actor را ایجاد نمی‌کند. |
@@ -33,7 +31,7 @@
 - endpoint HTTP دیگر مقدار پیش‌فرض loopback ندارد. مسیر parse قابل‌تنظیم است ولی تنظیمات، مسیر absolute، بدون query/fragment، backslash، control character یا dot-segment را الزام می‌کند؛ درصد-encoding نیز decode و بررسی می‌شود.
 - OpenAPI discovery محدود و fail-closed است: `$ref`های داخلی با سقف حل می‌شوند، multipart باید فیلد فایل سازگار داشته باشد و پاسخ باید JSON object باشد. قرارداد این adapter همان legacy `/file_parse` multipart + JSON است، نه async/task APIای که ZIP attachment برمی‌گرداند.
 - پاسخ HTTP با status نامعتبر، redirect، content type غیر JSON، envelope/result اشتباه، نتیجهٔ مبهم برای فایل ارسالی، JSON ناقص یا بدون محتوای قابل‌خواندن رد می‌شود. فایل/ZIP/attachment به‌عنوان parse result پذیرفته نمی‌شود. مقدارهای `middle_json`, `content_list` و Markdown از نظر نوع و تهی‌بودن بررسی می‌شوند.
-- artifactهای CLI فقط در scratch اختصاصی همان اجرا ساخته می‌شوند. retention عمومی/دلخواه حذف شد. پاک‌سازی در success و failure انجام می‌شود و metadata وضعیت پاک‌سازی یا خطای آن را نگه می‌دارد، نه مسیر scratch را. مسیر منبع/temporary از command/stderr/error ثبت‌شده redaction می‌شود؛ `layout_pdf` جعلی یا dangling path ثبت نمی‌شود. اصلاحیهٔ scope: فیلد عمومی product provenance به نام `metadata.path` می‌تواند مسیر منبع را نگه دارد؛ ادعای این bullet فقط دربارهٔ scratch و command/error metadata پاک‌سازی‌شده است.
+- artifactهای CLI فقط در scratch اختصاصی همان اجرا ساخته می‌شوند. retention عمومی/دلخواه حذف شد. پاک‌سازی در success و failure انجام می‌شود و metadata وضعیت پاک‌سازی یا خطای آن را نگه می‌دارد، نه مسیر scratch را. مسیر منبع/temporary از command/stderr/error ثبت‌شده redaction می‌شود؛ `layout_pdf` جعلی یا dangling path ثبت نمی‌شود.
 - normalization ورودی‌های ناقص را به دادهٔ «موفق» تبدیل نمی‌کند: confidence کالیبره‌نشده جعل نمی‌شود؛ مختصات non-finite، boolean یا خارج از قرارداد رد می‌شوند؛ خروجی خالی/خراب fail-closed است و partial parse diagnostics صریح دارد.
 - آزمون‌های boundary، schema، media type، redirect و malformed/empty/attachment responses را پوشش می‌دهند. **هیچ MinerU HTTP server واقعی در این مأموریت اجرا یا upload نشده است.**
 

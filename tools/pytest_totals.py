@@ -259,17 +259,22 @@ def skip_is_expected(classname: str, name: str, message: str) -> bool:
     return not _qt_available()
 
 
-def skip_is_expected_qt_enabled(classname: str, name: str, message: str) -> bool:
-    """Qt-enabled selection: no skip is expected; require real execution.
+def is_unqualified_backend_boundary_skip(classname: str, name: str, message: str) -> bool:
+    """Match only the one explicitly documented PostgreSQL boundary skip."""
+    return (classname, name, message or "") == _UNQUALIFIED_BACKEND_SKIP
 
-    The Qt-enabled UI coverage run measures where Qt is real. Any skipped
-    UI test in that selection is a deficit, not a headless allowance.
-    Only a documented platform skip is accepted; every Qt-unavailable message
-    is unexpected when Qt is present.
+
+def skip_is_expected_qt_enabled(classname: str, name: str, message: str) -> bool:
+    """Qt-enabled selection allows documented platform and backend-boundary skips only.
+
+    The PostgreSQL exception is an exact identity-and-reason match and remains
+    counted as skipped. All other Qt-unavailable or arbitrary skip reasons are
+    unexpected in this Qt-enabled environment.
     """
 
     text = message or ""
-    # No Qt-unavailable skips are expected in Qt-enabled mode
+    if is_unqualified_backend_boundary_skip(classname, name, text):
+        return True
     return any(reason in text for reason in _PLATFORM_SKIP_REASONS)
 
 

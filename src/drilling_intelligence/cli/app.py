@@ -955,7 +955,14 @@ def command_ddr(args: argparse.Namespace) -> int:
                 for record in records
             ] or ["no manually authored DDRs for this well"]
         elif action == "compare":
-            from ..operations.ddr_comparison import compare_ddr_revisions
+            from ..operations.ddr_comparison import (
+                compare_ddr_revisions,
+                ddr_comparison_export_payload,
+                redact_ddr_comparison_source_paths,
+                render_ddr_comparison_json,
+                render_ddr_comparison_markdown,
+                write_ddr_comparison_export,
+            )
 
             predecessor = authoring.get(args.predecessor_report_id)
             successor = authoring.get(args.successor_report_id)
@@ -969,6 +976,16 @@ def command_ddr(args: argparse.Namespace) -> int:
                 )
             comparison = compare_ddr_revisions(predecessor, successor)
             payload = {"ok": comparison["status"] == "OK", "comparison": comparison}
+            export_payload = ddr_comparison_export_payload(predecessor, successor, comparison)
+            redact_source_paths = bool(getattr(args, "redact_source_paths", False))
+            requested_format = getattr(args, "format", None)
+            output_path = getattr(args, "output", None)
+            if redact_source_paths and requested_format is None and output_path is None:
+                raise DrillingIntelligenceError(
+                    "--redact-source-paths requires --format or --output; no export was written"
+                )
+            if redact_source_paths:
+                export_payload = redact_ddr_comparison_source_paths(export_payload)
             lines = [
                 "Read-only DDR revision comparison; no review decision or state change was made.",
                 f"{predecessor['report_id']} (rev {predecessor['revision_number']}) → "
@@ -977,7 +994,39 @@ def command_ddr(args: argparse.Namespace) -> int:
                 f"conclusive: {str(comparison['conclusive']).lower()}",
                 f"activity classifications: {comparison['activities'].get('counts', {})}",
             ]
-            _emit(payload, as_json=args.json, lines=lines)
+            overwrite = bool(getattr(args, "overwrite", False))
+            if overwrite and output_path is None:
+                raise DrillingIntelligenceError(
+                    "--overwrite requires --output; no comparison file was written"
+                )
+            if output_path is not None:
+                output_format = requested_format or "json"
+                written = write_ddr_comparison_export(
+                    export_payload,
+                    output_path,
+                    output_format=output_format,
+                    overwrite=overwrite,
+                )
+                _emit(
+                    {
+                        "ok": payload["ok"],
+                        "output": str(written),
+                        "format": output_format,
+                        "read_only": True,
+                        "approval_evaluated": False,
+                        "source_path_redaction_applied": redact_source_paths,
+                    },
+                    as_json=args.json,
+                    lines=[f"Wrote read-only DDR comparison {output_format} export to {written}"],
+                )
+            elif requested_format == "json":
+                print(render_ddr_comparison_json(export_payload), end="", file=_data_stream(True))
+            elif requested_format == "markdown":
+                print(
+                    render_ddr_comparison_markdown(export_payload), end="", file=_data_stream(False)
+                )
+            else:
+                _emit(payload, as_json=args.json, lines=lines)
             return 0 if comparison["status"] == "OK" else 3
         elif action in {"show", "actions"}:
             record = authoring.get(args.report_id)
@@ -3689,6 +3738,27 @@ def _add_ddr_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
     )
     compare.add_argument("predecessor_report_id", help="exact predecessor DDR report id")
     compare.add_argument("successor_report_id", help="exact successor DDR report id")
+    compare.add_argument(
+        "--format",
+        choices=("json", "markdown"),
+        help="render an operator-facing export (default output remains the concise comparison)",
+    )
+    compare.add_argument(
+        "--output", type=Path, help="write an atomic export without replacing an existing file"
+    )
+    compare.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="explicitly replace an existing --output file after the complete export is prepared",
+    )
+    compare.add_argument(
+        "--redact-source-paths",
+        action="store_true",
+        help=(
+            "opt in to a shareable export copy with documented local source-path provenance "
+            "redacted; requires --format or --output"
+        ),
+    )
     compare.set_defaults(handler=command_ddr)
 
     save = actions.add_parser(

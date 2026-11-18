@@ -289,6 +289,10 @@ command  ddr compare
     arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
     arg (predecessor_report_id) dest=predecessor_report_id type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg (successor_report_id) dest=successor_report_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --format dest=format type=- nargs=None default=None required=False choices=json|markdown action=_StoreAction
+    arg --output dest=output type=Path nargs=None default=None required=False choices=- action=_StoreAction
+    arg --overwrite dest=overwrite type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
+    arg --redact-source-paths dest=redact_source_paths type=- nargs=0 default=False required=False choices=- action=_StoreTrueAction
 command  ddr save
   prog drillintel ddr save
   description -

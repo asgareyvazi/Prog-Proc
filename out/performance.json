@@ -1,0 +1,18 @@
+{
+  "as_of": "2026-10-31",
+  "branch": "arena/5957b76d-prog-proc",
+  "head": "332f8fc + V9.0 delta",
+  "hardware": "linux sandbox .venv",
+  "corpus": "v9 operational (17 files, including lesson tally)",
+  "measurements": {
+    "workspace_create_ms": 1,
+    "build_corpus_ms": 456,
+    "ingest_17_files_ms": 1075,
+    "promote_ms": 171,
+    "search_rebuild_and_query_ms": 115,
+    "reingest_idempotence_ms": 120
+  },
+  "notes": "Ingest includes extraction (pdf_text, excel, docx, text, csv) and classification. Promote creates 40 rows. Search uses InMemorySearchIndex. Re-ingest proves UNCHANGED idempotence. Representative, not a benchmark.",
+  "source": "/tmp/perf_measure.py (disposable SQLite, single thread, no MinerU)",
+  "tool": "time.perf_counter"
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -40,8 +41,8 @@ def _tree_text(window: Any) -> list[str]:
     return values
 
 
-def test_ui_shows_ambiguity_and_exact_omitted_count_without_database_writes(
-    qt_app, workspace, committed_well_id: str
+def test_ui_shows_ambiguity_and_exports_complete_read_only_comparisons(
+    qt_app, workspace, committed_well_id: str, tmp_path, monkeypatch
 ) -> None:
     from drilling_intelligence.operations.ddr import DdrAuthoringService
     from drilling_intelligence.ui.controller import ReviewController
@@ -129,6 +130,7 @@ def test_ui_shows_ambiguity_and_exact_omitted_count_without_database_writes(
     assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
     window = MainWindow(controller)
     try:
+        assert not window.ddr_compare_export_button.isEnabled()
         window._ddr_records_by_id = {
             predecessor["report_id"]: predecessor,
             successor["report_id"]: successor,
@@ -146,6 +148,54 @@ def test_ui_shows_ambiguity_and_exact_omitted_count_without_database_writes(
         assert "/private/unrelated/source.pdf" not in values
         assert "display-only provenance fixture" in values
         assert "One extra exact row" not in values
+        assert window.ddr_compare_export_button.isEnabled()
+        export_json = tmp_path / "ui-comparison.json"
+        window.export_ddr_comparison(str(export_json), output_format="json")
+        exported = json.loads(export_json.read_text(encoding="utf-8"))
+        assert exported["predecessor"]["report_id"] == predecessor["report_id"]
+        assert exported["successor"]["report_id"] == successor["report_id"]
+        assert exported["successor"]["provenance"][0]["path"] == "/private/unrelated/source.pdf"
+        shareable_json = tmp_path / "ui-comparison-shareable.json"
+        window.export_ddr_comparison(
+            str(shareable_json), output_format="json", redact_source_paths=True
+        )
+        shareable = json.loads(shareable_json.read_text(encoding="utf-8"))
+        assert shareable["redaction"]["applied"] is True
+        assert shareable["successor"]["provenance"][0]["path"] == ("[REDACTED LOCAL SOURCE PATH]")
+        assert "/private/unrelated/source.pdf" not in shareable_json.read_text(encoding="utf-8")
+        assert shareable["comparison"] == exported["comparison"]
+        assert (
+            exported["comparison"]["activities"]["items"]
+            == shareable["comparison"]["activities"]["items"]
+        )
+        from PySide6.QtWidgets import QFileDialog, QInputDialog
+
+        dialog_export = tmp_path / "ui-dialog-shareable.json"
+        monkeypatch.setattr(
+            QFileDialog,
+            "getSaveFileName",
+            lambda *_args: (str(dialog_export), "JSON (*.json)"),
+        )
+        monkeypatch.setattr(
+            QInputDialog,
+            "getItem",
+            lambda *_args: ("Shareable copy — redact local source paths", True),
+        )
+        window._ddr_export_comparison_dialog()
+        dialog_payload = json.loads(dialog_export.read_text(encoding="utf-8"))
+        assert dialog_payload["redaction"]["applied"] is True
+        assert "/private/unrelated/source.pdf" not in dialog_export.read_text(encoding="utf-8")
+        assert exported["truncation"] == {
+            "truncated": False,
+            "included_activity_items": 200,
+            "omitted_activity_items": 0,
+        }
+        export_markdown = tmp_path / "ui-comparison.md"
+        window.export_ddr_comparison(str(export_markdown), output_format="markdown")
+        markdown = export_markdown.read_text(encoding="utf-8")
+        assert "Activity comparison 200" in markdown
+        assert "One extra exact row" in markdown
+        assert "omitted items: 0; truncated: no" in markdown
         assert _database_fingerprint(controller.workspace) == before
 
         window._ddr_records_by_id = {
@@ -161,6 +211,14 @@ def test_ui_shows_ambiguity_and_exact_omitted_count_without_database_writes(
         assert "Alignment warning" in ambiguous_values
         assert "no pairing was guessed." in " ".join(ambiguous_values)
         assert "ambiguous" in ambiguous_values
+        ambiguous_path = tmp_path / "ambiguous.json"
+        window.export_ddr_comparison(str(ambiguous_path), output_format="json")
+        ambiguous_export = json.loads(ambiguous_path.read_text(encoding="utf-8"))
+        assert ambiguous_export["comparison"]["status"] == "AMBIGUOUS"
+        assert (
+            ambiguous_export["comparison"]["activities"]["items"][0]["reason"]
+            == "repeated_content_has_no_durable_identity"
+        )
         assert _database_fingerprint(controller.workspace) == before_ambiguous_compare
     finally:
         release_top_level_widgets(qt_app)

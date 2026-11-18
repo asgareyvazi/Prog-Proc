@@ -1,7 +1,5 @@
 # گزارش اختتام مأموریت audit و qualification — Prog-Proc
 
-> **یادداشت آرشیوی (2026-10-20):** این گزارش محدود به commitهای C1/C2 و runهای دقیق همان SHAها است. DDR comparison assurance و پیگیری CI جدید در [`AUTONOMOUS_MISSION_2026-10-20_DDR_COMPARISON_ASSURANCE_FA.md`](AUTONOMOUS_MISSION_2026-10-20_DDR_COMPARISON_ASSURANCE_FA.md) آمده‌اند؛ این گزارش قبلی گواهی branch tip یا CI جاری نیست.
-
 **تاریخ گزارش:** 2026-11-08 (UTC)<br>
 **شاخهٔ مجاز:** `arena/5957b76d-prog-proc`<br>
 **نوع نتیجه:** ممیزی و شواهد محدود؛ نه پذیرش production و نه رفع owner gateها

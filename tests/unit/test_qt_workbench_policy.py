@@ -270,7 +270,7 @@ def test_the_workbench_tests_release_their_windows_and_not_only_close_them():
         "a workbench test closes its window instead of releasing it; "
         "use release_top_level_widgets(qt_app)"
     )
-    assert source.count("release_top_level_widgets(qt_app)") == 7
+    assert source.count("release_top_level_widgets(qt_app)") == 8
     assert "release_top_level_widgets" in source
 
 

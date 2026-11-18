@@ -1,8 +1,6 @@
 # پرامپت چندمرحله‌ای برای ادامهٔ مهندسی خودمختار
 
-این prompt برای ادامهٔ همین مأموریت DDR comparison assurance است، نه جایگزین task مالک. متن داخل بلوک را به Agent Mode بعدی بدهید تا همان کار نیمه‌تمام را ادامه دهد. این prompt عمداً اجرای واقعی، آزمون، commit، push و CI را می‌خواهد؛ audit یا گزارش‌نویسی صرف جایگزین آن نیست.
-
-**وضعیت ادامهٔ ثبت‌شده:** implementation/diagnostics SHA `b1deab1782d6c17552ca4334606b5521c84c44ef` روی branch مجاز push شده است؛ exact-SHA Linux run `42501577186` و Windows run `42501577174` را از GitHub دوباره بررسی کنید و منتظر نتیجهٔ نهایی بمانید. تا آخرین مشاهدهٔ ثبت‌شده، هر دو Windows history lane 15/15 پاس شده و Linux/Ubuntu offscreen workbench jobs نیز موفق‌اند؛ full-suiteها هنوز نتیجهٔ کلی نداشتند؛ Linux CPython 3.11 و 3.14 هرکدام یک failure موردانتظار در inventory تولیدشده با 2,850 جمع‌آوری‌شده، 2,787 پاس، 62 skip و 1 fail نشان دادند؛ Windows CPython 3.11/3.14 نیز همان failure inventory را نشان دادند؛ Ubuntu 26.04 full-suite job تا 2026-11-08 20:31 UTC بیش از 3h44 در `in_progress` مانده و هنوز result/exit ندارد؛ آن را pass فرض نکن. SHA قبلی `41f04d6…` روی Linux دو inventory mismatch و یک failure نامشخص Ubuntu 26.04 داشت؛ Windows دو inventory mismatch و دو timeout history 45 دقیقه‌ای داشت. Artifact ZIPها از `*.blob.core.windows.net` قابل دانلود نبودند؛ Ubuntu failure identity و skip details هنوز نامعلوم‌اند. Inventory در worktree از نو تولید شده اما commit نشده است؛ تغییرات current-facing docs و report نهایی فارسی نیز commit نشده‌اند. `out/performance.json` حذف محافظت‌شده است. گزارش و traceability جاری: `docs/mission-reports/DDR_COMPARISON_ASSURANCE_TRACEABILITY_2026-10-20.md`؛ گزارش نهایی مقصد: `docs/mission-reports/AUTONOMOUS_MISSION_2026-10-20_DDR_COMPARISON_ASSURANCE_FA.md`.
+این فایل یک prompt آمادهٔ کپی برای Agent Mode بعدی است. متن داخل بلوک زیر را با task/mission تازهٔ مالک همراه کنید. این prompt عمداً اجرای واقعی، آزمون، commit، push و CI را می‌خواهد؛ audit یا گزارش‌نویسی صرف جایگزین آن نیست.
 
 ```text
 نقش و هدف
@@ -13,9 +11,9 @@
 
 - مخزن: `asgareyvazi/Prog-Proc`.
 - branch این session ثابت است: `arena/5957b76d-prog-proc`. هرگز branch را rename، عوض یا جایگزین نکن؛ به `main` merge یا push نکن؛ force-push/rebase/history rewrite نکن.
-- کد/diagnostics tip فعلی: `b1deab1782d6c17552ca4334606b5521c84c44ef`; exact-SHA Linux run `42501577186` و Windows run `42501577174` باید از GitHub دوباره بررسی شوند و نتیجه تا وقتی completed نیست ثبت نشود. سابقهٔ SHA `41f04d6a6ddd2abe4339c410b7e688004eb62c4a` با full-suite failures و Windows history timeout در traceability آمده است. هر SHA/run فقط برای خودش معتبر است؛ در شروع هر ادامه branch/remote را دوباره اندازه بگیر و SHA یا run ID را حدس نزن.
-- گزارش جاری مقصد: `docs/mission-reports/AUTONOMOUS_MISSION_2026-10-20_DDR_COMPARISON_ASSURANCE_FA.md`; traceability/baseline: `docs/mission-reports/DDR_COMPARISON_ASSURANCE_TRACEABILITY_2026-10-20.md`.
-- مرجع محصول: `docs/PROJECT_CONTEXT.md`; قبلی‌های `AUTONOMOUS_MISSION_2026-11-08_ENGINEERING_EXPANSION_FA.md`, `AUTONOMOUS_MISSION_2026-11-08_MINERU_DDR_FA.md` و `ENGINEERING_EXPANSION_TRACEABILITY_2026-11-08.md` تاریخی‌اند و فقط برای SHA/runهای خودشان‌اند.
+- آخرین کد مأموریت ثبت‌شده در گزارش: `075d5919ebd8a5e600e3c806b73bc560203f52c5`; آن SHA روی Linux run `42466023039` و Windows run `42466023072` PASS شد. این evidence فقط به همان SHA تعلق دارد. در شروع session بعدی branch/remote ممکن است جلوتر رفته باشد؛ دوباره اندازه بگیر و هیچ‌گاه SHA یا run ID را حدس نزن.
+- گزارش جاری این مأموریت: `docs/mission-reports/AUTONOMOUS_MISSION_2026-11-08_ENGINEERING_EXPANSION_FA.md`.
+- زمینهٔ جاری محصول: `docs/PROJECT_CONTEXT.md`; matrix مبنای مأموریت قبلی: `docs/mission-reports/ENGINEERING_EXPANSION_TRACEABILITY_2026-11-08.md`.
 - `out/performance.json` یک حذف محافظت‌شده است. آن را restore، stage، commit، حذف مجدد، `assume-unchanged`/skip-worktree-mark، stash یا هر نوع hide نکن. اگر روی branch update/checkout لازم شد و Git ممکن است آن فایل را بنویسد، از عملیات خودداری کن؛ ابتدا راه غیرمتلف و بی‌نوشتن در worktree را ثابت کن، و اگر نمی‌توانی با قطعیت از حفظ حذف اطمینان دهی، متوقف شو و blocker را به مالک گزارش کن.
 - محصول local-first، single-user و Pre-Alpha است؛ SQLite تنها DB واجد qualification است. PostgreSQL، M2–M5، O-02/O-03، authentication/multi-user، ریسک/AFE/currency، production DR، encryption، public deployment و acceptance display فیزیکی Windows owner-gated/unqualified هستند.
 - taxonomy ثابت بماند: 26 document classes؛ 14 `END_TO_END_CERTIFIED`، 7 `KNOWLEDGE_SUPPORTED`، 5 `EXTRACT_ONLY`؛ 12 named handlers. گزارش تاریخی را بازنویسی نکن.
