@@ -1177,6 +1177,15 @@ class MainWindow(QMainWindow):
     def _review_succeeded(self, review: DomainReview) -> None:
         if self._closing:
             return
+        if self._review is not None and self._review.to_dict() == review.to_dict():
+            # The identical review is already rendered (e.g. set directly before a
+            # background reload completed). Re-rendering would reset the user's
+            # current selection, so only the status line is refreshed.
+            self._set_status(
+                f"Review already loaded: {review.record_count} records for "
+                f"{review.request.get('lifecycle', 'current')}."
+            )
+            return
         self.set_review(review)
         audit = "; citations audited" if review.citation_audit is not None else ""
         self._set_status(
@@ -2867,9 +2876,11 @@ class MainWindow(QMainWindow):
     def _render_selected_section(self) -> None:
         # currentChanged and selectionChanged can arrive in either order during one
         # programmatic selectRow()/sort/reset, and each intermediate state is a valid
-        # but transient snapshot.  Coalesce them into one render on the event loop so
-        # the detail tree always reflects the final selection state, never a
-        # half-applied one.
+        # but transient snapshot.  Render the current state synchronously (so the
+        # detail tree is correct immediately, not only after the event loop turns)
+        # and additionally schedule one trailing coalesced render, so the final
+        # selection state is always applied even if a signal pair is still in flight.
+        self._render_selected_section_now()
         if self._section_render_pending:
             return
         self._section_render_pending = True
