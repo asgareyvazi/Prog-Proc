@@ -2861,10 +2861,6 @@ class MainWindow(QMainWindow):
         selection = self.sections_table.selectionModel()
         selected_rows = selection.selectedRows()
         if len(selected_rows) != 1:
-            current = selection.currentIndex()
-            if current.isValid():
-                _fill_tree(self.sections_detail, self.sections_model.row_payload(current.row()))
-                return
             _fill_tree(self.sections_detail, None)
             return
         current = selection.currentIndex()
