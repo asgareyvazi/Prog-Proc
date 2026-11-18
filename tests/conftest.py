@@ -134,6 +134,20 @@ def session(db):
 
 
 @pytest.fixture
+def committed_well_id(db, workspace):
+    """A well committed before services open their own transactional sessions."""
+    from drilling_intelligence.wells.repository import WellRepository
+
+    with db.unit_of_work() as session:
+        repository = WellRepository(session)
+        repository.get_or_create_workspace(str(workspace.root), name="Test Workspace")
+        project = repository.get_or_create_project("Test Workspace")
+        well = repository.create_well("A-3", project_id=project.id)
+        well_id = well.id
+    return well_id
+
+
+@pytest.fixture
 def well(session, tmp_path: Path):
     """A real well, created through the well registry.
 

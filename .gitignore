@@ -14,8 +14,24 @@ qt-logs/
 pytest-junit.xml
 pytest-totals.json
 pytest-totals.json.partial
+pytest-run-state.txt
 pytest-output.txt
 pytest-exit.txt
+pytest-matrix-evidence.json
+pytest-matrix-report-*.json
+pytest-matrix-report-*.md
+pytest-jobs.json
+pytest-artifacts-api.json
+pytest-artifacts/
+dependency-audit.json
+coverage.xml
+coverage-ui.xml
+coverage-view.json
+coverage-report.md
+coverage-report.txt
+docs/coverage_report.md.tmp
+pytest-ui-output.txt
+pytest-ui-exit.txt
 .ruff_cache/
 .mypy_cache/
 .coverage
@@ -35,6 +51,9 @@ workspace/.drillintel/
 /var/
 *.pdf.txt
 experiments/
+
+# Generated per-run acceptance evidence (raw logs may contain local paths)
+/out/windows-acceptance/
 
 # OS / editor
 .DS_Store

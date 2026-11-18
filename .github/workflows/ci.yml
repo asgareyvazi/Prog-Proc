@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -29,30 +30,85 @@ jobs:
         # The floor and the target, per ADR-0002.  Code must not use anything newer than the
         # floor, and this matrix is how that is enforced rather than asserted.
         python-version: ["3.11", "3.14"]
+        include:
+          # The coverage baseline is measured once, on the floor runtime.  It is a recorded
+          # number, not a gate: no threshold is enforced, because no measured baseline existed
+          # to set one against.  See docs/mission-reports/END_TO_END_FINAL_REPORT.md.
+          - python-version: "3.11"
+            coverage-flags: "--cov --cov-report=term --cov-report=xml:coverage.xml"
+          - python-version: "3.14"
+            coverage-flags: ""
     steps:
       # Full history, not the default depth-1.  `test_report_integrity` asserts that every
       # full-length commit SHA cited in the certification reports actually exists in the object
       # database - a real guarantee against a report naming a commit that was never pushed - and a
       # shallow clone cannot answer it, so the test failed in CI while passing locally.  The fix
       # belongs here: the assertion is correct, the checkout was too thin to evaluate it.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install (editable, with the dev extra)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints/development.txt -c constraints/build.txt -e ".[dev]"
 
       - name: Ruff lint
         run: ruff check .
 
       - name: Ruff format
         run: ruff format --check .
+
+      # The checked boundaries are drilling_intelligence.core, .database and
+      # .extraction.  The rules live in pyproject.toml under [tool.mypy]; the
+      # boundary is widened by a separate, dated change.
+      - name: Type-check the checked boundaries
+        if: matrix.python-version == '3.11'
+        run: python -m mypy
+
+      # The pin files are checked against the metadata, not trusted.  The check
+      # re-resolves each set in a throwaway virtual environment, so it costs about
+      # a minute and it needs the index.  A new upstream patch release therefore
+      # turns this step red **by design**: the pins are a decision to be renewed,
+      # not a value that follows the index.  The remedy is one command per set
+      # (`python tools/constraints.py --set <name>`) and a CI run on the new SHA.
+      # The comparison ignores the generation date the file carries, so a step
+      # that ran on a later day than the regeneration does not fail for that.
+      - name: The pins still resolve to what the files say
+        if: matrix.python-version == '3.11'
+        run: |
+          for set_name in runtime development ui build audit; do
+            python tools/constraints.py --set "${set_name}" --check
+          done
+
+      # The pinned dependency set is audited against the advisory service.
+      # A known vulnerability fails the job. An advisory-service outage is a
+      # warning and a record, not a failure: a third-party outage is not a
+      # defect in this repository, and it is still recorded so that it cannot
+      # be mistaken for a clean audit.
+      - name: Audit the pinned dependencies
+        if: matrix.python-version == '3.11'
+        run: |
+          # The auditor is pinned (constraints/audit.txt) and installed into an
+          # environment of its own: a floating range would let the tool change
+          # between two runs of the same commit, and installing it into the
+          # product's environment could move a version the product is tested
+          # with.  The audit itself reads the pins, not the environment.
+          #
+          # The environment lives outside the checkout.  It was built inside it
+          # at first, and the Windows job's "working tree was not rewritten"
+          # check then failed - the job had created an untracked directory in
+          # the tree it was inspecting.  Build the tool where it belongs: in the
+          # runner's temporary directory.
+          audit_venv="$RUNNER_TEMP/audit-venv"
+          python -m venv "$audit_venv"
+          "$audit_venv/bin/python" -m pip install --upgrade pip
+          "$audit_venv/bin/python" -m pip install -c constraints/audit.txt pip-audit
+          python tools/dependency_audit.py --output dependency-audit.json --python "$audit_venv/bin/python"
 
       # migrations/ is compiled too: a migration script is production code and a syntax error in
       # one is a release defect, not a test-time surprise.
@@ -67,16 +123,11 @@ jobs:
       - name: Test suite
         # The desktop UI tests skip themselves when Qt cannot load, which is the intended headless
         # behaviour - this job does not install the optional `ui` extra, and a skip is reported as
-        # a skip rather than being dressed up as a pass. One quiet level comes from pytest addopts;
-        # a second -q would hide the summary line. The session-stats file and JUnit are the
-        # durable totals if that line is lost; both are required after the process exits.
-        run: |
-          set -o pipefail
-          set +e
-          pytest --junitxml=pytest-junit.xml 2>&1 | tee pytest-output.txt
-          status=${PIPESTATUS[0]}
-          echo "$status" > pytest-exit.txt
-          exit "$status"
+        # a skip rather than being dressed up as a pass. The runner streams output to disk so an
+        # abnormal pytest exit leaves its partial transcript and exact child exit code.
+        run: >-
+          python tools/ci_pytest.py --output pytest-output.txt --exit-file pytest-exit.txt
+          --state-file pytest-run-state.txt -- ${{ matrix.coverage-flags }} --junitxml=pytest-junit.xml
 
       # The artifact host is not a substitute for this check. The step reads the
       # pytest output the job just wrote and fails if the deprecated adapter remains.
@@ -84,7 +135,12 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          test -f pytest-output.txt
+          if [ ! -f pytest-output.txt ]; then
+            echo "::notice::pytest-output: NOT RUN — prerequisite failed (install or pins check failed, pytest never ran)"
+            echo "::notice::datetime-adapter-warnings: NOT RUN"
+            echo "::notice::SKIPPED — prerequisite failed" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           adapter=$(grep -c "default datetime adapter" pytest-output.txt || true)
           summary=$(grep -E "[0-9]+ warnings? in " pytest-output.txt | tail -1 || true)
           echo "::notice::datetime-adapter-warnings: ${adapter}"
@@ -99,21 +155,137 @@ jobs:
           fi
 
       # Totals are required on a green run and still published when pytest fails midway.
+      # If pytest never ran (install/pins failed), report NOT RUN rather than a fabricated failure.
       - name: Record test totals
+        id: record_totals
         if: always()
-        run: python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt
+        run: |
+          if [ ! -f pytest-run-state.txt ] || grep -q '^NOT RUN' pytest-run-state.txt; then
+            if [ ! -f pytest-run-state.txt ]; then
+              echo "NOT RUN — pytest prerequisite did not start" > pytest-run-state.txt
+            fi
+            echo "::notice::pytest_result: NOT RUN — pytest prerequisite did not start"
+            echo "::notice::pytest-junit: NOT PRODUCED"
+            echo "::notice::pytest-totals: NOT PRODUCED"
+            echo "### Pytest totals — NOT RUN" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml \
+            --exit-file pytest-exit.txt --output pytest-output.txt --state-file pytest-run-state.txt
+
+      - name: Bind pytest totals to matrix identity
+        if: always()
+        env:
+          PYTEST_MATRIX_JOB_NAME: test (cp${{ matrix.python-version }})
+        run: |
+          python tools/pytest_matrix.py record \
+            --platform Linux \
+            --python-version "${{ matrix.python-version }}" \
+            --artifact-name "pytest-cp${{ matrix.python-version }}-a${{ github.run_attempt }}" \
+            --job-name "test (cp${{ matrix.python-version }})" \
+            --totals-step "${{ steps.record_totals.outcome }}" \
+            --output pytest-matrix-evidence.json
+
+      # The coverage baseline is a recorded number, not a gate.  It is published as a notice
+      # so it can be read from the run page and from the API without downloading the
+      # artifact, and the full per-module report goes to the step summary.
+      #
+      # A total is not a reading.  tools/coverage_report.py adds the package-level view
+      # and the comparison with the recorded baseline, and it says which optional
+      # dependency was absent from this environment - because "the Qt layer is 0%"
+      # and "the Qt layer was not measured, Qt is not installed here" are different
+      # claims and only one of them is true in this job.
+      - name: Record the coverage baseline
+        if: always() && matrix.python-version == '3.11'
+        run: |
+          if [ ! -f .coverage ]; then
+            echo "::notice::coverage-total: not measured"
+            echo "::notice::coverage-groups: not measured"
+            exit 0
+          fi
+          total=$(python -m coverage report --format=total)
+          echo "::notice::coverage-total: ${total}%"
+          {
+            echo "### Coverage baseline"
+            echo ""
+            echo "Line and branch coverage, CPython 3.11: ${total}%"
+            echo ""
+            python -m coverage report
+          } >> "$GITHUB_STEP_SUMMARY"
+          python tools/coverage_report.py --xml coverage.xml --scope full-suite --test-selection "pytest (full suite)" \
+            --output coverage-report.md --json coverage-view.json \
+            --label "CI test (cp3.11), ${{ github.sha }}" | tee coverage-report.txt
+          {
+            echo ""
+            # Everything after the overall table: the groups, the optional
+            # dependencies of this measurement, and the comparison.  One range,
+            # so the section headings are not repeated.
+            sed -n '/^## By package group/,$p' coverage-report.md
+          } >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          view = json.loads(Path("coverage-view.json").read_text(encoding="utf-8"))
+          print()
+          print("### Coverage by group, as one line per group")
+          print()
+          for name, group in sorted(view["groups"].items()):
+              line = group["line_percent"]
+              branch = group["branch_percent"]
+              stmts = group["statements"]
+              br = group["branches"]
+              # Qualify empty groups explicitly rather than printing 100% of nothing
+              line_str = f"{line}% (not measured)" if stmts == 0 else f"{line}%"
+              branch_str = f"{branch}% (not measured)" if br == 0 else f"{branch}%"
+              print(f"- `{name}`: {line_str} lines, {branch_str} branches ({group['files']} files, {stmts} stmts)")
+          absent = [fact["name"] for fact in view["optional_dependencies"] if not fact["present"]]
+          print()
+          print(f"optional dependencies absent from this environment: {', '.join(absent) or 'none'}")
+          print()
+          ui = view["groups"].get("qt/ui", {})
+          print(f"full-suite line/branch: {view['overall']['line_percent']}% / {view['overall']['branch_percent']}%")
+          print(f"qt/ui package (headless, so not measured): {ui.get('line_percent', 0)}% lines, {ui.get('branch_percent', 0)}% branches")
+          PY
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          view = json.loads(Path("coverage-view.json").read_text(encoding="utf-8"))
+          ui = view["groups"].get("qt/ui", {})
+          overall = view["overall"]
+          print(f"::notice::coverage-full-suite: {overall['line_percent']}% lines, {overall['branch_percent']}% branches (full suite)")
+          if ui.get("statements", 0) == 0:
+              print(f"::notice::coverage-ui-package: not measured (0 statements, Qt not installed in headless job)")
+          else:
+              print(f"::notice::coverage-ui-package: {ui.get('line_percent', 0)}% lines, {ui.get('branch_percent', 0)}% branches (qt/ui package, headless)")
+          PY
+
+      - name: Publish the coverage baseline
+        if: always() && matrix.python-version == '3.11'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-cp3.11
+          path: |
+            coverage.xml
+            coverage-report.md
+            coverage-view.json
+            coverage-report.txt
+          if-no-files-found: warn
 
       - name: Publish pytest results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pytest-cp${{ matrix.python-version }}
+          name: pytest-cp${{ matrix.python-version }}-a${{ github.run_attempt }}
           path: |
+            pytest-matrix-evidence.json
             pytest-output.txt
             pytest-junit.xml
             pytest-totals.json
             pytest-exit.txt
-          if-no-files-found: error
+            pytest-run-state.txt
+            dependency-audit.json
+          if-no-files-found: warn
 
       # A red run has to say *what* failed without anyone having to open the raw log, so each
       # failure is re-emitted as a workflow annotation and a short summary lands on the run page.
@@ -134,20 +306,431 @@ jobs:
           fi
           exit 1
 
-  release-smoke:
-    name: clean install smoke
-    runs-on: ubuntu-24.04
+  ubuntu-2604-cp314:
+    name: test Ubuntu 26.04 (cp3.14)
+    runs-on: ubuntu-26.04
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_OPENGL: software
+      QT_QPA_PLATFORM: offscreen
+      QT_X11_NO_MITSHM: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1 libegl1 libglib2.0-0 libdbus-1-3 libfontconfig1 libx11-6 \
+            libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-shm0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+            libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxtst6 libnss3 libsm6 libice6
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+
+      - name: Install (editable, Qt-enabled)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
+
+      - name: Ruff lint and format
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Type-check the configured boundary
+        run: python -m mypy
+
+      - name: Byte-compile source, tests, and migrations
+        run: python -m compileall -q src tests migrations
+
+      - name: Alembic has exactly one head
+        run: |
+          alembic heads
+          test "$(alembic heads | grep -c '(head)')" -eq 1
+
+      - name: Full suite (Qt-enabled, offscreen)
+        run: >-
+          xvfb-run -a -s "-screen 0 1280x1024x24" python tools/ci_pytest.py
+          --output pytest-output.txt --exit-file pytest-exit.txt
+          --state-file pytest-run-state.txt -- --junitxml=pytest-junit.xml
+
+      - name: Record test totals
+        id: record_totals
+        if: always()
+        run: |
+          if [ ! -f pytest-run-state.txt ] || grep -q '^NOT RUN' pytest-run-state.txt; then
+            if [ ! -f pytest-run-state.txt ]; then
+              echo "NOT RUN — pytest prerequisite did not start" > pytest-run-state.txt
+            fi
+            echo "::notice::pytest_result: NOT RUN — pytest prerequisite did not start"
+            echo "::notice::pytest-junit: NOT PRODUCED"
+            echo "::notice::pytest-totals: NOT PRODUCED"
+            echo "### Pytest totals — NOT RUN" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml \
+            --exit-file pytest-exit.txt --output pytest-output.txt --state-file pytest-run-state.txt
+
+      - name: Bind pytest totals to Ubuntu 26.04 / CPython 3.14 identity
+        if: always()
+        run: |
+          python tools/pytest_matrix.py record \
+            --platform "Ubuntu 26.04" \
+            --python-version "3.14" \
+            --artifact-name "pytest-ubuntu-2604-cp3.14-a${{ github.run_attempt }}" \
+            --job-name "test Ubuntu 26.04 (cp3.14)" \
+            --totals-step "${{ steps.record_totals.outcome }}" \
+            --output pytest-matrix-evidence.json
+
+      - name: Offscreen workbench tests
+        run: python tools/qt_workbench.py
+
+      - name: Clean-install smoke
+        run: python tools/release_smoke.py
+
+      - name: Publish Ubuntu 26.04 / CPython 3.14 test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-ubuntu-2604-cp3.14-a${{ github.run_attempt }}
+          path: |
+            pytest-matrix-evidence.json
+            pytest-output.txt
+            pytest-junit.xml
+            pytest-totals.json
+            pytest-exit.txt
+            pytest-run-state.txt
+          if-no-files-found: warn
+
+  pytest-shard-collection:
+    name: Ubuntu 26.04 Qt full-suite collection
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_OPENGL: software
+      QT_QPA_PLATFORM: offscreen
+      QT_X11_NO_MITSHM: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1 libegl1 libglib2.0-0 libdbus-1-3 libfontconfig1 libx11-6 \
+            libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-shm0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+            libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxtst6 libnss3 libsm6 libice6
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+      - name: Install (editable, Qt-enabled)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,ui]"
+      - name: Collect complete pytest universe
+        run: >-
+          xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest --collect-only -q
+          --strict-markers -p tools.pytest_shard
+          --progproc-collection-manifest pytest-collection.json
+          --progproc-head-sha "${GITHUB_SHA}"
+          --progproc-run-id "${GITHUB_RUN_ID}"
+          --progproc-run-attempt "${GITHUB_RUN_ATTEMPT}"
+          --progproc-repository "${GITHUB_REPOSITORY}"
+          --progproc-workflow "${GITHUB_WORKFLOW}"
+          --progproc-workflow-ref "${GITHUB_WORKFLOW_REF}"
+      - name: Publish canonical collection manifest
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ubuntu2604-qt-collection-a${{ github.run_attempt }}
+          path: pytest-collection.json
+          if-no-files-found: error
+          retention-days: 7
+
+  pytest-shards:
+    name: Ubuntu 26.04 Qt full-suite shard ${{ matrix.index }} of 4
+    needs: pytest-shard-collection
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - index: 0
+            artifact_index: "00"
+          - index: 1
+            artifact_index: "01"
+          - index: 2
+            artifact_index: "02"
+          - index: 3
+            artifact_index: "03"
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      QT_OPENGL: software
+      QT_QPA_PLATFORM: offscreen
+      QT_X11_NO_MITSHM: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+      PYTEST_TOTALS_PATH: pytest-totals.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb libgl1 libegl1 libglib2.0-0 libdbus-1-3 libfontconfig1 libx11-6 \
+            libxcb1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+            libxcb-shape0 libxcb-shm0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 \
+            libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
+            libxrender1 libxtst6 libnss3 libsm6 libice6
+          sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
+      - name: Install (editable, Qt-enabled)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,ui]"
+      - name: Download this attempt's canonical collection
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ubuntu2604-qt-collection-a${{ github.run_attempt }}
+          path: canonical-collection
+      - name: Initialize shard process evidence
+        run: echo "NOT RUN — shard pytest step has not started" > pytest-run-state.txt
+      - name: Run sharded Qt-enabled full suite
+        run: >-
+          xvfb-run -a -s "-screen 0 1280x1024x24" python tools/ci_pytest.py
+          --output pytest-output.txt --exit-file pytest-exit.txt
+          --state-file pytest-run-state.txt -- --junitxml=pytest-junit.xml
+          -p tools.pytest_shard
+          --progproc-collection-manifest observed-collection.json
+          --progproc-expected-manifest canonical-collection/pytest-collection.json
+          --progproc-selection-result shard-selection.json
+          --progproc-shard-result shard-execution.json
+          --progproc-shard-index "${{ matrix.index }}"
+          --progproc-shard-count 4
+          --progproc-head-sha "${GITHUB_SHA}"
+          --progproc-run-id "${GITHUB_RUN_ID}"
+          --progproc-run-attempt "${GITHUB_RUN_ATTEMPT}"
+          --progproc-repository "${GITHUB_REPOSITORY}"
+          --progproc-workflow "${GITHUB_WORKFLOW}"
+          --progproc-workflow-ref "${GITHUB_WORKFLOW_REF}"
+      - name: Validate shard pytest totals
+        if: always()
+        run: |
+          if [ ! -f pytest-run-state.txt ] || grep -q '^NOT RUN' pytest-run-state.txt; then
+            echo "INCOMPLETE: shard pytest never started" >&2
+            exit 1
+          fi
+          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml \
+            --exit-file pytest-exit.txt --output pytest-output.txt --state-file pytest-run-state.txt
+      - name: Publish run-bound shard evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ubuntu2604-qt-shard-${{ matrix.artifact_index }}-of-04-a${{ github.run_attempt }}
+          path: |
+            observed-collection.json
+            shard-selection.json
+            shard-execution.json
+            pytest-totals.json
+            pytest-junit.xml
+            pytest-exit.txt
+            pytest-run-state.txt
+            pytest-output.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+  pytest-shard-evidence:
+    name: Ubuntu 26.04 Qt shard evidence reconciliation
+    if: always()
+    needs: [pytest-shard-collection, pytest-shards]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Install package for evidence validation
+        run: python -m pip install -e .
+      - name: Retrieve this run's GitHub API and artifact evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m tools.pytest_shard_artifacts \
+            --repository "${GITHUB_REPOSITORY}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --attempt "${GITHUB_RUN_ATTEMPT}" \
+            --sha "${GITHUB_SHA}" \
+            --workflow "${GITHUB_WORKFLOW}" \
+            --shard-count 4 \
+            --output-dir github-shard-evidence
+      - name: Initialize fail-closed reconciliation report
+        if: always()
+        run: |
+          printf '%s\n' '{"schema_version":2,"status":"INCOMPLETE","complete":false,"error":"reconciliation did not produce a report"}' > pytest-shard-report.json
+          printf '%s\n' '# Ubuntu 26.04 Qt-enabled pytest shard report' '' '**INCOMPLETE** — reconciliation did not produce a report.' > pytest-shard-report.md
+      - name: Reconcile exact-once shard coverage and outcomes
+        if: always()
+        run: |
+          python -m tools.pytest_shard_report \
+            --shard-root github-shard-evidence \
+            --archive-root github-shard-evidence/archives \
+            --extracted-root github-shard-evidence/extracted \
+            --run github-shard-evidence/run.json \
+            --jobs github-shard-evidence/jobs.json \
+            --artifacts github-shard-evidence/artifacts.json \
+            --sha "${GITHUB_SHA}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --workflow "${GITHUB_WORKFLOW}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --attempt "${GITHUB_RUN_ATTEMPT}" \
+            --shard-count 4 \
+            --allow-in-progress-run \
+            --output-json pytest-shard-report.json \
+            --output-markdown pytest-shard-report.md \
+            --combined-junit pytest-shard-combined.xml \
+            --combined-stats pytest-shard-combined-stats.json \
+            --combined-output pytest-shard-combined-output.txt \
+            --combined-exit pytest-shard-combined-exit.txt \
+            --combined-state pytest-shard-combined-state.txt
+      - name: Publish final shard reconciliation report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ubuntu2604-qt-shard-report-a${{ github.run_attempt }}
+          path: |
+            pytest-shard-report.json
+            pytest-shard-report.md
+            pytest-shard-combined.xml
+            pytest-shard-combined-stats.json
+            pytest-shard-combined-output.txt
+            pytest-shard-combined-exit.txt
+            pytest-shard-combined-state.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+  pytest-matrix-report:
+    name: Linux and Ubuntu 26.04 full-suite attribution reports
+    if: always()
+    needs: [test, ubuntu-2604-cp314]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
+      - name: Download this attempt's full-suite evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: pytest-*cp*-a${{ github.run_attempt }}
+          path: pytest-artifacts
+          merge-multiple: false
+      - name: Resolve GitHub job and artifact IDs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?filter=latest&per_page=100" > pytest-jobs.json
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" > pytest-artifacts-api.json
+      - name: Generate identity-checked matrix report
+        if: always()
+        run: |
+          python tools/pytest_matrix.py report \
+            --artifact-root pytest-artifacts \
+            --platform Linux \
+            --expected-sha "${GITHUB_SHA}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --workflow "${GITHUB_WORKFLOW}" \
+            --jobs-json pytest-jobs.json \
+            --artifacts-json pytest-artifacts-api.json \
+            --output-json pytest-matrix-report-linux.json \
+            --output-markdown pytest-matrix-report-linux.md
+      - name: Generate identity-checked Ubuntu 26.04 / CPython 3.14 report
+        if: always()
+        run: |
+          python tools/pytest_matrix.py report \
+            --artifact-root pytest-artifacts \
+            --platform "Ubuntu 26.04" \
+            --versions 3.14 \
+            --expected-sha "${GITHUB_SHA}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --workflow "${GITHUB_WORKFLOW}" \
+            --jobs-json pytest-jobs.json \
+            --artifacts-json pytest-artifacts-api.json \
+            --output-json pytest-matrix-report-ubuntu-2604-cp3.14.json \
+            --output-markdown pytest-matrix-report-ubuntu-2604-cp3.14.md
+      - name: Publish Linux matrix report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-matrix-report-linux-a${{ github.run_attempt }}
+          path: |
+            pytest-matrix-report-linux.json
+            pytest-matrix-report-linux.md
+          if-no-files-found: warn
+      - name: Publish Ubuntu 26.04 / CPython 3.14 matrix report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-matrix-report-ubuntu-2604-cp3.14-a${{ github.run_attempt }}
+          path: |
+            pytest-matrix-report-ubuntu-2604-cp3.14.json
+            pytest-matrix-report-ubuntu-2604-cp3.14.md
+          if-no-files-found: warn
+
+  release-smoke:
+    name: clean install smoke (cp${{ matrix.python-version }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
 
       - name: Install build tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints/development.txt -c constraints/build.txt -e ".[dev]"
 
       # Builds the wheel and the sdist, installs each into a fresh virtualenv outside this
       # checkout, and drives the installed CLI: workspace creation, schema bootstrap with no
@@ -157,16 +740,20 @@ jobs:
         run: python tools/release_smoke.py
 
   workbench:
-    name: workbench (offscreen Qt)
+    name: workbench (offscreen Qt, cp${{ matrix.python-version }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       # Real PySide6 under Xvfb. A missing library or a skipped UI test fails this job.
       # It is not a skip dressed up as a pass, and the headless test job above does not
@@ -186,7 +773,7 @@ jobs:
       - name: Install (editable, with the ui extra)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,ui]"
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
 
       - name: Probe the real Qt platform
         env:
@@ -210,9 +797,118 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         run: python tools/qt_workbench.py
 
+      # The coverage of the Qt layer, measured where Qt is real. The headless test job
+      # above measures everything else. This is a required gate: 70% lines and 40% branches for qt/ui.
+      - name: Measure the coverage of the Qt layer
+        if: matrix.python-version == '3.11'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -o pipefail
+          set +e
+          xvfb-run -a -s "-screen 0 1280x1024x24" \
+            python -m pytest --cov --cov-branch --cov-report=term --cov-report=xml:coverage-ui.xml --junitxml=pytest-ui-junit.xml tests/ui tests/unit/test_qt_termination.py tests/unit/test_qt_termination_edge.py tests/unit/test_qt_lifetime_contract.py tests/unit/test_qt_wait_matrix.py tests/unit/test_qt_workbench_policy.py tests/unit/test_ui_coverage_boost.py tests/unit/test_ui_coverage_boost_extra.py tests/unit/test_ui_coverage_boost_v21.py tests/unit/test_main_window_mocked_coverage.py tests/unit/test_ui_coverage_boost_v22.py tests/unit/test_ui_coverage_boost_v23.py \
+            2>&1 | tee pytest-ui-output.txt
+          status=${PIPESTATUS[0]}
+          echo "$status" > pytest-ui-exit.txt
+          exit "$status"
+
+      - name: Record the Qt layer coverage
+        if: always() && matrix.python-version == '3.11'
+        run: |
+          if [ ! -f coverage-ui.xml ]; then
+            echo "::error::coverage-ui.xml missing — required Qt/UI coverage was not produced"
+            exit 1
+          fi
+          if [ ! -f .coverage ]; then
+            echo "::error::.coverage missing — coverage data was not produced"
+            exit 1
+          fi
+          total=$(python -m coverage report --format=total)
+          echo "::notice::coverage-ui-total: ${total}%"
+          {
+            echo "### Coverage of the Qt layer"
+            echo ""
+            echo "Line and branch coverage of the UI tests, CPython 3.11: ${total}%"
+            echo "This number is the whole-source coverage *during* the UI run, not the UI package alone."
+            echo ""
+            python -m coverage report
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f coverage-ui.xml ]; then
+            python tools/coverage_report.py --xml coverage-ui.xml --scope ui-test-selection --test-selection "tests/ui + tests/unit/test_qt_termination.py + tests/unit/test_qt_termination_edge.py + tests/unit/test_qt_lifetime_contract.py + tests/unit/test_qt_wait_matrix.py + tests/unit/test_qt_workbench_policy.py + tests/unit/test_ui_coverage_boost.py + tests/unit/test_ui_coverage_boost_extra.py + tests/unit/test_ui_coverage_boost_v21.py + tests/unit/test_main_window_mocked_coverage.py + tests/unit/test_ui_coverage_boost_v22.py + tests/unit/test_ui_coverage_boost_v23.py (Qt offscreen)" \
+              --output coverage-ui-report.md --json coverage-ui-view.json \
+              --label "CI ui (cp3.11), ${{ github.sha }}" | tee coverage-ui-report.txt
+            {
+              echo ""
+              sed -n '/^## By package group/,$p' coverage-ui-report.md
+            } >> "$GITHUB_STEP_SUMMARY"
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          view = json.loads(Path("coverage-ui-view.json").read_text(encoding="utf-8"))
+          ui = view["groups"].get("qt/ui", {})
+          overall = view["overall"]
+          print()
+          print("### UI package vs whole-source during the UI run")
+          print()
+          # overall may be None for not measured, handle
+          overall_line = overall.get('line_percent')
+          overall_branch = overall.get('branch_percent')
+          ui_line = ui.get('line_percent')
+          ui_branch = ui.get('branch_percent')
+          print(f"- whole-source during UI run: {overall_line if overall_line is not None else '—'}% lines, {overall_branch if overall_branch is not None else '—'}% branches")
+          print(f"- `qt/ui` package alone: {ui_line if ui_line is not None else '—'}% lines, {ui_branch if ui_branch is not None else '—'}% branches ({ui.get('files', 0)} files)")
+          print(f"- `qt/ui` statements: {ui.get('covered_statements', 0)}/{ui.get('statements', 0)}")
+          print(f"- `qt/ui` branches: {ui.get('covered_branches', 0)}/{ui.get('branches', 0)}")
+          print(f"- platform: {view.get('platform', 'unknown')} — Python: {view.get('python_version', 'unknown')} — Coverage: {view.get('coverage_version', 'unknown')}")
+          print(f"- fingerprint: {view.get('test_selection_fingerprint', '')}")
+          PY
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          view = json.loads(Path("coverage-ui-view.json").read_text(encoding="utf-8"))
+          ui = view["groups"].get("qt/ui", {})
+          print(f"::notice::coverage-ui-package: {ui.get('line_percent', 0) if ui.get('line_percent') is not None else '—'}% lines, {ui.get('branch_percent', 0) if ui.get('branch_percent') is not None else '—'}% branches (qt/ui package, UI run)")
+          print(f"::notice::coverage-ui-package-statements: {ui.get('covered_statements', 0)}/{ui.get('statements', 0)} (qt/ui)")
+          print(f"::notice::coverage-ui-package-branches: {ui.get('covered_branches', 0)}/{ui.get('branches', 0)} (qt/ui)")
+          print(f"::notice::coverage-scope: {view.get('measurement_scope')} -- {view.get('test_selection')}")
+          PY
+          fi
+
+      - name: Qt/UI coverage gate (70% lines, 40% branches)
+        if: always() && matrix.python-version == '3.11'
+        run: |
+          set -euo pipefail
+          python tools/qt_coverage_gate.py --xml coverage-ui.xml --view coverage-ui-view.json --junit pytest-ui-junit.xml --expected-sha "${{ github.sha }}"
+
+
+      - name: Publish the Qt layer coverage
+        if: always() && matrix.python-version == '3.11'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-ui-cp3.11
+          path: |
+            coverage-ui.xml
+            coverage-ui-report.md
+            coverage-ui-view.json
+            coverage-ui-report.txt
+            pytest-ui-output.txt
+            pytest-ui-exit.txt
+            pytest-ui-junit.xml
+          if-no-files-found: error
+
       # Qualification, not a silent rerun. Each iteration is independent. A
       # failed iteration fails the job even if a later one passes.
+      # V8.27: must run even after coverage gate failure so evidence is
+      # produced and the verifier does not misreport "missing evidence" as
+      # though the producer had run. The job still fails due to the gate.
       - name: Qt stability qualification
+        if: always()
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           QT_OPENGL: software
@@ -221,6 +917,22 @@ jobs:
           PYTHONUNBUFFERED: "1"
           PYTHONFAULTHANDLER: "1"
         run: python tools/qt_stability.py --repeats 15
+
+      # The fail-closed shutdown is the one path that has faulted natively on
+      # Windows. The same experiment runs here so the two platforms are
+      # compared on the same contract, and every attempt is reported.
+      - name: Fail-closed shutdown stress
+        if: always()
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          QT_OPENGL: software
+          QT_QPA_PLATFORM: offscreen
+          QT_X11_NO_MITSHM: "1"
+          PYTHONUNBUFFERED: "1"
+          PYTHONFAULTHANDLER: "1"
+        # --gate: on Linux the native access violation cannot occur, so any failure
+        # here is a contract violation and must fail the job.
+        run: python tools/qt_shutdown_stress.py --attempts 10 --log-dir qt-logs/shutdown-stress --gate
 
       # Hash the logs that exist. A mismatch, a missing attempt, or an abort
       # signature inside a successful record fails the job. The checksum is not
@@ -233,9 +945,9 @@ jobs:
       # waive a failed upload or a missing log directory.
       - name: Publish Qt attempt logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qt-workbench-logs
+          name: qt-workbench-logs-cp${{ matrix.python-version }}
           path: qt-logs/
           if-no-files-found: error
 
@@ -246,11 +958,11 @@ jobs:
     # until a runner executes it; this job is 3.11.
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
@@ -269,7 +981,7 @@ jobs:
       - name: Install (editable, with the ui extra)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,ui]"
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
 
       - name: Probe the real Qt platform
         env:
@@ -327,7 +1039,7 @@ jobs:
 
       - name: Publish Ubuntu 26.04 Qt evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: qt-ubuntu-2604-logs
           path: qt-logs/

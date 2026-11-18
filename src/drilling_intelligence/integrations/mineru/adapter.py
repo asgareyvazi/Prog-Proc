@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...__init__ import EXTRACTION_ENGINE_VERSION
+from ... import EXTRACTION_ENGINE_VERSION
 from ...core.errors import ExtractionError, ParserUnavailableError
 from ...core.logging import get_logger
+from ...core.redact import safe_detail
 from ...extraction.interfaces import DocumentComplexity, ExtractionContext, ProvenanceBuilder
 from ...extraction.normalized import NormalizedDocument, clean_text
 from .client import MinerUClient
@@ -25,6 +26,39 @@ from .normalize import (
 )
 
 log = get_logger("integrations.mineru.adapter")
+
+
+def _safe_run_text(value: str, run: Any, context: ExtractionContext) -> str:
+    text = str(value or "")
+    paths = ((context.path, "<document>"), (run.output_dir, "<temporary-output>"))
+    for path, replacement in paths:
+        if path is None:
+            continue
+        candidates = {str(path), path.as_posix()}
+        for candidate in candidates:
+            if candidate:
+                text = text.replace(candidate, replacement)
+    return safe_detail(text)
+
+
+def _command_summary(run: Any, client: MinerUClient) -> str:
+    """Redact source/scratch paths from MinerU command/error metadata.
+
+    Generic ``NormalizedDocument.metadata.path`` remains product provenance and is separate from
+    these sanitized MinerU-specific command and error fields.
+    """
+    if run.mode != "cli":
+        return "HTTP multipart/JSON parse"
+    if "--format" in run.command:
+        return (
+            "mineru-kit parse <document> --output <temporary-output> "
+            f"--format middle_json --tier {client.tier}"
+        )
+    if "-o" in run.command:
+        return (
+            f"mineru -p <document> -o <temporary-output> -b {client.backend} -l {client.language}"
+        )
+    return "MinerU CLI (command details omitted)"
 
 
 class MinerUExtractor:
@@ -78,61 +112,97 @@ class MinerUExtractor:
                 hint="install MinerU separately, or set [mineru].mode = 'disabled' to silence the fallback",
             )
         try:
-            run = self.client.parse(context.path, filename_hint=context.filename)
+            run = self.client.parse(
+                context.path,
+                filename_hint=context.filename,
+                selected_mode=status.mode,
+                contract_verified=status.mode == "http",
+            )
         except ParserUnavailableError:
             raise
         except Exception as exc:
-            raise ExtractionError(f"MinerU run failed: {type(exc).__name__}: {exc}") from exc
-        artefacts = run.artefacts
-        if not run.ok or artefacts is None:
-            raise ExtractionError(
-                f"MinerU returned no usable output: {run.error or 'unknown error'}", mode=run.mode
-            )
-        if (
-            not artefacts.middle
-            and not artefacts.content_list
-            and not (artefacts.markdown or "").strip()
-        ):
-            # A well-formed envelope carrying no content is not a successful extraction.  The HTTP
-            # transport accepts any ``results`` entry that is a dict, so a response like
-            # ``{"results": {"report.pdf": {}}}`` used to fall through to ``normalize_markdown("")``
-            # and return a document with no text and no sections - while the diagnostics claimed
-            # "MinerU markdown used", a provenance mode that never happened.  For a product whose
-            # value is knowing where a fact came from, registering an empty document as a parsed
-            # one is silent data loss, so it is refused here, at the external boundary, rather
-            # than left for a reviewer to notice a well with no content.
-            raise ExtractionError(
-                "MinerU returned a well-formed response containing no middle.json, content_list "
-                "or markdown; refusing to record an empty document as an extraction",
-                mode=run.mode,
-            )
+            detail = safe_detail(f"{type(exc).__name__}: {exc}")
+            raise ExtractionError(f"MinerU run failed: {detail}") from exc
+        document: NormalizedDocument | None = None
+        try:
+            artefacts = run.artefacts
+            if not run.ok or artefacts is None:
+                raise ExtractionError(
+                    f"MinerU returned no usable output: {run.error or 'unknown error'}",
+                    mode=run.mode,
+                )
+            if (
+                not artefacts.middle
+                and not artefacts.content_list
+                and not (artefacts.markdown or "").strip()
+            ):
+                raise ExtractionError(
+                    "MinerU returned a well-formed response containing no middle.json, content_list "
+                    "or markdown; refusing to record an empty document as an extraction",
+                    mode=run.mode,
+                )
 
-        document, diagnostics = self._normalize(artefacts, context)
-        document.metadata.engine = (document.metadata.engine or "") or f"MinerU via {run.mode}"
-        document.metadata.extra["mineru"] = {
-            "mode": run.mode,
-            "duration_ms": round(run.duration_ms, 1),
-            "artefact": artefacts.best,
-            "command": " ".join(run.command),
-            "stderr_tail": (run.stderr or "")[-600:],
-            "version": status.version,
-        }
-        document.metadata.extra["provenance_source"] = artefacts.best
-        document.diagnostics.extend(diagnostics)
-        document.diagnostics.append(
-            f"extracted by MinerU ({run.mode}, artefact={artefacts.best}) in {run.duration_ms / 1000:.1f}s"
-        )
-        if run.returncode != 0:
-            # The adapter's contract is to report its own limitations in diagnostics so a reviewer
-            # can see what kind of extraction produced a fact.  Output accepted from a run that
-            # exited non-zero is exactly such a limitation.
+            document, diagnostics = self._normalize(artefacts, context)
+            if not document.text.strip() and not document.tables and not document.figures:
+                raise ExtractionError(
+                    "MinerU output contained no normalized text, tables, or figures; "
+                    "refusing to record an empty document",
+                    mode=run.mode,
+                )
+            document.metadata.engine = (document.metadata.engine or "") or f"MinerU via {run.mode}"
+            document.metadata.extra["mineru"] = {
+                "mode": run.mode,
+                "model_source": self.client.model_source,
+                "duration_ms": round(run.duration_ms, 1),
+                "artefact": artefacts.best,
+                "command": _command_summary(run, self.client),
+                "stderr_tail": _safe_run_text(run.stderr, run, context)[-600:],
+                "version": status.version,
+                "returncode": run.returncode,
+                "partial": run.partial,
+                "timed_out": run.timed_out,
+                "error": _safe_run_text(run.error, run, context),
+                "scratch_cleanup": "pending" if run.output_dir else "not_applicable",
+            }
+            document.metadata.extra["provenance_source"] = artefacts.best
+            document.diagnostics.extend(diagnostics)
             document.diagnostics.append(
-                f"MinerU exited with code {run.returncode}; output was used but may be incomplete"
+                f"extracted by MinerU ({run.mode}, artefact={artefacts.best}) in {run.duration_ms / 1000:.1f}s"
             )
-        if artefacts.layout_pdf and artefacts.layout_pdf.exists():
-            document.metadata.extra["mineru"]["layout_pdf"] = str(artefacts.layout_pdf)
-        run.cleanup()
-        return document
+            if run.returncode != 0:
+                document.diagnostics.append(
+                    f"MinerU exited with code {run.returncode}; output was used but may be incomplete"
+                )
+            if run.partial:
+                document.diagnostics.append(
+                    "MinerU produced usable output but exited abnormally; this extraction is partial "
+                    "and must not be read as a complete parse"
+                )
+            return document
+        finally:
+            # Scratch is always transient. The cleanup status is recorded without persisting a path.
+            had_scratch = run.output_dir is not None
+            cleaned = run.cleanup()
+            if document is not None:
+                mineru_meta = document.metadata.extra.get("mineru")
+                if isinstance(mineru_meta, dict):
+                    mineru_meta["scratch_cleanup"] = (
+                        (
+                            "removed"
+                            if had_scratch and cleaned and run.output_dir is None
+                            else "not_applicable"
+                        )
+                        if cleaned
+                        else "failed"
+                    )
+                    if run.cleanup_error:
+                        mineru_meta["scratch_cleanup_error"] = _safe_run_text(
+                            run.cleanup_error, run, context
+                        )
+                if not cleaned:
+                    document.diagnostics.append(
+                        "MinerU temporary output cleanup failed; transient parser files may remain"
+                    )
 
     # -- internals ----------------------------------------------------------
     def _normalize(

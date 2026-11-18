@@ -1,29 +1,21 @@
-"""MinerU client: run the parser as an external process or service.
+"""MinerU client: run the parser as an external process or legacy JSON service.
 
-Two transports, chosen by configuration and by what discovery found:
+MinerU 4 is invoked through ``mineru-kit parse`` and writes the versioned
+``docvortex.middle`` JSON contract. Older separately managed CLI builds retain
+their ``-p/-o/-b/-l`` invocation. HTTP mode deliberately accepts only the
+legacy multipart + JSON parse endpoint verified through OpenAPI; current
+attachment/ZIP APIs are rejected rather than reinterpreted as JSON.
 
-``cli``
-    ``mineru -p <file> -o <outdir> -b <backend> -l <lang>`` in a temporary
-    output directory.  Works with a per-machine MinerU install (its own venv),
-    which is the recommended deployment for offline desktop use.
-
-``http``
-    ``POST {endpoint}/file_parse`` with the file and the same options, reading
-    ``md_content`` / ``middle_json`` / ``content_list`` from the response.  This
-    is what a shared GPU host or ``mineru-router`` deployment exposes.
-
-Why a process boundary rather than ``import mineru``:
-MinerU pins its own dependency stack (models, torch, its own Python range:
-PyPI metadata for 3.4.x requires ``<3.14``) and its licence is Apache-2.0 with
-additional conditions.  Keeping it outside the application keeps our runtime,
-our licence and our upgrade schedule independent, and keeps a segfault in an OCR
-stack from taking down a desktop session with unsaved review state.
+MinerU stays in a separate environment/process so its heavy, version-specific
+runtime and license terms do not enter the application installation, and an OCR
+process failure cannot take down a desktop session with unsaved review state.
 """
 
 from __future__ import annotations
 
 import shutil
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,10 +24,39 @@ from typing import Any
 from ...core.errors import ExtractionError, IntegrationUnavailableError
 from ...core.hashing import short_hash
 from ...core.logging import get_logger
+from ...core.redact import safe_detail
 from ..base import http_json, run_command
+from .cli import is_mineru_kit, resolve_cli_binary
+from .discovery import MinerUProber, http_endpoint_problem, legacy_http_parse_contract
 from .normalize import MinerURawOutput
 
 log = get_logger("integrations.mineru.client")
+_OWNER_MARKER = ".drillintel-mineru-owner"
+
+
+def _redact_paths(value: str, source: Path, scratch: Path) -> str:
+    text = str(value or "")
+    for path, replacement in ((source, "<document>"), (scratch, "<temporary-output>")):
+        for candidate in {str(path), path.as_posix()}:
+            if candidate:
+                text = text.replace(candidate, replacement)
+    return text
+
+
+def _safe_command(command: list[str], source: Path, scratch: Path) -> list[str]:
+    safe: list[str] = []
+    source_paths = {str(source), source.as_posix()}
+    scratch_paths = {str(scratch), scratch.as_posix()}
+    for index, argument in enumerate(command):
+        if index == 0:
+            safe.append(Path(argument).name)
+        elif argument in source_paths:
+            safe.append("<document>")
+        elif any(path and path in argument for path in scratch_paths):
+            safe.append("<temporary-output>")
+        else:
+            safe.append(argument)
+    return safe
 
 
 @dataclass
@@ -48,142 +69,245 @@ class MinerURun:
     stdout: str = ""
     stderr: str = ""
     duration_ms: float = 0.0
-    #: The external process's exit status.  Part of the audited record because a run can be
-    #: accepted *and* have exited non-zero (see ``_parse_cli``), and "we used the output anyway"
-    #: has to be recoverable from the record rather than only from a stderr tail.
     returncode: int = 0
     command: list[str] = field(default_factory=list)
     output_dir: Path | None = None
     error: str = ""
-    #: Keep artefacts for debugging when this is set (config: keep_artifacts).
-    keep: bool = False
+    timed_out: bool = False
+    cleanup_error: str = ""
+    ownership_marker_value: str = ""
 
-    def cleanup(self) -> None:
-        if self.keep or self.output_dir is None:
-            return
-        shutil.rmtree(self.output_dir, ignore_errors=True)
+    @property
+    def partial(self) -> bool:
+        return self.ok and self.returncode != 0
+
+    def cleanup(self) -> bool:
+        """Remove only the unique temporary run directory owned by this result.
+
+        Return False (and retain an auditable error) if the directory no longer
+        has its expected temp-root/prefix shape or the OS refuses removal. Never
+        follow a replaced symlink and never recursively delete an arbitrary path.
+        """
+        path = self.output_dir
+        if path is None:
+            return True
+        if not path.exists() and not path.is_symlink():
+            self.output_dir = None
+            self.ownership_marker_value = ""
+            return True
+        try:
+            candidate = path.absolute()
+            temp_root = Path(tempfile.gettempdir()).absolute()
+            if candidate.parent != temp_root or not candidate.name.startswith("mineru-"):
+                raise OSError("MinerU scratch path failed ownership checks")
+            if path.is_symlink() or not path.is_dir():
+                raise OSError("MinerU scratch path is not a real directory")
+            marker = path / _OWNER_MARKER
+            if marker.is_symlink() or not marker.is_file():
+                raise OSError("MinerU scratch ownership marker is missing or unsafe")
+            if (
+                not self.ownership_marker_value
+                or marker.read_text(encoding="ascii") != self.ownership_marker_value
+            ):
+                raise OSError("MinerU scratch ownership marker does not match this run")
+            shutil.rmtree(candidate)
+            self.output_dir = None
+            self.ownership_marker_value = ""
+            return True
+        except (OSError, UnicodeError) as exc:
+            detail = str(exc)
+            for candidate in {str(path), path.as_posix()}:
+                if candidate:
+                    detail = detail.replace(candidate, "<temporary-output>")
+            self.cleanup_error = safe_detail(f"{type(exc).__name__}: {detail}")
+            log.warning(
+                "MinerU scratch directory cleanup failed",
+                extra={"event": "mineru.cleanup_failed", "error": self.cleanup_error},
+            )
+            return False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
             "mode": self.mode,
+            "status": "partial" if self.partial else ("ok" if self.ok else "failed"),
             "duration_ms": round(self.duration_ms, 1),
             "command": " ".join(self.command) if self.command else "",
             "artefact": self.artefacts.best if self.artefacts else "",
             "returncode": self.returncode,
+            "timed_out": self.timed_out,
             "error": self.error,
+            "cleanup_error": self.cleanup_error,
         }
 
 
 class MinerUClient:
-    """Thin, explicit client for MinerU.  No silent retries, no magic."""
+    """Thin, explicit client. Transport selection is made once and then pinned."""
 
     def __init__(self, settings: Any) -> None:
+        self.settings = settings
         mineru = getattr(settings, "mineru", None)
         self.mode = str(getattr(mineru, "mode", "auto") or "auto").lower()
         self.binary = str(getattr(mineru, "binary", "mineru") or "mineru")
         self.backend = str(getattr(mineru, "backend", "pipeline") or "pipeline")
+        self.tier = str(getattr(mineru, "tier", "basic") or "basic").lower()
+        self.model_source = str(getattr(mineru, "model_source", "local") or "local").lower()
         self.endpoint = str(getattr(mineru, "endpoint", "") or "").rstrip("/")
         self.timeout = float(getattr(mineru, "timeout_seconds", 900.0) or 900.0)
         self.extra_env: dict[str, str] = dict(getattr(mineru, "env", {}) or {})
+        self.extra_env["MINERU_MODEL_SOURCE"] = self.model_source
         self.parse_path = str(getattr(mineru, "http_parse_path", "/file_parse") or "/file_parse")
         self.language = str(getattr(mineru, "language", "en") or "en")
-        self.keep_artifacts = bool(getattr(mineru, "keep_artifacts", False))
 
-    # -- public -------------------------------------------------------------
-    def parse(self, source: Path, *, filename_hint: str = "") -> MinerURun:
+    def parse(
+        self,
+        source: Path,
+        *,
+        filename_hint: str = "",
+        selected_mode: str | None = None,
+        contract_verified: bool = False,
+    ) -> MinerURun:
+        """Parse using a pinned transport; no retry or fallback after selection.
+
+        Adapters pass the cached prober's selected mode so a compatible CLI
+        avoids any second probe and an HTTP selection does not re-read OpenAPI.
+        Direct auto-mode callers use the same prober once, which short-circuits
+        after finding a compatible CLI.
+        """
         if self.mode in ("disabled", "off", "none"):
             raise IntegrationUnavailableError("MinerU", "disabled in configuration")
-        mode = self.mode
-        if mode == "auto":
-            # Prefer HTTP when an endpoint answers, else CLI.  The prober has the
-            # authoritative view; here we only pick the transport.
-            mode = (
-                "http"
-                if (
-                    self.endpoint
-                    and http_json("GET", self.endpoint + "/docs", timeout=3.0).get("ok")
-                )
-                else "cli"
+        mode = (selected_mode or "").strip().lower()
+        if not mode:
+            if self.mode in {"cli", "http"}:
+                mode = self.mode
+            elif self.mode == "auto":
+                status = MinerUProber(self.settings).status()
+                if not status.available or status.mode not in {"cli", "http"}:
+                    raise IntegrationUnavailableError(
+                        "MinerU", status.reason or "no compatible runtime"
+                    )
+                mode = status.mode
+                contract_verified = mode == "http"
+            else:
+                raise IntegrationUnavailableError("MinerU", f"unsupported mode {self.mode!r}")
+        if self.mode in {"cli", "http"} and mode != self.mode:
+            raise IntegrationUnavailableError(
+                "MinerU",
+                f"selected transport {mode!r} conflicts with explicitly configured mode {self.mode!r}",
             )
         if mode == "http":
             if not self.endpoint:
                 raise IntegrationUnavailableError(
                     "MinerU", "[mineru].endpoint is required for http mode"
                 )
+            endpoint_problem = http_endpoint_problem(self.endpoint)
+            if endpoint_problem:
+                raise IntegrationUnavailableError("MinerU", endpoint_problem)
+            if not contract_verified:
+                compatible, reason, _version = legacy_http_parse_contract(
+                    self.endpoint, self.parse_path
+                )
+                if not compatible:
+                    raise IntegrationUnavailableError(
+                        "MinerU",
+                        f"HTTP service does not implement the supported JSON contract: {reason}",
+                    )
             return self._parse_http(Path(source))
+        if mode != "cli":
+            raise IntegrationUnavailableError("MinerU", f"unsupported selected transport {mode!r}")
         return self._parse_cli(Path(source), filename_hint)
 
-    # -- transports ---------------------------------------------------------
     def _parse_cli(self, source: Path, filename_hint: str = "") -> MinerURun:
-        if not shutil.which(self.binary) and not Path(self.binary).expanduser().exists():
-            raise IntegrationUnavailableError(
-                "MinerU", f"executable {self.binary!r} not found on PATH"
-            )
+        binary = resolve_cli_binary(self.binary)
+        if not shutil.which(binary) and not Path(binary).expanduser().exists():
+            raise IntegrationUnavailableError("MinerU", f"executable {binary!r} not found on PATH")
+        kit_cli = is_mineru_kit(binary)
         workdir = Path(tempfile.mkdtemp(prefix=f"mineru-{short_hash(uuid.uuid4().hex, 8)}-"))
-        outdir = workdir / "out"
-        outdir.mkdir(parents=True, exist_ok=True)
-        command = [
-            self.binary or "mineru",
-            "-p",
-            str(source),
-            "-o",
-            str(outdir),
-            "-b",
-            self.backend,
-            "-l",
-            self.language,
-        ]
-        run = run_command(command, timeout=self.timeout, cwd=workdir, env=self.extra_env)
-        duration = float(run.get("duration_ms") or 0.0)
-        # Not `run.get("returncode", -1) or -1`: 0 is falsy, so that turned a *successful* exit
-        # into -1.  Every clean run was therefore recorded as a failure, the `code == 0` branch
-        # below could never be taken, and acceptance rested entirely on artefact discovery.
-        raw_code = run.get("returncode", -1)
-        code = -1 if raw_code is None else int(raw_code)
-        stdout = str(run.get("stdout") or "")
-        stderr = str(run.get("stderr") or "")
-        artefacts: MinerURawOutput | None = None
-        error = ""
-        ok = False
-        if code == 0 or any(outdir.rglob("*.json")) or any(outdir.rglob("*.md")):
-            try:
-                # One discovery implementation, shared with the adapter path.
-                from .normalize import load_mineru_outputs
+        ownership_marker_value = uuid.uuid4().hex
+        try:
+            (workdir / _OWNER_MARKER).write_text(ownership_marker_value, encoding="ascii")
+            outdir = workdir / "out"
+            outdir.mkdir(parents=True, exist_ok=True)
+            if kit_cli:
+                output_file = outdir / f"{source.stem or filename_hint or 'document'}_middle.json"
+                command = [
+                    binary,
+                    "parse",
+                    str(source),
+                    "--output",
+                    str(output_file),
+                    "--format",
+                    "middle_json",
+                    "--tier",
+                    self.tier,
+                ]
+            else:
+                command = [
+                    binary,
+                    "-p",
+                    str(source),
+                    "-o",
+                    str(outdir),
+                    "-b",
+                    self.backend,
+                    "-l",
+                    self.language,
+                ]
+            process = run_command(command, timeout=self.timeout, cwd=workdir, env=self.extra_env)
+            raw_code = process.get("returncode", -1)
+            code = -1 if raw_code is None else int(raw_code)
+            stdout = str(process.get("stdout") or "")
+            stderr = str(process.get("stderr") or "")
+            duration = float(process.get("duration_ms") or 0.0)
+            timed_out = bool(process.get("timeout"))
+            artefacts: MinerURawOutput | None = None
+            error = ""
+            ok = False
+            if code == 0 or any(outdir.rglob("*.json")) or any(outdir.rglob("*.md")):
+                try:
+                    from .normalize import load_mineru_outputs
 
-                artefacts = load_mineru_outputs(outdir, source.stem or filename_hint)
-                ok = True
-            except ExtractionError as exc:
-                error = str(exc)
-        if not ok and not error:
-            error = (
-                f"mineru exited with code {code}: {stderr.strip()[:400] or stdout.strip()[:400]}"
+                    artefacts = load_mineru_outputs(outdir, source.stem or filename_hint)
+                    ok = True
+                except (ExtractionError, OSError) as exc:
+                    error = str(exc)
+            if not ok and not error:
+                reason = stderr.strip()[:400] or stdout.strip()[:400]
+                error = f"mineru exited with code {code}: {reason}"
+            elif ok and code != 0:
+                state = (
+                    f"timed out after {self.timeout:g}s"
+                    if timed_out
+                    else f"exited with code {code}"
+                )
+                error = (
+                    f"mineru {state} but wrote usable output; the extraction may be incomplete: "
+                    f"{stderr.strip()[:300]}"
+                )
+            return MinerURun(
+                ok=ok,
+                returncode=code,
+                mode="cli",
+                artefacts=artefacts,
+                stdout=stdout[-4000:],
+                stderr=safe_detail(_redact_paths(stderr[-4000:], source, workdir)),
+                duration_ms=duration,
+                command=_safe_command(command, source, workdir),
+                output_dir=workdir,
+                error=safe_detail(_redact_paths(error, source, workdir)),
+                ownership_marker_value=ownership_marker_value,
+                timed_out=timed_out,
             )
-        elif ok and code != 0:
-            # Tolerating a non-zero exit when usable artefacts were written is deliberate: MinerU
-            # builds do exit non-zero after producing valid output.  What was *not* acceptable is
-            # doing it silently - the run reported ok with an empty error, so a document parsed
-            # from a crash part-way through (say page 1 of 9) was indistinguishable in the record
-            # from a clean full parse.  The tolerance stays; the silence goes.
-            error = (
-                f"mineru exited with code {code} but wrote usable output; "
-                f"the extraction may be incomplete: {stderr.strip()[:300]}"
+        except Exception:
+            # No run object exists yet, so retain no scratch if command construction or discovery fails.
+            scratch = MinerURun(
+                ok=False,
+                mode="cli",
+                output_dir=workdir,
+                ownership_marker_value=ownership_marker_value,
             )
-        return MinerURun(
-            ok=ok,
-            returncode=code,
-            mode="cli",
-            artefacts=artefacts,
-            stdout=stdout[-4000:],
-            stderr=stderr[-4000:],
-            duration_ms=duration,
-            command=command,
-            output_dir=artefacts.directory
-            if (artefacts and self.keep_artifacts)
-            else (outdir if self.keep_artifacts else None),
-            error=error,
-            keep=self.keep_artifacts,
-        )
+            scratch.cleanup()
+            raise
 
     def _parse_http(self, source: Path) -> MinerURun:
         url = self.endpoint + self.parse_path
@@ -194,30 +318,78 @@ class MinerUClient:
             "return_middle_json": "true",
             "return_content_list": "true",
         }
-        with source.open("rb") as handle:
-            response = http_json(
-                "POST",
-                url,
-                files={"files": (source.name, handle, "application/pdf")},
-                data=data,
-                timeout=self.timeout,
-            )
-        payload = response.get("json") or {}
-        if not response.get("ok"):
+        started = time.perf_counter()
+        try:
+            with source.open("rb") as handle:
+                response = http_json(
+                    "POST",
+                    url,
+                    files={"files": (source.name, handle, "application/pdf")},
+                    data=data,
+                    timeout=self.timeout,
+                    follow_redirects=False,
+                )
+        except OSError as exc:
             raise IntegrationUnavailableError(
-                "MinerU", f"HTTP {response.get('status_code')}: {str(response.get('error'))[:200]}"
+                "MinerU", f"could not read the source document ({type(exc).__name__})"
+            ) from exc
+        duration_ms = (time.perf_counter() - started) * 1000
+        status_code = response.get("status_code")
+        if (
+            not response.get("ok")
+            or not isinstance(status_code, int)
+            or not 200 <= status_code < 300
+        ):
+            raise IntegrationUnavailableError(
+                "MinerU", f"HTTP {status_code}: response details omitted"
             )
-        results = payload.get("results") if isinstance(payload, dict) else None
+        content_type = str(response.get("content_type") or "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json" and not content_type.endswith("+json"):
+            raise IntegrationUnavailableError(
+                "MinerU",
+                f"HTTP parse returned unsupported content type {content_type!r}; JSON required",
+            )
+        payload = response.get("json")
+        if not isinstance(payload, dict):
+            raise IntegrationUnavailableError("MinerU", "HTTP parse response is not a JSON object")
+        results = payload.get("results")
         if not isinstance(results, dict) or not results:
             raise IntegrationUnavailableError(
-                "MinerU", f"unexpected /file_parse response: {str(payload)[:200]}"
+                "MinerU", "HTTP parse response has no non-empty 'results' object"
             )
-        entry = next(iter(results.values()))
+        if set(results) != {source.name}:
+            raise IntegrationUnavailableError(
+                "MinerU",
+                "HTTP parse response is ambiguous or does not match the uploaded filename",
+            )
+        entry = results[source.name]
         if not isinstance(entry, dict):
-            raise IntegrationUnavailableError("MinerU", "malformed result entry")
-        middle = _maybe_json(entry.get("middle_json"))
-        content_list = _maybe_json(entry.get("content_list") or entry.get("content_list_json"))
-        markdown = str(entry.get("md_content") or entry.get("markdown") or "")
+            raise IntegrationUnavailableError(
+                "MinerU", f"HTTP parse response has no result object for {source.name!r}"
+            )
+
+        middle_value = entry.get("middle_json")
+        content_value = entry.get("content_list")
+        if content_value is None:
+            content_value = entry.get("content_list_json")
+        middle = _maybe_json(middle_value)
+        content_list = _maybe_json(content_value)
+        markdown_value = entry.get("md_content")
+        if markdown_value is None:
+            markdown_value = entry.get("markdown")
+        if markdown_value is not None and not isinstance(markdown_value, str):
+            raise IntegrationUnavailableError("MinerU", "HTTP markdown result must be a string")
+        if middle_value is not None and not isinstance(middle, dict):
+            raise IntegrationUnavailableError("MinerU", "HTTP middle_json result is malformed")
+        if content_value is not None and not isinstance(content_list, list):
+            raise IntegrationUnavailableError(
+                "MinerU", "HTTP content_list result must be a JSON array"
+            )
+        markdown = markdown_value or ""
+        if not middle and not content_list and not markdown.strip():
+            raise IntegrationUnavailableError(
+                "MinerU", "HTTP result contains no readable middle.json, content_list or markdown"
+            )
         artefacts = MinerURawOutput(
             middle=middle if isinstance(middle, dict) else None,
             content_list=content_list,
@@ -227,8 +399,7 @@ class MinerUClient:
             ok=True,
             mode="http",
             artefacts=artefacts,
-            duration_ms=float(response.get("duration_ms") or 0.0),
-            error="",
+            duration_ms=duration_ms,
         )
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
@@ -15,24 +14,131 @@ from ..core.errors import (
     ProviderUnavailableError,
     ValidationError,
 )
-from ..core.redact import safe_detail
 from ..database.integrity import KnowledgeIntegrityError
 from ..review import ReviewActionRequest
 from .controller import ReviewController
+from .errors import WorkerError
 
 
-@dataclass(frozen=True)
-class WorkerError:
-    """Structured UI error without exposing a traceback to the operator."""
+class IntakeWorker(QObject):
+    """Run one bounded intake queue operation outside the GUI event loop."""
 
-    category: str
-    message: str
-    hint: str = ""
-    exception_type: str = ""
+    succeeded = Signal(str, object)
+    failed = Signal(str, object)
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "message", " ".join(safe_detail(self.message).split()))
-        object.__setattr__(self, "hint", " ".join(safe_detail(self.hint).split()))
+    def __init__(
+        self, controller: ReviewController, operation: str, payload: dict[str, Any]
+    ) -> None:
+        super().__init__()
+        self._controller = controller
+        self._operation = operation
+        self._payload = payload
+
+    @Slot()
+    def run(self) -> None:
+        if QThread.currentThread().isInterruptionRequested():
+            self.failed.emit(
+                self._operation,
+                WorkerError("cancelled", "Intake operation cancelled before start."),
+            )
+            return
+        try:
+            if self._operation == "list":
+                result = self._controller.intake_items(status=self._payload.get("status", ""))
+            elif self._operation == "enqueue":
+                result = self._controller.enqueue_intake(
+                    self._payload["paths"], actor=self._payload["actor"]
+                )
+            elif self._operation == "preview":
+                result = self._controller.preview_intake(self._payload["item_id"])
+            elif self._operation == "decide":
+                result = self._controller.decide_intake(
+                    self._payload["item_id"],
+                    decision=self._payload["decision"],
+                    actor=self._payload["actor"],
+                    reason=self._payload["reason"],
+                )
+            elif self._operation == "register":
+                result = self._controller.register_intake(
+                    self._payload["item_id"],
+                    actor=self._payload["actor"],
+                    reason=self._payload["reason"],
+                    well_id=self._payload.get("well_id", ""),
+                )
+            else:
+                raise ValueError(f"unknown intake operation: {self._operation}")
+        except Exception as exc:  # noqa: BLE001 - thread boundary reports failures without hiding them
+            self.failed.emit(
+                self._operation,
+                WorkerError(
+                    "intake",
+                    str(exc),
+                    "Check the source and workspace; no result was accepted.",
+                    type(exc).__name__,
+                ),
+            )
+            return
+        self.succeeded.emit(self._operation, result)
+
+
+class DdrWorker(QObject):
+    """Run one DDR authoring command in a worker, returning plain domain values."""
+
+    succeeded = Signal(str, object)
+    failed = Signal(str, object)
+
+    def __init__(
+        self, controller: ReviewController, operation: str, payload: dict[str, Any]
+    ) -> None:
+        super().__init__()
+        self._controller = controller
+        self._operation = operation
+        self._payload = payload
+
+    @Slot()
+    def run(self) -> None:
+        if QThread.currentThread().isInterruptionRequested():
+            self.failed.emit(
+                self._operation,
+                WorkerError("cancelled", "DDR operation cancelled before start."),
+            )
+            return
+        try:
+            if self._operation == "list":
+                result = self._controller.ddr_reports(
+                    self._payload["well_id"],
+                    include_history=self._payload.get("include_history", True),
+                )
+            elif self._operation == "get":
+                result = self._controller.ddr_report(self._payload["report_id"])
+            elif self._operation == "create":
+                result = self._controller.ddr_create_draft(**self._payload)
+            elif self._operation == "save":
+                result = self._controller.ddr_save_draft(
+                    self._payload["report_id"], **self._payload["values"]
+                )
+            elif self._operation == "submit":
+                result = self._controller.ddr_submit(
+                    self._payload["report_id"], **self._payload["values"]
+                )
+            elif self._operation == "revision":
+                result = self._controller.ddr_create_revision(
+                    self._payload["report_id"], **self._payload["values"]
+                )
+            else:
+                raise ValueError(f"unknown DDR operation: {self._operation}")
+        except Exception as exc:  # noqa: BLE001 - report unexpected worker failures to the UI
+            self.failed.emit(
+                self._operation,
+                WorkerError(
+                    "ddr",
+                    str(exc),
+                    "Check the selected report and workspace; no action was accepted.",
+                    type(exc).__name__,
+                ),
+            )
+            return
+        self.succeeded.emit(self._operation, result)
 
 
 class ReviewWorker(QObject):

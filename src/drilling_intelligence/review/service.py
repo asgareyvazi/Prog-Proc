@@ -14,7 +14,7 @@ import json
 import math
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any
 
@@ -152,14 +152,19 @@ def _dedupe_mappings(entries: Iterable[Mapping[str, Any]]) -> tuple[Mapping[str,
 
 
 def _dedupe_rows(rows: Iterable[Any]) -> list[Any]:
-    """Merge overlapping inherited scopes by the authoritative table and primary key."""
+    """Merge overlapping inherited scopes by the authoritative table and primary key.
+
+    The result is sorted by ``(table, id)`` so that an iteration over an
+    unordered collection (a set or a database result without a stable sort)
+    does not become a payload order.
+    """
     found: dict[tuple[str, str], Any] = {}
     for row in rows:
         table = str(getattr(type(row), "__tablename__", type(row).__name__))
         row_id = str(getattr(row, "id", ""))
         if row_id:
             found.setdefault((table, row_id), row)
-    return list(found.values())
+    return [found[key] for key in sorted(found)]
 
 
 def _fetch_limit(request: DomainReviewRequest) -> int:
@@ -236,13 +241,15 @@ def _current_for(
     if table == "program_target":
         return str(getattr(row, "program_id", "")) in current_programs
     if table == "document_version":
-        return bool(getattr(row, "is_current", False))
+        value = getattr(row, "is_current", False)
+        return bool(value) if value is not None else True
     if table == "calculation":
         return str(getattr(row, "id", "")) not in superseded_calculations and status != "SUPERSEDED"
     if table == "knowledge_item":
         return status not in {KnowledgeStatus.SUPERSEDED.value, KnowledgeStatus.RETIRED.value}
     if table in _OPERATIONAL_TABLES:
-        return status != "REJECTED"
+        value = getattr(row, "is_current", True)
+        return status != "REJECTED" and (value is None or bool(value))
     if table in {"risk_record", "recommendation"}:
         return status != "SUPERSEDED"
     if hasattr(row, "is_current"):
@@ -640,13 +647,17 @@ def _calculation_contract(
     if not isinstance(metric, Mapping):
         issues.append("missing_npt_output")
     else:
-        try:
-            output_value = float(metric.get("value"))
-        except (TypeError, ValueError, OverflowError):
+        raw_output_value: Any = metric.get("value")
+        if raw_output_value is None:
             issues.append("malformed_npt_output")
         else:
-            if not math.isfinite(output_value) or output_value < 0.0:
-                issues.append("invalid_npt_output")
+            try:
+                output_value = float(raw_output_value)
+            except (TypeError, ValueError, OverflowError):
+                issues.append("malformed_npt_output")
+            else:
+                if not math.isfinite(output_value) or output_value < 0.0:
+                    issues.append("invalid_npt_output")
         if str(metric.get("unit") or "") != NPT_ROLLUP_UNIT:
             issues.append("wrong_output_unit")
         if str(metric.get("dimension") or "") != "TIME":
@@ -655,21 +666,33 @@ def _calculation_contract(
     if not isinstance(validation, Mapping):
         issues.append("missing_validation")
     else:
-        try:
-            considered = int(validation.get("records_considered"))
-            summed = int(validation.get("records_summed"))
-            without_duration = int(validation.get("records_without_duration"))
-            without_evidence = int(validation.get("records_without_evidence", 0))
-        except (TypeError, ValueError):
+        raw_considered: Any = validation.get("records_considered")
+        raw_summed: Any = validation.get("records_summed")
+        raw_without_duration: Any = validation.get("records_without_duration")
+        raw_without_evidence: Any = validation.get("records_without_evidence", 0)
+        if (
+            raw_considered is None
+            or raw_summed is None
+            or raw_without_duration is None
+            or raw_without_evidence is None
+        ):
             issues.append("malformed_validation")
         else:
-            if (
-                min(considered, summed, without_duration, without_evidence) < 0
-                or considered != summed + without_duration
-                or summed != len(indexed_inputs)
-                or without_evidence != 0
-            ):
-                issues.append("inconsistent_validation")
+            try:
+                considered = int(raw_considered)
+                summed = int(raw_summed)
+                without_duration = int(raw_without_duration)
+                without_evidence = int(raw_without_evidence)
+            except (TypeError, ValueError):
+                issues.append("malformed_validation")
+            else:
+                if (
+                    min(considered, summed, without_duration, without_evidence) < 0
+                    or considered != summed + without_duration
+                    or summed != len(indexed_inputs)
+                    or without_evidence != 0
+                ):
+                    issues.append("inconsistent_validation")
         if isinstance(output, Mapping) and output.get("records") != validation.get(
             "records_summed"
         ):
@@ -685,15 +708,18 @@ def _calculation_contract(
         else ""
     )
     for item in indexed_inputs:
-        value = item.get("value")
+        value: Any = item.get("value")
         numeric_value: float | None = None
-        try:
-            numeric_value = float(value)
-        except (TypeError, ValueError, OverflowError):
+        if value is None:
             issues.append("malformed_input_value")
         else:
-            if not math.isfinite(numeric_value) or numeric_value < 0.0:
-                issues.append("invalid_input_value")
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError, OverflowError):
+                issues.append("malformed_input_value")
+            else:
+                if not math.isfinite(numeric_value) or numeric_value < 0.0:
+                    issues.append("invalid_input_value")
         if str(item.get("unit") or "") != NPT_ROLLUP_UNIT:
             issues.append("wrong_input_unit")
         if str(item.get("dimension") or "") != "TIME":
@@ -723,17 +749,21 @@ def _calculation_contract(
             source_status = str(source.status or "").upper()
             if source_status in {"REJECTED", "SUPERSEDED", "RETIRED"}:
                 issues.append("rejected_source_row")
-            try:
-                source_value = float(source.duration_hours)
-            except (TypeError, ValueError, OverflowError):
+            raw_source_value: Any = source.duration_hours
+            if raw_source_value is None:
                 issues.append("malformed_source_duration")
             else:
-                if not math.isfinite(source_value) or source_value < 0.0:
-                    issues.append("invalid_source_duration")
-                elif numeric_value is not None and not math.isclose(
-                    source_value, numeric_value, rel_tol=0.0, abs_tol=1e-9
-                ):
-                    issues.append("source_input_value_mismatch")
+                try:
+                    source_value = float(raw_source_value)
+                except (TypeError, ValueError, OverflowError):
+                    issues.append("malformed_source_duration")
+                else:
+                    if not math.isfinite(source_value) or source_value < 0.0:
+                        issues.append("invalid_source_duration")
+                    elif numeric_value is not None and not math.isclose(
+                        source_value, numeric_value, rel_tol=0.0, abs_tol=1e-9
+                    ):
+                        issues.append("source_input_value_mismatch")
         cited = versions.get(version_id)
         if cited is None:
             unresolved = True
@@ -823,6 +853,53 @@ def _reproducibility_for(classification: str) -> str:
     return classification or "NOT_ASSESSED"
 
 
+@dataclass
+class _ReviewScope:
+    """The subject of one review and the bounds every read of it respects."""
+
+    well: Any
+    request: DomainReviewRequest
+    limit: int
+    result_limit: int
+    sections_rows: list[Any] = field(default_factory=list)
+    sections_truncated: bool = False
+    subject_section_ids: set[str] = field(default_factory=set)
+
+
+@dataclass
+class _DomainRows:
+    """What one review read: the rows themselves and the indexes over them.
+
+    Nothing here is a copy of the domain.  The rows are the rows the
+    repositories returned, the lookups are indexes over those rows, and the
+    ``relations`` are the edges the knowledge repository holds - so what the
+    review shows is what the database holds.
+    """
+
+    rows: list[Any]
+    bounded_sizes: list[tuple[int, int]]
+    sections_rows: list[Any]
+    sections_truncated: bool
+    mud_measurements_by_report: dict[str, list[MudMeasurement]]
+    components_by_report: dict[str, list[BhaComponent]]
+    stations_by_run: dict[str, list[SurveyStation]]
+    extraction_by_version: dict[str, Extraction]
+    calculation_inputs: dict[str, list[dict[str, Any]]]
+    source_rows: dict[str, NptRecord]
+    versions: dict[str, DocumentVersion]
+    documents_by_id: dict[str, Document]
+    facts: list[KnowledgeFact]
+    review_conflicts: list[ReviewConflict]
+    conflict_by_item: dict[str, list[str]]
+    lesson_evidence: dict[str, list[Mapping[str, Any]]]
+    superseded_calculations: set[str]
+    current_programs: set[str]
+    program_by_id: dict[str, Any]
+    engineering: Any
+    programs: list[Any]
+    relations: tuple[dict[str, Any], ...]
+
+
 class DomainReviewService:
     """Compose one deterministic, read-only well review from authoritative repositories."""
 
@@ -849,9 +926,91 @@ class DomainReviewService:
         return self._audit(review)
 
     def _build(self, session: Session, request: DomainReviewRequest) -> DomainReview:
+        """Read the domain for one well and assemble the review.
+
+        The assembly has four steps and each step has its own method: the subject
+        context, the bounded reads, the records those rows become, and the
+        finalisation that filters, sorts, truncates and packages them.  The
+        review itself stays read-only: nothing here writes a row, a timestamp or
+        a cache entry, and no calculation is re-run.
+        """
         well = session.get(Well, request.well_id)
         if well is None:
             raise ValidationError(f"no well {request.well_id!r}")
+        scope = _ReviewScope(
+            well=well,
+            request=request,
+            limit=_fetch_limit(request),
+            result_limit=_result_limit(request),
+        )
+        context, sections = self._subject_context(session, scope)
+        domain = self._read_domain_rows(session, scope)
+        row_records = self._records_from_rows(domain, scope)
+        review_conflicts = list(domain.review_conflicts)
+        if request.lifecycle == REVIEW_CURRENT:
+            row_records = [record for record in row_records if record.current]
+            review_conflicts = [conflict for conflict in review_conflicts if conflict.current]
+        row_records.sort(key=lambda record: (record.record_type, record.record_id))
+        review_conflicts.sort(key=lambda conflict: (conflict.lookup_key, conflict.conflict_id))
+
+        plan_actual = self._plan_actual(
+            domain.engineering,
+            domain.programs,
+            well_id=str(well.id),
+            lifecycle=request.lifecycle,
+        )
+        # Deterministic ordering for externally visible lists. A set iteration
+        # or an unordered database result must not become a payload order.
+        plan_actual = sorted(
+            plan_actual,
+            key=lambda row: (
+                str(row.get("section_id") or ""),
+                str(row.get("metric") or ""),
+                str(row.get("program_id") or ""),
+                str(row.get("target_id") or ""),
+                json.dumps(row, sort_keys=True, default=str),
+            ),
+        )
+        domain.relations = tuple(
+            sorted(
+                domain.relations,
+                key=lambda rel: json.dumps(dict(rel), sort_keys=True, default=str),
+            )
+        )
+        truncated = domain.sections_truncated or any(
+            size >= bound for size, bound in domain.bounded_sizes
+        )
+        if len(row_records) > scope.result_limit:
+            row_records = row_records[: scope.result_limit]
+            truncated = True
+        if len(review_conflicts) > scope.result_limit:
+            review_conflicts = review_conflicts[: scope.result_limit]
+            truncated = True
+        if len(domain.relations) > scope.result_limit:
+            domain.relations = domain.relations[: scope.result_limit]
+            truncated = True
+        if len(plan_actual) > _SAFE_LIMIT:
+            plan_actual = plan_actual[:_SAFE_LIMIT]
+            truncated = True
+
+        observations = self._observations(row_records, review_conflicts, truncated=truncated)
+        return DomainReview(
+            request=request.to_dict(),
+            subject=context,
+            sections=sections,
+            records=tuple(row_records),
+            conflicts=tuple(review_conflicts),
+            relations=domain.relations,
+            plan_actual=tuple(plan_actual),
+            observations=observations,
+            truncated=truncated,
+        )
+
+    def _subject_context(
+        self, session: Session, scope: _ReviewScope
+    ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
+        """The subject of the review: the well, what it belongs to, and its sections."""
+        well = scope.well
         field = session.get(Field, str(well.field_id)) if well.field_id else None
         project = session.get(Project, str(well.project_id)) if well.project_id else None
         company = (
@@ -870,24 +1029,35 @@ class DomainReviewService:
                 "project_id": str(well.project_id or ""),
             },
         }
-        limit = _fetch_limit(request)
-        result_limit = _result_limit(request)
         sections_rows = sorted(
             WellRepository(session).list_sections(well.id, limit=_SAFE_LIMIT + 1),
             key=lambda row: (row.sequence, row.id),
         )
-        sections_truncated = len(sections_rows) > _SAFE_LIMIT
+        scope.sections_rows = sections_rows
+        scope.sections_truncated = len(sections_rows) > _SAFE_LIMIT
+        scope.subject_section_ids = {str(row.id) for row in sections_rows}
         sections = tuple(_plain(record_to_dict(row)) for row in sections_rows[:_SAFE_LIMIT])
+        return context, sections
 
-        operational = OperationsRepository(session)
+    def _read_domain_rows(self, session: Session, scope: _ReviewScope) -> _DomainRows:
+        """Read every domain the review covers, once, within the review's bounds.
+
+        This is the only method that reads.  It returns the rows themselves and
+        the indexes over them; nothing is copied into a review structure and no
+        value is derived here, so what the review shows is what the database
+        holds.
+        """
+        well = scope.well
+        request = scope.request
+        limit = scope.limit
         rows: list[Any] = []
+        bounded_sizes: list[tuple[int, int]] = []
+
         #: Every bounded read records the size it returned *and the bound that was actually applied
         #: to its own query*.  A bare size cannot answer "was anything cut?": a child batch fetched
         #: at ``limit * number_of_parents`` legitimately returns far more than ``limit`` rows without
         #: a single row being cut, and comparing it against ``limit`` made a semantically complete
         #: review report itself truncated.
-        bounded_sizes: list[tuple[int, int]] = []
-
         def note_bounded(size: int, *, bound: int = limit) -> None:
             """Record one bounded read against the bound its own query used."""
             bounded_sizes.append((int(size), int(bound)))
@@ -896,6 +1066,7 @@ class DomainReviewService:
             rows.extend(group)
             note_bounded(len(group) if fetched_count is None else int(fetched_count))
 
+        operational = OperationsRepository(session)
         add_bounded(operational.list_reports(well_id=well.id, limit=limit))
         add_bounded(operational.list_operations(well_id=well.id, limit=limit))
         add_bounded(operational.list_events(well_id=well.id, limit=limit))
@@ -1091,7 +1262,7 @@ class DomainReviewService:
             # contain targets explicitly attached to another well's section.  Keep unbound template
             # targets and targets for this well's sections; never expose the other well's target in a
             # subject-scoped review.
-            section_ids = [str(row.id) for row in sections_rows]
+            section_ids = [str(row.id) for row in scope.sections_rows]
             target_scope = [ProgramTarget.section_id.is_(None)]
             if section_ids:
                 target_scope.append(ProgramTarget.section_id.in_(section_ids))
@@ -1241,7 +1412,7 @@ class DomainReviewService:
         calculation_ids = sorted({str(row.id) for row in calculations})
         calculation_inputs: dict[str, list[dict[str, Any]]] = defaultdict(list)
         if calculation_ids:
-            input_rows = session.execute(
+            input_rows_scalars = session.execute(
                 select(CalculationInput)
                 .where(CalculationInput.calculation_id.in_(calculation_ids))
                 .order_by(
@@ -1249,7 +1420,7 @@ class DomainReviewService:
                 )
                 .limit(limit)
             ).scalars()
-            input_rows = list(input_rows)
+            input_rows = list(input_rows_scalars)
             note_bounded(len(input_rows))
             for input_row in input_rows:
                 calculation_inputs[str(input_row.calculation_id)].append(
@@ -1322,7 +1493,7 @@ class DomainReviewService:
         knowledge = KnowledgeRepository(session)
         facts = knowledge.facts_for_well(well.id, include_superseded=True, limit=limit)
         fetched_fact_count = len(facts)
-        subject_section_ids = {str(row.id) for row in sections_rows}
+        subject_section_ids = scope.subject_section_ids
         # The knowledge repository indexes the explicit ``well_id`` column.  A malformed or
         # hand-authored row can still carry a different section/project alongside that well, so
         # intersect the inherited identifiers here as well rather than trusting denormalised scope.
@@ -1414,6 +1585,60 @@ class DomainReviewService:
         }
         program_by_id = {str(row.id): row for row in programs}
 
+        relation_rows = knowledge.relations_for_entity(
+            EntityRef("well", str(well.id)), direction="both", limit=limit
+        )
+        relations = tuple(
+            _edge_payload(row)
+            for row in sorted(
+                relation_rows,
+                key=lambda row: (
+                    str(row.relation),
+                    str(row.source_id),
+                    str(row.target_id),
+                    str(row.id),
+                ),
+            )
+        )
+        note_bounded(len(relation_rows))
+
+        return _DomainRows(
+            rows=rows,
+            bounded_sizes=bounded_sizes,
+            sections_rows=scope.sections_rows,
+            sections_truncated=scope.sections_truncated,
+            mud_measurements_by_report=mud_measurements_by_report,
+            components_by_report=components_by_report,
+            stations_by_run=stations_by_run,
+            extraction_by_version=extraction_by_version,
+            calculation_inputs=calculation_inputs,
+            source_rows=source_rows,
+            versions=versions,
+            documents_by_id=documents_by_id,
+            facts=facts,
+            review_conflicts=review_conflicts,
+            conflict_by_item=conflict_by_item,
+            lesson_evidence=lesson_evidence,
+            superseded_calculations=superseded_calculations,
+            current_programs=current_programs,
+            program_by_id=program_by_id,
+            engineering=engineering,
+            programs=programs,
+            relations=relations,
+        )
+
+    def _records_from_rows(self, domain: _DomainRows, scope: _ReviewScope) -> list[ReviewRecord]:
+        """Turn the rows that were read into the records the review shows.
+
+        A row keeps its own data; the extras below are the children and the
+        derived lookups that belong with it.  Nothing is recalculated here: a
+        calculation's classification comes from its contract and from the
+        dependency query, not from arithmetic repeated in the review.
+        """
+        well = scope.well
+        subject_section_ids = scope.subject_section_ids
+        engineering = domain.engineering
+
         def row_in_scope(row: Any) -> bool:
             row_well_id = str(getattr(row, "well_id", "") or "")
             row_field_id = str(getattr(row, "field_id", "") or "")
@@ -1427,7 +1652,7 @@ class DomainReviewService:
             )
 
         row_records: list[ReviewRecord] = []
-        for row in _dedupe_rows(rows):
+        for row in _dedupe_rows(domain.rows):
             if not row_in_scope(row):
                 continue
             table = str(getattr(type(row), "__tablename__", ""))
@@ -1436,14 +1661,14 @@ class DomainReviewService:
             data_extra: dict[str, Any] = {}
             scope_extra: dict[str, Any] = {}
             if table == "mud_report":
-                measurement_rows = mud_measurements_by_report.get(str(row.id), [])
+                measurement_rows = domain.mud_measurements_by_report.get(str(row.id), [])
                 data_extra["measurements"] = [
                     _plain(record_to_dict(measurement)) for measurement in measurement_rows
                 ]
                 for measurement in measurement_rows:
                     extra_entries.extend(_mapping_entries(getattr(measurement, "provenance", None)))
             if table == "bha_report":
-                component_rows = components_by_report.get(str(row.id), [])
+                component_rows = domain.components_by_report.get(str(row.id), [])
                 # The components are shown in the source's own order, which is the assembly's order.
                 data_extra["components"] = [
                     _plain(record_to_dict(component)) for component in component_rows
@@ -1451,14 +1676,14 @@ class DomainReviewService:
                 for component in component_rows:
                     extra_entries.extend(_mapping_entries(getattr(component, "provenance", None)))
             if table == "survey_run":
-                station_rows = stations_by_run.get(str(row.id), [])
+                station_rows = domain.stations_by_run.get(str(row.id), [])
                 data_extra["stations"] = [
                     _plain(record_to_dict(station)) for station in station_rows
                 ]
                 for station in station_rows:
                     extra_entries.extend(_mapping_entries(getattr(station, "provenance", None)))
             if table == "document_version":
-                extraction = extraction_by_version.get(str(row.id))
+                extraction = domain.extraction_by_version.get(str(row.id))
                 if extraction is not None:
                     data_extra["extraction_status"] = str(extraction.status or "")
                     data_extra["extraction_error"] = str(extraction.error or "")
@@ -1468,22 +1693,22 @@ class DomainReviewService:
                 else:
                     data_extra["extraction_status"] = ""
             if table == "lesson_learned":
-                extra_entries.extend(lesson_evidence.get(str(row.id), ()))
+                extra_entries.extend(domain.lesson_evidence.get(str(row.id), ()))
             if table == "calculation":
-                indexed_inputs = calculation_inputs.get(str(row.id), [])
+                indexed_inputs = domain.calculation_inputs.get(str(row.id), [])
                 data_extra["indexed_inputs"] = indexed_inputs
                 dependency_impact = _calculation_dependency_impact(
                     engineering,
                     row,
                     indexed_inputs,
-                    source_rows=source_rows,
-                    versions=versions,
+                    source_rows=domain.source_rows,
+                    versions=domain.versions,
                 )
                 classification, contract_issues = _calculation_contract(
                     row_data,
                     indexed_inputs,
-                    source_rows=source_rows,
-                    versions=versions,
+                    source_rows=domain.source_rows,
+                    versions=domain.versions,
                 )
                 # A valid contract with an old or unresolved source is not executable *today*, even though
                 # its historical result remains readable.  The dependency query is the authoritative
@@ -1502,8 +1727,8 @@ class DomainReviewService:
                 data_extra["source_navigation"] = _source_navigation(
                     row_data,
                     indexed_inputs,
-                    versions=versions,
-                    documents=documents_by_id,
+                    versions=domain.versions,
+                    documents=domain.documents_by_id,
                 )
                 # CalculationInput is the indexed view of the same calculation contract.  Its
                 # provenance is evidence too; leaving it only inside ``data`` makes a citation
@@ -1511,7 +1736,7 @@ class DomainReviewService:
                 for input_row in indexed_inputs:
                     extra_entries.extend(_mapping_entries(input_row.get("provenance")))
             if table == "program_target":
-                owner = program_by_id.get(str(getattr(row, "program_id", "") or ""))
+                owner = domain.program_by_id.get(str(getattr(row, "program_id", "") or ""))
                 if owner is not None:
                     scope_extra.update(
                         {
@@ -1523,73 +1748,19 @@ class DomainReviewService:
             row_records.append(
                 _record_from_row(
                     row,
-                    superseded_calculations=superseded_calculations,
-                    current_programs=current_programs,
-                    conflict_ids=conflict_by_item.get(str(row.id), ()),
+                    superseded_calculations=domain.superseded_calculations,
+                    current_programs=domain.current_programs,
+                    conflict_ids=domain.conflict_by_item.get(str(row.id), ()),
                     extra_evidence=tuple(extra_entries),
                     data_extra=data_extra,
                     scope_extra=scope_extra,
                 )
             )
         row_records.extend(
-            _record_from_fact(fact, conflict_ids=conflict_by_item.get(str(fact.item_id), ()))
-            for fact in facts
+            _record_from_fact(fact, conflict_ids=domain.conflict_by_item.get(str(fact.item_id), ()))
+            for fact in domain.facts
         )
-
-        if request.lifecycle == REVIEW_CURRENT:
-            row_records = [record for record in row_records if record.current]
-            review_conflicts = [conflict for conflict in review_conflicts if conflict.current]
-        row_records.sort(key=lambda record: (record.record_type, record.record_id))
-        review_conflicts.sort(key=lambda conflict: (conflict.lookup_key, conflict.conflict_id))
-
-        plan_actual = self._plan_actual(
-            engineering,
-            programs,
-            well_id=str(well.id),
-            lifecycle=request.lifecycle,
-        )
-        relation_rows = knowledge.relations_for_entity(
-            EntityRef("well", str(well.id)), direction="both", limit=limit
-        )
-        relations = tuple(
-            _edge_payload(row)
-            for row in sorted(
-                relation_rows,
-                key=lambda row: (
-                    str(row.relation),
-                    str(row.source_id),
-                    str(row.target_id),
-                    str(row.id),
-                ),
-            )
-        )
-        note_bounded(len(relation_rows))
-        truncated = sections_truncated or any(size >= bound for size, bound in bounded_sizes)
-        if len(row_records) > result_limit:
-            row_records = row_records[:result_limit]
-            truncated = True
-        if len(review_conflicts) > result_limit:
-            review_conflicts = review_conflicts[:result_limit]
-            truncated = True
-        if len(relations) > result_limit:
-            relations = relations[:result_limit]
-            truncated = True
-        if len(plan_actual) > _SAFE_LIMIT:
-            plan_actual = plan_actual[:_SAFE_LIMIT]
-            truncated = True
-
-        observations = self._observations(row_records, review_conflicts, truncated=truncated)
-        return DomainReview(
-            request=request.to_dict(),
-            subject=context,
-            sections=sections,
-            records=tuple(row_records),
-            conflicts=tuple(review_conflicts),
-            relations=relations,
-            plan_actual=tuple(plan_actual),
-            observations=observations,
-            truncated=truncated,
-        )
+        return row_records
 
     @staticmethod
     def _plan_actual(

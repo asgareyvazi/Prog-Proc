@@ -28,8 +28,10 @@ Invariants enforced here rather than "by convention" in service code:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import (
+    DDL,
     JSON,
     Boolean,
     CheckConstraint,
@@ -41,6 +43,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -142,7 +145,7 @@ class Well(Base, TimestampMixin):
     coordinate_system: Mapped[str | None] = mapped_column(String(64))
     notes: Mapped[str | None] = mapped_column(Text)
     #: Free-form attributes for things we refuse to guess a schema for yet.
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
     project: Mapped[Project | None] = relationship(back_populates="wells")
     field: Mapped[Field | None] = relationship(back_populates="wells")
@@ -200,12 +203,12 @@ class WellSection(Base, TimestampMixin):
     #: There is no ``identity_key`` and no lifecycle here - a section is identified by the well and its
     #: name, and it is the *plan* that is revised and superseded, never the hole.
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
     well: Mapped[Well] = relationship(back_populates="sections")
 
@@ -223,7 +226,61 @@ class Workspace(Base, TimestampMixin):
     project_id: Mapped[str | None] = mapped_column(ForeignKey("project.id", ondelete="SET NULL"))
     last_scan_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Free-form scan settings overrides (folder includes/excludes).
-    config: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    config: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
+
+
+class IntakeQueueItem(Base):
+    """Persistent operator intake queue; stores references and hashes, never document bytes."""
+
+    __tablename__ = "intake_queue_item"
+    __table_args__ = (
+        UniqueConstraint("sha256", name="uq_intake_queue_item_sha256"),
+        CheckConstraint(
+            "status IN ('QUEUED', 'REVIEWED', 'REJECTED')", name="ck_intake_queue_status"
+        ),
+        Index("ix_intake_queue_status_enqueued", "status", "enqueued_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_path: Mapped[str] = mapped_column(String(4096), nullable=False)
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    extension: Mapped[str] = mapped_column(String(16), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="QUEUED", nullable=False)
+    enqueued_by: Mapped[str] = mapped_column(String(80), nullable=False)
+    enqueued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(80))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class IntakeRegistrationRecord(Base):
+    """Durable, FK-protected link from a reviewed queue item to registry evidence."""
+
+    __tablename__ = "intake_registration"
+    __table_args__ = (
+        Index("ix_intake_registration_document", "document_id", "document_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    intake_item_id: Mapped[str] = mapped_column(
+        ForeignKey("intake_queue_item.id", ondelete="RESTRICT"), nullable=False, unique=True
+    )
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("document.id", ondelete="RESTRICT"), nullable=False
+    )
+    document_version_id: Mapped[str] = mapped_column(
+        ForeignKey("document_version.id", ondelete="RESTRICT"), nullable=False
+    )
+    registered_well_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well.id", ondelete="SET NULL")
+    )
+    registered_by: Mapped[str] = mapped_column(String(80), nullable=False)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    registration_reason: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class Document(Base, TimestampMixin):
@@ -286,12 +343,16 @@ class Document(Base, TimestampMixin):
     #: and PostgreSQL both enforce them at COMMIT), so this is not a SQLite-only trick.
     current_version_id: Mapped[str | None] = mapped_column(
         ForeignKey(
-            "document_version.id", ondelete="SET NULL", deferrable=True, initially="DEFERRED"
+            "document_version.id",
+            ondelete="SET NULL",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
         )
     )
     #: Number of times this slot was seen with different content.
     change_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    tags: Mapped[list | None] = mapped_column(JSON, default=list)
+    tags: Mapped[list[str] | None] = mapped_column(JSON, default=list)
     notes: Mapped[str | None] = mapped_column(Text)
 
     well: Mapped[Well | None] = relationship(back_populates="documents")
@@ -371,7 +432,7 @@ class DocumentVersion(Base, TimestampMixin):
     duplicate_of_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    metadata_json: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
     document: Mapped[Document] = relationship(
         back_populates="versions", foreign_keys="DocumentVersion.document_id"
@@ -416,13 +477,13 @@ class Extraction(Base, TimestampMixin):
     #: Stable hash of extractor options that change output; part of the cache key.
     config_hash: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     #: Why this extractor was chosen (router decision, including fallbacks taken).
-    router_decision: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    router_decision: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(24), default="OK", nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     duration_ms: Mapped[float | None] = mapped_column(Float)
-    stats: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    stats: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     #: Full NormalizedDocument (metadata/pages/sections/tables/fields/provenance).
-    document_json: Mapped[dict | None] = mapped_column(JSON)
+    document_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     #: Large text is kept out of the JSON blob to keep rows small.
     text_blob: Mapped[str | None] = mapped_column(Text)
 
@@ -526,9 +587,9 @@ class KnowledgeItem(Base, TimestampMixin):
     content: Mapped[str] = mapped_column(Text, default="", nullable=False)
     domain: Mapped[str] = mapped_column(String(80), default="general", nullable=False)
     applicability: Mapped[str | None] = mapped_column(Text)
-    assumptions: Mapped[list | None] = mapped_column(JSON, default=list)
+    assumptions: Mapped[list[str] | None] = mapped_column(JSON, default=list)
     #: Structured payload: formula expression, variables, units, decision rules...
-    payload: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     #: Canonical key for conflict detection, e.g. ``well:W1|section:12|property:mud_weight``.
     lookup_key: Mapped[str | None] = mapped_column(String(300))
     value: Mapped[float | None] = mapped_column(Float)
@@ -572,8 +633,8 @@ class KnowledgeItem(Base, TimestampMixin):
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
-    evidence: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
+    evidence: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     #: Set when a stronger source supersedes this item.
     superseded_by: Mapped[str | None] = mapped_column(String(36))
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
@@ -603,7 +664,7 @@ class KnowledgeRelation(Base, TimestampMixin):
     target_type: Mapped[str] = mapped_column(String(32), nullable=False)
     target_id: Mapped[str] = mapped_column(String(36), nullable=False)
     weight: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     note: Mapped[str | None] = mapped_column(Text)
 
 
@@ -618,9 +679,9 @@ class KnowledgeConflict(Base, TimestampMixin):
     property_name: Mapped[str] = mapped_column(String(120), nullable=False)
     record_state: Mapped[str] = mapped_column(String(16), default="CURRENT", nullable=False)
     #: [{item_id, value, unit, source, authority_tier, revision, provenance}]
-    candidates: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    candidates: Mapped[list[Any]] = mapped_column(JSON, default=list, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="OPEN", nullable=False)
-    resolution: Mapped[dict | None] = mapped_column(JSON)
+    resolution: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     #: The unit the values were normalised to for comparison (auditability).
     compare_unit: Mapped[str] = mapped_column(String(24), default="")
     note: Mapped[str | None] = mapped_column(Text)
@@ -643,7 +704,7 @@ class Skill(Base, TimestampMixin):
     current_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     #: Where the skill package is exported on disk (SKILL.md + references/).
     package_path: Mapped[str | None] = mapped_column(String(1024))
-    tags: Mapped[list | None] = mapped_column(JSON, default=list)
+    tags: Mapped[list[str] | None] = mapped_column(JSON, default=list)
 
 
 class SkillVersion(Base, TimestampMixin):
@@ -660,12 +721,12 @@ class SkillVersion(Base, TimestampMixin):
     builder: Mapped[str] = mapped_column(String(64), default="skill_pipeline", nullable=False)
     builder_version: Mapped[str] = mapped_column(String(48), default="", nullable=False)
     #: The structured skill (concepts/methods/formulas/rules/limitations/...).
-    content: Mapped[dict] = mapped_column(JSON, nullable=False)
-    source_document_ids: Mapped[list | None] = mapped_column(JSON, default=list)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    source_document_ids: Mapped[list[Any] | None] = mapped_column(JSON, default=list)
     #: Statistics for the pipeline: item counts per section, extraction notes.
-    metrics: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     #: Provenance summary so a reviewer can jump from a claim to a document.
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     review_status: Mapped[str] = mapped_column(String(24), default="UNREVIEWED", nullable=False)
     reviewer: Mapped[str | None] = mapped_column(String(200))
     notes: Mapped[str | None] = mapped_column(Text)
@@ -713,13 +774,13 @@ class Calculation(Base, TimestampMixin):
     )
     project_id: Mapped[str | None] = mapped_column(ForeignKey("project.id", ondelete="SET NULL"))
     source_id: Mapped[str | None] = mapped_column(ForeignKey("source.id", ondelete="SET NULL"))
-    inputs: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
-    outputs: Mapped[dict | None] = mapped_column(JSON)
-    assumptions: Mapped[list | None] = mapped_column(JSON, default=list)
-    validation: Mapped[dict | None] = mapped_column(JSON)
-    uncertainty: Mapped[dict | None] = mapped_column(JSON)
+    inputs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    outputs: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    assumptions: Mapped[list[str] | None] = mapped_column(JSON, default=list)
+    validation: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    uncertainty: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     confidence: Mapped[float | None] = mapped_column(Float)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(24), default="COMPUTED", nullable=False)
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     supersedes_id: Mapped[str | None] = mapped_column(
@@ -742,7 +803,7 @@ class Calculation(Base, TimestampMixin):
     # have is worse than a check every workspace passes.  ``check_promoted_evidence`` is what polices them.
     document_id: Mapped[str | None] = mapped_column(String(36))
     document_version_id: Mapped[str | None] = mapped_column(String(36))
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
     input_records: Mapped[list[CalculationInput]] = relationship(
         back_populates="calculation", cascade="all, delete-orphan"
@@ -789,7 +850,7 @@ class CalculationInput(Base):
     # rest.  ``check_calculation_dependencies`` is what polices these instead (ADR-0016).
     subject_kind: Mapped[str | None] = mapped_column(String(32))
     subject_id: Mapped[str | None] = mapped_column(String(64))
-    provenance: Mapped[dict | None] = mapped_column(JSON)
+    provenance: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     calculation: Mapped[Calculation] = relationship(back_populates="input_records")
 
@@ -810,8 +871,8 @@ class IngestionRun(Base):
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     mode: Mapped[str] = mapped_column(String(24), default="incremental", nullable=False)
-    counts: Mapped[dict | None] = mapped_column(JSON, default=dict)
-    report: Mapped[dict | None] = mapped_column(JSON)
+    counts: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
+    report: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     error: Mapped[str | None] = mapped_column(Text)
 
 
@@ -834,7 +895,7 @@ class AuditEvent(Base):
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     subject_type: Mapped[str] = mapped_column(String(40), nullable=False)
     subject_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    detail: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 # --------------------------------------------------------------------------- operations
@@ -858,6 +919,15 @@ class DdrReport(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("document_version_id", "well_id", name="uq_ddr_report_version_well"),
         Index("ix_ddr_report_well_date", "well_id", "report_date"),
+        Index("ix_ddr_report_revision_parent", "supersedes_report_id"),
+        Index("uq_ddr_report_revision_number", "revision_group_id", "revision_number", unique=True),
+        Index(
+            "uq_ddr_report_revision_current",
+            "revision_group_id",
+            unique=True,
+            sqlite_where=text("revision_group_id IS NOT NULL AND is_current = 1"),
+            postgresql_where=text("revision_group_id IS NOT NULL AND is_current"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -881,11 +951,72 @@ class DdrReport(Base, TimestampMixin):
     #: The document's approval status as registered (DRAFT/APPROVED/...), copied, never guessed.
     document_status: Mapped[str | None] = mapped_column(String(32))
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: Authoring readiness is separate from the independent record-confirmation lifecycle in
+    #: ``status``. Imported reports are already submitted for inspection; manual drafts remain
+    #: CANDIDATE until a reviewer takes an explicit action.
+    authoring_state: Mapped[str] = mapped_column(String(16), default="SUBMITTED", nullable=False)
+    revision_group_id: Mapped[str | None] = mapped_column(String(36))
+    revision_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    supersedes_report_id: Mapped[str | None] = mapped_column(String(36))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     #: Where each field above came from, in the shape the knowledge layer uses.
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
+
+
+# SQLite cannot add a self-referential FK to the historical ddr_report table without a table-copy
+# migration. Install equivalent reference/state guards for metadata-created (wheel/bootstrap) schemas;
+# migration 0026 installs the same guards for upgraded workspaces.
+for _ddl in (
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_supersedes_insert BEFORE INSERT ON ddr_report "
+    "WHEN NEW.supersedes_report_id IS NOT NULL AND NOT EXISTS "
+    "(SELECT 1 FROM ddr_report WHERE id = NEW.supersedes_report_id) "
+    "BEGIN SELECT RAISE(ABORT, 'superseded DDR report does not exist'); END",
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_supersedes_update BEFORE UPDATE OF supersedes_report_id "
+    "ON ddr_report WHEN NEW.supersedes_report_id IS NOT NULL AND NOT EXISTS "
+    "(SELECT 1 FROM ddr_report WHERE id = NEW.supersedes_report_id) "
+    "BEGIN SELECT RAISE(ABORT, 'superseded DDR report does not exist'); END",
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_supersedes_delete AFTER DELETE ON ddr_report "
+    "BEGIN UPDATE ddr_report SET supersedes_report_id = NULL WHERE supersedes_report_id = OLD.id; END",
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_authoring_state_insert BEFORE INSERT ON ddr_report "
+    "WHEN NEW.authoring_state NOT IN ('DRAFT', 'SUBMITTED') "
+    "BEGIN SELECT RAISE(ABORT, 'invalid DDR authoring state'); END",
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_authoring_state_update BEFORE UPDATE OF authoring_state "
+    "ON ddr_report WHEN NEW.authoring_state NOT IN ('DRAFT', 'SUBMITTED') "
+    "BEGIN SELECT RAISE(ABORT, 'invalid DDR authoring state'); END",
+):
+    event.listen(
+        DdrReport.__table__,
+        "after_create",
+        DDL(_ddl).execute_if(dialect="sqlite"),
+    )
+
+
+class DdrActivity(Base, TimestampMixin):
+    """An explicitly authored daily activity linked to its resulting operational row."""
+
+    __tablename__ = "ddr_activity"
+    __table_args__ = (
+        UniqueConstraint("ddr_report_id", "sequence", name="uq_ddr_activity_sequence"),
+        CheckConstraint("sequence > 0", name="ck_ddr_activity_sequence_positive"),
+        Index("ix_ddr_activity_operation", "operation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    ddr_report_id: Mapped[str] = mapped_column(
+        ForeignKey("ddr_report.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    period_text: Mapped[str | None] = mapped_column(String(200))
+    operation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("well_operation.id", ondelete="SET NULL")
+    )
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
 
 
 class MudReport(Base, TimestampMixin):
@@ -931,10 +1062,10 @@ class MudReport(Base, TimestampMixin):
     document_status: Mapped[str | None] = mapped_column(String(32))
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     identity_key: Mapped[str | None] = mapped_column(String(160))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class MudMeasurement(Base, TimestampMixin):
@@ -983,10 +1114,10 @@ class MudMeasurement(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     identity_key: Mapped[str | None] = mapped_column(String(200))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class BhaReport(Base, TimestampMixin):
@@ -1048,10 +1179,10 @@ class BhaReport(Base, TimestampMixin):
     document_status: Mapped[str | None] = mapped_column(String(32))
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     identity_key: Mapped[str | None] = mapped_column(String(200))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class BhaComponent(Base, TimestampMixin):
@@ -1114,10 +1245,10 @@ class BhaComponent(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     identity_key: Mapped[str | None] = mapped_column(String(200))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class BitRecord(Base, TimestampMixin):
@@ -1191,10 +1322,10 @@ class BitRecord(Base, TimestampMixin):
     document_status: Mapped[str | None] = mapped_column(String(32))
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     identity_key: Mapped[str | None] = mapped_column(String(200))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class SurveyRun(Base, TimestampMixin):
@@ -1248,10 +1379,10 @@ class SurveyRun(Base, TimestampMixin):
     document_status: Mapped[str | None] = mapped_column(String(32))
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     identity_key: Mapped[str | None] = mapped_column(String(200))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class SurveyStation(Base, TimestampMixin):
@@ -1323,10 +1454,10 @@ class SurveyStation(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     identity_key: Mapped[str | None] = mapped_column(String(200))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class WellOperation(Base, TimestampMixin):
@@ -1372,7 +1503,7 @@ class WellOperation(Base, TimestampMixin):
     service_company_id: Mapped[str | None] = mapped_column(
         ForeignKey("service_company.id", ondelete="SET NULL")
     )
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     #: Content-addressed key when a promotion wrote this row: two passes are one row, not two.
@@ -1384,7 +1515,10 @@ class WellOperation(Base, TimestampMixin):
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    #: Manual DDR revisions stand down their linked operations without rewriting their confirmation
+    #: state; historical rows remain readable in review history.
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class WellEvent(Base, TimestampMixin):
@@ -1438,7 +1572,7 @@ class WellEvent(Base, TimestampMixin):
     )
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     identity_key: Mapped[str | None] = mapped_column(String(160))
@@ -1446,7 +1580,7 @@ class WellEvent(Base, TimestampMixin):
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class NptRecord(Base, TimestampMixin):
@@ -1519,7 +1653,7 @@ class NptRecord(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     #: 0-1: how much the *record* is trusted, distinct from how sure the cause is.
     confidence: Mapped[float | None] = mapped_column(Float)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     identity_key: Mapped[str | None] = mapped_column(String(160))
@@ -1527,7 +1661,7 @@ class NptRecord(Base, TimestampMixin):
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
     @property
     def duration_known(self) -> bool:
@@ -1549,7 +1683,7 @@ class ProblemDefinition(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="ACTIVE", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
 
@@ -1610,13 +1744,13 @@ class ProblemOccurrence(Base, TimestampMixin):
     root_cause_status: Mapped[str] = mapped_column(String(16), default="UNKNOWN", nullable=False)
     #: What else had to be true for this to happen.  A list of strings, each citable through the
     #: record's provenance; never a paragraph, because "contributing factors" is a set to count.
-    contributing_factors: Mapped[list | None] = mapped_column(JSON, default=list)
+    contributing_factors: Mapped[list[Any] | None] = mapped_column(JSON, default=list)
     corrective_action: Mapped[str | None] = mapped_column(Text)
     preventive_action: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     #: 0-1: how much the *record* is trusted, distinct from how sure the cause is.
     confidence: Mapped[float | None] = mapped_column(Float)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     identity_key: Mapped[str | None] = mapped_column(String(160))
@@ -1624,7 +1758,7 @@ class ProblemOccurrence(Base, TimestampMixin):
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class LessonLearned(Base, TimestampMixin):
@@ -1650,11 +1784,41 @@ class LessonLearned(Base, TimestampMixin):
             sqlite_where=text("is_current = 1 AND code IS NOT NULL"),
             postgresql_where=text("is_current AND code IS NOT NULL"),
         ),
+        # Global case-insensitive code uniqueness among current lessons.  SQLite
+        # ``LOWER()`` is a superset of the Python ``casefold`` check in
+        # ``LessonRepository._ensure_code_unique``; PostgreSQL's ``LOWER()`` is
+        # likewise case-insensitive for the 7-bit codes in use, and the Python
+        # check remains authoritative for Unicode edge cases (e.g. ``ß``).
+        # NOTE: This index is retained for 0021 history; the authoritative
+        # enforcement from 0022 onward is ``code_key`` (strip+casefold) via
+        # ``uq_lesson_code_key_current`` which matches ADR 003 exactly.
+        Index(
+            "uq_lesson_code_current_ci",
+            text("lower(code)"),
+            unique=True,
+            sqlite_where=text("is_current = 1 AND code IS NOT NULL"),
+            postgresql_where=text("is_current AND code IS NOT NULL"),
+        ),
+        # Canonical key for ADR 003: stripped + casefolded.  Unique among
+        # current lessons, global, not per-well.
+        Index(
+            "uq_lesson_code_key_current",
+            "code_key",
+            unique=True,
+            sqlite_where=text("is_current = 1 AND code_key IS NOT NULL"),
+            postgresql_where=text("is_current AND code_key IS NOT NULL"),
+        ),
+        UniqueConstraint("identity_key", name="uq_lesson_identity"),
+        Index("ix_lesson_version", "document_version_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     #: The number the organisation gave it (``LL-2025-014``), when it has one.
     code: Mapped[str | None] = mapped_column(String(80))
+    # Canonical key per ADR 003: strip+casefold, enforced via partial unique index
+    # ``uq_lesson_code_key_current``.  Kept in sync with ``code`` by
+    # ``LessonRepository`` and the 0022 backfill.
+    code_key: Mapped[str | None] = mapped_column(String(80))
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     #: The label as authored ("Rev 2", "Rev B"), kept next to the integer that orders them.
     revision_label: Mapped[str | None] = mapped_column(String(64))
@@ -1664,6 +1828,8 @@ class LessonLearned(Base, TimestampMixin):
     )
     #: ``LessonLifecycle``.
     status: Mapped[str] = mapped_column(String(24), default="DRAFT", nullable=False)
+    #: Exact lifecycle state before this row was superseded; UNKNOWN marks unrecoverable legacy history.
+    prior_status: Mapped[str | None] = mapped_column(String(24))
     title: Mapped[str] = mapped_column(String(400), nullable=False)
     #: The problem this lesson is about, as a token, so ``lessons_for_problem`` is one WHERE.
     problem_type: Mapped[str | None] = mapped_column(String(64))
@@ -1684,8 +1850,8 @@ class LessonLearned(Base, TimestampMixin):
         ForeignKey("well_section.id", ondelete="SET NULL")
     )
     #: Snake_case operation tokens this lesson applies to (``["tripping", "reaming"]``).
-    applicable_operations: Mapped[list | None] = mapped_column(JSON, default=list)
-    applicable_formations: Mapped[list | None] = mapped_column(JSON, default=list)
+    applicable_operations: Mapped[list[Any] | None] = mapped_column(JSON, default=list)
+    applicable_formations: Mapped[list[Any] | None] = mapped_column(JSON, default=list)
     hole_size_in: Mapped[float | None] = mapped_column(Float)
     depth_from_value: Mapped[float | None] = mapped_column(Float)
     depth_from_unit: Mapped[str] = mapped_column(String(16), default="m")
@@ -1702,11 +1868,17 @@ class LessonLearned(Base, TimestampMixin):
     #: 0-1.  Confidence in the *lesson*, not in the evidence: a well-cited one-off still reads lower
     #: than the same finding on six wells.
     confidence: Mapped[float | None] = mapped_column(Float)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     #: Why a superseded lesson was replaced: kept on the row so history explains itself.
     status_note: Mapped[str | None] = mapped_column(Text)
+    # -- promotion linkage: a promoted lesson is a derived row from one artefact version ------------
+    identity_key: Mapped[str | None] = mapped_column(String(200))
+    document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
+    document_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("document_version.id", ondelete="SET NULL")
+    )
 
 
 class ProcedureRecord(Base, TimestampMixin):
@@ -1766,9 +1938,9 @@ class ProcedureRecord(Base, TimestampMixin):
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     status_note: Mapped[str | None] = mapped_column(Text)
 
 
@@ -1819,10 +1991,10 @@ class DrillingProgram(Base, TimestampMixin):
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(200), default="system", nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     status_note: Mapped[str | None] = mapped_column(Text)
 
 
@@ -1863,9 +2035,74 @@ class ProgramTarget(Base, TimestampMixin):
     planned_npt_hours: Mapped[float | None] = mapped_column(Float)
     planned_cost_value: Mapped[float | None] = mapped_column(Float)
     planned_cost_unit: Mapped[str] = mapped_column(String(16), default="USD")
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
+
+
+class ProgramSection(Base, TimestampMixin):
+    """One authored, revision-owned section of a drilling program.
+
+    This is deliberately separate from ``ProgramTarget``: prose/design basis and the planned
+    numeric target are related but not interchangeable records. A revision copies its sections so
+    approved historical content remains immutable by convention and by the service boundary.
+    """
+
+    __tablename__ = "program_section"
+    __table_args__ = (
+        UniqueConstraint("program_id", "sequence", name="uq_program_section_sequence"),
+        CheckConstraint("sequence > 0", name="ck_program_section_sequence_positive"),
+        CheckConstraint(
+            "completion_state IN ('MISSING','DRAFT','SOURCE_PROVIDED','EXTRACTED_UNVERIFIED',"
+            "'TECHNICALLY_REVIEWED','APPROVED','NOT_APPLICABLE','OWNER_DECISION_REQUIRED')",
+            name="ck_program_section_completion_state",
+        ),
+        Index("ix_program_section_program", "program_id", "sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    program_id: Mapped[str] = mapped_column(
+        ForeignKey("drilling_program.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    section_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    completion_state: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
+    source_reference: Mapped[str | None] = mapped_column(String(500))
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
+    origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
+
+
+class ProcedureStep(Base, TimestampMixin):
+    """A structured, ordered instruction owned by one exact procedure revision."""
+
+    __tablename__ = "procedure_step"
+    __table_args__ = (
+        UniqueConstraint("procedure_id", "sequence", name="uq_procedure_step_sequence"),
+        CheckConstraint("sequence > 0", name="ck_procedure_step_sequence_positive"),
+        Index("ix_procedure_step_procedure", "procedure_id", "sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    procedure_id: Mapped[str] = mapped_column(
+        ForeignKey("procedure_record.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    responsible_role: Mapped[str | None] = mapped_column(String(160))
+    equipment: Mapped[str | None] = mapped_column(Text)
+    preconditions: Mapped[str | None] = mapped_column(Text)
+    parameters: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
+    expected_result: Mapped[str | None] = mapped_column(Text)
+    acceptance_criteria: Mapped[str | None] = mapped_column(Text)
+    evidence_required: Mapped[str | None] = mapped_column(Text)
+    hold_point: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    safety_controls: Mapped[str | None] = mapped_column(Text)
+    contingency: Mapped[str | None] = mapped_column(Text)
+    source_reference: Mapped[str | None] = mapped_column(String(500))
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
 
 
 class RiskRecord(Base, TimestampMixin):
@@ -1921,17 +2158,17 @@ class RiskRecord(Base, TimestampMixin):
     severity_band: Mapped[str | None] = mapped_column(String(16))
     #: The scale the score is on, because a 5x5 12 is not a 4x4 12.
     scale: Mapped[str] = mapped_column(String(24), default="MATRIX_5X5", nullable=False)
-    causes: Mapped[list | None] = mapped_column(JSON, default=list)
-    consequences: Mapped[list | None] = mapped_column(JSON, default=list)
+    causes: Mapped[list[Any] | None] = mapped_column(JSON, default=list)
+    consequences: Mapped[list[Any] | None] = mapped_column(JSON, default=list)
     mitigation: Mapped[str | None] = mapped_column(Text)
     contingency: Mapped[str | None] = mapped_column(Text)
     owner: Mapped[str | None] = mapped_column(String(200))
     #: Where the risk came from: "the offset wells' history" is a real answer, and it needs a row.
     source_note: Mapped[str | None] = mapped_column(Text)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(200), default="system", nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class Rig(Base, TimestampMixin):
@@ -1955,12 +2192,12 @@ class Rig(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE", nullable=False)
     horsepower: Mapped[float | None] = mapped_column(Float)
     #: Pumps, drawworks, VFD, winter package: whatever the operator records, as a dict of strings.
-    specifications: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    specifications: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     #: ``source`` row that describes the rig (a registry entry, a datasheet), when there is one.
     source_id: Mapped[str | None] = mapped_column(ForeignKey("source.id", ondelete="SET NULL"))
     notes: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class ServiceCompany(Base, TimestampMixin):
@@ -1988,7 +2225,7 @@ class ServiceCompany(Base, TimestampMixin):
     contract_reference: Mapped[str | None] = mapped_column(String(200))
     notes: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class CasingRun(Base, TimestampMixin):
@@ -2058,10 +2295,10 @@ class CasingRun(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     identity_key: Mapped[str | None] = mapped_column(String(200))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class CementJob(Base, TimestampMixin):
@@ -2147,10 +2384,10 @@ class CementJob(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     identity_key: Mapped[str | None] = mapped_column(String(200))
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class WellControlEvent(Base, TimestampMixin):
@@ -2238,12 +2475,12 @@ class WellControlEvent(Base, TimestampMixin):
     npt_hours_text: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     identity_key: Mapped[str | None] = mapped_column(String(160), unique=True)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class HseIncident(Base, TimestampMixin):
@@ -2325,12 +2562,12 @@ class HseIncident(Base, TimestampMixin):
     npt_hours_text: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
     record_state: Mapped[str] = mapped_column(String(16), default="ACTUAL", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     identity_key: Mapped[str | None] = mapped_column(String(160), unique=True)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class CostItem(Base, TimestampMixin):
@@ -2376,11 +2613,11 @@ class CostItem(Base, TimestampMixin):
     #: The NPT row this line was incurred against, when the sheet attributed it (PART 6's cost case).
     npt_id: Mapped[str | None] = mapped_column(ForeignKey("npt_record.id", ondelete="SET NULL"))
     status: Mapped[str] = mapped_column(String(24), default="CANDIDATE", nullable=False)
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     identity_key: Mapped[str | None] = mapped_column(String(160))
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     #: Source ownership, added when cost gained a promotion writer.  A manually entered line leaves
     #: all three empty and is never superseded or swept, because it belongs to no artefact.  A
     #: derived line belongs to the version that produced it, so a corrected sheet can stand the
@@ -2426,11 +2663,11 @@ class FieldPattern(Base, TimestampMixin):
     well_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_npt_hours: Mapped[float | None] = mapped_column(Float)
     #: ``[{"kind": "problem", "id": "prob-..."}]`` - every number above has a row behind it here.
-    evidence: Mapped[list | None] = mapped_column(JSON, default=list)
+    evidence: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     #: Well ids, denormalised for the "which wells" answer a reviewer checks first.
-    well_ids: Mapped[list | None] = mapped_column(JSON, default=list)
+    well_ids: Mapped[list[Any] | None] = mapped_column(JSON, default=list)
     #: The exact aggregation parameters, so a recompute is the same query and not a new judgement.
-    query: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    query: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: ``ConfirmationStatus``: a pattern a person has looked at is CONFIRMED; the rest are proposals.
@@ -2439,7 +2676,7 @@ class FieldPattern(Base, TimestampMixin):
     confidence: Mapped[float | None] = mapped_column(Float)
     #: Set when a recompute found the numbers no longer match; ``stale_count`` is what it found.
     stale_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    stale_snapshot: Mapped[dict | None] = mapped_column(JSON)
+    stale_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     detected_by: Mapped[str] = mapped_column(
         String(64), default="field_intelligence", nullable=False
     )
@@ -2447,7 +2684,7 @@ class FieldPattern(Base, TimestampMixin):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class BestPractice(Base, TimestampMixin):
@@ -2507,22 +2744,22 @@ class BestPractice(Base, TimestampMixin):
         ForeignKey("well_section.id", ondelete="SET NULL")
     )
     #: Where it applies, as open tokens the search and the recommender both filter on.
-    applicable_operations: Mapped[list | None] = mapped_column(JSON, default=list)
-    applicable_formations: Mapped[list | None] = mapped_column(JSON, default=list)
+    applicable_operations: Mapped[list[Any] | None] = mapped_column(JSON, default=list)
+    applicable_formations: Mapped[list[Any] | None] = mapped_column(JSON, default=list)
     hole_size_in: Mapped[float | None] = mapped_column(Float)
-    conditions: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    conditions: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     #: Where it must *not* be applied, because half of a practice's value is its exceptions.
     not_applicable_when: Mapped[str | None] = mapped_column(Text)
     document_id: Mapped[str | None] = mapped_column(ForeignKey("document.id", ondelete="SET NULL"))
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
-    provenance: Mapped[list | None] = mapped_column(JSON, default=list)
+    provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     created_by: Mapped[str] = mapped_column(String(80), default="system", nullable=False)
     #: Source lessons are relations (``LESSON_BEST_PRACTICE``), not a column: a practice rests on
     #: several lessons, and each edge carries the evidence that lesson contributed.
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 class Recommendation(Base, TimestampMixin):
@@ -2549,14 +2786,14 @@ class Recommendation(Base, TimestampMixin):
     #: Why this was generated: which rows, counted how, imply this action.  Never empty.
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     #: ``[{"kind": "problem_occurrence", "id": "..."}]`` - the same evidence-ref shape a pattern uses.
-    evidence: Mapped[list | None] = mapped_column(JSON, default=list)
+    evidence: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     #: The query the generator ran, verbatim, so a reader re-runs it instead of trusting this row.
-    query: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    query: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     #: ``RecommendationLifecycle``.
     status: Mapped[str] = mapped_column(String(24), default="PROPOSED", nullable=False)
     #: 0-1, from the strength of the pattern behind it - never a model's confidence in its own prose.
     confidence: Mapped[float | None] = mapped_column(Float)
-    applicability: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    applicability: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
     # -- what it came from and what it is for: columns, because these are the joins ---------------
     pattern_id: Mapped[str | None] = mapped_column(
         ForeignKey("field_pattern.id", ondelete="SET NULL")
@@ -2595,7 +2832,7 @@ class Recommendation(Base, TimestampMixin):
     decided_by: Mapped[str | None] = mapped_column(String(120))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decline_reason: Mapped[str | None] = mapped_column(Text)
-    attributes: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
 
 
 __all__ = [
@@ -2624,6 +2861,8 @@ __all__ = [
     "NptRecord",
     "ProblemOccurrence",
     "ProcedureRecord",
+    "ProcedureStep",
+    "ProgramSection",
     "ProgramTarget",
     "Project",
     "Recommendation",

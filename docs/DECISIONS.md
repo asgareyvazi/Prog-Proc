@@ -53,9 +53,9 @@ case of a UI and a pipeline touching the same file.
 
 **Status:** accepted (2026-09-05)
 
-**Context.** The platform starts on SQLite and may be deployed against PostgreSQL for a
-shared project database. Silent `create_all()` in production is how schemas drift apart
-from the code that reads them.
+**Context.** The platform currently supports SQLite workspaces only. PostgreSQL is a future
+possibility, not a supported or qualified backend. Silent `create_all()` in production is
+how schemas drift apart from the code that reads them.
 
 **Decision.** Alembic is the only writer of schema; `create_all()` exists for tests that
 want a throwaway database, and `ensure_schema()` runs the migration chain when a
@@ -67,9 +67,16 @@ application opens. Primary keys are application-generated strings (`core/ids.py`
 than dialect-specific serials, and offline mode (`upgrade --sql`) stays working so a DBA
 can review a migration before running it.
 
+**Support boundary.** PostgreSQL is **NOT QUALIFIED and not a currently supported backend**.
+The portability choices below are design intent only; they do not establish compatibility.
+There is no service-backed PostgreSQL workflow, and no PostgreSQL migration, data, concurrency,
+Doctor, downgrade, or offline qualification is claimed. Do not point production data at a
+PostgreSQL URL. Enabling it requires a dedicated disposable service job and the complete
+migration/data qualification matrix.
+
 **Consequences.** `migrations/env.py` is small and boring, which is the point. Drift is a
 CI failure: `schema_diff()` compares live tables with ORM metadata, and a test asserts it
-comes back empty.
+comes back empty. This guarantee currently applies to SQLite only.
 
 ## ADR-0005 — Own the AI seams; talk to Ollama over HTTP
 
@@ -147,6 +154,26 @@ file, which is what makes the platform usable for engineering decisions. MinerU'
 is Apache-2.0 with additional terms (attribution if offered as an online service; a
 separate commercial licence only past 100M MAU or $20M/month, neither of which applies
 here) — recorded so the next reader does not have to re-litigate it.
+
+**Current runtime/license addendum (reviewed 2026-11-08; initial audit 2026-10-20).** The optional MinerU 4.1.7
+runtime was installed and exercised in an isolated environment during the
+current mission; it is not a core dependency and CI does not install it. The
+upstream [MinerU license](https://github.com/opendatalab/MinerU/blob/master/LICENSE.md)
+contains Apache-2.0 terms plus additional conditions, including service and
+commercial-use language. The older threshold note above is a transcription of
+that source, **not** a legal determination that any condition does or does not
+apply. Re-read the license version shipped with the exact runtime and obtain
+appropriate review for the intended deployment.
+
+**No-implicit-model-fetch policy (2026-10-20 engineering expansion).** Prog-Proc's
+MinerU integration defaults `MINERU_MODEL_SOURCE=local`; missing local model files
+cause the requested parse/qualification attempt to fail instead of downloading
+models. An operator can opt into a remote model source in the `mineru.model_source`
+setting; that is an explicit network-policy decision. `drillintel mineru validate`
+checks the local runtime without inspecting/downloading models or uploading a
+document. Its separate synthetic OCR option pins local CLI, Basic tier and ONNX;
+metrics are emitted only after inference and remain fixture-scoped. This policy
+does not qualify OCR accuracy or authorize any deployment.
 
 ---
 
@@ -358,9 +385,10 @@ another, with nothing forcing the two to agree.
     `VocabMatch(raw=...)` exist so that "what did the file say" stays answerable after a classifier
     changes. A token nobody recognises is kept as `("rig_move", recognised=False)`, not discarded and not
     coerced to `other`.
-*   **SQLite now, PostgreSQL later, by staying in the common subset.** Partial unique indexes carry the
-    one-current-revision rules; no `ARRAY`, no `JSONB` operators, no enum types; `PRAGMA foreign_keys=ON`
-    on connect makes the schema's foreign keys real here as well as there.
+*   **SQLite is current; PostgreSQL remains unqualified future work.** Partial unique indexes and common
+    data types are portability-oriented design choices, not PostgreSQL support evidence. `PRAGMA
+    foreign_keys=ON` is SQLite-specific; PostgreSQL behavior requires an isolated service-backed
+    qualification before support can be claimed.
 *   **Two documented deviations, stated rather than hidden.** `ddr_report.report_date` is nullable with
     `report_date_text` beside it: a daily report that writes "14 June 2025" in prose would otherwise have
     forced promotion to invent a date or fail, and inventing is the one thing this layer is not for. And
@@ -549,9 +577,9 @@ same inputs. Widening a table that already has rows in it is the part with choic
     DBA uses on a shared file - and would leave a fresh workspace and a migrated one structurally different.
     So 0005 adds plain columns, the ORM models declare exactly those (a model that believes in a constraint
     the database does not enforce is worse than either alone), and `check_promoted_evidence` plus the
-    document-version checks police the promise where corruption can actually arrive. On PostgreSQL the same
-    migration stays a fast `ADD COLUMN`, and real constraints can be added there in a later one-line
-    migration with no data movement.
+    document-version checks police the promise where corruption can actually arrive. A PostgreSQL migration
+    shape was considered theoretically, but PostgreSQL remains unqualified: do not infer that this migration
+    or its constraints have been tested there.
 *   **Existing rows are told the truth about.** `origin` is backfilled to `'MANUAL'` and `created_by` to
     `'system'`, with `NOT NULL` and server defaults so a raw insert that forgets the column cannot create an
     unattributable record. `'MANUAL'` is the only honest backfill: nobody has seen these rows' sources, and
@@ -2565,3 +2593,539 @@ hazard. It is not a fix certificate.
 **Consequences.** A green Windows UI job after this decision is still not
 proof the access violation cannot recur. The owner checklist stays
 unexecuted.
+
+## ADR-56 — V8.16: one owner ends the process, and the loser stands down
+
+**Status:** accepted (2026-10-20)
+
+> **Correction (V8.17, ADR-61).** The phrase "the Python finalizer" in this
+> entry names a mechanism that does not exist. `os._exit` on Windows is the
+> CRT `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken teardown —
+> it does **not** run Python interpreter finalization. The double terminal
+> end described here is a real defect and is fixed; the crash it was
+> associated with is real and is not withdrawn. See ADR-61.
+
+ADR-54 moved the Windows deadline monitor from `os._exit` to
+`TerminateProcess`, because `os._exit` is `ExitProcess` on Windows and
+`ExitProcess` notifies the loaded libraries, so the Python finalizer runs
+while the `QApplication` and a live `QThread` still exist. ADR-55 recorded
+that the fault was still unproven.
+
+V8.16 re-read the failing job at `317c553` (check-run `117917753945`).
+The child exited `3221225477` (`0xC0000005`) instead of the contracted `4`.
+The stack was `finish_qt_application:426` -> `application_shutdown:507` ->
+`qt_shutdown_child.py:443` in the `deadline` mode, which is the **real
+`QThread`** mode, not the synthetic one. The transcript markers were
+`REAL_QTHREAD, LOOP_STARTED, QUIT_REQUESTED, ABOUT_TO_QUIT_WINDOW_VALID,
+EXEC_RETURNED`.
+
+The cause is now stated, and it is not the Qt call itself.
+
+*   Two threads reach the same shutdown expiry. The coordinator polls the
+    release budget; the deadline monitor guarantees the ceiling. When both
+    fire, both tried to end the process.
+*   The coordinator used `os._exit`, so it ran `ExitProcess`, which notified
+    the libraries, which ran the Python finalizer while the `QApplication`
+    and the live `QThread` still existed.
+*   The monitor used `TerminateProcess`, which does not notify the
+    libraries. The monitor's Windows path waits up to 50 ms for the deadline
+    notice, and that wait is the window in which the two overlapped.
+
+The evidence for the double end is in the repository, not in this report.
+The implementation at `317c553` was loaded and the coordinator and the
+monitor were raced into the same expiry: **two** `exit(4)` calls were
+recorded. The regression test in
+`tests/unit/test_qt_lifetime_contract.py` asserts exactly one terminal exit
+and fails against that implementation.
+
+The decision:
+
+*   **One owner.** A process-wide arbiter owns the terminal exit. The first
+    thread to claim it ends the process. The other stands down: it does not
+    terminate, and it does not return into Qt or into interpreter teardown.
+    A stand-down waits for the owner, bounded at three seconds, and then
+    uses the same end-of-process path as a backstop.
+*   **The coordinator ends the process the way the monitor does.** The
+    standard streams are flushed first, because a forced end does not flush
+    them, and then the process is ended with `TerminateProcess` on Windows
+    and `os._exit` elsewhere. The Python finalizer no longer runs while Qt
+    objects are alive.
+*   **`is_fail_closed_shutdown_exit` is unchanged.** It accepts only the
+    integer `4`. It still rejects `3221225477`, `-1073741819`, `True` and
+    `0`. No assertion was weakened and no test was skipped.
+*   **The fault is not closed.** A native Windows reproduction was not
+    achieved in this mission. The mechanism is established from the source
+    and from the reproduction of the double end, and the fix removes it, but
+    a green Windows UI job is still not proof that the fault cannot recur.
+    The owner checklist stays unexecuted.
+*   **No schema change.** Alembic head stays `0019`.
+
+**Consequences.** The shutdown contract is unchanged and now has a single
+owner. A shutdown that loses the race ends the process exactly once.
+
+## ADR-57 — V8.16: the dependency set is pinned, audited, and every action is a commit
+
+**Status:** accepted (2026-10-20)
+
+The repository declared version ranges and installed without a record of what
+it actually installed. The audit found no known vulnerability in the runtime
+set, but that was a property of a moment, not a property of the repository.
+
+The decision:
+
+*   **Constraints, not a lock.** `constraints/runtime.txt`,
+    `development.txt`, `ui.txt` and `build.txt` pin the versions the CI
+    proves. `pyproject.toml` keeps its ranges, so an operator can install a
+    newer patch release. The repository installs one product on two
+    operating systems and two runtimes with an optional Qt extra, and a
+    single universal lock would either carry a resolution this platform
+    never installs or pin the platform-specific Qt wheel everywhere.
+*   **The pins are regenerated by a tool.** `tools/constraints.py` resolves
+    a set in a throw away environment and writes the file. There is no
+    second list to keep in step, and `--check` fails when a file was edited
+    by hand.
+*   **The audit has three outcomes and one failure.** `clean` passes,
+    `vulnerable` fails, and an advisory-service outage is a recorded warning
+    and a pass. A third-party outage is not a defect in this repository, and
+    it is still written to `dependency-audit.json` so a silent outage cannot
+    be mistaken for a clean audit. An audit that cannot decide is a failure.
+*   **Every action is a commit SHA.** `actions/checkout`,
+    `actions/setup-python` and `actions/upload-artifact` are pinned to the
+    v7 release commits, verified against the upstream tags on 2026-10-20.
+    A tag is a name that can move; a commit cannot.
+
+The outcome at the time of the decision: the pinned runtime and UI sets
+audit clean, with no known vulnerability. Every pin has a wheel for CPython
+3.11 and 3.14, on Linux and on Windows.
+
+**Consequences.** A dependency change is a reviewed change with a CI run
+behind it. The cost is that a pin has to be renewed by hand, on purpose.
+
+## ADR-58 — V8.16: one package boundary is type-checked, and coverage is measured
+
+**Status:** accepted (2026-10-20)
+
+The repository had no type checker and no coverage measurement. A suite that
+is never measured has no baseline, so a change that removes coverage cannot
+be told apart from a change that adds a feature.
+
+The decision:
+
+*   **One boundary.** `drilling_intelligence.core` is type-checked in CI
+    with a strict profile: untyped definitions are an error, an incomplete
+    definition is an error, a returned `Any` is an error, and an unused
+    `type: ignore` is an error. That layer decides what a number means, so
+    an imprecise annotation there is a defect and not a style question. The
+    remaining packages are not checked yet; widening the boundary is a
+    separate, dated change.
+*   **Four real defects came out of it.** The state enums were declared as
+    `type[StrEnum]`, which has no `parse`, so the annotation described an
+    API the enums do not have. `Quantity.from_dict` coerced an arbitrary
+    object with `float()`, which raised `TypeError` for a value that is not a
+    number. `VocabMatch.to_dict` declared `dict[str, str]` and returned a
+    boolean. The structured logger forwarded `**fields` into a call that has
+    named parameters, so a field called `duration_ms` or `exception` was a
+    second argument rather than data.
+*   **Coverage is measured, not gated.** The coverage baseline is recorded
+    on the floor runtime and published as an artifact. No threshold is
+    enforced, because no measured baseline existed to set one against.
+    Inventing a threshold is not a measurement.
+*   **The policy test follows the pin.** The workflow policy test now
+    asserts that every action in every workflow is pinned to a commit SHA
+    that is recorded against its v7 tag. That is a stronger statement than
+    the tag it replaced.
+
+**Consequences.** The core layer is now held to a strict type profile in
+CI. The number is a recorded baseline to compare against, not a promise.
+
+## ADR-59 — V8.16: the native access violation is reproduced, measured, and not gated
+
+**Status:** accepted (2026-10-20)
+
+ADR-56 recorded the single-owner terminal exit and said the fault was not
+closed. This decision records what the measurement actually showed, and it
+corrects the earlier statement in one place.
+
+**The fault is reproducible.** The Windows offscreen UI job at
+`32483ed89c06981d7e8fdfb85639ec6ab129ca31` ran the shutdown stress
+experiment with 25 attempts in each of two modes. Four of the fifty attempts
+ended in the native access violation:
+
+| mode | attempts | native access violations |
+| --- | --- | --- |
+| `deadline` (real `QThread`) | 25 | 2 — attempts 21 and 25 |
+| `deadline-synthetic` (`threading.Thread`) | 25 | 2 — attempts 5 and 23 |
+
+That is a rate of about 8% per attempt. The UI suite in the same job
+reported 22 collected, 22 passed, 0 failed, 0 skipped.
+
+**What this corrects.** ADR-56 established, from the source and from a
+direct reproduction, that the old implementation performed *two* terminal
+exits in the race. That is a real defect and it is fixed. It is **not** the
+whole cause: with the arbitration in place the fault still occurs in about
+8% of attempts. The earlier reading — that the double end explained the
+fault — was too strong, and the fault is now measured rather than argued
+about.
+
+**Why the two modes matter.** The `deadline` mode runs a real `QThread`; the
+`deadline-synthetic` mode runs a plain `threading.Thread`. They fault at the
+same rate, so the live `QThread` is not the cause. What the two modes share
+is the shutdown path itself: the coordinator in `lifetime.py` and the
+deadline monitor.
+
+**What is known about the remaining fault.** The coordinator does not pump
+events while a worker owns the window, so in these modes the GUI thread is
+inside `QThread.msleep` when the deadline expires, and it never touches the
+window. The `processEvents` pump that an earlier revision of the coordinator
+ran at that point — the one the code comments already name as the place a
+Windows child access-violated — is skipped in these modes. The fault is
+therefore not the pump in this configuration, and no cause has been
+established for it.
+
+**The missing evidence.** The run that reproduced the fault did not publish
+the transcript of a faulted child, so the stage the child reached when it
+faulted is not known. `tools/qt_shutdown_stress.py` now records the stage
+tokens and the shutdown transcript of every failed attempt, and reports them
+at error level. The next Windows run therefore says where the fault happens,
+not only that it happened.
+
+**The measurement is not a gate.** The known native fault is measured and
+published; it does not fail the required job. ADR-55 already decided that a
+repeat loop does not belong in required CI, for the same reason: a fault
+that fires in a few percent of attempts turns a required job into a coin
+toss, and a job that fails at random stops meaning anything. Every native
+fault is still reported at error level with the count and the rate, the
+transcripts are in the artifact, and `--gate` exists for an operator who
+wants the run to fail on it.
+
+**What still fails the run.** An attempt that ends with any exit code other
+than `4`, other than the known native access violation, still fails the
+step. The shutdown contract itself is unchanged: `is_fail_closed_shutdown_exit`
+accepts only the integer `4`, and the UI suite's single deadline child is
+still required to exit `4`.
+
+*   **No schema change.** Alembic head stays `0019`.
+*   **No speculative Qt refactor.** The cause of the remaining fault is not
+    established, so the shutdown path is not restructured on a guess.
+
+**Consequences.** The fault has a name, a rate, and a reproduction. The
+remaining work is to find the stage at which it happens, and the
+instrumentation for that is now in place.
+
+## ADR-60 — V8.16: the faulting thread is inside a Python callback while the interpreter finalizes
+
+**Status:** accepted (2026-10-20); the fix is implemented and verified on the Windows runner
+
+> **Correction (V8.17, ADR-61).** The title says "the interpreter
+> finalizes"; that is the wrong mechanism. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs and runs the
+> native Qt/PySide6/shiboken teardown while the GUI thread is inside a
+> Python callback — and it does **not** run Python interpreter
+> finalization. The frames, the faulting thread, the access violation and
+> the measurements all stand; only the label is corrected.
+
+ADR-59 published the reproduction of the native access violation and withdrew
+the earlier claim that the cause was known. This decision records the first
+evidence that says *where* the fault happens, and the change that follows
+from it.
+
+**The evidence.** The Windows offscreen UI job at
+`eab9323324a1aade38ea547febe3ffe079dd187a` published the innermost frames of
+the faulting thread for every faulted attempt of the stress experiment. The
+frames are:
+
+| role | innermost frames (innermost first) |
+| --- | --- |
+| the thread that ends the process | `lifetime.py:625` → `lifetime.py:386` → `lifetime.py:447` |
+| the thread that stands down | `lifetime.py:423` → `lifetime.py:439` → `lifetime.py:508` |
+
+Read against the source at that commit:
+
+*   `lifetime.py:625` is `event.type() == QEvent.Type.Quit` inside
+    `_AcceptQuit.eventFilter` — a **Python callback invoked from C++**.
+*   `lifetime.py:386` is `os._exit(code)` in `_end_process`.
+*   `lifetime.py:447` is the `_end_process(...)` call in the monitor's
+    `_terminal`.
+*   `lifetime.py:423` is `time.sleep(0.02)` in
+    `_stand_down_for_terminal_exit`; `439` is that call; `508` is
+    `self._terminal()` in `enforce`.
+
+**What the frames say.** The faulting thread is the GUI thread, and it is
+inside a Python callback that Qt invoked from C++. A Python callback cannot
+run safely while the interpreter is finalizing. The only way the interpreter
+finalizes is `os._exit` — on Windows `os._exit` is `ExitProcess`, which
+*notifies the loaded libraries*, so the finalizer runs on the terminating
+thread, destroys the `QApplication`, and the GUI thread is left standing
+inside a callback that belongs to the object being destroyed.
+
+That is a mechanism that explains every observation: the fault is rare
+(about 8% of attempts) because it needs the finalizer to reach the Qt
+objects while the GUI thread is inside the callback; it happens in both
+stress modes because both end the process the same way; it happens in the
+UI suite too (the `35b0552` failure had stages up to `SHUTDOWN_BEGIN` and no
+terminal attempt at all, so the process was already finalizing); and it is
+not a live `QThread` problem.
+
+**What changed.** ADR-54 and `35b0552` already removed the `os._exit` that
+followed an *accepted* `TerminateProcess`. The frames show the fault on a
+path that still reached `os._exit`, so the whole `os._exit` path is now
+closed on Windows:
+
+*   `_end_process` on Windows ends the process with `TerminateProcess` and
+    returns. It never calls `os._exit`. The POSIX path is unchanged.
+*   The `TerminateProcess` call is typed explicitly
+    (`HANDLE`/`UINT`/`BOOL`). An untyped call passes the 64-bit handle as a
+    32-bit argument, and a refusal then falls through to the very
+    `os._exit` this path exists to avoid. A refusal is now retried and then
+    raised, not swallowed.
+*   A refused termination is reported (`TERMINAL_REFUSED`) and the process
+    waits; the watchdog that bounds the parent's wait ends it. Reaching the
+    exit code through the finalizer is the fault, and a failed shutdown
+    that the parent reports is worth more than a native fault.
+
+**What is verified, and what is not.** The change is verified by the source
+contract (the Windows branch of `_end_process` cannot reach `os._exit`, and
+the contract test says so structurally), by the unit tests, and by the local
+suite.
+
+**The Windows runner confirms it.** The offscreen UI job at
+`282707395553b0212684293dd787ddb6644e9aec` (run `39416773889`, job
+`118608029122`) published the UI suite green (22 collected, 22 passed, 0
+failed, 0 skipped, exit 0) and the stress step published **no native-fault
+annotation at all**, where the previous run at `eab9323` published ten. The
+stress step ran for 96 seconds, the same as the run that faulted, so the
+same fifty attempts ran: **zero native access violations in fifty
+attempts**, against at least ten in fifty before.
+
+The summary notice was truncated — GitHub keeps ten annotations of one level
+per step, and the summary was the eleventh notice — so the count in the
+evidence is the absence of failure annotations, not the summary line. The
+summary JSON is in the artifact.
+
+The root cause is therefore **established**: the interpreter finalizer,
+reached through the `os._exit` line of `_end_process` on Windows. What
+remains unproven is the owner's workstation, and that is what the manual
+checklist is for.
+
+**Consequences.**
+
+*   The exit-4 contract is unchanged: `is_fail_closed_shutdown_exit` accepts
+    only the integer `4`.
+*   A refused termination now fails loudly (a reported refusal and a
+    watchdog kill) instead of faulting.
+*   The shutdown path is not restructured beyond this: no speculative Qt
+    refactor, no change to the coordinator, no change to the deadline
+    monitor.
+
+## ADR-61 — V8.17: `os._exit` on Windows is a DLL detach, not a Python finalization
+
+**Status:** accepted (2026-10-24); this corrects the *name of the mechanism* in
+ADR-56 and ADR-60, and it withdraws nothing that was observed
+
+ADR-56 and ADR-60 named the mechanism of the Windows native access violation
+as "the interpreter finalizer". That name is wrong, and the error matters,
+because a wrong mechanism sends the next engineer to the wrong layer.
+
+**What the two decisions said.** ADR-56: "`os._exit` is `ExitProcess` on
+Windows and `ExitProcess` notifies the loaded libraries, so the Python
+finalizer runs while the `QApplication` and a live `QThread` still exist."
+ADR-60: "A Python callback cannot run safely while the interpreter is
+finalizing. The only way the interpreter finalizes is `os._exit`."
+
+**What is actually true.** Three different things were merged into one, and
+only the third is real:
+
+| candidate mechanism | what it is | does `os._exit` do it? |
+| --- | --- | --- |
+| Python interpreter finalization | `Py_FinalizeEx`: `atexit` handlers, module `__del__`, type cleanup | **no** |
+| CRT `_exit` / `_Exit` | the C runtime's immediate exit; skips `atexit` handlers and does not flush the streams | **yes** |
+| Win32 `ExitProcess` | the Win32 process-termination entry point; notifies every loaded DLL and kills the other threads | **yes** (the CRT `_exit` reaches it) |
+| DLL `DLL_PROCESS_DETACH` | each DLL's `DllMain(DLL_PROCESS_DETACH)` runs on the terminating thread | **yes** |
+| native C++ static destruction | `__cxa_atexit`/static destructors in those DLLs, which is where Qt, PySide6 and shiboken tear down | **yes** |
+| Qt / PySide6 / shiboken teardown | the Qt object tree and the shiboken bindings released by the above | **yes** |
+| a fault on a thread already inside a Python callback | the observed shape: the GUI thread was inside `_AcceptQuit.eventFilter`, a Python callback invoked from C++ | **yes** — this is what the frames show |
+| a stack dump that merely shows another thread | a thread that appears in a faulthandler dump but was not the faulting one | **no** — it is not evidence of anything |
+
+**The evidence for the correction.**
+
+*   CPython `Modules/posixmodule.c` (tag `v3.11.9`): `os._exit` is
+    `_exit(status)`. There is no Windows branch in it and no call into
+    `Py_FinalizeEx`. On Windows the C runtime's `_exit` terminates the
+    process through `ExitProcess`.
+*   Microsoft, *ExitProcess*: the function "terminates all threads within
+    the calling process" and notifies every loaded DLL with
+    `DLL_PROCESS_DETACH`; the documentation explicitly warns that a DLL
+    whose detach handler waits on a thread that is being killed can
+    deadlock, and recommends `TerminateProcess` for a forced end.
+*   Microsoft, *TerminateProcess*: "This function does not notify DLLs"; and
+    "if the target process is the calling process, the function does not
+    return".
+*   Microsoft, CRT `exit`/`_exit`/`_Exit`: `_exit` and `_Exit` "do not invoke
+    `atexit` handlers" and do not flush the streams.
+*   A public instance of the same mechanism: Electron issue #53091 records
+    a real `EXCEPTION_ACCESS_VIOLATION_READ` inside a DLL detach handler
+    during CRT `exit()` teardown.
+
+**What is not withdrawn.** The crash was real: a native
+`0xC0000005` access violation, observed in the Windows offscreen job, on a
+thread that was inside a Python callback invoked from C++
+(`lifetime.py:625` → `lifetime.py:386` → `lifetime.py:447`). The
+measurements (at least ten faults in fifty attempts at `eab9323`; zero in
+fifty at `2827073`) stand. What is corrected is the label: the teardown
+that faulted was the **native** teardown — `ExitProcess` → `DLL_PROCESS_DETACH`
+→ Qt/PySide6/shiboken static destruction — and not Python interpreter
+finalization.
+
+**What is not claimed either.** No specific DLL is named as the faulting
+one; a stack dump that shows other threads is not evidence about them; and
+nothing here is a cross-platform guarantee. The POSIX path (`os._exit`
+after `flush`) is a different mechanism with a different contract and is
+unchanged.
+
+**What the code does now.** The Windows terminal path never reaches any of
+the above. It goes through the injectable `_KernelTermination` adapter
+(`TerminateProcess`), which does not notify DLLs; a refusal is reported
+(`TERMINAL_REFUSED`) with its error code and is never converted into a
+success; `fixture_teardown` uses the same `_end_process` boundary. There is
+no `os._exit` fallback on Windows, and there is no `ExitProcess` fallback
+anywhere in the package.
+
+**Consequences.**
+
+*   The exit-4 contract is unchanged: `is_fail_closed_shutdown_exit` accepts
+    only the integer `4`.
+*   The wording in ADR-56, ADR-60, `docs/WINDOWS_TESTING.md` and the
+    end-to-end reports carries an additive correction pointing here; the
+    original sentences are left in place, because the report history is
+    evidence and erasing it would hide what was believed and when.
+
+## ADR-62 — V8.17: the flaky workbench test was a window that outlived its workspace
+
+**Status:** accepted (2026-10-24); the fix is implemented, tested and pushed
+
+**The symptom.** The `tests/ui` suite aborted at the *end* of a full run —
+after the last test had reported — with `QObject: shared QObject was
+deleted directly` and `malloc_consolidate(): unaligned fastbin chunk
+detected`, exit code 134. The same file passed when it ran alone, and the
+abortion never appeared in an isolated run. The failure therefore belonged
+to the *suite*, not to the test that happened to be running.
+
+**The cause.** The `qt_app` fixture in `tests/ui/test_workbench.py` is
+declared `@pytest.fixture(scope="session")`, so one `QApplication` serves
+every test in the file. Each test built its own `MainWindow`, and each
+`finally:` block only called `window.close()`. A closed `MainWindow` is not
+a destroyed one: it keeps its `ReviewController`, its open SQLite session
+and its Qt children alive, because nothing releases the top-level widget.
+Six tests did that, so six windows — each with a controller and a database
+session — outlived the per-test `workspace` fixture, which deletes the
+workspace directory. At the end of the session the application was torn
+down and the surviving windows were destroyed against a workspace that no
+longer existed: the shared `QObject` was deleted directly, and the
+allocator found an inconsistent heap. That is why the fault appeared only
+in a full `tests/ui` run and never in isolation, and why it pointed at the
+last test instead of at the six that caused it.
+
+**The fix.** The tests now use the product's own release path,
+`release_top_level_widgets(qt_app)` (`src/drilling_intelligence/ui/lifetime.py`),
+in every `finally:` block — six call sites — and the session fixture
+asserts that no top-level widget survived its teardown. The assertion is
+what turns this class of defect into an immediate, local failure instead of
+a distant native abort.
+
+**What was not done.** No sleep was added, no retry was added, no
+assertion was weakened, and nothing was skipped or xfailed. The
+`window.close()` call is gone from the file, and a policy test
+(`tests/unit/test_qt_workbench_policy.py`) asserts that it stays gone, that
+the six releases stay, that the fixture stays session-scoped, and that the
+teardown assertion stays.
+
+**The evidence.** The suite passes; the fresh-process repetition (25
+consecutive runs of the whole `tests/ui` directory, each in a new process,
+each recorded) is in the V8.17 mission report, and the Windows offscreen
+job runs the same suite.
+
+**Consequences.** The product's release path is now exercised by the tests
+that use it, and the fixture fails loudly instead of leaving a native abort
+for a later run to explain.
+
+## ADR-63 — V9.0: a source-grounded lesson-learned writer
+
+**Status:** accepted (2026-10-31); implemented, tested and shipped
+
+**The gap.** `LESSON_LEARNED` was `KNOWLEDGE_SUPPORTED`: a narrative TXT lesson
+(`lesson_learned_ll-2025-014.txt`) was citable as knowledge and as evidence,
+but no static contract could write a `lesson_learned` row from a document. A
+candidate that required a table shape had to be invented, not reused. The
+lessons a project actually accumulates are therefore not a writer until a
+contract says what a lesson tally is, and what it is not.
+
+**The shape that was chosen.** An XLSX sheet with an explicit header row.
+The header must contain a `lesson` column (`lesson`, `lesson learned`, …) plus
+at least one identifier column (`lesson code` or `title`). Optional columns are
+`observation`, `context`, `recommendation`, `root cause`, `problem type`,
+`well`, `field`, `project`, `section`, `applicable operations`, `hole size`.
+A TXT narrative, a table with only a `lesson` column, or a table with no
+`lesson` column is refused with `NO_RECOGNISED_TABLE` and remains evidence.
+A footnote row with a description but no sizing is not a component; here a
+row with no `lesson` text or with neither code nor title is not a lesson.
+
+**What is not inferred.** `root_cause` is stored when the column exists and
+left absent otherwise; `root_cause_status` is `KNOWN` only when the source
+states a cause, else `UNKNOWN` — never `INFERRED`. Problem type is a closed
+vocabulary token matched whole; an unknown string keeps its own token. Hole
+size is kept as text plus a parsed numeric when the header stated a unit;
+otherwise it stays text. Lesson wording is kept verbatim.
+
+**Identity, idempotence and revision.** One promotion identity per row:
+`promotion_identity(version_id, "lesson-learned", table_id, row_index, well_id, code)`.
+A second promotion of the same version is `UNCHANGED` via `_confirm_row`.
+A changed source creates a new `DocumentVersion`; the old derived lessons are
+stood down (`is_current=False`) by `_supersede_by_document`, and the new row
+gets `revision = prior.revision + 1` with `supersedes_id` pointing at the old.
+A duplicate code in the same artefact is refused as `CONFLICT`; a row naming
+a well that is not the document's well is `WELL_SCOPE_CONFLICT`; a
+site-scoped document that is asked for a well is `UNRESOLVED_WELL_REFERENCE`.
+All are exclusive outcomes, not silent merges.
+
+**Governance.** A promoted lesson starts `DRAFT` with `origin=DERIVED`,
+`document_id`/`document_version_id`/`identity_key` and a provenance entry that
+carries the sheet, table id, row index and file hash. It requires evidence
+(`provenance` plus any edge) and a reviewer distinct from `created_by`
+(`promotion`) for `APPROVED`. Stale `expected_status`/`revision`/`updated_at`
+and independent-actor checks are the same `ReviewActionService` boundary the
+workbench already uses; the UI derives its actions from `available_actions()`
+and executes them outside the GUI thread.
+
+**Migration.** `0020` adds nullable `document_id`, `document_version_id` and
+`identity_key` to `lesson_learned` with `uq_lesson_identity` and
+`ix_lesson_version`, via `batch_alter_table` for SQLite. Manual lessons keep
+`NULL` there; promoted lessons fill them.
+
+**Tests.** 12 forensic cases in `tests/integration/test_lesson_promotion.py`:
+two valid rows, missing shape, incomplete row, cross-well, duplicate in file,
+revision supersession, idempotence, unsupported unit/provenance, TXT refused,
+provenance re-read, human approval (self-approval and evidence gates), and
+`root_cause` not inferred. A duplicate code from a different document is
+`CONFLICT`.
+
+**Consequences.** `LESSON_LEARNED` moves to `END_TO_END_CERTIFIED` (`v8`);
+the coverage matrix becomes 14/7/5 with 12 handlers and head `0020`. The
+knowledge-only TXT corpus stays valid and is still the negative case that
+proves promotion does not invent from prose.
+
+**Lifecycle qualification follow-up (2026-11-06; implementation, not a new product policy).** On code/test SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c`, a source supersession sets the predecessor to `SUPERSEDED`, preserves its previous lifecycle in `prior_status`, and creates the successor as `DRAFT` without inheriting `approved_by`/`approved_at`. Lesson code identity is globally unique after trim + Unicode casefold among current rows; repository create/update/revision, promotion, and the database partial unique index enforce the rule. Focused lesson and exception tests passed 95/95; full Linux/Ubuntu/Windows suites passed on that exact SHA (see the Persian closure report). This note documents tested lifecycle behavior and does not authorize a source-removal or code-rename policy.
+
+**Owner-gated gap.** If a source revision removes or changes a lesson code without an explicit successor, disposition/linking semantics remain unspecified. An isolated audit showed the resulting chain is refused by the chain validator when no current or withdrawn disposition exists, but the product does not yet define a complete approved behavior for source removal/rename. Do not infer automatic deletion, withdrawal, code reuse, or linkage; see `docs/PRODUCT_DECISIONS_REQUIRED.md`.
+
+## ADR-64 — DDR comparison is content-aligned, conservative, and read-only
+
+**Status:** implemented on the authorized mission branch; final exact-SHA workflow qualification is tracked in the current mission report. No schema migration or lifecycle change.
+
+**Context.** Manual DDR revisions recreate activity rows and assign their sequence from current list position. Neither row ID, sequence, nor creation/update timestamp is a durable identity for an authored activity. Pairing by those values can turn an insertion, deletion, or reorder into false edits. Repeated text may not have a uniquely recoverable correspondence.
+
+**Decision.** Compare only the exact predecessor/successor revision pair requested by the operator. Compare non-activity authored fields by field value. Align activity rows using exact authored content and surrounding order; report unique insertions, removals, edits and relative-order changes. If identical content repeats or multiple changed rows could be paired, return an explicit ambiguous group rather than guessing. Preserve exact operator text and do not supply engineering interpretation, normalization, approval, or confidence. Do not use sequence, row ID, or timestamps as matching identity.
+
+The CLI and UI are strictly display-only: comparison must not create a review decision, audit event, status change, or database write. CLI JSON has stable ordering and distinguishes a conclusive result, non-conclusive (ambiguous/malformed) result, operational/scope error, and usage error with separate exit codes. UI displays the exact revision scope, predecessor/successor provenance, ambiguity, and exact count of comparison items omitted by its display cap. Declared actor text remains provenance only, not authentication.
+
+**Consequences.** This adds no document class, handler, calculation, database schema, or review authority. It does not change the 26-class taxonomy, SQLite-only qualification, or any M2–M5/O-02/O-03 owner gate. Tests must include service-generated revisions and spawned independent-process SQLite tests for write contention separately from the comparison's read-only behavior. Qt-enabled CI—not a local skip—is required to evidence execution of the UI tests.

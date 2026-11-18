@@ -1,14 +1,19 @@
 # Windows testing
 
+> **Current DDR assurance CI:** code/diagnostics SHA `b1deab1782d6c17552ca4334606b5521c84c44ef` has Windows history stability **15/15 PASS on CPython 3.11 and 3.14** (job IDs `128795266286` and `128795266227`) and Windows Qt offscreen UI **30/30 PASS per runtime** (job IDs `128795266400` and `128795266181`); both Windows full-suite jobs have now failed the stale generated exception-inventory test (2,850 collected / 2,785 passed / 64 skipped / 1 failed on each runtime). Linux CPython 3.11/3.14 failed that same inventory test; Ubuntu 26.04 full suite remained `in_progress` at the 2026-11-08 20:31 UTC check after >3h44, so it is not a pass. Exact-SHA Linux run [`42501577186`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42501577186) and Windows run [`42501577174`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42501577174) are linked here; see the mission report for final workflow conclusions. The preceding exact SHA `41f04d6a6ddd2abe4339c410b7e688004eb62c4a` had Linux full-suite failures in CPython 3.11/3.14 on the stale generated exception inventory, plus one unidentified Ubuntu 26.04 test. Windows CPython 3.11/3.14 each failed the same inventory test; two Windows history stability jobs were canceled at the unchanged 45-minute ceiling. Windows offscreen UI was 30/30 on both runtimes, intake and presentation stability were 15/15 each, and both PowerShell run-card versions passed. Artifact ZIP payloads could not be downloaded because GitHub redirected to a host outside the sandbox allowlist; the Ubuntu failure identity and detailed CI skip reasons remain unknown. Selectors, 15 attempts, and timeout were not changed. Offscreen CI is not physical display acceptance; the 16-step human workstation checklist remains **NOT RUN**.
+>
+> **Historical C1/C2 evidence only:** C1 SHA `43afa1f2873356e2c5e73d1b8b0491374d3b6cc5` passed Linux [`42381352913`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42381352913) (9/9 jobs) and Windows [`42381353106`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42381353106) (14/14 jobs); C2 SHA `8cc4c0fec923329f9371ddd1ce222a5e8ca0df80` passed Linux [`42449344642`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42449344642) (9/9) and Windows [`42449344633`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42449344633) (14/14). Those exact-SHA totals and results remain valid only for those revisions. Local Qt is **SKIPPED** because `PySide6` is not installed in the current virtual environment. See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and the [current DDR mission report](mission-reports/AUTONOMOUS_MISSION_2026-10-20_DDR_COMPARISON_ASSURANCE_FA.md) for the latest exact-SHA verdict.
+
 This is the operator route for a Windows 10 or Windows 11 workstation. It is
 not a claim that Windows is fully supported. Automated coverage is the
 `windows-2022` workflow in `.github/workflows/ci-windows.yml`. That image is
 not this workstation. The workflow runs CPython 3.11 and 3.14 for the core
-suite, and CPython 3.11 for clean-install smoke, the disposable pilot, and
-the offscreen UI job. Exact totals for a SHA are in
-`docs/mission-reports/V8.13_FINAL_REPORT.md` and
-`docs/mission-reports/V8.14_FINAL_REPORT.md`. A green offscreen job is not
-the same as opening the workbench on this machine.
+suite, clean-install smoke, and offscreen UI jobs; the disposable pilot and
+PowerShell run-card behavior have separate Windows jobs. C1 and C2's
+identity-bound Windows totals belong only to those exact SHAs and their artifacts.
+Older run totals belong only to the exact SHAs printed in their artifacts and
+are not transferred here. A green offscreen job is not the same as opening
+the workbench on this machine.
 
 Commands below are PowerShell. Do not paste the Bash examples from the
 README. Keep the repository line endings as LF (`git config core.autocrlf
@@ -45,15 +50,20 @@ From the repository root:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m pip install -c constraints\development.txt -c constraints\build.txt -e ".[dev]"
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m ruff format --check .
+.\.venv\Scripts\python.exe -m mypy
 .\.venv\Scripts\python.exe -m compileall -q src tests migrations tools
 .\.venv\Scripts\python.exe -m alembic heads
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-`alembic heads` must show one line containing `(head)`, currently `0019`.
+The constraints pin the versions the CI proves. Drop them for a plain
+install; keep them when you want the machine to match the recorded run.
+`python -m mypy` checks the declared boundaries in `pyproject.toml`: core, database, extraction, documents, and review.
+
+`alembic heads` must show exactly one line containing `(head)`, currently `0027` for the Program/Procedure authoring schema. Verify this command against the checkout being qualified.
 UI tests skip when PySide6 is not installed. That skip is not a pass. The
 reason is `QtWidgets unavailable`.
 
@@ -65,6 +75,66 @@ $root = Join-Path $env:TEMP "drillintel venv"
 python -m venv $root
 & (Join-Path $root "Scripts\python.exe") -m pip install -e ".[dev]"
 ```
+
+## V10.3 isolated acceptance run card
+
+For a full Windows qualification run (including actual PySide6/Qt probing, pytest totals, offline SQL capture, wheel/sdist clean installs and explicit dependent `NOT RUN` states), use the run card from either PowerShell 5.1 or PowerShell 7:
+
+```powershell
+powershell -NoProfile -File docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1 -Python (Get-Command python).Source
+# or
+pwsh -NoProfile -File docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1 -Python (Get-Command python).Source
+```
+
+Each invocation gets `out/windows-acceptance/<run-id>/.venv`; do not reuse the repository `.venv`. The behavioral harness is `tests/powershell/test_run_card.ps1`. Generated raw and sanitized evidence stays under the ignored per-run output directory. A missing interpreter, failed prerequisite, timeout, or malformed result template remains a non-PASS result and is not rewritten as a skip.
+
+## Shutdown stress on this workstation
+
+The Windows offscreen UI job runs the fail-closed shutdown child repeatedly
+and measures it. The same experiment runs here:
+
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+.\.venv\Scripts\python.exe tools\qt_shutdown_stress.py --attempts 25 --log-dir qt-logs\shutdown-stress --gate
+```
+
+> **Correction (V8.17).** This section used to say that a native access
+> violation was reported at error level and did **not** fail the job,
+> because a fault that fires in a few percent of attempts turns a required
+> job into a coin toss. That was the policy of an open defect. The defect
+> is closed by construction - the Windows termination path can no longer
+> reach `ExitProcess` - so a recurrence is a regression, and the step is
+> gated: the CI runs the same command with `--gate` and a single fault
+> fails the job. Every attempt is still reported, and the artifact is
+> uploaded whether the step passes or fails.
+
+Every attempt must report exit `4`. An attempt that reports
+`3221225477` (`0xC0000005`) is a native access violation, and it is a
+failure of this workstation, not a flaky test. Record the number of
+attempts and every failure; do not re-run until one attempt passes.
+
+**What this experiment measured.** The native access violation was
+reproduced on the Windows runner — at least ten faults in fifty attempts
+at commit `eab9323`. The cause was the interpreter finalizer: on Windows
+the terminal exit used `os._exit`, which is `ExitProcess`, which notifies
+the loaded libraries and runs the finalizer while the `QApplication` and a
+live GUI thread still exist. The finalizer destroyed them under the GUI
+thread. Since commit `2827073` the Windows branch of the terminal exit
+cannot reach `os._exit` at all, and the same fifty attempts published
+**zero** native faults.
+
+> **Correction (V8.17, ADR-61).** "The Python finalizer" names a
+> mechanism that does not exist. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken
+> teardown while the GUI thread is inside a Python callback; it does
+> **not** run Python interpreter finalization. The access violation is
+> real and is not withdrawn — only the label is corrected.
+
+If an attempt still reports `3221225477` on your workstation, record the
+whole line: it carries the stage the child reached and the innermost frames
+of the thread that faulted. Those frames are the evidence, and they are
+what a fix has to be based on.
 
 ## Release smoke
 
@@ -114,9 +184,22 @@ The workbook handle-count test also skips on Windows. The reason is
 Two runs grew by 3 and by 11, so that counter cannot prove the archive
 bound. The skip is not a pass. Linux still counts `/proc/self/fd`.
 
-The offscreen UI job has also seen the synthetic-deadline child exit
-`3221225477` (`0xC0000005`) instead of 4. A later green UI job does not
+The offscreen UI job has also seen the fail-closed shutdown child exit
+`3221225477` (`0xC0000005`) instead of 4. The cause is now stated: two
+threads could reach the same shutdown expiry and both tried to end the
+process, and the coordinator's `ExitProcess` ran the Python finalizer while
+the `QApplication` and a live `QThread` still existed. The shutdown now has
+one owner, and the loser stands down. A later green UI job still does not
 prove that access violation cannot recur. It is not a pass of that case.
+The shutdown stress step above is the measurement that would show it.
+
+> **Correction (V8.17, ADR-61).** "The Python finalizer" names a
+> mechanism that does not exist. On Windows `os._exit` is the CRT
+> `_exit` → `ExitProcess`, which notifies the loaded DLLs
+> (`DLL_PROCESS_DETACH`) and runs the native Qt/PySide6/shiboken
+> teardown while the GUI thread is inside a Python callback; it does
+> **not** run Python interpreter finalization. The access violation is
+> real and is not withdrawn — only the label is corrected.
 
 ## Optional workbench
 
@@ -139,8 +222,7 @@ $ws = Join-Path $env:TEMP "drillintel-sample"
 ```
 
 Close the window from its close control. Repeat open and close a few times.
-Review actions in the workbench are read-only; they must not create or
-promote a record.
+Opening the review without confirming an action is read-only: `DomainReviewService` does not mutate the workspace. Explicit, confirmed actions through `ReviewActionService` (`src/drilling_intelligence/review/actions.py`) are the governed mutation boundary — they are submitted as an immutable request with expected preconditions, executed outside the GUI thread by `ReviewActionWorker`, and re-read into a fresh review on success. Promotion of a new domain row is still `records promote`, not a review click.
 
 Offscreen automated UI tests, not a substitute for that window:
 
@@ -209,22 +291,184 @@ stored.
 
 ## Manual acceptance checklist
 
-Run this on the workstation you care about. Record the Windows edition,
-build if you have it, `python --version`, the repository SHA, and
-`$LASTEXITCODE` for each failed step. A skipped step is not a pass; write
-the skip reason. Until those notes exist, this checklist is unexecuted.
-The disposable pilot does not complete these boxes.
+**Status: NOT RUN.** This list has never been executed on the owner's
+workstation. Nothing on this page completes a box, and no automated run -
+including the green `windows-2022` jobs - completes one either. A box is
+ticked by the person who ran that step on the workstation, in the record
+below, and by nobody else.
 
-- [ ] `python --version` is 3.11 or newer.
-- [ ] `.\.venv\Scripts\python.exe -m pip install -e ".[dev]"` exits 0.
-- [ ] `drillintel.exe --help` and `--version` exit 0.
-- [ ] Workspace create and open on a temp path, including a path with a space.
-- [ ] Well create and well list show the well you created.
-- [ ] `doctor` exits without opening a network connection.
-- [ ] A synthetic text file ingests and extraction does not require MinerU.
-- [ ] Search and `index rebuild` run on that workspace.
-- [ ] `fields report` writes HTML you can open.
-- [ ] `drillintel-ui.exe` opens and closes repeatedly on that workspace.
-- [ ] Review controls do not write a new engineering record.
-- [ ] Console text with a non-ASCII character is readable (`PYTHONUTF8=1`).
-- [ ] Logs were captured without document bodies or credentials.
+### Before the first step: the acceptance record
+
+Write these down before running anything. Without them, a result cannot be
+compared with any other run, and a failure cannot be reproduced.
+
+| What to record | How |
+| --- | --- |
+| Windows edition and build | `Get-ComputerInfo` \| Select-Object WindowsProductName, OsBuildNumber, OsVersion |
+| Architecture and RAM | `$env:PROCESSOR_ARCHITECTURE`; `(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory` |
+| CPython | `.\.venv\Scripts\python.exe -VV` |
+| Repository SHA | `git rev-parse HEAD` **and** `git status --porcelain=v2 --branch` |
+| Branch and cleanliness | the two lines above must agree that the tree is clean |
+| Installed Pin set used | `git rev-parse HEAD:constraints/development.txt` |
+| Qt and PySide6 | `.\.venv\Scripts\python.exe -c "import PySide6; from PySide6.QtCore import qVersion; print(PySide6.__version__, qVersion())"` |
+| Qt platform | `.\.venv\Scripts\python.exe -c "from PySide6.QtWidgets import QApplication; print(QApplication([]).platformName())"` |
+| The disposable workspace path | a new folder under `$env:TEMP` whose name you can delete |
+| Date and who ran it | the person, not the machine |
+
+Everything below runs against a **disposable** workspace. Do not run it
+against an operational record: several steps write to the workspace, and
+the point of the exercise is to be able to delete it afterwards.
+
+```powershell
+$sha  = git rev-parse HEAD
+$ws   = Join-Path $env:TEMP ("drillintel-acceptance-" + $sha.Substring(0,7))
+$log  = Join-Path $env:TEMP ("drillintel-acceptance-" + $sha.Substring(0,7) + ".log")
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+"edition/build:" | Out-File $log
+Get-ComputerInfo | Select-Object WindowsProductName, OsBuildNumber, OsVersion | Out-File $log -Append
+"sha: $sha" | Out-File $log -Append
+git status --porcelain=v2 --branch | Out-File $log -Append
+```
+
+### The steps
+
+Each step says what to run, what a pass looks like, and what to write in
+the record if it fails. `$LASTEXITCODE` is the exit code of the last
+native program; check it after every command, because PowerShell will
+happily print an error and carry on.
+
+1. **The interpreter is the documented one.**
+   `.\.venv\Scripts\python.exe -VV` reports CPython 3.11 or newer,
+   and 3.14 is preferred when wheels exist for it. Record the version.
+   A Microsoft Store alias that answers `python` is not this step.
+
+2. **The install is the pinned one and exits 0.**
+   `.\.venv\Scripts\python.exe -m pip install -c constraints\development.txt -c constraints\build.txt -e ".[dev]"`,
+   then `.\.venv\Scripts\python.exe -m pip check`.
+   Pass: both exit 0 and `pip check` says no broken requirements.
+
+3. **The tree is the committed one and is still clean.**
+   `git status --porcelain=v2 --branch` prints the branch line and the
+   SHA and nothing else. Pass: no `1 `, `2 ` or `? ` lines.
+
+4. **The static gates are green on this machine.**
+   `-m ruff check .`, `-m ruff format --check .`, `-m mypy`,
+   `-m compileall -q src tests migrations tools`, `-m alembic heads`.
+   Pass: the first four exit 0, and `alembic heads` prints exactly one
+   line containing `(head)`, currently `0027`.
+
+5. **The suite runs, and the skips are named.**
+   `.\.venv\Scripts\python.exe -m pytest`.
+   Pass: exit 0, and the summary line is copied into the record *including*
+   the skip count. Two Windows skips are expected and must be named, not
+   counted as passes: the open-database-file move, and the workbook
+   handle-count test. A skip that is not one of those two gets its reason
+   written down.
+
+6. **The shutdown experiment preserves every attempt.**
+   `$env:QT_QPA_PLATFORM = "offscreen"` then
+   `.\.venv\Scripts\python.exe tools\qt_shutdown_stress.py --attempts 25 --log-dir qt-logs\shutdown-stress --gate`.
+   Pass: 25 attempts, every one exit `4`, and
+   `qt-logs\shutdown-stress\summary.json` reports 25 attempts and 0
+   failures. Copy the whole `qt-logs\shutdown-stress` folder into the
+   record - every attempt log, not only the failures. Do not re-run until
+   one attempt passes: an attempt that reports `3221225477`
+   (`0xC0000005`) is a failure of this workstation, and the frames it
+   prints are the evidence a fix has to be built on.
+
+7. **The console commands answer.**
+   `.\.venv\Scripts\drillintel.exe --help` and
+   `.\.venv\Scripts\drillintel.exe --version`. Pass: exit 0 for
+   both, and the version line names the interpreter.
+
+8. **A workspace and a well can be created on a path with a space.**
+   The path in `$ws` above has no space by accident - the acceptance path
+   also runs with one:
+   `$ws2 = Join-Path $env:TEMP "drillintel acceptance space"`,
+   `drillintel.exe workspace create $ws2 --name Acceptance`,
+   `drillintel.exe wells create --name "SAMPLE-1" --workspace $ws2`,
+   `drillintel.exe wells list --workspace $ws2`.
+   Pass: the well is listed. Record the exact paths used.
+
+9. **`doctor` stays offline.**
+   `drillintel.exe doctor --workspace $ws2` and
+   `drillintel.exe --json doctor --workspace $ws2`.
+   Pass: it exits 0 or 1, and the JSON parses. Watch the machine's network
+   indicator, or run it with the adapter disabled: nothing here may open a
+   connection. A provider finding is configuration, not availability.
+
+10. **A synthetic document ingests and extracts without MinerU.**
+    Create `sample.txt` as shown in "A small synthetic ingest" above, then
+    `drillintel.exe ingest $docs --well "SAMPLE-1" --workspace $ws2`.
+    Pass: the summary names the file as ingested, and no step fails because
+    MinerU is absent. A scanned page demanding OCR is expected to be
+    reported as needing MinerU, not to crash.
+
+11. **The index rebuilds and the search returns something.**
+    `drillintel.exe index rebuild --workspace $ws2` and
+    `drillintel.exe search mud --well "SAMPLE-1" --workspace $ws2`.
+    Pass: the rebuild exits 0 and the search finds the synthetic line.
+
+12. **The HTML report opens in a browser.**
+    `drillintel.exe fields report --workspace $ws2 --well "SAMPLE-1" --output (Join-Path $env:TEMP "sample-report.html")`.
+    Pass: `$LASTEXITCODE` is 0, the file opens, the identity shown in the
+    page matches the JSON identity, and the page needs no network: no
+    script tag, no `https://` reference.
+
+13. **The workbench opens and closes, repeatedly.**
+    `$env:QT_QPA_PLATFORM` **unset** for a real window; then
+    `.\.venv\Scripts\drillintel-ui.exe --workspace $ws2 --well "SAMPLE-1"`.
+    Close it from its own close control, and repeat five times.
+    Pass: every launch opens a window, every close ends the process with
+    exit 0, and no `0xC0000005` appears in the console or in the Windows
+    application event log. Record the number of launches and the exit code
+    of each one.
+
+14. **Domain review is read-only until an action is explicitly confirmed.**
+    In the workbench, open the review surface and browse without confirming any action. Then
+    `drillintel.exe records list --workspace $ws2 --well "SAMPLE-1"` and
+    compare with the same command before the window was opened.
+    Pass: the rows are identical — passive review does not mutate. A confirmed action through `ReviewActionService` does mutate via its owning domain repository (it is not a silent promotion), reloads a fresh `DomainReview` on success, and leaves the display unchanged on failure. The prompt must derive its actions from `available_actions()`, require actor/reason/evidence according to the lifecycle, block concurrent submissions, and run outside the GUI thread — see `docs/HUMAN_REVIEW_ACTION_INVENTORY.md` and `src/drilling_intelligence/ui/worker.py` `ReviewActionWorker`.
+
+The V10.3 **Intake** page is separate from domain review: queueing writes only file metadata/hash plus an audit event; preview must not create a `Document` or domain row. Marking reviewed/rejected requires actor and reason. M2–M5 remain blocked.
+
+15. **Non-ASCII text survives the console.**
+    `.\.venv\Scripts\drillintel.exe wells create --name "Ø-test" --workspace $ws2`
+    then `wells list`. Pass: the name reads back exactly, with no `?` and no
+    `UnicodeEncodeError`. `$env:PYTHONUTF8` must be `1` for this; record
+    whether it was set.
+
+16. **The logs carry no document body and no credential.**
+    Open `$ws2\.drillintel\logs\`. Pass: no file contains the text of
+    `sample.txt`, no API key, no connection string. If one does, that is a
+    security defect: stop, keep the file, and report it without pasting the
+    secret.
+
+### The record
+
+Fill this in as you go; leave a box unticked until the step has run **on
+this workstation**. "Skipped" is a result, and it is written down with its
+reason - it is never a tick.
+
+| # | step | result | evidence |
+| --- | --- | --- | --- |
+| 1 | interpreter version | NOT RUN | |
+| 2 | pinned install and `pip check` | NOT RUN | |
+| 3 | tree clean at the recorded SHA | NOT RUN | |
+| 4 | ruff, format, mypy, compileall, alembic head | NOT RUN | |
+| 5 | suite, with named skips | NOT RUN | |
+| 6 | shutdown stress, 25 attempts, every log | NOT RUN | |
+| 7 | `--help` and `--version` | NOT RUN | |
+| 8 | workspace and well on a path with a space | NOT RUN | |
+| 9 | `doctor` offline | NOT RUN | |
+| 10 | synthetic ingest and extraction | NOT RUN | |
+| 11 | index rebuild and search | NOT RUN | |
+| 12 | HTML report in a browser | NOT RUN | |
+| 13 | workbench open and close, five times | NOT RUN | |
+| 14 | review controls write nothing | NOT RUN | |
+| 15 | non-ASCII console round trip | NOT RUN | |
+| 16 | logs sanitized | NOT RUN | |
+
+Until every row says otherwise, the desktop acceptance state of this
+project is **NOT RUN**, and the reports say so.

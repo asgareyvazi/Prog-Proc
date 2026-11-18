@@ -532,6 +532,7 @@ class LessonLifecycle(StrEnumLike):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
     SUPERSEDED = "SUPERSEDED"
+    WITHDRAWN = "WITHDRAWN"
 
 
 LESSON_LIFECYCLE_TRANSITIONS: dict[LessonLifecycle, tuple[LessonLifecycle, ...]] = {
@@ -539,15 +540,18 @@ LESSON_LIFECYCLE_TRANSITIONS: dict[LessonLifecycle, tuple[LessonLifecycle, ...]]
         LessonLifecycle.REVIEW,
         LessonLifecycle.APPROVED,
         LessonLifecycle.REJECTED,
+        LessonLifecycle.WITHDRAWN,
     ),
     LessonLifecycle.REVIEW: (
         LessonLifecycle.DRAFT,
         LessonLifecycle.APPROVED,
         LessonLifecycle.REJECTED,
+        LessonLifecycle.WITHDRAWN,
     ),
-    LessonLifecycle.APPROVED: (LessonLifecycle.SUPERSEDED,),
-    LessonLifecycle.REJECTED: (LessonLifecycle.DRAFT,),
-    LessonLifecycle.SUPERSEDED: (),
+    LessonLifecycle.APPROVED: (LessonLifecycle.SUPERSEDED, LessonLifecycle.WITHDRAWN),
+    LessonLifecycle.REJECTED: (LessonLifecycle.DRAFT, LessonLifecycle.WITHDRAWN),
+    LessonLifecycle.SUPERSEDED: (LessonLifecycle.WITHDRAWN,),
+    LessonLifecycle.WITHDRAWN: (),
 }
 
 

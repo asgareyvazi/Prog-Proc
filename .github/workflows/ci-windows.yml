@@ -10,6 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -33,11 +34,11 @@ jobs:
         shell: pwsh
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -45,7 +46,7 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints/development.txt -c constraints/build.txt -e ".[dev]"
 
       - name: Ruff lint
         shell: pwsh
@@ -54,6 +55,48 @@ jobs:
       - name: Ruff format
         shell: pwsh
         run: python -m ruff format --check .
+
+      # The same boundaries are type-checked on Windows as on Linux, so a type error that
+      # only appears on one platform cannot hide behind the other one's green run.
+      - name: Type-check the checked boundaries
+        if: matrix.python-version == '3.11'
+        shell: pwsh
+        run: python -m mypy
+
+      # The pinned dependency set is audited against the advisory service.
+      # A known vulnerability fails the job. An advisory-service outage is a
+      # warning and a record, not a failure: a third-party outage is not a
+      # defect in this repository, and it is still recorded so that it cannot
+      # be mistaken for a clean audit.
+      - name: Audit the pinned dependencies
+        run: |
+          # The auditor is pinned (constraints/audit.txt) and installed into an
+          # environment of its own: a floating range would let the tool change
+          # between two runs of the same commit, and installing it into the
+          # product's environment could move a version the product is tested
+          # with.  The audit itself reads the pins, not the environment.
+          # The environment lives outside the checkout: this job ends with a
+          # "working tree was not rewritten" check, and an untracked directory
+          # the job itself created would fail it.
+          # Each native call is checked.  pwsh does not stop on a non-zero exit
+          # code from a native program, so without these checks a failed install
+          # would be followed by a successful one and the step would go green.
+          function Assert-Ok([string] $what) {
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "$what failed with exit $LASTEXITCODE"
+              exit $LASTEXITCODE
+            }
+          }
+          $auditVenv = Join-Path $env:RUNNER_TEMP 'audit-venv'
+          python -m venv $auditVenv
+          Assert-Ok 'creating the audit environment'
+          $auditPython = Join-Path $auditVenv 'Scripts\python.exe'
+          & $auditPython -m pip install --upgrade pip
+          Assert-Ok 'upgrading pip in the audit environment'
+          & $auditPython -m pip install -c constraints/audit.txt pip-audit
+          Assert-Ok 'installing the pinned auditor'
+          python tools/dependency_audit.py --output dependency-audit.json --python $auditPython
+          Assert-Ok 'the dependency audit'
 
       - name: Byte-compile source, tests, migrations and tools
         shell: pwsh
@@ -72,15 +115,19 @@ jobs:
 
       - name: Test suite
         shell: pwsh
-        run: python tools/ci_pytest.py -- --junitxml=pytest-junit.xml
+        run: |
+          'NOT RUN — pytest step has not started' | Set-Content -Encoding utf8 pytest-run-state.txt
+          python tools/ci_pytest.py --state-file pytest-run-state.txt -- --junitxml=pytest-junit.xml
 
       - name: Count datetime adapter warnings
         if: always()
         shell: pwsh
         run: |
           if (-not (Test-Path pytest-output.txt)) {
-            Write-Error "pytest-output.txt is missing"
-            exit 1
+            Write-Output "::notice::pytest-output: NOT RUN — prerequisite failed (install or pins check failed, pytest never ran)"
+            Write-Output "::notice::datetime-adapter-warnings: NOT RUN"
+            Write-Output "::notice::SKIPPED — prerequisite failed" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
           }
           $adapter = @(Select-String -Path pytest-output.txt -Pattern "default datetime adapter" -SimpleMatch -Encoding utf8).Count
           $summary = Select-String -Path pytest-output.txt -Pattern '[0-9]+ warnings? in ' -Encoding utf8 | Select-Object -Last 1
@@ -96,21 +143,44 @@ jobs:
           }
 
       - name: Record test totals
+        id: record_totals
         if: always()
         shell: pwsh
-        run: python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt
+        run: |
+          $state = if (Test-Path pytest-run-state.txt) { (Get-Content pytest-run-state.txt -Raw).Trim() } else { "" }
+          if (-not $state -or $state.StartsWith("NOT RUN")) {
+            if (-not $state) {
+              [IO.File]::WriteAllText("pytest-run-state.txt", "NOT RUN — pytest prerequisite did not start`n", [Text.UTF8Encoding]::new($false))
+            }
+            Write-Output "::notice::pytest_result: NOT RUN — pytest prerequisite did not start"
+            Write-Output "::notice::pytest-junit: NOT PRODUCED"
+            Write-Output "::notice::pytest-totals: NOT PRODUCED"
+            "### Pytest totals — NOT RUN" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          python tools/pytest_totals.py --stats pytest-totals.json --junit pytest-junit.xml --exit-file pytest-exit.txt --output pytest-output.txt --state-file pytest-run-state.txt
+
+      - name: Bind pytest totals to matrix identity
+        if: always()
+        shell: pwsh
+        run: |
+          python tools/pytest_matrix.py record --platform Windows --python-version "${{ matrix.python-version }}" --artifact-name "pytest-windows-cp${{ matrix.python-version }}-a${{ github.run_attempt }}" --job-name "windows test (cp${{ matrix.python-version }})" --totals-step "${{ steps.record_totals.outcome }}" --output pytest-matrix-evidence.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Publish pytest results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: pytest-windows-cp${{ matrix.python-version }}
+          name: pytest-windows-cp${{ matrix.python-version }}-a${{ github.run_attempt }}
           path: |
+            pytest-matrix-evidence.json
             pytest-output.txt
             pytest-junit.xml
             pytest-totals.json
             pytest-exit.txt
-          if-no-files-found: error
+            pytest-run-state.txt
+            dependency-audit.json
+          if-no-files-found: warn
 
       - name: Surface failures as annotations
         if: failure()
@@ -134,10 +204,61 @@ jobs:
             exit 1
           }
 
+  pytest-matrix-report:
+    name: Windows full-suite attribution report
+    if: always()
+    needs: test
+    runs-on: windows-2022
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+      - name: Download this attempt's full-suite evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: pytest-windows-cp*-a${{ github.run_attempt }}
+          path: pytest-artifacts
+          merge-multiple: false
+      - name: Resolve GitHub job and artifact IDs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $jobs = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/jobs?filter=latest&per_page=100"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $artifacts = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/artifacts?per_page=100"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [IO.File]::WriteAllText("pytest-jobs.json", $jobs, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText("pytest-artifacts-api.json", $artifacts, [Text.UTF8Encoding]::new($false))
+      - name: Generate identity-checked matrix report
+        if: always()
+        shell: pwsh
+        run: |
+          python tools/pytest_matrix.py report --artifact-root pytest-artifacts --platform Windows --expected-sha "$env:GITHUB_SHA" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT" --repository "$env:GITHUB_REPOSITORY" --workflow "$env:GITHUB_WORKFLOW" --jobs-json pytest-jobs.json --artifacts-json pytest-artifacts-api.json --output-json pytest-matrix-report-windows.json --output-markdown pytest-matrix-report-windows.md
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Publish Windows matrix report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-matrix-report-windows-a${{ github.run_attempt }}
+          path: |
+            pytest-matrix-report-windows.json
+            pytest-matrix-report-windows.md
+          if-no-files-found: warn
+
   release-smoke:
-    name: windows clean install smoke
+    name: windows clean install smoke (cp${{ matrix.python-version }})
     runs-on: windows-2022
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
@@ -146,17 +267,17 @@ jobs:
         shell: pwsh
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install build tooling
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          python -m pip install -c constraints/development.txt -c constraints/build.txt -e ".[dev]"
 
       - name: Build, clean-install and exercise the package
         shell: pwsh
@@ -167,9 +288,13 @@ jobs:
         run: .\tools\windows_pilot.ps1 -Python python -RepoRoot (Get-Location).Path
 
   ui:
-    name: windows ui (offscreen Qt)
+    name: windows ui (offscreen Qt, cp${{ matrix.python-version }})
     runs-on: windows-2022
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: "utf-8"
@@ -182,19 +307,19 @@ jobs:
         shell: pwsh
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install (editable, with the ui extra)
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,ui]"
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
 
       - name: Probe the real Qt platform
         shell: pwsh
@@ -208,7 +333,42 @@ jobs:
 
       - name: Offscreen UI tests
         shell: pwsh
-        run: python tools/ci_pytest.py --output qt-logs/pytest-output.txt --exit-file qt-logs/pytest-exit.txt -- tests/ui --junitxml=qt-logs/pytest-junit.xml
+        run: |
+          [IO.File]::WriteAllText("qt-logs/pytest-run-state.txt", "NOT RUN — pytest step has not started`n", [Text.UTF8Encoding]::new($false))
+          python tools/ci_pytest.py --output qt-logs/pytest-output.txt --exit-file qt-logs/pytest-exit.txt --state-file qt-logs/pytest-run-state.txt -- tests/ui --junitxml=qt-logs/pytest-junit.xml
+
+      # The fail-closed shutdown is the one path that has faulted natively on
+      # Windows. This experiment repeats it and reports every attempt: a later
+      # attempt that honours the contract does not erase an earlier native
+      # fault. It is not a retry of the UI suite.
+      #
+      # The native access violation is GATED here. It used to be measured
+      # and not gated, because it was an open defect with a measured rate
+      # (see docs/mission-reports/END_TO_END_FINAL_REPORT.md) and a fault
+      # that fires in a few percent of attempts turns a required job into a
+      # coin toss. That reason is gone: the mechanism was removed. On
+      # Windows the process is no longer ended through ``ExitProcess``,
+      # which handed every loaded DLL a ``DLL_PROCESS_DETACH`` notification
+      # while another thread was still inside a Python callback; it is ended
+      # through ``TerminateProcess``, which notifies no library. A
+      # recurrence is therefore a regression of a closed defect, and a
+      # regression must fail the required job instead of being published as
+      # a measurement nobody acts on.
+      #
+      # Every attempt is still reported: the stage it reached, the raw exit
+      # code in decimal and in hexadecimal, the frames of the thread that
+      # faulted, the terminal decision owners and the counts, in
+      # ``qt-logs/shutdown-stress/summary.json`` and in the attempt logs.
+      # The artifact is uploaded whether this step passes or fails.
+      #
+      # ``if: always()``: when the UI suite itself faults, this step is the
+      # only place left that can say where. A skipped measurement answers
+      # nothing, so the measurement runs even when the suite failed.
+      - name: Fail-closed shutdown stress
+        if: always()
+        shell: pwsh
+        run: |
+          python tools/qt_shutdown_stress.py --attempts 25 --log-dir qt-logs/shutdown-stress --gate
 
       - name: Surface UI failures
         if: always()
@@ -223,14 +383,168 @@ jobs:
       - name: Record UI totals
         if: always()
         shell: pwsh
-        run: python tools/pytest_totals.py --stats pytest-totals.json --junit qt-logs/pytest-junit.xml --exit-file qt-logs/pytest-exit.txt
+        run: |
+          $state = if (Test-Path qt-logs/pytest-run-state.txt) { (Get-Content qt-logs/pytest-run-state.txt -Raw).Trim() } else { "" }
+          if (-not $state -or $state.StartsWith("NOT RUN")) {
+            Write-Output "::notice::pytest_result: NOT RUN — pytest prerequisite did not start"
+            Write-Output "::notice::pytest-junit: NOT PRODUCED"
+            Write-Output "::notice::pytest-totals: NOT PRODUCED"
+            "### Qt UI pytest totals — NOT RUN" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          python tools/pytest_totals.py --stats pytest-totals.json --junit qt-logs/pytest-junit.xml --exit-file qt-logs/pytest-exit.txt --output qt-logs/pytest-output.txt --state-file qt-logs/pytest-run-state.txt
+
+      - name: Qt-enabled skip audit (fail-closed — no Qt-unavailable skips when Qt present)
+        if: always()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path qt-logs/pytest-junit.xml)) {
+            Write-Output "::notice::qt-skip-audit: NOT RUN — pytest JUnit report NOT PRODUCED"
+            exit 0
+          }
+          python -c "import sys; from pathlib import Path; from tools.pytest_totals import unexpected_skips_qt_enabled; bad=unexpected_skips_qt_enabled(Path('qt-logs/pytest-junit.xml')); print(f'unexpected Qt skips (Qt-enabled audit): {bad}'); sys.exit(1 if bad else 0)"
 
       - name: Publish Windows UI logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qt-windows-ui-logs
+          name: qt-windows-ui-logs-cp${{ matrix.python-version }}
           path: |
             qt-logs/
             pytest-totals.json
+          if-no-files-found: error
+
+  stability:
+    name: windows stability (${{ matrix.node.id }}, cp${{ matrix.python-version }})
+    runs-on: windows-2022
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+        node:
+          - id: history
+            selector: "tests/ui/test_workbench.py::test_real_fixture_workbench_current_history_evidence_plan_actual_and_detail"
+          - id: presentation
+            selector: "tests/ui/test_workbench.py::test_presentation_filter_conflict_detail_and_explicit_error_states"
+          - id: intake
+            selector: "tests/ui/test_intake_workbench.py::test_intake_page_uses_worker_and_renders_persisted_queue"
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      QT_QPA_PLATFORM: offscreen
+      QT_OPENGL: software
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - name: Keep repository line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (editable, with the ui extra)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
+
+      - name: Probe the real Qt platform
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path qt-logs | Out-Null
+          python -c "import pathlib, platform; import PySide6; from PySide6.QtCore import qVersion; from PySide6.QtWidgets import QApplication; app = QApplication([]); text = ' '.join(['qt-platform', app.platformName(), 'python', platform.python_version(), 'pyside', PySide6.__version__, 'qt', qVersion()]); pathlib.Path('qt-logs/versions.txt').write_text(text + chr(10), encoding='utf-8'); print(text)"
+          if (-not (Test-Path qt-logs/versions.txt) -or (Get-Item qt-logs/versions.txt).Length -lt 1) {
+            Write-Error "Qt version probe wrote no versions.txt"
+            exit 1
+          }
+
+      - name: Windows repeated workbench qualification
+        shell: pwsh
+        run: python tools/qt_stability.py --repeats 15 --node "${{ matrix.node.selector }}"
+
+      - name: Verify stability evidence (standalone)
+        if: always()
+        shell: pwsh
+        run: python tools/qt_stability_evidence.py qt-logs/stability --repeats 15 --node "${{ matrix.node.selector }}"
+
+      - name: Publish Windows stability logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qt-windows-stability-logs-cp${{ matrix.python-version }}-${{ matrix.node.id }}
+          path: qt-logs/stability/
+          if-no-files-found: error
+
+
+  run-card-powershell:
+    name: Windows run-card behavioral tests (PowerShell 5.1 and 7)
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Explicit shell selects inbox Windows PowerShell 5.1, not pwsh.
+      - name: Behavioral run-card tests under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE "out/windows-acceptance/behavioral-runs"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          Start-Transcript -LiteralPath (Join-Path $evidence "powershell-5.1-transcript.txt") -Force
+          try { & "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1" }
+          catch {
+            $message = (($_ | Out-String).Trim() -replace "`r?`n", " | ")
+            Write-Output "::error title=PowerShell 5.1 run-card behavior::$message"
+            "PowerShell 5.1 run-card failure: $message" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            throw
+          }
+          finally {
+            Stop-Transcript
+            $transcriptPath = Join-Path $evidence "powershell-5.1-transcript.txt"
+            if (Test-Path -LiteralPath $transcriptPath) {
+              $tail = (@(Get-Content -LiteralPath $transcriptPath | Select-Object -Last 20) -join " | ")
+              $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A").Replace(":", "%3A").Replace(",", "%2C")
+              Write-Output "::notice title=PowerShell 5.1 transcript tail::$annotation"
+              "PowerShell 5.1 transcript tail: $tail" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            }
+          }
+
+      - name: Behavioral run-card tests under PowerShell 7
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE "out/windows-acceptance/behavioral-runs"
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          Start-Transcript -LiteralPath (Join-Path $evidence "powershell-7-transcript.txt") -Force
+          try { & "$env:GITHUB_WORKSPACE\tests\powershell\test_run_card.ps1" }
+          catch {
+            $message = (($_ | Out-String).Trim() -replace "`r?`n", " | ")
+            Write-Output "::error title=PowerShell 7 run-card behavior::$message"
+            "PowerShell 7 run-card failure: $message" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            throw
+          }
+          finally {
+            Stop-Transcript
+            $transcriptPath = Join-Path $evidence "powershell-7-transcript.txt"
+            if (Test-Path -LiteralPath $transcriptPath) {
+              $tail = (@(Get-Content -LiteralPath $transcriptPath | Select-Object -Last 20) -join " | ")
+              $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A").Replace(":", "%3A").Replace(",", "%2C")
+              Write-Output "::notice title=PowerShell 7 transcript tail::$annotation"
+              "PowerShell 7 transcript tail: $tail" | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+            }
+          }
+
+      - name: Publish run-card behavioral evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-run-card-powershell-logs
+          path: out/windows-acceptance/behavioral-runs/
           if-no-files-found: error

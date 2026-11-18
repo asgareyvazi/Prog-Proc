@@ -163,25 +163,77 @@ def _safe(node: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", node)
 
 
+def _run_streamed(
+    command: list[str], log_path: Path, *, env: dict[str, str] | None = None
+) -> tuple[int, str]:
+    """Run a child while durably streaming its combined output to disk/stdout."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    output_lines: list[str] = []
+    with (
+        log_path.open("a", encoding="utf-8", buffering=1) as log,
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            errors="replace",
+            bufsize=1,
+        ) as process,
+    ):
+        if process.stdout is None:
+            raise RuntimeError("child process stdout pipe was not created")
+        for line in process.stdout:
+            log.write(line)
+            log.flush()
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            output_lines.append(line)
+        return_code = process.wait()
+    return return_code, "".join(output_lines)
+
+
+def _collection_environment(log_dir: Path) -> dict[str, str]:
+    """Keep collection-only pytest totals out of the enclosing suite's evidence files."""
+    env = os.environ.copy()
+    env["PYTEST_TOTALS_PATH"] = str(log_dir / "collection.pytest-totals.json")
+    return env
+
+
+def _node_environment(log_path: Path) -> dict[str, str]:
+    """Keep each nested pytest node's totals out of the enclosing suite's evidence files."""
+    env = os.environ.copy()
+    env["PYTEST_TOTALS_PATH"] = str(log_path.with_name(f"{log_path.stem}.pytest-totals.json"))
+    return env
+
+
 def _run_node(node: str, log_path: Path) -> tuple[int, str]:
+    import platform
+    import shutil
+
+    # On Windows xvfb-run does not exist; run directly. On Linux, prefer xvfb-run if available.
+    use_xvfb = shutil.which("xvfb-run") is not None and platform.system() != "Windows"
     command = [
-        "xvfb-run",
-        "-a",
-        "-s",
-        "-screen 0 1280x1024x24",
         sys.executable,
         "-X",
         "faulthandler",
         "-m",
         "pytest",
-        "-q",
+        "-vv",
         node,
         "--tb=line",
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
-    output = (completed.stdout or "") + (completed.stderr or "")
-    log_path.write_text(output, encoding="utf-8")
-    return completed.returncode, output
+    if use_xvfb:
+        command = [
+            "xvfb-run",
+            "-a",
+            "-s",
+            "-screen 0 1280x1024x24",
+            *command,
+        ]
+    return _run_streamed(command, log_path, env=_node_environment(log_path))
 
 
 def main() -> int:
@@ -195,6 +247,7 @@ def main() -> int:
         [sys.executable, "-m", "pytest", "--collect-only", "--no-header", "tests/ui"],
         capture_output=True,
         text=True,
+        env=_collection_environment(log_dir),
         check=False,
     )
     collect_text = (collected.stdout or "") + "\n" + (collected.stderr or "")
@@ -217,6 +270,8 @@ def main() -> int:
         attempts: list[tuple[int, int]] = []
         for attempt in (1, 2):
             log_path = log_dir / f"{_safe(node)}.attempt-{attempt}.txt"
+            log_path.write_text("", encoding="utf-8")
+            print(f"::notice::NODE {node} ATTEMPT {attempt} START", flush=True)
             code, output = _run_node(node, log_path)
             attempts.append((attempt, code))
             line = f"NODE {node} ATTEMPT {attempt} EXIT {code}"

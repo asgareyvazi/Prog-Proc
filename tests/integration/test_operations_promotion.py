@@ -70,7 +70,8 @@ def test_promotion_writes_the_rows_the_sheet_states(workspace) -> None:
     assert counts["target"]["created"] == 1, summary
     assert counts["mud_report"]["created"] == 1, summary
     assert counts["mud_measurement"]["created"] == 22, summary
-    assert summary["versions"] == 4, summary
+    # 4 operational versions + lesson_learned_ll-2025-014.txt (NO_RECOGNISED_TABLE)
+    assert summary["versions"] == 5, summary
 
 
 def test_each_row_says_which_well_and_which_file_it_came_from(workspace) -> None:
@@ -363,8 +364,10 @@ def test_a_field_scope_promotes_the_field_it_names(workspace) -> None:
     with workspace.database.session() as session:
         outcome = service.promote_workspace(session=session, field_id=field_id(workspace))
         session.commit()
-    # Four versions in the field's scope: the NPT export, daily report, program and mud report.
-    assert outcome["versions"] == 4, outcome
+    # Four operational versions in the field's scope plus the lesson_learned prose note
+    # (lesson_learned_ll-2025-014.txt, NO_RECOGNISED_TABLE) — 5 total, 4 with records.
+    assert outcome["versions"] == 5, outcome
+    assert outcome["versions_with_records"] == 4, outcome
     assert outcome["totals"]["created"] == 47, outcome["counts"]
     assert outcome["totals"]["conflict"] == 0, outcome["counts"]
     assert len(fetch(workspace, NptRecord)) == len(STATED) + len(DDR_NPT_LINES)

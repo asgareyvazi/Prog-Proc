@@ -1,16 +1,16 @@
 """MinerU runtime discovery.
 
-What we check, and why (docs/DEPENDENCIES.md records the outcome for the
-environment this was developed in):
+What we check, and why (the current runtime boundary is recorded in
+``docs/PRODUCT_CAPABILITY.md`` and the active mission report):
 
 *   ``[mineru].mode`` may pin the integration (``cli``/``http``), ask for auto
     detection (``auto``) or turn it off (``disabled``);
-*   CLI mode: the ``mineru`` executable must exist **and** answer a version
-    query.  MinerU is a heavyweight parser (models, torch) - we never import it;
-    we run it as a subprocess so its dependency tree and its Python-version
-    constraint stay outside our application runtime.
-*   HTTP mode: a reachable MinerU/`mineru-router` service is probed with a short
-    timeout.  A configured but unreachable endpoint is a *warning*, not a crash.
+*   CLI mode: the supported ``mineru-kit`` entry point (or a compatible legacy
+    CLI) must exist **and** answer a version query. MinerU stays external so its
+    models and dependency tree do not enter the application runtime.
+*   HTTP mode: OpenAPI must declare the configured legacy parse route with a
+    JSON response. A reachable docs page or MinerU 4 attachment endpoint is not
+    sufficient. A configured but incompatible endpoint fails closed.
 
 A probe result is cached per process; long ingestion runs must not pay for it
 per document.
@@ -20,14 +20,160 @@ from __future__ import annotations
 
 import re
 import threading
-from pathlib import Path
+from urllib.parse import urlsplit
 
 from ...core.logging import get_logger
 from ..base import IntegrationStatus, http_json, run_command, which
+from .cli import is_mineru_kit, resolve_cli_binary
 
 log = get_logger("integrations.mineru.discovery")
 
 _VERSION_RE = re.compile(r"(?:v|version)?\s*(\d+\.\d+(?:\.\d+)?)")
+
+
+def http_endpoint_problem(endpoint: str) -> str:
+    """Return a safe reason when an HTTP endpoint could expose credentials or URL secrets."""
+    try:
+        parsed = urlsplit(endpoint)
+        hostname = parsed.hostname
+        # Accessing .port also validates malformed port syntax.
+        _ = parsed.port
+    except ValueError:
+        return "HTTP endpoint must be a valid http(s) URL without credentials or URL parameters"
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or any(
+            ord(character) < 32 or character.isspace() or character == "\\"
+            for character in endpoint
+        )
+    ):
+        return "HTTP endpoint must be a valid http(s) URL without credentials or URL parameters"
+    return ""
+
+
+def _safe_endpoint_label(endpoint: str) -> str:
+    try:
+        parsed = urlsplit(endpoint)
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return f"{parsed.scheme.lower()}://{hostname}{port}"
+    except ValueError:
+        return "<configured-http-endpoint>"
+
+
+def _resolve_local_schema(document: dict[str, object], schema: object) -> dict[str, object] | None:
+    """Resolve only bounded local OpenAPI schema refs; never fetch external refs."""
+    current = schema
+    seen: set[str] = set()
+    while isinstance(current, dict) and "$ref" in current:
+        reference = current.get("$ref")
+        if (
+            not isinstance(reference, str)
+            or not reference.startswith("#/components/schemas/")
+            or reference in seen
+        ):
+            return None
+        seen.add(reference)
+        key = reference.removeprefix("#/components/schemas/").replace("~1", "/").replace("~0", "~")
+        components = document.get("components")
+        schemas = components.get("schemas") if isinstance(components, dict) else None
+        current = schemas.get(key) if isinstance(schemas, dict) else None
+    return current if isinstance(current, dict) else None
+
+
+def _is_upload_schema(document: dict[str, object], schema: object, *, depth: int = 0) -> bool:
+    if depth >= 16:
+        return False
+    resolved = _resolve_local_schema(document, schema)
+    if not resolved:
+        return False
+    if resolved.get("type") == "string":
+        return resolved.get("format") == "binary"
+    if resolved.get("type") == "array":
+        return _is_upload_schema(document, resolved.get("items"), depth=depth + 1)
+    return False
+
+
+def legacy_http_parse_contract(endpoint: str, parse_path: str) -> tuple[bool, str, str]:
+    """Require the multipart request and JSON result envelope this client consumes.
+
+    A reachable docs page is not enough: MinerU 4's standalone file-parse API
+    returns attachments, while this integration accepts a legacy JSON ``results``
+    envelope from a multipart ``files`` request. The actual response is validated
+    again after every parse; OpenAPI is only a compatibility declaration.
+    """
+    if not endpoint:
+        return False, "HTTP endpoint is not configured", ""
+    problem = http_endpoint_problem(endpoint)
+    if problem:
+        return False, problem, ""
+    response = http_json(
+        "GET",
+        endpoint.rstrip("/") + "/openapi.json",
+        timeout=4.0,
+        follow_redirects=False,
+    )
+    status_code = response.get("status_code")
+    if not response.get("ok") or not isinstance(status_code, int) or not 200 <= status_code < 300:
+        return False, "OpenAPI description is unavailable", ""
+    payload = response.get("json")
+    paths = payload.get("paths") if isinstance(payload, dict) else None
+    operation = paths.get(parse_path) if isinstance(paths, dict) else None
+    post = operation.get("post") if isinstance(operation, dict) else None
+    if not isinstance(post, dict):
+        return False, "OpenAPI does not expose the configured POST parse route", ""
+
+    request_body = post.get("requestBody")
+    request_content = request_body.get("content") if isinstance(request_body, dict) else None
+    multipart = (
+        next(
+            (
+                value
+                for media_type, value in request_content.items()
+                if str(media_type).split(";", 1)[0].strip().lower() == "multipart/form-data"
+                and isinstance(value, dict)
+            ),
+            None,
+        )
+        if isinstance(request_content, dict)
+        else None
+    )
+    schema = multipart.get("schema") if isinstance(multipart, dict) else None
+    resolved_schema = _resolve_local_schema(payload, schema) if isinstance(payload, dict) else None
+    properties = resolved_schema.get("properties") if resolved_schema else None
+    if not isinstance(properties, dict) or "files" not in properties:
+        return False, "parse route does not declare the multipart 'files' field", ""
+    if not _is_upload_schema(payload, properties.get("files")):
+        return False, "multipart 'files' field is not declared as a binary upload", ""
+
+    responses = post.get("responses")
+    if not isinstance(responses, dict):
+        return False, "OpenAPI does not declare parse responses", ""
+    json_success = any(
+        isinstance(response_spec, dict)
+        and str(code).startswith("2")
+        and isinstance(response_spec.get("content"), dict)
+        and any(
+            str(media_type).split(";", 1)[0].strip().lower() == "application/json"
+            or str(media_type).split(";", 1)[0].strip().lower().endswith("+json")
+            for media_type in response_spec["content"]
+        )
+        for code, response_spec in responses.items()
+    )
+    if not json_success:
+        return False, "parse route does not declare a successful JSON response", ""
+    info = payload.get("info") if isinstance(payload, dict) else None
+    raw_version = str(info.get("version", "")) if isinstance(info, dict) else ""
+    match = _VERSION_RE.search(raw_version)
+    version = match.group(1) if match else "unknown"
+    return True, "", version
 
 
 class MinerUProber:
@@ -74,11 +220,14 @@ class MinerUProber:
             return status
 
         backend = str(getattr(mineru, "backend", "pipeline") or "pipeline")
+        tier = str(getattr(mineru, "tier", "basic") or "basic")
+        model_source = str(getattr(mineru, "model_source", "local") or "local")
         status.limitations.extend(
             [
-                f"backend '{backend}': the pipeline backend runs on CPU and needs ~16 GB RAM (32 GB recommended); "
-                "vlm/hybrid backends require a GPU",
-                "MinerU's own Python version constraint is independent of the application because it runs as a separate process/service",
+                f"MinerU 4 mineru-kit uses configured tier '{tier}'; legacy CLI backend '{backend}' applies only to older CLI builds",
+                f"model source is configured as '{model_source}'; local prevents implicit downloads, while non-local sources may contact their providers when parsing",
+                "model-file readiness is not inspected by this runtime probe; OCR quality is not qualified by a successful CLI check",
+                "MinerU's Python and dependency requirements remain outside the application because it runs as a subprocess/service",
                 "MinerU output is layout-based; cell-level Excel provenance is *not* available from it, which is why XLSX stays on the native openpyxl extractor",
             ]
         )
@@ -122,7 +271,8 @@ class MinerUProber:
         return status
 
     def _probe_cli(self, mineru: object, backend: str) -> dict[str, object]:
-        binary = str(getattr(mineru, "binary", "mineru") or "mineru")
+        configured = str(getattr(mineru, "binary", "mineru") or "mineru")
+        binary = resolve_cli_binary(configured, find_executable=which)
         path = which(binary)
         record: dict[str, object] = {
             "mode": "cli",
@@ -140,61 +290,67 @@ class MinerUProber:
             help_result = run_command([path, "--help"], timeout=60.0)
             if int(help_result["returncode"]) != 0:
                 record["reason"] = (
-                    f"{binary} --version failed: {str(result['stderr'])[:160] or str(help_result['stderr'])[:160]}"
+                    "configured CLI --version and --help failed; process output omitted"
                 )
                 return record
-            record["version"] = (
-                _VERSION_RE.findall(str(help_result["stdout"]))[0]
-                if _VERSION_RE.findall(str(help_result["stdout"]))
-                else "unknown"
+            found = _VERSION_RE.findall(str(help_result["stdout"]))
+            version = found[0] if found else "unknown"
+        else:
+            found = _VERSION_RE.findall(str(result["stdout"]) + str(result["stderr"]))
+            version = found[0] if found else "unknown"
+
+        record["version"] = version
+        # MinerU 4's `mineru` command is its document-library interface, not the
+        # stateless parse command.  If `mineru-kit` was not found, fail closed;
+        # invoking it with legacy -p/-o flags would be a false availability pass.
+        if not is_mineru_kit(path) and version.startswith("4."):
+            record["reason"] = (
+                "MinerU 4 was found without the compatible mineru-kit executable; "
+                "install the complete MinerU 4 CLI or configure a supported legacy CLI"
             )
-            record["available"] = True
-            record["binary"] = path
             return record
-        found = _VERSION_RE.findall(str(result["stdout"]) + str(result["stderr"]))
-        record["version"] = (
-            found[0]
-            if found
-            else str(result["stdout"]).strip().splitlines()[0][:32]
-            if str(result["stdout"]).strip()
-            else "unknown"
-        )
         record["available"] = True
         record["binary"] = path
         return record
 
     def _probe_http(self, mineru: object) -> dict[str, object]:
         endpoint = str(getattr(mineru, "endpoint", "") or "").rstrip("/")
+        parse_path = str(getattr(mineru, "http_parse_path", "/file_parse") or "/file_parse")
         record: dict[str, object] = {
             "mode": "http",
             "available": False,
             "version": "",
-            "endpoint": endpoint,
+            "endpoint": _safe_endpoint_label(endpoint) if endpoint else "",
             "reason": "",
         }
         if not endpoint:
             record["reason"] = "[mineru].endpoint is empty"
             return record
-        for path in ("/health", "/docs", "/"):
-            response = http_json("GET", endpoint + path, timeout=4.0)
-            if response.get("ok"):
-                record["available"] = True
-                record["endpoint"] = endpoint + path
-                payload = response.get("json")
-                if isinstance(payload, dict):
-                    record["version"] = str(
-                        payload.get("version") or payload.get("version_name") or ""
-                    )
-                return record
-        record["reason"] = f"no HTTP response from {endpoint} (checked /health, /docs, /)"
+        problem = http_endpoint_problem(endpoint)
+        if problem:
+            record["reason"] = problem
+            return record
+        compatible, reason, version = legacy_http_parse_contract(endpoint, parse_path)
+        record["contract"] = {
+            "path": parse_path,
+            "compatible": compatible,
+        }
+        if not compatible:
+            record["reason"] = (
+                f"HTTP service does not implement the configured JSON parse contract: {reason}"
+            )
+            return record
+        health = http_json("GET", endpoint + "/health", timeout=4.0, follow_redirects=False)
+        payload = health.get("json") if health.get("ok") else None
+        if isinstance(payload, dict):
+            raw_version = str(payload.get("version") or payload.get("version_name") or version)
+            match = _VERSION_RE.search(raw_version)
+            if match:
+                version = match.group(1)
+        record["available"] = True
+        record["endpoint"] = _safe_endpoint_label(endpoint)
+        record["version"] = version
         return record
 
 
-def output_root(data_dir: Path | None = None) -> Path:
-    """Directory where MinerU run artefacts are written for inspection."""
-    root = Path(data_dir) if data_dir else Path.cwd() / "var"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-__all__ = ["MinerUProber", "output_root"]
+__all__ = ["MinerUProber", "legacy_http_parse_contract"]

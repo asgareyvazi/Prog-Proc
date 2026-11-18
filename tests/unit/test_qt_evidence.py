@@ -555,7 +555,7 @@ def test_an_attempt_header_must_name_its_historic_node(tmp_path: Path) -> None:
     stability = _stability()
     root = _archive(tmp_path)
     evidence.write_manifest(root)
-    first, second = stability.HISTORIC_NODES
+    first, second = stability.HISTORIC_NODES[:2]
     relative = f"{stability.stability_dirname(first)}/attempt-01.txt"
     log = root / "stability" / relative
     log.write_text(log.read_text(encoding="utf-8").replace(f"node={first}", f"node={second}", 1))

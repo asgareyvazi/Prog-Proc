@@ -14,8 +14,9 @@ The CLI exists for three reasons and does nothing outside them:
 3.  **Machine-readable output.**  ``--json`` on every command, so a script or a smoke test
     asserts on the same numbers a human reads.
 
-``argparse`` (stdlib) with explicit subcommands and nothing else.  Exit codes: ``0`` success,
-``1`` a domain error or ingestion failure, ``2`` a usage error (argparse's own).
+``argparse`` (stdlib) with explicit subcommands and nothing else. Exit codes: ``0`` conclusive
+success, ``1`` a domain error or ingestion failure, ``2`` a usage error (argparse's own), and ``3``
+a DDR comparison that ran but is malformed or ambiguous. Code 3 still carries the comparison JSON.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from .. import __version__
 from ..config.settings import Settings
 from ..core.enums import WellLifecycleStatus
 from ..core.errors import DrillingIntelligenceError
+from ..database.backup import BackupError, create_workspace_backup, restore_workspace_backup
 from ..database.integrity import (
     check_current_version_invariants,
     check_extraction_cache,
@@ -43,7 +45,13 @@ from ..database.integrity import (
     check_workspace_identity,
 )
 from ..database.models import Document, DocumentVersion
+from ..database.sqlite_health import inspect_sqlite_database
+from ..database.workspace_archive import (
+    create_workspace_archive,
+    restore_workspace_archive,
+)
 from ..documents.repository import DocumentRepository
+from ..engineering.authoring_cli import add_program_procedure_commands
 from ..engineering.repository import PLAN_ACTUAL_METRICS
 from ..ingestion.pipeline import IngestionPipeline
 from ..search.service import SearchService, build_index
@@ -449,6 +457,60 @@ def command_wells(args: argparse.Namespace) -> int:
         workspace.close()
 
 
+def command_config_validate(args: argparse.Namespace) -> int:
+    """Validate settings without opening a workspace/database or probing services."""
+    settings = Settings.load(args.config) if getattr(args, "config", None) else Settings.load()
+    unknown = list(settings.unknown_keys)
+    if getattr(args, "strict", False) and unknown:
+        from ..core.errors import ConfigurationError
+
+        raise ConfigurationError(
+            "configuration contains unknown key(s)",
+            problems=[f"unknown configuration key: {key}" for key in unknown],
+            config_path=settings.source_path or "(defaults and environment)",
+        )
+    payload = {
+        "ok": True,
+        "valid": True,
+        "source_path": settings.source_path or "(defaults only)",
+        "applied_overrides": list(settings.applied_overrides),
+        "unknown_keys": unknown,
+        "warnings": [f"unknown key: {key}" for key in unknown],
+        "services_probed": False,
+        "workspace_opened": False,
+        "database_opened": False,
+    }
+    _emit(
+        payload,
+        as_json=args.json,
+        lines=[
+            f"configuration valid: {payload['source_path']}",
+            f"overrides: {len(payload['applied_overrides'])}; unknown keys: {len(unknown)}",
+            "services and workspace database were not opened or probed",
+            *(payload["warnings"]),
+        ],
+    )
+    return 0
+
+
+def command_mineru_validate(args: argparse.Namespace) -> int:
+    """Validate local MinerU CLI readiness, optionally on a bundled synthetic image."""
+    from ..integrations.mineru.qualification import validate_local_mineru
+
+    result, exit_code = validate_local_mineru(
+        _settings_for(args), run_synthetic_ocr=bool(args.run_synthetic_ocr)
+    )
+    lines = [
+        f"local MinerU runtime: {result['runtime_readiness']['status']}",
+        f"OCR fixture: {result['ocr_qualification']['status']}",
+        f"model readiness: {result['model_readiness']['status']}",
+        str(result["transport_scope"]),
+        str(result["ocr_qualification"].get("note") or ""),
+    ]
+    _emit(result, as_json=args.json, lines=lines)
+    return exit_code
+
+
 def command_workspace_create(args: argparse.Namespace) -> int:
     workspace = Workspace.create(
         args.path,
@@ -468,6 +530,116 @@ def command_workspace_create(args: argparse.Namespace) -> int:
         ],
     )
     workspace.close()
+    return 0
+
+
+def command_workspace_backup(args: argparse.Namespace) -> int:
+    """Snapshot a workspace's system-of-record database without migrating it."""
+    workspace = _open_workspace(args)
+    try:
+        result = create_workspace_backup(workspace, args.output)
+        payload = result.to_dict() | {"ok": result.storage_health.get("status") == "healthy"}
+        lines = [
+            f"database snapshot {'verified' if payload['ok'] else 'preserved but NOT VERIFIED'}: {result.path}",
+            "  scope:     database-only; this is NOT a full workspace/source backup",
+            f"  workspace: {result.workspace_name}",
+            f"  database:  {result.database_bytes} bytes, SHA-256 {result.database_sha256}",
+            f"  archive:   SHA-256 {result.archive_sha256}",
+            f"  schema:    {result.schema_revision}",
+            f"  storage:   {result.storage_health.get('status')}",
+            "  included:  workspace.toml and SQLite snapshot",
+            "  omitted:   configured corpus/source files and rebuildable search index",
+            "  security:  unencrypted archive; protect it as sensitive data",
+        ]
+        _emit(payload, as_json=args.json, lines=lines)
+        return 0 if payload["ok"] else 1
+    finally:
+        workspace.close()
+
+
+def command_workspace_restore(args: argparse.Namespace) -> int:
+    """Restore a verified snapshot into a new workspace directory."""
+    settings = _settings_for(args)
+    configured_data_dir = settings.app.data_dir or ".drillintel"
+    if Path(configured_data_dir).as_posix() != ".drillintel":
+        raise BackupError(
+            "restore requires the default relative workspace data directory",
+            data_directory=configured_data_dir,
+        )
+    result = restore_workspace_backup(args.archive, args.destination)
+    payload = result.to_dict() | {"ok": result.storage_health.get("status") == "healthy"}
+    _emit(
+        payload,
+        as_json=args.json,
+        lines=[
+            f"database snapshot restored and verified at {result.path}",
+            "  scope:     database-only; source files were not restored",
+            f"  workspace: {result.workspace_name}",
+            f"  database:  {result.database_bytes} bytes, SHA-256 {result.database_sha256}",
+            f"  schema:    {result.schema_revision}",
+            "  configured corpus/source files and the rebuildable search index were not included",
+        ],
+    )
+    return 0 if payload["ok"] else 1
+
+
+def command_workspace_archive(args: argparse.Namespace) -> int:
+    """Archive workspace-owned files plus a consistent SQLite snapshot."""
+    workspace = _open_workspace(args)
+    try:
+        result = create_workspace_archive(workspace, args.output)
+        payload = result.to_dict() | {"ok": True}
+        lines = [
+            f"workspace archive created: {result.path}",
+            f"  scope:       {result.backup_scope}; workspace-owned regular files",
+            f"  workspace:   {result.workspace_name} ({result.workspace_root})",
+            f"  entries:     {result.included_files} files, {result.included_directories} directories, {result.included_bytes} bytes",
+            f"  database:    schema {result.schema_revision}; SHA-256 {result.database_sha256}",
+            f"  archive:     SHA-256 {result.archive_sha256}",
+            "  excluded:    rebuildable index, cache/logs, transient and credential files",
+            f"  external:    {len(result.unarchived_source_references)} source reference(s) listed but not copied",
+            "  security:    unencrypted archive; protect it as sensitive data",
+        ]
+        for item in result.unarchived_source_references[:20]:
+            lines.append(f"    not archived: {item['recorded_path']} ({item['reason']})")
+        if len(result.unarchived_source_references) > 20:
+            lines.append(
+                "    additional source references are recorded in the archive manifest and --json result"
+            )
+        _emit(payload, as_json=args.json, lines=lines)
+        return 0
+    finally:
+        workspace.close()
+
+
+def command_workspace_restore_archive(args: argparse.Namespace) -> int:
+    """Restore a verified full workspace archive to its recorded root, atomically."""
+    settings = _settings_for(args)
+    configured_data_dir = settings.app.data_dir or ".drillintel"
+    if Path(configured_data_dir).as_posix() != ".drillintel":
+        raise BackupError(
+            "full workspace archive restore requires the default workspace storage directory (.drillintel)",
+            data_directory=configured_data_dir,
+        )
+    result = restore_workspace_archive(args.archive, args.destination)
+    payload = result.to_dict() | {"ok": True}
+    lines = [
+        f"workspace archive verified and atomically restored: {result.path}",
+        f"  scope:       {result.backup_scope}; workspace-owned files",
+        f"  workspace:   {result.workspace_name} ({result.workspace_root})",
+        f"  restored:    {result.included_files} files, {result.included_directories} directories, {result.included_bytes} bytes",
+        f"  database:    schema {result.schema_revision}; SHA-256 {result.database_sha256}",
+        f"  archive:     SHA-256 {result.archive_sha256}",
+        f"  exclusions:  {len(result.excluded_items)} documented exclusion(s)",
+        f"  external:    {len(result.unarchived_source_references)} source reference(s) remain outside the archive",
+    ]
+    for item in result.unarchived_source_references[:20]:
+        lines.append(f"    not restored: {item['recorded_path']} ({item['reason']})")
+    if len(result.unarchived_source_references) > 20:
+        lines.append(
+            "    additional source references are recorded in the archive manifest and --json result"
+        )
+    _emit(payload, as_json=args.json, lines=lines)
     return 0
 
 
@@ -556,6 +728,348 @@ def command_ingest(args: argparse.Namespace) -> int:
             failures += int(totals.get("conflict", 0))
         _emit(payload, as_json=args.json, lines=lines)
         return 1 if failures else 0
+    finally:
+        workspace.close()
+
+
+def command_intake(args: argparse.Namespace) -> int:
+    """Queue, inspect, disposition, and explicitly register one locally selected source."""
+    from dataclasses import asdict
+
+    from ..review.intake import IntakeQueueService
+
+    workspace = _open_workspace(args)
+    try:
+        service = IntakeQueueService(
+            workspace.database,
+            workspace_root=workspace.root,
+            settings=workspace.settings,
+        )
+        if args.action == "add":
+            result = service.enqueue(args.paths, actor=args.by)
+            payload: Any = {"count": len(result), "items": [asdict(item) for item in result]}
+            lines = [
+                f"queued or matched {len(result)} file reference(s); source bytes were not copied"
+            ]
+        elif args.action == "list":
+            result = service.list_items(status=args.status or "")
+            payload = {"count": len(result), "items": [asdict(item) for item in result]}
+            lines = [
+                f"{item.status}: {item.filename} · {item.sha256[:12]} · {item.id}"
+                for item in result
+            ] or ["intake queue is empty"]
+        elif args.action == "preview":
+            result = service.preview(args.item)
+            payload = asdict(result)
+            lines = [
+                f"{result.item.filename}: {result.classification} · {result.contract_level}",
+                f"extractor: {result.extractor}; preview is transient and writes no registry or domain rows",
+                result.text_excerpt[:240],
+            ]
+        elif args.action == "decide":
+            result = service.decide(
+                args.item, decision=args.decision, actor=args.by, reason=args.reason
+            )
+            payload = asdict(result)
+            lines = [
+                f"intake disposition recorded: {result.status}; registration is still explicit"
+            ]
+        elif args.action == "register":
+            well_id = _resolve_well_id(workspace, args.well) if args.well else ""
+            result = service.register(args.item, actor=args.by, reason=args.reason, well_id=well_id)
+            payload = result.to_dict()
+            lines = [
+                f"registered {result.item.filename}: document {result.item.document_id}, "
+                f"version {result.item.document_version_id}, classification {result.classification}",
+                "no promotion was run; use `drillintel records promote` as a separate action",
+            ]
+        else:
+            raise DrillingIntelligenceError(f"unsupported intake action: {args.action}")
+        _emit(payload, as_json=args.json, lines=lines)
+        return 0
+    finally:
+        workspace.close()
+
+
+_DDR_CONTENT_MAX_BYTES = 1_048_576
+_DDR_CONTENT_KEYS = frozenset({"report_date", "report_number", "shift", "summary", "activities"})
+_DDR_ACTIVITY_KEYS = frozenset({"operation_type", "label", "description", "period_text"})
+
+
+def _read_ddr_content(path: str, *, require_complete: bool) -> dict[str, Any]:
+    """Read one bounded, explicit DDR snapshot; never infer omitted save fields.
+
+    Create accepts optional metadata fields, while save requires the whole mutable snapshot so an
+    omitted CLI/JSON field cannot accidentally clear a value the operator did not mean to replace.
+    Duplicate JSON keys and unknown properties are rejected rather than resolved by parser order.
+    """
+    from ..core.errors import ValidationError
+
+    source = Path(path).expanduser()
+    try:
+        with source.open("rb") as handle:
+            raw = handle.read(_DDR_CONTENT_MAX_BYTES + 1)
+    except OSError as exc:
+        raise ValidationError(
+            f"could not read DDR content file {source.name!r}: {type(exc).__name__}"
+        ) from exc
+    if len(raw) > _DDR_CONTENT_MAX_BYTES:
+        raise ValidationError("DDR content file exceeds the 1 MiB input limit", size_bytes=len(raw))
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError("DDR content file must be UTF-8 JSON") from exc
+
+    def object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    def reject_non_json_constant(value: str) -> None:
+        raise ValueError(f"non-JSON numeric constant {value!r}")
+
+    try:
+        payload = json.loads(
+            text,
+            object_pairs_hook=object_without_duplicates,
+            parse_constant=reject_non_json_constant,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        detail = exc.msg if isinstance(exc, json.JSONDecodeError) else str(exc)
+        raise ValidationError(f"DDR content file is not unambiguous JSON: {detail}") from exc
+    if not isinstance(payload, dict):
+        raise ValidationError("DDR content JSON must be one object")
+    unknown = set(payload) - _DDR_CONTENT_KEYS
+    if unknown:
+        raise ValidationError("DDR content has unknown field(s)", fields=sorted(unknown))
+    required = {"report_date", "report_number", "shift", "summary", "activities"}
+    missing = required - set(payload) if require_complete else {"report_date"} - set(payload)
+    if missing:
+        raise ValidationError("DDR content is missing required field(s)", fields=sorted(missing))
+
+    normalized: dict[str, Any] = {}
+    for field in ("report_date", "report_number", "shift", "summary"):
+        value = payload.get(field, "")
+        if not isinstance(value, str):
+            raise ValidationError(f"DDR content field {field!r} must be a string")
+        normalized[field] = value
+    activities = payload.get("activities", [])
+    if not isinstance(activities, list):
+        raise ValidationError("DDR content field 'activities' must be a JSON array")
+    if len(activities) > 200:
+        raise ValidationError("DDR content may contain at most 200 activities")
+    parsed_activities: list[dict[str, str]] = []
+    for index, activity in enumerate(activities):
+        if not isinstance(activity, dict):
+            raise ValidationError(f"DDR activity {index + 1} must be a JSON object")
+        extra = set(activity) - _DDR_ACTIVITY_KEYS
+        missing_activity = {"operation_type", "label"} - set(activity)
+        if extra or missing_activity:
+            raise ValidationError(
+                f"DDR activity {index + 1} has an invalid shape",
+                unknown_fields=sorted(extra),
+                missing_fields=sorted(missing_activity),
+            )
+        normalized_activity: dict[str, str] = {}
+        for field in _DDR_ACTIVITY_KEYS:
+            value = activity.get(field, "")
+            if not isinstance(value, str):
+                raise ValidationError(f"DDR activity {index + 1} field {field!r} must be a string")
+            normalized_activity[field] = value
+        parsed_activities.append(normalized_activity)
+    normalized["activities"] = parsed_activities
+    return normalized
+
+
+def _ddr_display_lines(record: Mapping[str, Any]) -> list[str]:
+    report_id = str(record.get("report_id") or "")
+    current = "current" if record.get("is_current") else "historical"
+    lines = [
+        f"DDR {report_id}: {record.get('report_date_text') or 'undated'} · "
+        f"revision {record.get('revision_number')} · {current}",
+        f"authoring: {record.get('authoring_state')} · review status: {record.get('status')}",
+    ]
+    if record.get("report_number"):
+        lines.append(f"number: {record['report_number']}")
+    if record.get("shift"):
+        lines.append(f"shift: {record['shift']}")
+    if record.get("summary"):
+        lines.append(f"summary: {record['summary']}")
+    for activity in record.get("activities") or ():
+        lines.append(
+            f"activity {activity.get('sequence')}: [{activity.get('operation_type')}] "
+            f"{activity.get('label')}"
+        )
+        if activity.get("period_text"):
+            lines.append(f"  period (operator text): {activity['period_text']}")
+        if activity.get("description"):
+            lines.append(f"  {activity['description']}")
+    return lines
+
+
+def command_ddr(args: argparse.Namespace) -> int:
+    """CLI surface for the existing DDR authoring and governed review services."""
+    from ..operations.ddr import DdrAuthoringService
+    from ..review.actions import ReviewActionRequest, ReviewActionService
+
+    action = args.action
+    content: dict[str, Any] | None = None
+    if action == "create":
+        content = _read_ddr_content(args.content, require_complete=False)
+    elif action == "save":
+        content = _read_ddr_content(args.content, require_complete=True)
+
+    # Reject malformed/oversized JSON before opening the lazy workspace database; an invalid
+    # snapshot must not trigger schema bootstrap or any write-side database initialization.
+    workspace = _open_workspace(args)
+    try:
+        authoring = DdrAuthoringService(workspace.database)
+        if action == "create":
+            if content is None:
+                raise DrillingIntelligenceError("DDR create content was not validated")
+            well_id = _resolve_well_id(workspace, args.well)
+            record = authoring.create_draft(
+                well_id=str(well_id or ""),
+                **content,
+                actor=args.by,
+                reason=args.reason,
+            )
+            payload: Any = record
+            lines = ["DDR draft created; no operational rows exist until explicit submission."]
+            lines.extend(_ddr_display_lines(record))
+        elif action == "list":
+            well_id = _resolve_well_id(workspace, args.well)
+            records = authoring.list_reports(str(well_id or ""), include_history=args.history)
+            payload = {
+                "well_id": well_id,
+                "history_included": bool(args.history),
+                "count": len(records),
+                "reports": list(records),
+            }
+            lines = [
+                f"{record['report_date_text']} · rev {record['revision_number']} · "
+                f"{record['authoring_state']} / {record['status']} · {record['report_id']}"
+                for record in records
+            ] or ["no manually authored DDRs for this well"]
+        elif action == "compare":
+            from ..operations.ddr_comparison import compare_ddr_revisions
+
+            predecessor = authoring.get(args.predecessor_report_id)
+            successor = authoring.get(args.successor_report_id)
+            if predecessor["well_id"] != successor["well_id"]:
+                raise DrillingIntelligenceError(
+                    "DDR revisions belong to different wells; comparison was not run"
+                )
+            if successor.get("supersedes_report_id") != predecessor.get("report_id"):
+                raise DrillingIntelligenceError(
+                    "the requested successor does not name the requested predecessor"
+                )
+            comparison = compare_ddr_revisions(predecessor, successor)
+            payload = {"ok": comparison["status"] == "OK", "comparison": comparison}
+            lines = [
+                "Read-only DDR revision comparison; no review decision or state change was made.",
+                f"{predecessor['report_id']} (rev {predecessor['revision_number']}) → "
+                f"{successor['report_id']} (rev {successor['revision_number']})",
+                f"comparison status: {comparison['status']}; "
+                f"conclusive: {str(comparison['conclusive']).lower()}",
+                f"activity classifications: {comparison['activities'].get('counts', {})}",
+            ]
+            _emit(payload, as_json=args.json, lines=lines)
+            return 0 if comparison["status"] == "OK" else 3
+        elif action in {"show", "actions"}:
+            record = authoring.get(args.report_id)
+            if action == "show":
+                payload = record
+                lines = _ddr_display_lines(record)
+            else:
+                review = ReviewActionService.for_workspace(workspace)
+                review_record = {
+                    "record_type": "ddr_report",
+                    "status": record["status"],
+                    "current": record["is_current"],
+                    "data": {"authoring_state": record["authoring_state"]},
+                    "provenance": record["provenance"],
+                }
+                available = [item.to_dict() for item in review.available_actions(review_record)]
+                payload = {
+                    "report_id": record["report_id"],
+                    "status": record["status"],
+                    "authoring_state": record["authoring_state"],
+                    "is_current": record["is_current"],
+                    "actions": available,
+                }
+                lines = [
+                    f"available review actions for {record['report_id']}: "
+                    + (", ".join(item["action_id"] for item in available) or "none")
+                ]
+        elif action == "save":
+            if content is None:
+                raise DrillingIntelligenceError("DDR save content was not validated")
+            record = authoring.save_draft(
+                args.report_id,
+                expected_updated_at=args.expected_updated_at,
+                **content,
+                actor=args.by,
+                reason=args.reason,
+            )
+            payload = record
+            lines = [
+                "DDR draft saved with optimistic freshness protection.",
+                *_ddr_display_lines(record),
+            ]
+        elif action == "submit":
+            record = authoring.submit(
+                args.report_id,
+                expected_updated_at=args.expected_updated_at,
+                actor=args.by,
+                reason=args.reason,
+            )
+            payload = record
+            lines = [
+                "DDR submitted; resulting operational rows remain CANDIDATE for independent review.",
+                *_ddr_display_lines(record),
+            ]
+        elif action == "revise":
+            record = authoring.create_revision(
+                args.report_id,
+                expected_updated_at=args.expected_updated_at,
+                actor=args.by,
+                reason=args.reason,
+            )
+            payload = record
+            lines = [
+                "new DRAFT revision created; its predecessor remains historical and its review is not inherited.",
+                *_ddr_display_lines(record),
+            ]
+        elif action == "decide":
+            well_id = _resolve_well_id(workspace, args.well)
+            request = ReviewActionRequest(
+                record_type="ddr_report",
+                record_id=args.report_id,
+                action=args.review_action,
+                actor=args.by,
+                expected_status=args.expected_status,
+                reason=args.reason,
+                well_id=str(well_id or ""),
+                expected_revision=args.expected_revision,
+                expected_current=True,
+                expected_scope={"well_id": str(well_id or "")},
+                expected_updated_at=args.expected_updated_at,
+            )
+            result = ReviewActionService.for_workspace(workspace).execute(request)
+            record = authoring.get(args.report_id)
+            payload = {"action": result.to_dict(), "report": record}
+            lines = [
+                f"{result.action} recorded: {result.previous_status} → {result.status}; "
+                "actor identity is a declared value, not authenticated by this single-user application."
+            ]
+        else:
+            raise DrillingIntelligenceError(f"unsupported DDR action: {action}")
+        _emit(payload, as_json=args.json, lines=lines)
+        return 0
     finally:
         workspace.close()
 
@@ -813,7 +1327,7 @@ def command_index(args: argparse.Namespace) -> int:
 
 
 def command_doctor(args: argparse.Namespace) -> int:
-    """One command that reads every structure and says whether they agree.
+    """One command that checks SQLite storage before its cross-row structures.
 
     It is the recovery path after a crash, a hand-edited database or a move between machines:
     the registry's invariants, the cache's uniqueness promise, the knowledge edges and the
@@ -821,6 +1335,42 @@ def command_doctor(args: argparse.Namespace) -> int:
     """
     workspace = _open_workspace(args)
     try:
+        # Check an existing file before Workspace.database can invoke Alembic. A damaged SQLite
+        # file is evidence to preserve, not a migration target; fail closed without creating,
+        # repairing, or rewriting it. A not-yet-created database keeps the historical bootstrap
+        # behavior and is checked immediately after its first open below.
+        storage_health = inspect_sqlite_database(workspace.database_path)
+        if storage_health.status == "not_run":
+            # First-open bootstrap is allowed for a genuinely absent database, but it is a
+            # separate step from claiming integrity. Materialise the database, then run the
+            # physical/FK preflight before any domain or search-index query.
+            _ = workspace.database
+            storage_health = inspect_sqlite_database(workspace.database_path)
+        if storage_health.status != "healthy":
+            finding = (
+                "SQLite storage integrity/foreign-key check failed; domain checks were not run"
+            )
+            payload = {
+                "version": __version__,
+                "python": sys.version.split()[0],
+                "workspace": workspace.summary(),
+                "storage": storage_health.to_dict(),
+                "integrity_problems": [],
+                "findings": [finding],
+                "checks_not_run": ["schema migrations", "domain integrity", "search index"],
+            }
+            _emit(
+                payload,
+                as_json=args.json,
+                lines=[
+                    f"workspace {workspace.root}",
+                    "storage  FAILED",
+                    f"  {storage_health.detail or '; '.join(storage_health.integrity_messages)}",
+                    "  schema, domain, and index checks were not run to preserve the damaged file",
+                ],
+            )
+            return 1
+
         with workspace.database.session() as session:
             repository = DocumentRepository(session)
             counts = repository.counts()
@@ -847,6 +1397,11 @@ def command_doctor(args: argparse.Namespace) -> int:
         findings: list[str] = [
             f"{item['problem']} on {item['table']}({item['row_id']})" for item in problems
         ]
+        if storage_health.status != "healthy":
+            findings.append(
+                "SQLite storage health could not be qualified: "
+                + (storage_health.detail or "; ".join(storage_health.integrity_messages))
+            )
         # What the operational tables hold, as its own line.  Deliberately not a *finding*: findings
         # change the exit code, which is how a script decides whether to trust this workspace, and "the
         # field has 5 NPT records" is context rather than something to fix.  "5,000 documents and no
@@ -925,6 +1480,7 @@ def command_doctor(args: argparse.Namespace) -> int:
                 "by_status": knowledge.get("by_status", {}),
             },
             "schema": migration.to_dict() if migration is not None else None,
+            "storage": storage_health.to_dict(),
             "index": stats,
             "integrity_problems": problems,
             "operational": records,
@@ -936,6 +1492,8 @@ def command_doctor(args: argparse.Namespace) -> int:
             f"workspace {workspace.root}",
             f"  registry {workspace.database_path}",
             f"  index    {workspace.index_database_path}",
+            f"storage  {storage_health.status} - SQLite integrity check, "
+            f"{storage_health.foreign_key_violation_count} foreign-key violation(s)",
             f"schema {migration.current or '(none)'} at head {migration.head or '(unknown)'} - {migration.mode if migration else 'not opened'}",
             f"config  {workspace.settings.summary()['source_path']}",
             # Configuration is not availability.  ``doctor`` does not probe.  The note says so,
@@ -1299,6 +1857,497 @@ def _picked(row: Any, keys: Sequence[tuple[str, int]] = ()) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- domain commands
+
+
+def _records_review(args: argparse.Namespace, workspace: Workspace) -> int:
+    """The ``records review`` action."""
+    from ..review import DomainReviewRequest, DomainReviewService
+
+    scope = _scope(args, workspace, required=True)
+    well_id = str(scope.get("well_id") or "")
+    if not well_id:
+        raise DrillingIntelligenceError(
+            "a domain review is about one well",
+            hint="pass --well (a name works as well as an id)",
+        )
+    review = DomainReviewService.for_workspace(workspace).review(
+        DomainReviewRequest(
+            well_id=well_id,
+            lifecycle=args.lifecycle,
+            verify_citations=bool(args.verify_citations),
+            limit=args.limit,
+        )
+    )
+    payload = review.to_dict()
+    audit = payload.get("citation_audit") or {}
+    _emit(
+        payload,
+        as_json=args.json,
+        lines=[
+            f"well: {review.subject['well'].get('name', well_id)} ({well_id})",
+            f"records: {review.record_count}, sections: {len(review.sections)}, "
+            f"conflicts: {len(review.conflicts)}",
+            "observations: "
+            + ", ".join(
+                f"{key} {value}"
+                for key, value in sorted(review.observations.items())
+                if key
+                in {
+                    "candidate_records",
+                    "pending_review_records",
+                    "explicitly_reviewed_records",
+                    "records_without_recorded_provenance",
+                    "open_conflicts",
+                }
+            ),
+            (
+                "citation audit: "
+                + ", ".join(
+                    f"{key} {value}" for key, value in sorted((audit.get("counts") or {}).items())
+                )
+                if audit
+                else "citation audit: not run (use --verify-citations to re-read source files)"
+            ),
+            "search sidecar: not used; records came from authoritative scope reads",
+        ],
+    )
+    return 0
+
+
+def _records_promote(args: argparse.Namespace, workspace: Workspace) -> int:
+    """The ``records promote`` action."""
+    from ..operations.service import OperationalService
+
+    scope = _scope(args, workspace, required=False)
+    service = OperationalService.for_workspace(workspace)
+    if args.document:
+        outcome = service.promote(document_id=args.document, version_id=args.version or "")
+        payload = outcome.to_dict()
+        _emit(
+            payload,
+            as_json=args.json,
+            lines=[
+                f"promotion outcome: {payload.get('outcome', 'UNKNOWN')} "
+                f"({'eligible' if payload.get('eligible') else 'not eligible'})",
+                f"promoted {args.document}: "
+                + ", ".join(
+                    f"{key} {value}" for key, value in sorted((payload.get("counts") or {}).items())
+                ),
+                "skipped: "
+                + (
+                    ", ".join(
+                        f"{key} {value}"
+                        for key, value in sorted((payload.get("skipped") or {}).items())
+                    )
+                    or "nothing"
+                ),
+            ],
+        )
+        return 1 if (payload.get("totals") or {}).get("conflict") else 0
+    with workspace.database.session() as session:
+        summary = service.promote_workspace(
+            session=session,
+            include_unsupported=bool(getattr(args, "include_unsupported", False)),
+            **scope,
+        )
+        session.commit()
+    totals = summary.get("totals") or {}
+    _emit(
+        summary,
+        as_json=args.json,
+        lines=[
+            "scope: "
+            + (", ".join(f"{key}={value}" for key, value in sorted(scope.items())) or "all"),
+            # Said out loud because "0 new, 0 already there" has two readings - everything was
+            # already promoted, or this scope holds no report-shaped version at all - and only one
+            # of them is a job that is done.
+            f"{summary.get('versions', 0)} version(s) visited in scope"
+            + (
+                f" ({summary.get('versions_with_records', 0)} with records to write)"
+                if summary.get("versions")
+                else ""
+            ),
+            "rows written: "
+            f"{totals.get('created', 0)} new, {totals.get('unchanged', 0)} already there, "
+            f"{totals.get('conflict', 0)} conflicting",
+            "version outcomes: "
+            + (
+                ", ".join(
+                    f"{key} {value}"
+                    for key, value in sorted((summary.get("outcomes") or {}).items())
+                    if value
+                )
+                or "none"
+            ),
+            "eligibility: "
+            + ", ".join(
+                f"{key} {value}"
+                for key, value in sorted((summary.get("eligibility") or {}).items())
+            ),
+            ", ".join(
+                f"{key} {value['created']} new/{value['unchanged']} unchanged"
+                for key, value in sorted((summary.get("counts") or {}).items())
+            ),
+            "skipped: "
+            + (
+                ", ".join(
+                    f"{key} {value}"
+                    for key, value in sorted((summary.get("skipped") or {}).items())
+                )
+                or "nothing"
+            ),
+            "a conflict is reported, never resolved by force: `drillintel knowledge conflicts`",
+        ],
+    )
+    return 1 if totals.get("conflict") else 0
+
+
+def _records_rollup(args: argparse.Namespace, workspace: Workspace) -> int:
+    """The ``records rollup`` action."""
+    # The production path for engineering calculations: promoted rows in, one cited record out.
+    # It computes nothing the database does not already state - the total is addition over
+    # `npt_record.duration_hours` - and it never decides that an existing record is obsolete,
+    # which is why --supersedes is a flag a person passes rather than something inferred here.
+    from ..engineering.service import EngineeringService
+
+    scope = _scope(args, workspace, required=True)
+    well_id = str(scope.get("well_id") or "")
+    if not well_id:
+        # A field or a project is a scope, but it is not a subject: a lost-time total belongs
+        # to one well, and rolling several into one number would file it under a subject key
+        # that does not describe it.
+        raise DrillingIntelligenceError(
+            "a lost-time roll-up is about one well",
+            hint="pass --well (a name works as well as an id)",
+        )
+    service = EngineeringService.for_workspace(workspace)
+    calculation, created = service.record_npt_rollup(
+        well_id=well_id,
+        supersedes_id=str(getattr(args, "supersedes", "") or ""),
+        created_by=str(getattr(args, "by", "") or "cli"),
+    )
+    total = (calculation.outputs or {}).get("npt_hours") or {}
+    validation = calculation.validation or {}
+    payload = {
+        "calculation_id": calculation.id,
+        "created": created,
+        "method_id": calculation.method_id,
+        "method_version": calculation.method_version,
+        "calculation_type": calculation.calculation_type,
+        "origin": calculation.origin,
+        "status": calculation.status,
+        "well_id": calculation.well_id,
+        "scope": {
+            "well_id": calculation.well_id,
+            "section_id": calculation.section_id,
+            "project_id": calculation.project_id,
+            "source_id": calculation.source_id,
+        },
+        "subject": service.npt_rollup_subject(calculation.well_id),
+        "value": total.get("value"),
+        "unit": total.get("unit"),
+        "records_summed": validation.get("records_summed"),
+        "records_without_duration": validation.get("records_without_duration"),
+        "records_without_evidence": validation.get("records_without_evidence"),
+        "validation": validation,
+        "inputs": calculation.inputs,
+        "outputs": calculation.outputs,
+        "assumptions": calculation.assumptions,
+        "uncertainty": calculation.uncertainty,
+        "confidence": calculation.confidence,
+        "created_by": calculation.created_by,
+        "triggered_by": calculation.triggered_by,
+        "revision": int(calculation.revision or 1),
+        "supersedes_id": calculation.supersedes_id or "",
+        "provenance": calculation.provenance,
+        "document_versions": [
+            entry.get("document_version_id") for entry in (calculation.provenance or [])
+        ],
+        "source_navigation": _calculation_source_navigation(workspace, calculation),
+    }
+    unquantified = int(validation.get("records_without_duration") or 0)
+    _emit(
+        payload,
+        as_json=args.json,
+        lines=[
+            f"{total.get('value')} {total.get('unit')} lost, "
+            f"from {validation.get('records_summed')} NPT record(s)",
+            (
+                f"stored as {calculation.id} (revision {calculation.revision})"
+                if created
+                else f"already recorded as {calculation.id}; nothing was written"
+            ),
+            f"cited document versions: {len(calculation.provenance or [])}",
+            # Said out loud, because a total is only as complete as what it could count.
+            (
+                f"{unquantified} row(s) state no duration and were counted, not summed"
+                if unquantified
+                else "every row in scope stated a duration"
+            ),
+            f"subject: {payload['subject']}",
+            "re-running is safe: the same rows and method return this record, not a copy",
+        ],
+    )
+    return 0
+
+
+def _records_plan_actual(args: argparse.Namespace, workspace: Workspace) -> int:
+    """The ``records plan-actual`` action."""
+    # The read half of the planned domain.  Every number printed here is already stored -
+    # the programme's targets and the section's own columns - so this command computes
+    # nothing and stores nothing; it is the terminal's view of
+    # ``EngineeringRepository.plan_actual_summary``, which is the single implementation of
+    # the comparison (a second one here is how a screen and a report come to disagree).
+    from ..engineering.repository import EngineeringRepository
+
+    scope = _scope(args, workspace, allow_well=True, required=False)
+    well_id = str(scope.get("well_id") or "")
+    program_id = str(getattr(args, "program", "") or "")
+    section_id = str(getattr(args, "section", "") or "")
+    if not (well_id or program_id or section_id):
+        # The repository refuses an unscoped comparison because it would compare every
+        # section in the workspace; the message says so here rather than surfacing a
+        # validation error whose hint names arguments this command does not have.
+        raise DrillingIntelligenceError(
+            "plan-versus-actual is about one well, programme or section",
+            hint="pass --well (a name works as well as an id), --program or --section",
+        )
+    wanted = str(getattr(args, "metric", "") or "").strip()
+    known = {metric.label for metric in PLAN_ACTUAL_METRICS}
+    if wanted and wanted not in known:
+        raise DrillingIntelligenceError(
+            f"no plan-versus-actual metric named {wanted!r}",
+            hint=f"one of: {', '.join(sorted(known))}",
+        )
+    with workspace.database.read_only() as session:
+        rows = EngineeringRepository(session).plan_actual_summary(
+            well_id=well_id, section_id=section_id, program_id=program_id
+        )
+    if wanted:
+        rows = [row for row in rows if row["metric"] == wanted]
+    payload = {
+        "scope": {
+            "well_id": well_id or None,
+            "program_id": program_id or None,
+            "section_id": section_id or None,
+            "metric": wanted or None,
+        },
+        "count": len(rows),
+        "rows": rows,
+    }
+    statuses: dict[str, int] = {}
+    for row in rows:
+        statuses[str(row["status"])] = statuses.get(str(row["status"]), 0) + 1
+    payload["by_status"] = dict(sorted(statuses.items()))
+    _emit(
+        payload,
+        as_json=args.json,
+        lines=[
+            "scope: "
+            + (
+                ", ".join(
+                    f"{key}={value}" for key, value in sorted(payload["scope"].items()) if value
+                )
+                or "none"
+            ),
+            f"{len(rows)} comparison row(s)",
+            *(
+                _table(
+                    [
+                        {
+                            "section": row["section"],
+                            "metric": row["metric"],
+                            "planned": row["planned"],
+                            "actual": row["actual"],
+                            "unit": row["unit"],
+                            "variance": row["variance"],
+                            "status": row["status"],
+                        }
+                        for row in rows
+                    ],
+                    _PLAN_ACTUAL_COLUMNS,
+                )
+                or [
+                    # An empty answer has two readings and they are not the same job:
+                    # nothing is planned here, or the scope names nothing at all.
+                    "no section in this scope has a plan or an actual to compare"
+                ]
+            ),
+            "status: "
+            + (
+                ", ".join(f"{key} {value}" for key, value in payload["by_status"].items())
+                or "nothing to compare"
+            ),
+            "NO_ACTUAL is a plan nobody has drilled against yet, not a variance of zero",
+        ],
+    )
+    return 0
+
+
+def _records_impact(args: argparse.Namespace, workspace: Workspace) -> int:
+    """The ``records impact`` action."""
+    # Read-only, and deliberately narrow: it answers "what consumed this subject, and is
+    # any of it computed from a superseded source" and does nothing about the answer.
+    # Re-running a calculation is an engineering act with a method and a reviewer
+    # (ADR-0012), so this command never recomputes and never invalidates.
+    from ..engineering.repository import EngineeringRepository
+
+    scope = _scope(args, workspace, required=False)
+    with workspace.database.session() as session:
+        payload = EngineeringRepository(session).calculation_impact(
+            args.subject,
+            current_only=args.current_only,
+            well_id=str(scope.get("well_id") or ""),
+            project_id=str(scope.get("project_id") or ""),
+        )
+    counts = payload["counts"]
+    header = (
+        f"{payload['calculations']} calculation(s) depend on {payload['subject']!r}"
+        if payload["resolved"]
+        else f"subject not recognised: {payload['subject']!r}"
+    )
+    lines = [header]
+    if payload["resolved"]:
+        lines.append(
+            f"resolved to {payload['subject_kind']}:{payload['subject_id']}  "
+            f"[{payload['subject_key']}]"
+        )
+    else:
+        # The distinction the whole command exists for: "nothing depends on this" and "I
+        # cannot resolve this" are different answers and must never print the same way.
+        lines.append(
+            "this is not a canonical subject key, so it matches only its exact text; "
+            "any dependency on the thing it describes cannot be found from it"
+        )
+    lines.append(
+        "dependencies: "
+        + ", ".join(f"{key} {counts[key]}" for key in sorted(counts))
+        + ("" if payload["entries"] else "  (nothing recorded)")
+    )
+    lines.extend(
+        _table(
+            payload["entries"],
+            (
+                ("calculation_id", 38),
+                ("method_id", 24),
+                ("input_name", 18),
+                ("status", 12),
+                ("dependency", 12),
+                ("document_version_id", 38),
+            ),
+        )
+    )
+    if counts["STALE"]:
+        lines.append(
+            "a STALE row cites a superseded document version: nothing is re-run here, "
+            "and which revision replaces it is an engineering decision"
+        )
+    _emit(payload, as_json=args.json, lines=lines)
+    # Non-zero for anything a script must not read as a clean bill of health: a stale
+    # dependency, an input whose subject cannot be resolved, or - the case a bare count
+    # would hide - a *question* that could not be resolved, where an empty result means
+    # "I could not look" rather than "nothing depends on this".
+    if not payload["resolved"] or counts["STALE"] or counts["UNRESOLVED"]:
+        return 1
+    return 0
+
+
+def _records_summary(args: argparse.Namespace, workspace: Workspace) -> int:
+    """The ``records summary`` action."""
+    from ..operations.repository import OperationsRepository
+
+    # A well scope is accepted here because ``record_summary`` answers it: the flag exists on the
+    # parser, so refusing it after parsing would be a CLI that argues with itself.
+    scope = _scope(args, workspace)
+    with workspace.database.session() as session:
+        payload = OperationsRepository(session).record_summary(**scope)
+    npt = payload.get("npt") or {}
+    planned = payload.get("planned") or {}
+    _emit(
+        payload,
+        as_json=args.json,
+        lines=[
+            "scope: "
+            + (", ".join(f"{key}={value}" for key, value in sorted(scope.items())) or "all"),
+            "counts   "
+            + ", ".join(
+                f"{key} {payload[key]}"
+                for key in ("reports", "operations", "events", "problems")
+                if payload.get(key) is not None
+            ),
+            "npt      "
+            + (
+                f"{npt.get('rows', 0)} row(s), {npt.get('promoted', 0)} promoted, "
+                f"{npt.get('with_duration', 0)} with a duration "
+                f"({npt.get('unknown_duration', 0)} without), {npt.get('undated', 0)} undated, "
+                # ``total_hours`` is None when the scope holds no NPT row at all, and that is
+                # the honest value: "nothing was recorded" is not "0 h were lost".  Formatting
+                # it with :g raised TypeError and took the whole summary down, so a scope with
+                # a programme and no history could not be printed.
+                + (
+                    f"{npt['total_hours']:g} h total"
+                    if npt.get("total_hours") is not None
+                    else "no hours recorded"
+                )
+                if npt
+                else "nothing recorded"
+            ),
+            "planned  "
+            + (
+                f"{planned.get('sections', 0)} section(s) "
+                f"({planned.get('sections_with_actual_depth', 0)} with a drilled depth), "
+                f"{planned.get('programs', 0)} programme(s) "
+                f"({planned.get('programs_current', 0)} current), "
+                f"{planned.get('targets', 0)} target(s)"
+                if planned
+                else "no plan promoted"
+            ),
+            "status   "
+            + (
+                ", ".join(
+                    f"{key} {value}"
+                    for key, value in sorted((payload.get("npt_by_status") or {}).items())
+                )
+                or "no rows to attribute"
+            ),
+            "by category "
+            + (
+                ", ".join(
+                    f"{row.get('category')} {row.get('rows', row.get('records', 0))} row(s)"
+                    f" {row.get('hours', 0):g} h"
+                    for row in (payload.get("npt_by_category") or [])
+                )
+                or "none"
+            ),
+            "a duration without a basis is counted, never zeroed: `drillintel records list "
+            "--table npt` shows the rows",
+        ],
+    )
+    return 0
+
+
+def _records_list(args: argparse.Namespace, workspace: Workspace) -> int:
+    """The ``records list`` action - the default when no action is given."""
+    from ..operations.repository import OperationsRepository
+
+    # ``records list`` (the default): one query, one table, the filters that table understands.
+    scope = _scope(args, workspace)
+    with workspace.database.session() as session:
+        repository = OperationsRepository(session)
+        rows = _list_records(repository, args, scope)
+    columns = _LIST_COLUMNS.get(args.table or "npt", _LIST_COLUMNS["npt"])
+    payload = [_picked(row, columns) for row in rows]
+    _emit(
+        {"table": args.table or "npt", "scope": scope, "count": len(payload), "rows": payload},
+        as_json=args.json,
+        lines=[
+            f"{len(payload)} {args.table or 'npt'} row(s)",
+            *(_table(payload, columns) or ["nothing recorded"]),
+        ],
+    )
+    return 0
+
+
 def command_records(args: argparse.Namespace) -> int:
     """``drillintel records``: the operational tables, read, promoted and corrected from a terminal.
 
@@ -1317,484 +2366,20 @@ def command_records(args: argparse.Namespace) -> int:
     """
     workspace = _open_workspace(args)
     try:
-        from ..operations.repository import OperationsRepository
-        from ..operations.service import OperationalService
-
-        if args.action == "review":
-            from ..review import DomainReviewRequest, DomainReviewService
-
-            scope = _scope(args, workspace, required=True)
-            well_id = str(scope.get("well_id") or "")
-            if not well_id:
-                raise DrillingIntelligenceError(
-                    "a domain review is about one well",
-                    hint="pass --well (a name works as well as an id)",
-                )
-            review = DomainReviewService.for_workspace(workspace).review(
-                DomainReviewRequest(
-                    well_id=well_id,
-                    lifecycle=args.lifecycle,
-                    verify_citations=bool(args.verify_citations),
-                    limit=args.limit,
-                )
-            )
-            payload = review.to_dict()
-            audit = payload.get("citation_audit") or {}
-            _emit(
-                payload,
-                as_json=args.json,
-                lines=[
-                    f"well: {review.subject['well'].get('name', well_id)} ({well_id})",
-                    f"records: {review.record_count}, sections: {len(review.sections)}, "
-                    f"conflicts: {len(review.conflicts)}",
-                    "observations: "
-                    + ", ".join(
-                        f"{key} {value}"
-                        for key, value in sorted(review.observations.items())
-                        if key
-                        in {
-                            "candidate_records",
-                            "pending_review_records",
-                            "explicitly_reviewed_records",
-                            "records_without_recorded_provenance",
-                            "open_conflicts",
-                        }
-                    ),
-                    (
-                        "citation audit: "
-                        + ", ".join(
-                            f"{key} {value}"
-                            for key, value in sorted((audit.get("counts") or {}).items())
-                        )
-                        if audit
-                        else "citation audit: not run (use --verify-citations to re-read source files)"
-                    ),
-                    "search sidecar: not used; records came from authoritative scope reads",
-                ],
-            )
-            return 0
-
-        if args.action == "promote":
-            scope = _scope(args, workspace, required=False)
-            service = OperationalService.for_workspace(workspace)
-            if args.document:
-                outcome = service.promote(document_id=args.document, version_id=args.version or "")
-                payload = outcome.to_dict()
-                _emit(
-                    payload,
-                    as_json=args.json,
-                    lines=[
-                        f"promotion outcome: {payload.get('outcome', 'UNKNOWN')} "
-                        f"({'eligible' if payload.get('eligible') else 'not eligible'})",
-                        f"promoted {args.document}: "
-                        + ", ".join(
-                            f"{key} {value}"
-                            for key, value in sorted((payload.get("counts") or {}).items())
-                        ),
-                        "skipped: "
-                        + (
-                            ", ".join(
-                                f"{key} {value}"
-                                for key, value in sorted((payload.get("skipped") or {}).items())
-                            )
-                            or "nothing"
-                        ),
-                    ],
-                )
-                return 1 if (payload.get("totals") or {}).get("conflict") else 0
-            with workspace.database.session() as session:
-                summary = service.promote_workspace(
-                    session=session,
-                    include_unsupported=bool(getattr(args, "include_unsupported", False)),
-                    **scope,
-                )
-                session.commit()
-            totals = summary.get("totals") or {}
-            _emit(
-                summary,
-                as_json=args.json,
-                lines=[
-                    "scope: "
-                    + (
-                        ", ".join(f"{key}={value}" for key, value in sorted(scope.items())) or "all"
-                    ),
-                    # Said out loud because "0 new, 0 already there" has two readings - everything was
-                    # already promoted, or this scope holds no report-shaped version at all - and only one
-                    # of them is a job that is done.
-                    f"{summary.get('versions', 0)} version(s) visited in scope"
-                    + (
-                        f" ({summary.get('versions_with_records', 0)} with records to write)"
-                        if summary.get("versions")
-                        else ""
-                    ),
-                    "rows written: "
-                    f"{totals.get('created', 0)} new, {totals.get('unchanged', 0)} already there, "
-                    f"{totals.get('conflict', 0)} conflicting",
-                    "version outcomes: "
-                    + (
-                        ", ".join(
-                            f"{key} {value}"
-                            for key, value in sorted((summary.get("outcomes") or {}).items())
-                            if value
-                        )
-                        or "none"
-                    ),
-                    "eligibility: "
-                    + ", ".join(
-                        f"{key} {value}"
-                        for key, value in sorted((summary.get("eligibility") or {}).items())
-                    ),
-                    ", ".join(
-                        f"{key} {value['created']} new/{value['unchanged']} unchanged"
-                        for key, value in sorted((summary.get("counts") or {}).items())
-                    ),
-                    "skipped: "
-                    + (
-                        ", ".join(
-                            f"{key} {value}"
-                            for key, value in sorted((summary.get("skipped") or {}).items())
-                        )
-                        or "nothing"
-                    ),
-                    "a conflict is reported, never resolved by force: `drillintel knowledge conflicts`",
-                ],
-            )
-            return 1 if totals.get("conflict") else 0
-
-        if args.action == "rollup":
-            # The production path for engineering calculations: promoted rows in, one cited record out.
-            # It computes nothing the database does not already state - the total is addition over
-            # `npt_record.duration_hours` - and it never decides that an existing record is obsolete,
-            # which is why --supersedes is a flag a person passes rather than something inferred here.
-            from ..engineering.service import EngineeringService
-
-            scope = _scope(args, workspace, required=True)
-            well_id = str(scope.get("well_id") or "")
-            if not well_id:
-                # A field or a project is a scope, but it is not a subject: a lost-time total belongs
-                # to one well, and rolling several into one number would file it under a subject key
-                # that does not describe it.
-                raise DrillingIntelligenceError(
-                    "a lost-time roll-up is about one well",
-                    hint="pass --well (a name works as well as an id)",
-                )
-            service = EngineeringService.for_workspace(workspace)
-            calculation, created = service.record_npt_rollup(
-                well_id=well_id,
-                supersedes_id=str(getattr(args, "supersedes", "") or ""),
-                created_by=str(getattr(args, "by", "") or "cli"),
-            )
-            total = (calculation.outputs or {}).get("npt_hours") or {}
-            validation = calculation.validation or {}
-            payload = {
-                "calculation_id": calculation.id,
-                "created": created,
-                "method_id": calculation.method_id,
-                "method_version": calculation.method_version,
-                "calculation_type": calculation.calculation_type,
-                "origin": calculation.origin,
-                "status": calculation.status,
-                "well_id": calculation.well_id,
-                "scope": {
-                    "well_id": calculation.well_id,
-                    "section_id": calculation.section_id,
-                    "project_id": calculation.project_id,
-                    "source_id": calculation.source_id,
-                },
-                "subject": service.npt_rollup_subject(calculation.well_id),
-                "value": total.get("value"),
-                "unit": total.get("unit"),
-                "records_summed": validation.get("records_summed"),
-                "records_without_duration": validation.get("records_without_duration"),
-                "records_without_evidence": validation.get("records_without_evidence"),
-                "validation": validation,
-                "inputs": calculation.inputs,
-                "outputs": calculation.outputs,
-                "assumptions": calculation.assumptions,
-                "uncertainty": calculation.uncertainty,
-                "confidence": calculation.confidence,
-                "created_by": calculation.created_by,
-                "triggered_by": calculation.triggered_by,
-                "revision": int(calculation.revision or 1),
-                "supersedes_id": calculation.supersedes_id or "",
-                "provenance": calculation.provenance,
-                "document_versions": [
-                    entry.get("document_version_id") for entry in (calculation.provenance or [])
-                ],
-                "source_navigation": _calculation_source_navigation(workspace, calculation),
-            }
-            unquantified = int(validation.get("records_without_duration") or 0)
-            _emit(
-                payload,
-                as_json=args.json,
-                lines=[
-                    f"{total.get('value')} {total.get('unit')} lost, "
-                    f"from {validation.get('records_summed')} NPT record(s)",
-                    (
-                        f"stored as {calculation.id} (revision {calculation.revision})"
-                        if created
-                        else f"already recorded as {calculation.id}; nothing was written"
-                    ),
-                    f"cited document versions: {len(calculation.provenance or [])}",
-                    # Said out loud, because a total is only as complete as what it could count.
-                    (
-                        f"{unquantified} row(s) state no duration and were counted, not summed"
-                        if unquantified
-                        else "every row in scope stated a duration"
-                    ),
-                    f"subject: {payload['subject']}",
-                    "re-running is safe: the same rows and method return this record, not a copy",
-                ],
-            )
-            return 0
-
-        if args.action == "plan-actual":
-            # The read half of the planned domain.  Every number printed here is already stored -
-            # the programme's targets and the section's own columns - so this command computes
-            # nothing and stores nothing; it is the terminal's view of
-            # ``EngineeringRepository.plan_actual_summary``, which is the single implementation of
-            # the comparison (a second one here is how a screen and a report come to disagree).
-            from ..engineering.repository import EngineeringRepository
-
-            scope = _scope(args, workspace, allow_well=True, required=False)
-            well_id = str(scope.get("well_id") or "")
-            program_id = str(getattr(args, "program", "") or "")
-            section_id = str(getattr(args, "section", "") or "")
-            if not (well_id or program_id or section_id):
-                # The repository refuses an unscoped comparison because it would compare every
-                # section in the workspace; the message says so here rather than surfacing a
-                # validation error whose hint names arguments this command does not have.
-                raise DrillingIntelligenceError(
-                    "plan-versus-actual is about one well, programme or section",
-                    hint="pass --well (a name works as well as an id), --program or --section",
-                )
-            wanted = str(getattr(args, "metric", "") or "").strip()
-            known = {metric.label for metric in PLAN_ACTUAL_METRICS}
-            if wanted and wanted not in known:
-                raise DrillingIntelligenceError(
-                    f"no plan-versus-actual metric named {wanted!r}",
-                    hint=f"one of: {', '.join(sorted(known))}",
-                )
-            with workspace.database.read_only() as session:
-                rows = EngineeringRepository(session).plan_actual_summary(
-                    well_id=well_id, section_id=section_id, program_id=program_id
-                )
-            if wanted:
-                rows = [row for row in rows if row["metric"] == wanted]
-            payload = {
-                "scope": {
-                    "well_id": well_id or None,
-                    "program_id": program_id or None,
-                    "section_id": section_id or None,
-                    "metric": wanted or None,
-                },
-                "count": len(rows),
-                "rows": rows,
-            }
-            statuses: dict[str, int] = {}
-            for row in rows:
-                statuses[str(row["status"])] = statuses.get(str(row["status"]), 0) + 1
-            payload["by_status"] = dict(sorted(statuses.items()))
-            _emit(
-                payload,
-                as_json=args.json,
-                lines=[
-                    "scope: "
-                    + (
-                        ", ".join(
-                            f"{key}={value}"
-                            for key, value in sorted(payload["scope"].items())
-                            if value
-                        )
-                        or "none"
-                    ),
-                    f"{len(rows)} comparison row(s)",
-                    *(
-                        _table(
-                            [
-                                {
-                                    "section": row["section"],
-                                    "metric": row["metric"],
-                                    "planned": row["planned"],
-                                    "actual": row["actual"],
-                                    "unit": row["unit"],
-                                    "variance": row["variance"],
-                                    "status": row["status"],
-                                }
-                                for row in rows
-                            ],
-                            _PLAN_ACTUAL_COLUMNS,
-                        )
-                        or [
-                            # An empty answer has two readings and they are not the same job:
-                            # nothing is planned here, or the scope names nothing at all.
-                            "no section in this scope has a plan or an actual to compare"
-                        ]
-                    ),
-                    "status: "
-                    + (
-                        ", ".join(f"{key} {value}" for key, value in payload["by_status"].items())
-                        or "nothing to compare"
-                    ),
-                    "NO_ACTUAL is a plan nobody has drilled against yet, not a variance of zero",
-                ],
-            )
-            return 0
-
-        if args.action == "impact":
-            # Read-only, and deliberately narrow: it answers "what consumed this subject, and is
-            # any of it computed from a superseded source" and does nothing about the answer.
-            # Re-running a calculation is an engineering act with a method and a reviewer
-            # (ADR-0012), so this command never recomputes and never invalidates.
-            from ..engineering.repository import EngineeringRepository
-
-            scope = _scope(args, workspace, required=False)
-            with workspace.database.session() as session:
-                payload = EngineeringRepository(session).calculation_impact(
-                    args.subject,
-                    current_only=args.current_only,
-                    well_id=str(scope.get("well_id") or ""),
-                    project_id=str(scope.get("project_id") or ""),
-                )
-            counts = payload["counts"]
-            header = (
-                f"{payload['calculations']} calculation(s) depend on {payload['subject']!r}"
-                if payload["resolved"]
-                else f"subject not recognised: {payload['subject']!r}"
-            )
-            lines = [header]
-            if payload["resolved"]:
-                lines.append(
-                    f"resolved to {payload['subject_kind']}:{payload['subject_id']}  "
-                    f"[{payload['subject_key']}]"
-                )
-            else:
-                # The distinction the whole command exists for: "nothing depends on this" and "I
-                # cannot resolve this" are different answers and must never print the same way.
-                lines.append(
-                    "this is not a canonical subject key, so it matches only its exact text; "
-                    "any dependency on the thing it describes cannot be found from it"
-                )
-            lines.append(
-                "dependencies: "
-                + ", ".join(f"{key} {counts[key]}" for key in sorted(counts))
-                + ("" if payload["entries"] else "  (nothing recorded)")
-            )
-            lines.extend(
-                _table(
-                    payload["entries"],
-                    (
-                        ("calculation_id", 38),
-                        ("method_id", 24),
-                        ("input_name", 18),
-                        ("status", 12),
-                        ("dependency", 12),
-                        ("document_version_id", 38),
-                    ),
-                )
-            )
-            if counts["STALE"]:
-                lines.append(
-                    "a STALE row cites a superseded document version: nothing is re-run here, "
-                    "and which revision replaces it is an engineering decision"
-                )
-            _emit(payload, as_json=args.json, lines=lines)
-            # Non-zero for anything a script must not read as a clean bill of health: a stale
-            # dependency, an input whose subject cannot be resolved, or - the case a bare count
-            # would hide - a *question* that could not be resolved, where an empty result means
-            # "I could not look" rather than "nothing depends on this".
-            if not payload["resolved"] or counts["STALE"] or counts["UNRESOLVED"]:
-                return 1
-            return 0
-
-        if args.action == "summary":
-            # A well scope is accepted here because ``record_summary`` answers it: the flag exists on the
-            # parser, so refusing it after parsing would be a CLI that argues with itself.
-            scope = _scope(args, workspace)
-            with workspace.database.session() as session:
-                payload = OperationsRepository(session).record_summary(**scope)
-            npt = payload.get("npt") or {}
-            planned = payload.get("planned") or {}
-            _emit(
-                payload,
-                as_json=args.json,
-                lines=[
-                    "scope: "
-                    + (
-                        ", ".join(f"{key}={value}" for key, value in sorted(scope.items())) or "all"
-                    ),
-                    "counts   "
-                    + ", ".join(
-                        f"{key} {payload[key]}"
-                        for key in ("reports", "operations", "events", "problems")
-                        if payload.get(key) is not None
-                    ),
-                    "npt      "
-                    + (
-                        f"{npt.get('rows', 0)} row(s), {npt.get('promoted', 0)} promoted, "
-                        f"{npt.get('with_duration', 0)} with a duration "
-                        f"({npt.get('unknown_duration', 0)} without), {npt.get('undated', 0)} undated, "
-                        # ``total_hours`` is None when the scope holds no NPT row at all, and that is
-                        # the honest value: "nothing was recorded" is not "0 h were lost".  Formatting
-                        # it with :g raised TypeError and took the whole summary down, so a scope with
-                        # a programme and no history could not be printed.
-                        + (
-                            f"{npt['total_hours']:g} h total"
-                            if npt.get("total_hours") is not None
-                            else "no hours recorded"
-                        )
-                        if npt
-                        else "nothing recorded"
-                    ),
-                    "planned  "
-                    + (
-                        f"{planned.get('sections', 0)} section(s) "
-                        f"({planned.get('sections_with_actual_depth', 0)} with a drilled depth), "
-                        f"{planned.get('programs', 0)} programme(s) "
-                        f"({planned.get('programs_current', 0)} current), "
-                        f"{planned.get('targets', 0)} target(s)"
-                        if planned
-                        else "no plan promoted"
-                    ),
-                    "status   "
-                    + (
-                        ", ".join(
-                            f"{key} {value}"
-                            for key, value in sorted((payload.get("npt_by_status") or {}).items())
-                        )
-                        or "no rows to attribute"
-                    ),
-                    "by category "
-                    + (
-                        ", ".join(
-                            f"{row.get('category')} {row.get('rows', row.get('records', 0))} row(s)"
-                            f" {row.get('hours', 0):g} h"
-                            for row in (payload.get("npt_by_category") or [])
-                        )
-                        or "none"
-                    ),
-                    "a duration without a basis is counted, never zeroed: `drillintel records list "
-                    "--table npt` shows the rows",
-                ],
-            )
-            return 0
-
-        # ``records list`` (the default): one query, one table, the filters that table understands.
-        scope = _scope(args, workspace)
-        with workspace.database.session() as session:
-            repository = OperationsRepository(session)
-            rows = _list_records(repository, args, scope)
-        columns = _LIST_COLUMNS.get(args.table or "npt", _LIST_COLUMNS["npt"])
-        payload = [_picked(row, columns) for row in rows]
-        _emit(
-            {"table": args.table or "npt", "scope": scope, "count": len(payload), "rows": payload},
-            as_json=args.json,
-            lines=[
-                f"{len(payload)} {args.table or 'npt'} row(s)",
-                *(_table(payload, columns) or ["nothing recorded"]),
-            ],
-        )
-        return 0
+        action = str(getattr(args, "action", "") or "")
+        if action == "review":
+            return _records_review(args, workspace)
+        if action == "promote":
+            return _records_promote(args, workspace)
+        if action == "rollup":
+            return _records_rollup(args, workspace)
+        if action == "plan-actual":
+            return _records_plan_actual(args, workspace)
+        if action == "impact":
+            return _records_impact(args, workspace)
+        if action == "summary":
+            return _records_summary(args, workspace)
+        return _records_list(args, workspace)
     finally:
         workspace.close()
 
@@ -2865,30 +3450,50 @@ def _common() -> argparse.ArgumentParser:
     return common
 
 
-def build_parser() -> argparse.ArgumentParser:
-    # The top-level parser gets its *own* instance of the shared options.  ``set_defaults`` does
-    # not merely record a namespace default - it rewrites ``action.default`` on any matching action
-    # object, and ``parents=`` shares those very objects with every parser built from the same
-    # parent.  Reusing one instance here would therefore push the real defaults straight back into
-    # the subparsers and silently undo the ``SUPPRESS`` that keeps them from clobbering a value
-    # given before the subcommand.
-    parser = argparse.ArgumentParser(
-        prog="drillintel",
-        description="Drilling Intelligence - document registry, search and diagnostics (local-first).",
-        parents=[_common()],
+def _add_mineru_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    mineru = sub.add_parser(
+        "mineru", help="validate the optional local MinerU runtime without uploading documents"
     )
-    # The real defaults live here, not in ``_common()`` - see its docstring for why a default there
-    # would be discarded by whichever subparser runs next.
-    parser.set_defaults(config=None, workspace=None, json=False, debug=False)
-    common = _common()
-    parser.add_argument("--version", action="store_true", help="print the version and exit")
-    sub = parser.add_subparsers(dest="command")
+    actions = mineru.add_subparsers(dest="action", required=True)
+    validate = actions.add_parser(
+        "validate",
+        help="check local CLI readiness; OCR is not run unless explicitly requested",
+        parents=[common],
+    )
+    validate.add_argument(
+        "--run-synthetic-ocr",
+        action="store_true",
+        help="run the bundled synthetic image through local MinerU using local-only model settings",
+    )
+    validate.set_defaults(handler=command_mineru_validate)
 
+
+def _add_config_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    config = sub.add_parser(
+        "config", help="inspect application configuration without opening a workspace"
+    )
+    actions = config.add_subparsers(dest="action", required=True)
+    validate = actions.add_parser(
+        "validate",
+        help="validate TOML and environment settings without service probes",
+        parents=[common],
+    )
+    validate.add_argument(
+        "--strict", action="store_true", help="treat unknown configuration keys as an error"
+    )
+    validate.set_defaults(handler=command_config_validate)
+
+
+def _add_version_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "version" command and its options."""
     version = sub.add_parser(
         "version", help="print the platform and Python versions", parents=[common]
     )
     version.set_defaults(handler=command_version)
 
+
+def _add_workspace_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "workspace" command and its options."""
     workspace_parser = sub.add_parser(
         "workspace", help="create or inspect a workspace folder", parents=[common]
     )
@@ -2903,6 +3508,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     create.set_defaults(handler=command_workspace_create)
 
+    backup = workspace_sub.add_parser(
+        "backup",
+        help="write an integrity-checked SQLite snapshot without overwriting an existing file",
+        parents=[common],
+    )
+    backup.add_argument("--output", required=True, help="new backup archive path (must not exist)")
+    backup.set_defaults(handler=command_workspace_backup)
+
+    restore = workspace_sub.add_parser(
+        "restore",
+        help="restore a verified archive into a new workspace directory (never in place)",
+        parents=[common],
+    )
+    restore.add_argument("archive", help="workspace backup archive")
+    restore.add_argument("destination", help="new workspace directory (must not exist)")
+    restore.set_defaults(handler=command_workspace_restore)
+
+    archive = workspace_sub.add_parser(
+        "archive",
+        help="archive workspace-owned files with a consistent SQLite snapshot",
+        parents=[common],
+    )
+    archive.add_argument(
+        "--output", required=True, help="new archive path outside the workspace (must not exist)"
+    )
+    archive.set_defaults(handler=command_workspace_archive)
+
+    restore_archive = workspace_sub.add_parser(
+        "restore-archive",
+        help="verify and atomically restore a full workspace archive to its recorded root",
+        parents=[common],
+    )
+    restore_archive.add_argument("archive", help="full workspace archive")
+    restore_archive.add_argument("destination", help="the original workspace root (must not exist)")
+    restore_archive.set_defaults(handler=command_workspace_restore_archive)
+
+
+def _add_wells_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "wells" command and its options."""
     wells = sub.add_parser(
         "wells",
         help="the wells this workspace knows: register one, or list what is registered",
@@ -2934,6 +3578,9 @@ def build_parser() -> argparse.ArgumentParser:
     wells_list.add_argument("--status", default="", help="restrict to this lifecycle state")
     wells_list.set_defaults(handler=command_wells)
 
+
+def _add_ingest_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "ingest" command and its options."""
     ingest = sub.add_parser(
         "ingest",
         help="scan a folder: register what changed, extract, classify, index",
@@ -2957,6 +3604,146 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ingest.set_defaults(handler=command_ingest)
 
+
+def _add_intake_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the local intake queue and explicit registration boundary."""
+    intake = sub.add_parser(
+        "intake",
+        help="queue, preview, disposition, and explicitly register local source files",
+        parents=[common],
+    )
+    actions = intake.add_subparsers(dest="action", required=True)
+    add = actions.add_parser(
+        "add", help="queue file references and measure their SHA-256", parents=[common]
+    )
+    add.add_argument("paths", nargs="+", help="supported PDF/XLSX/XLSM/DOCX/CSV/TXT sources")
+    add.add_argument("--by", required=True, help="actor recorded for the enqueue action")
+    add.set_defaults(handler=command_intake)
+    listing = actions.add_parser(
+        "list", help="list queued, reviewed, rejected, or registered items", parents=[common]
+    )
+    listing.add_argument(
+        "--status", choices=("QUEUED", "REVIEWED", "REJECTED", "REGISTERED"), default=""
+    )
+    listing.set_defaults(handler=command_intake)
+    preview = actions.add_parser(
+        "preview", help="preview local extraction and static eligibility", parents=[common]
+    )
+    preview.add_argument("item", help="intake item id")
+    preview.set_defaults(handler=command_intake)
+    decide = actions.add_parser(
+        "decide", help="record a human REVIEWED or REJECTED disposition", parents=[common]
+    )
+    decide.add_argument("item", help="intake item id")
+    decide.add_argument("--decision", required=True, choices=("REVIEWED", "REJECTED"))
+    decide.add_argument("--by", required=True, help="reviewer identity")
+    decide.add_argument("--reason", required=True, help="required disposition reason")
+    decide.set_defaults(handler=command_intake)
+    register = actions.add_parser(
+        "register",
+        help="register reviewed bytes with DocumentRegistry; never auto-promotes",
+        parents=[common],
+    )
+    register.add_argument("item", help="reviewed intake item id")
+    register.add_argument("--by", required=True, help="actor identity")
+    register.add_argument("--reason", required=True, help="why this source is being registered")
+    register.add_argument("--well", default="", help="registered well id or exact name (optional)")
+    register.set_defaults(handler=command_intake)
+
+
+def _add_ddr_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Expose manual DDR authoring and governed review without duplicating domain rules."""
+    ddr = sub.add_parser(
+        "ddr",
+        help="author, inspect, submit, revise and independently review manual DDRs",
+        parents=[common],
+    )
+    actions = ddr.add_subparsers(dest="action", required=True)
+
+    create = actions.add_parser(
+        "create", help="create an explicit DRAFT from a JSON snapshot", parents=[common]
+    )
+    create.add_argument("--well", required=True, help="registered well id or exact name")
+    create.add_argument("--content", required=True, help="UTF-8 JSON snapshot file (max 1 MiB)")
+    create.add_argument("--by", required=True, help="declared author recorded in provenance")
+    create.add_argument("--reason", required=True, help="why this draft is being created")
+    create.set_defaults(handler=command_ddr)
+
+    listing = actions.add_parser("list", help="list current DDRs for a well", parents=[common])
+    listing.add_argument("--well", required=True, help="registered well id or exact name")
+    listing.add_argument("--history", action="store_true", help="include preserved prior revisions")
+    listing.set_defaults(handler=command_ddr)
+
+    for name, help_text in (
+        ("show", "show one authored DDR and its source-entered activities"),
+        ("actions", "show governed review actions currently allowed for one DDR"),
+    ):
+        view = actions.add_parser(name, help=help_text, parents=[common])
+        view.add_argument("report_id", help="DDR report id")
+        view.set_defaults(handler=command_ddr)
+
+    compare = actions.add_parser(
+        "compare",
+        help="compare an explicitly named predecessor and its direct successor (read-only)",
+        parents=[common],
+    )
+    compare.add_argument("predecessor_report_id", help="exact predecessor DDR report id")
+    compare.add_argument("successor_report_id", help="exact successor DDR report id")
+    compare.set_defaults(handler=command_ddr)
+
+    save = actions.add_parser(
+        "save", help="replace a current DRAFT from a complete JSON snapshot", parents=[common]
+    )
+    save.add_argument("report_id", help="DDR report id")
+    save.add_argument(
+        "--content", required=True, help="complete UTF-8 JSON snapshot file (max 1 MiB)"
+    )
+    save.add_argument(
+        "--expected-updated-at", required=True, help="timestamp from the last `ddr show`"
+    )
+    save.add_argument("--by", required=True, help="declared author recorded in provenance")
+    save.add_argument(
+        "--reason", required=True, help="why this complete draft snapshot is replacing the old one"
+    )
+    save.set_defaults(handler=command_ddr)
+
+    for name, help_text in (
+        ("submit", "submit a DRAFT; operations remain CANDIDATE until independent review"),
+        ("revise", "start a new DRAFT revision of a submitted manual report"),
+    ):
+        operation = actions.add_parser(name, help=help_text, parents=[common])
+        operation.add_argument("report_id", help="DDR report id")
+        operation.add_argument(
+            "--expected-updated-at", required=True, help="timestamp from the last `ddr show`"
+        )
+        operation.add_argument("--by", required=True, help="declared actor recorded in provenance")
+        operation.add_argument(
+            "--reason", required=True, help="why this lifecycle action is being taken"
+        )
+        operation.set_defaults(handler=command_ddr)
+
+    decide = actions.add_parser(
+        "decide", help="apply an existing governed review action", parents=[common]
+    )
+    decide.add_argument("report_id", help="DDR report id")
+    decide.add_argument("--well", required=True, help="well scope shown by `ddr show`")
+    decide.add_argument(
+        "--action", dest="review_action", required=True, help="one action listed by `ddr actions`"
+    )
+    decide.add_argument("--expected-status", required=True, help="status shown by `ddr show`")
+    decide.add_argument(
+        "--expected-revision", required=True, type=int, help="revision number shown by `ddr show`"
+    )
+    decide.add_argument(
+        "--expected-updated-at", required=True, help="timestamp shown by `ddr show`"
+    )
+    decide.add_argument("--by", required=True, help="declared reviewer id; not authenticated")
+    decide.add_argument("--reason", required=True, help="required decision reason")
+    decide.set_defaults(handler=command_ddr)
+
+
+def _add_search_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "search" command and its options."""
     search = sub.add_parser(
         "search", help="search indexed text; every result cites its location", parents=[common]
     )
@@ -2982,6 +3769,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search.set_defaults(handler=command_search)
 
+
+def _add_evidence_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "evidence" command and its options."""
     evidence = sub.add_parser(
         "evidence",
         help="verified evidence for a set of topics, addressed by content",
@@ -3033,6 +3823,9 @@ def build_parser() -> argparse.ArgumentParser:
         )
         action.set_defaults(handler=command_evidence)
 
+
+def _add_index_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "index" command and its options."""
     index = sub.add_parser(
         "index", help="inspect, rebuild or prune the derived search index", parents=[common]
     )
@@ -3045,6 +3838,9 @@ def build_parser() -> argparse.ArgumentParser:
         action = index_sub.add_parser(name, help=help_text, parents=[common])
         action.set_defaults(handler=command_index)
 
+
+def _add_knowledge_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "knowledge" command and its options."""
     knowledge = sub.add_parser(
         "knowledge",
         help="the facts the corpus asserts: status, rebuild, conflicts, listing, resolution",
@@ -3105,13 +3901,19 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--by", help="who decided (required; no implicit operator identity)")
     resolve.set_defaults(handler=command_knowledge)
 
+
+def _add_doctor_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "doctor" command and its options."""
     doctor = sub.add_parser(
         "doctor",
-        help="check the workspace, schema, registry invariants and index together",
+        help="check SQLite storage before the workspace schema, registry invariants and index",
         parents=[common],
     )
     doctor.set_defaults(handler=command_doctor)
 
+
+def _add_ai_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "ai" command and its options."""
     ai = sub.add_parser(
         "ai",
         help="probe the configured model provider; this does not write records",
@@ -3125,6 +3927,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ai_status.set_defaults(handler=command_ai_status)
 
+
+def _add_timeline_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "timeline" command and its options."""
     timeline = sub.add_parser(
         "timeline",
         help="one well's history, derived from the records and never stored",
@@ -3159,6 +3964,9 @@ def build_parser() -> argparse.ArgumentParser:
     timeline.add_argument("--limit", type=int, default=0, help="at most N entries (0 = no limit)")
     timeline.set_defaults(handler=command_timeline)
 
+
+def _add_records_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "records" command and its options."""
     records = sub.add_parser(
         "records",
         help="the operational tables: list rows, summarise a scope, promote a version",
@@ -3289,6 +4097,9 @@ def build_parser() -> argparse.ArgumentParser:
             )
         action.set_defaults(handler=command_records)
 
+
+def _add_fields_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "fields" command and its options."""
     fields = sub.add_parser(
         "fields",
         help="the field's numbers: hours, occurrences, affected wells, offset candidates",
@@ -3442,6 +4253,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.set_defaults(handler=command_fields)
 
+
+def _add_analyze_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "analyze" command and its options."""
     analyze = sub.add_parser(
         "analyze",
         help="one typed answer from the fixed analyst question catalog "
@@ -3496,6 +4310,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     analyze.set_defaults(handler=command_analyze)
 
+
+def _add_patterns_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "patterns" command and its options."""
     patterns = sub.add_parser(
         "patterns",
         help="recurring problems: find them, snapshot them, re-check a snapshot",
@@ -3557,6 +4374,9 @@ def build_parser() -> argparse.ArgumentParser:
             action.add_argument("--reason", help="why, from the records that support it")
         action.set_defaults(handler=command_patterns)
 
+
+def _add_lessons_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the "lessons" command and its options."""
     lessons = sub.add_parser(
         "lessons",
         help="lessons learned, best practices and the evidence under them",
@@ -3592,6 +4412,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     show.add_argument("lesson", help="the lesson id, as `lessons list` prints it")
     show.set_defaults(handler=command_lessons)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    # The top-level parser gets its *own* instance of the shared options.  ``set_defaults`` does
+    # not merely record a namespace default - it rewrites ``action.default`` on any matching action
+    # object, and ``parents=`` shares those very objects with every parser built from the same
+    # parent.  Reusing one instance here would therefore push the real defaults straight back into
+    # the subparsers and silently undo the ``SUPPRESS`` that keeps them from clobbering a value
+    # given before the subcommand.
+    parser = argparse.ArgumentParser(
+        prog="drillintel",
+        description="Drilling Intelligence - document registry, search and diagnostics (local-first).",
+        parents=[_common()],
+    )
+    # The real defaults live here, not in ``_common()`` - see its docstring for why a default there
+    # would be discarded by whichever subparser runs next.
+    parser.set_defaults(config=None, workspace=None, json=False, debug=False)
+    common = _common()
+    parser.add_argument("--version", action="store_true", help="print the version and exit")
+    sub = parser.add_subparsers(dest="command")
+    _add_config_command(sub, common)
+    _add_mineru_command(sub, common)
+    _add_version_command(sub, common)
+    _add_workspace_command(sub, common)
+    _add_wells_command(sub, common)
+    _add_ingest_command(sub, common)
+    _add_intake_command(sub, common)
+    _add_ddr_command(sub, common)
+    _add_search_command(sub, common)
+    _add_evidence_command(sub, common)
+    _add_index_command(sub, common)
+    _add_knowledge_command(sub, common)
+    _add_doctor_command(sub, common)
+    _add_ai_command(sub, common)
+    _add_timeline_command(sub, common)
+    _add_records_command(sub, common)
+    _add_fields_command(sub, common)
+    _add_analyze_command(sub, common)
+    _add_patterns_command(sub, common)
+    _add_lessons_command(sub, common)
+    add_program_procedure_commands(sub, common)
 
     return parser
 

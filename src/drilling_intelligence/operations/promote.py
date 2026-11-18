@@ -50,10 +50,11 @@ from ..core.enums import (
     ConfirmationStatus,
     KnowledgeOrigin,
     KnowledgeRelationType,
+    LessonLifecycle,
     ProgramLifecycle,
     RecordState,
 )
-from ..core.errors import UnitError
+from ..core.errors import UnitError, ValidationError
 from ..core.hashing import sha256_obj
 from ..core.ids import new_id
 from ..core.units import Quantity, parse_decimal
@@ -72,10 +73,13 @@ from ..database.models import (
     Extraction,
     Field,
     HseIncident,
+    KnowledgeRelation,
+    LessonLearned,
     MudMeasurement,
     MudReport,
     NptRecord,
     ProblemOccurrence,
+    Project,
     SurveyRun,
     SurveyStation,
     Well,
@@ -112,6 +116,7 @@ from .cost import (
     unmapped_money_columns,
 )
 from .hse import HseIncidentEntry, hse_incident_entries
+from .lesson_learned import lesson_entries, lesson_table_key
 from .mud import (
     SummaryEntry,
     daily_entries,
@@ -693,6 +698,19 @@ class VersionPromoter:
                     sorted(set(missing))
                 )
             return ""
+        if handler == "lesson_learned":
+            # No recognised table is not a provenance failure — the writer reports unsupported shape.
+            relevant = [entry.table for entry in lesson_entries(payload)]
+            missing = [
+                source_table_key(table) or "table"
+                for table in relevant
+                if not isinstance(table.get("provenance"), Mapping)
+            ]
+            if missing:
+                return f"{handler} table provenance is missing for: " + ", ".join(
+                    sorted(set(missing))
+                )
+            return ""
         tables = find_npt_tables(payload) + find_breakdown_tables(payload)
         if tables:
             missing = [
@@ -853,6 +871,12 @@ class VersionPromoter:
             )
             result.finalize()
             return result
+        if contract.handler == "lesson_learned":
+            self._promote_lesson_learned(
+                payload=payload, document=document, version=version, result=result, replace=replace
+            )
+            result.finalize()
+            return result
         if contract.handler != "report":  # pragma: no cover - import-time registry guard
             result.error = "UNKNOWN_HANDLER"
             result.finalize()
@@ -920,6 +944,18 @@ class VersionPromoter:
         to do - a promotion made from what turned out to be somebody's draft, for instance.  Children
         before parents, one flush at a time: the record tables point at each other by ordinary foreign
         keys, and SQLite enforces only what it is given, in the order it is given it.
+
+        Lessons are part of this surface: only ``DERIVED`` rows for this ``version_id``
+        are removed; ``MANUAL`` lessons are preserved, rows for other versions are left
+        alone, the delete is transactional (no partial commit on failure), evidence
+        edges (``knowledge_relation`` where source or target is the lesson) are removed
+        with the lesson, and a superseded predecessor (``supersedes_id``) is reinstated
+        as current when the superseding derived row is deleted.  Approved/reviewed
+        derived lessons are removed like any other derived row — the operation is a
+        governed un-derive of a specific document version, not a silent erasure of an
+        engineering decision: approval is versioned, and the audit log retains the
+        decision; a caller that needs a policy gate should check ``status`` before
+        calling this method.
         """
         removed = 0
         # Children before parents, one flush at a time: the record tables point at each other by
@@ -934,6 +970,62 @@ class VersionPromoter:
         # way.  Order is constrained by the foreign keys: problem occurrences and the NPT-referencing
         # domains go first, ``npt_record`` next, then the cement/casing pair in that order because
         # ``cement_job.casing_run_id`` points at ``casing_run``.
+        #
+        # LessonLearned is version-owned via ``document_version_id`` and must be handled
+        # before the generic loop so its knowledge edges and supersession can be treated
+        # transactionally.  KnowledgeRelation rows for the lesson are deleted first to
+        # avoid leaving graph orphans, then the lesson row itself.
+        lesson_rows = list(
+            self.session.execute(
+                select(LessonLearned).where(
+                    LessonLearned.document_version_id == version_id,
+                    LessonLearned.origin == KnowledgeOrigin.DERIVED.value,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        # Collect supersession links before deletion to avoid UNIQUE violation
+        # on uq_lesson_one_current (code) when both predecessor and superseding row
+        # are is_current=True momentarily.  Deletion goes first, then reinstatement.
+        supersedes_ids: list[str] = []
+        for lesson in lesson_rows:
+            # Delete evidence edges where this lesson is source or target.
+            for edge in list(
+                self.session.execute(
+                    select(KnowledgeRelation).where(
+                        (KnowledgeRelation.source_type == "lesson")
+                        & (KnowledgeRelation.source_id == lesson.id)
+                    )
+                ).scalars()
+            ):
+                self.session.delete(edge)
+            for edge in list(
+                self.session.execute(
+                    select(KnowledgeRelation).where(
+                        (KnowledgeRelation.target_type == "lesson")
+                        & (KnowledgeRelation.target_id == lesson.id)
+                    )
+                ).scalars()
+            ):
+                self.session.delete(edge)
+            sid = str(getattr(lesson, "supersedes_id", "") or "")
+            if sid:
+                supersedes_ids.append(sid)
+            self.session.delete(lesson)
+        if lesson_rows:
+            self.session.flush()
+            # Reinstate superseded predecessors as current after the superseding rows
+            # are gone, preserving audit (status stays SUPERSEDED — the predecessor
+            # remains readable as superseded-but-current after an un-derive; a full
+            # status revert would invent history).
+            for sid in supersedes_ids:
+                predecessor = self.session.get(LessonLearned, sid)
+                if predecessor is not None and not predecessor.is_current:
+                    predecessor.is_current = True
+            if supersedes_ids:
+                self.session.flush()
+        removed += len(lesson_rows)
         for model in (
             ProblemOccurrence,
             WellControlEvent,
@@ -3717,8 +3809,10 @@ class VersionPromoter:
         well, and an HSE incident may have no well at all - a slip on the camp steps or a spill at
         the mud warehouse belongs to a site, not to a hole.  Scoping by well there would leave the
         older version current forever.  A document's own rows all carry that document's scope, so
-        the document is the correct boundary for both domains.  A row a person confirmed is never
-        demoted: a later extraction is not evidence that the person misread the source.
+        the document is the correct boundary for both domains. A confirmed operational row remains
+        current. A lesson successor is a separate reviewable revision: the old row is marked
+        SUPERSEDED while its exact prior lifecycle (including APPROVED) is retained in
+        ``prior_status``; approval is never copied to the new source version.
         """
         previous = list(
             self.session.execute(
@@ -3734,8 +3828,28 @@ class VersionPromoter:
         )
         stood_down = 0
         for row in previous:
-            if str(row.status) == ConfirmationStatus.CONFIRMED.value:
+            status = str(row.status or "")
+            if status == ConfirmationStatus.CONFIRMED.value:
                 continue
+            if model is LessonLearned:
+                # Lesson lifecycle is richer than the confirmation flag used by
+                # operational rows. Keep the exact prior review state so the
+                # successor chain remains valid and the next version still needs
+                # its own explicit review.
+                promotable_prior_states = {
+                    LessonLifecycle.DRAFT.value,
+                    LessonLifecycle.REVIEW.value,
+                    LessonLifecycle.APPROVED.value,
+                    LessonLifecycle.REJECTED.value,
+                }
+                if status not in promotable_prior_states:
+                    raise ValidationError(
+                        "cannot supersede a lesson with an unknown or inactive lifecycle state",
+                        lesson_id=str(row.id),
+                        status=status or None,
+                    )
+                row.prior_status = status
+                row.status = LessonLifecycle.SUPERSEDED.value
             row.is_current = False
             stood_down += 1
         return stood_down
@@ -4135,6 +4249,353 @@ class VersionPromoter:
             if removed:
                 result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
         return written
+
+    def _write_lesson_learned(
+        self,
+        *,
+        entry: Any,
+        well_id: str | None,
+        field_id: str | None,
+        project_id: str | None,
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+    ) -> LessonLearned | None:
+        """Write one lesson row, never inferring what the source did not state."""
+        # Row identity is stable across re-promotions of the same version.  Code wins when
+        # present, otherwise title+lesson hash — so a re-extraction that changes a lesson's
+        # wording produces a different identity and is reported as SOURCE_CHANGED rather than
+        # silently editing an approved row.
+        table_id = lesson_table_key((entry,)) if hasattr(entry, "table") else ""
+        # Fallback table_id from entry table directly when helper expects sequence
+        try:
+            table_id = lesson_table_key([entry])  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001
+            table_id = ""
+        if not table_id:
+            table_id = (
+                str(getattr(entry.table, "get", lambda *a, **k: "")("table_id", "")) or "lesson"
+            )
+        extra = entry.lesson_code.strip() if entry.lesson_code.strip() else entry.title.strip()[:40]
+        # Well scope is part of identity for idempotence (same row on same version
+        # must re-find the same row), but code uniqueness itself is global via
+        # uq_lesson_one_current — the same code on two wells is a conflict, not two
+        # lessons (checked above).
+        identity = promotion_identity(
+            version_id=version.id,
+            kind="lesson-learned",
+            table_id=table_id,
+            row_index=int(entry.source_row_index),
+            well_id=str(well_id or ""),
+            extra=extra,
+        )
+        # Problem type is a closed vocabulary token, matched exactly; unknown stays as-is token
+        from ..core.vocabulary import problem_type as match_problem_type
+
+        problem_token = ""
+        if entry.problem_type.strip():
+            try:
+                problem_token = match_problem_type(entry.problem_type).token
+            except Exception:  # noqa: BLE001
+                problem_token = entry.problem_type.strip().lower().replace(" ", "_")
+        # Hole size parsing — keep source text, value and unit discipline
+        hole_size_text = entry.hole_size_text.strip() if hasattr(entry, "hole_size_text") else ""
+        hole_size_value: float | None = None
+        if hole_size_text:
+            try:
+                from .tableshape import numeric as _numeric
+
+                hole_size_value = _numeric(hole_size_text, ("in", "inch", "inches"))
+            except Exception:  # noqa: BLE001
+                hole_size_value = None
+        # Applicable operations split on commas
+        ops: list[str] = []
+        if hasattr(entry, "applicable_operations") and entry.applicable_operations.strip():
+            ops = [part.strip() for part in entry.applicable_operations.split(",") if part.strip()]
+        # Lesson must be non-empty (already checked by shape), but guard
+        lesson_text = entry.lesson.strip()
+        if not lesson_text:
+            result.skipped.append(
+                {
+                    "reason": "INVALID_FIELDS",
+                    "detail": f"lesson row {entry.source_row_index} has no lesson text",
+                }
+            )
+            return None
+        title_text = (
+            entry.title.strip()
+            if entry.title.strip()
+            else lesson_text.split(".")[0][:120].strip() or "Untitled lesson"
+        )
+        # Root cause status is KNOWN only when the source states one; else UNKNOWN
+        cause_text = entry.root_cause.strip() if hasattr(entry, "root_cause") else ""
+        cause_status = CauseStatus.KNOWN.value if cause_text else CauseStatus.UNKNOWN.value
+        content: dict[str, Any] = {
+            "code": entry.lesson_code.strip() or None,
+            "title": title_text[:400],
+            "lesson": lesson_text,
+            "observation": entry.observation.strip() if hasattr(entry, "observation") else "",
+            "context": entry.context.strip() if hasattr(entry, "context") else "",
+            "recommendation": entry.recommendation.strip()
+            if hasattr(entry, "recommendation")
+            else "",
+            "root_cause": cause_text or None,
+            "root_cause_status": cause_status,
+            "problem_type": problem_token or None,
+            "well_id": well_id,
+            "field_id": field_id,
+            "project_id": project_id,
+            "section_id": None,
+            "applicable_operations": ops,
+            "hole_size_in": hole_size_value,
+            "status": "DRAFT",
+            "is_current": True,
+            "revision": 1,
+        }
+        provenance = self._table_provenance(
+            entry.table,
+            document=document,
+            version=version,
+            row_index=int(entry.source_row_index),
+            source_label=entry.lesson_code or title_text[:40],
+        )
+        # Idempotence via identity_key — same as every other promoted domain
+        existing, outcome = self._confirm_row(LessonLearned, identity, content, "lesson", result)
+        if existing is not None:
+            # For lessons, a differing content is a conflict, not a silent update
+            result.bump("lesson_learned", outcome)
+            # Ensure provenance survives but do not mutate the row's lifecycle
+            return existing
+        # Check duplicate code globally (same code, any well) — the unique partial
+        # index ``uq_lesson_one_current`` on (code) where is_current enforces this at
+        # commit time; report earlier.  For a revision of the same document, the old
+        # row has already been superseded (is_current=False) by _supersede_by_document,
+        # so it will not be found here.  A live lesson from a *different* document
+        # with the same code is a true conflict (code is globally unique, not per-well).
+        if content["code"]:
+            normalized_dup = str(content["code"]).strip().casefold()
+            duplicate = (
+                self.session.execute(
+                    select(LessonLearned).where(
+                        LessonLearned.code_key == normalized_dup,
+                        LessonLearned.is_current.is_(True),
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if duplicate is not None and str(getattr(duplicate, "document_id", "")) != str(
+                document.id
+            ):
+                result.skipped.append(
+                    {
+                        "reason": "CONFLICT",
+                        "detail": f"lesson code {content['code']!r} already exists globally as {duplicate.id}",
+                    }
+                )
+                return None
+        attributes: dict[str, Any] = {
+            "source": {"row_index": int(entry.source_row_index)},
+            "promotion_identity": identity,
+        }
+        # For a lesson code that already exists (previous version), create a revision chain.
+        # The old row has been stood down (is_current=False) by _supersede_by_document; the new
+        # row carries the next revision and points at the superseded one.  This is the same
+        # contract LessonRepository.revise enforces, so the revision history remains readable.
+        supersedes_id: str | None = None
+        revision = 1
+        if content.get("code"):
+            normalized = str(content["code"]).strip().casefold()
+            if normalized:
+                prior = (
+                    self.session.execute(
+                        select(LessonLearned)
+                        .where(LessonLearned.code_key == normalized)
+                        .order_by(LessonLearned.revision.desc())
+                    )
+                    .scalars()
+                    .first()
+                )
+            else:
+                prior = None
+            if prior is not None:
+                revision = int(prior.revision or 1) + 1
+                supersedes_id = str(prior.id)
+                # Ensure the prior is not current (it should already have been stood down, but
+                # cover the case where _supersede_by_document was scoped by document and missed
+                # a lesson that moved wells).
+                if prior.is_current:
+                    prior.is_current = False
+        content["revision"] = revision
+        if supersedes_id:
+            content["supersedes_id"] = supersedes_id
+        # Canonical key for ADR 003: strip+casefold, kept in sync with code
+        if "code" in content and content["code"] is not None:
+            raw = str(content["code"]).strip()
+            content["code_key"] = raw.casefold() if raw else None
+            content["code"] = raw or None
+        row = LessonLearned(
+            id=new_id("les"),
+            origin=KnowledgeOrigin.DERIVED.value,
+            created_by="promotion",
+            provenance=provenance,
+            identity_key=identity,
+            document_id=document.id,
+            document_version_id=version.id,
+            attributes=attributes,
+            **content,
+        )
+        self.session.add(row)
+        self.session.flush()
+        result.identities.add(identity)
+        result.bump("lesson_learned", "created")
+        return row
+
+    def _promote_lesson_learned(
+        self,
+        *,
+        payload: Mapping[str, Any],
+        document: Document,
+        version: DocumentVersion,
+        result: PromotionResult,
+        replace: bool = True,
+    ) -> LessonLearned | None:
+        """Promote recognised lesson rows.
+
+        A lesson tally is a header plus rows.  The header must contain a
+        `lesson` column and at least one identifier column (`lesson_code` or
+        `title`).  The document's well is the scope; a row naming a different
+        well is refused, and a site-scoped document cannot confer a well on a
+        row that asks for one.  Field and project are inherited from the
+        document's well when present.
+        """
+        # Well resolution — lessons may be field/project scoped but we keep the same strictness
+        well: Well | None = None
+        if document.well_id:
+            well = self.session.get(Well, str(document.well_id))
+            if well is None:
+                result.error = "NO_WELL"
+                result.skipped.append(
+                    {"reason": "NO_WELL", "detail": "the linked well does not exist"}
+                )
+                return None
+        entries = lesson_entries(payload)
+        if not entries:
+            self._no_recognised_table(
+                result,
+                "no stored table has a lesson column plus a lesson code or title column, so there is no lesson to promote",
+            )
+            return None
+        # Supersede older derived lessons from the same document (by version, not just well)
+        self._supersede_by_document(model=LessonLearned, document=document, version=version)
+        self.session.flush()
+        written: LessonLearned | None = None
+        seen_codes: set[str] = set()
+        for entry in entries:
+            stated_well = entry.well_name.strip() if hasattr(entry, "well_name") else ""
+            field_name = entry.field_name.strip() if hasattr(entry, "field_name") else ""
+            project_name = entry.project_name.strip() if hasattr(entry, "project_name") else ""
+            # Per-row well scope handling — same as operational rows: a row naming a well that
+            # is not the document's well is a conflict.
+            target_well_id: str | None = well.id if well is not None else None
+            target_field_id: str | None = (
+                str(getattr(well, "field_id", "") or "") if well is not None else None
+            )
+            target_project_id: str | None = (
+                str(getattr(well, "project_id", "") or "") if well is not None else None
+            )
+            # If entry names a well explicitly, resolve it by name
+            if stated_well:
+                if well is not None:
+                    if self._row_scope_conflict(stated_well, well):
+                        result.skipped.append(
+                            {
+                                "reason": "WELL_SCOPE_CONFLICT",
+                                "detail": f"lesson {entry.lesson_code or entry.source_row_index} names well {stated_well!r}, not this document's well {well.name!r}; row not promoted",
+                            }
+                        )
+                        continue
+                    # Same well — keep document's well
+                else:
+                    # Document is site-scoped but row asks for a well — resolve by name
+                    resolved = self._well_by_name(stated_well)
+                    if resolved is None:
+                        result.skipped.append(
+                            {
+                                "reason": "UNRESOLVED_WELL_REFERENCE",
+                                "detail": f"lesson {entry.lesson_code or entry.source_row_index} names well {stated_well!r} but no well with that name is registered; row not promoted",
+                            }
+                        )
+                        continue
+                    target_well_id = resolved.id
+                    target_field_id = str(getattr(resolved, "field_id", "") or "")
+                    target_project_id = str(getattr(resolved, "project_id", "") or "")
+            # Field/project from entry overwrite document's when explicitly stated and resolvable
+            # For lessons, a field name in the row is taken as the lesson's field when the well
+            # does not already define it — no creation, only linkage.
+            if field_name and not target_field_id:
+                field_row = self.session.execute(
+                    select(Field).where(Field.name == field_name)
+                ).scalar_one_or_none()
+                if field_row is not None:
+                    target_field_id = str(field_row.id)
+            if project_name and not target_project_id:
+                project_row = self.session.execute(
+                    select(Project).where(Project.name == project_name)
+                ).scalar_one_or_none()
+                if project_row is not None:
+                    target_project_id = str(project_row.id)
+            # Fallback to document's project/field when well is absent
+            if target_field_id is None and document.field_id:
+                target_field_id = str(document.field_id)
+            if target_project_id is None and document.project_id:
+                target_project_id = str(document.project_id)
+            # Duplicate within same artefact: same code globally is a repeated row
+            # (code is globally unique, not per-well).
+            code_key = entry.lesson_code.strip().casefold()
+            if entry.lesson_code.strip() and code_key in seen_codes:
+                result.skipped.append(
+                    {
+                        "reason": "CONFLICT",
+                        "detail": f"lesson code {entry.lesson_code!r} appears twice in {document.filename}; second row not promoted",
+                    }
+                )
+                continue
+            if entry.lesson_code.strip():
+                seen_codes.add(code_key)
+            row = self._write_lesson_learned(
+                entry=entry,
+                well_id=target_well_id,
+                field_id=target_field_id,
+                project_id=target_project_id,
+                document=document,
+                version=version,
+                result=result,
+            )
+            if row is not None and written is None:
+                written = row
+        if replace and bool(result.identities):
+            removed = self._delete_domain_orphans(
+                LessonLearned, version_id=version.id, kept=result.identities
+            )
+            if removed:
+                result.counts["removed"] = {"created": removed, "unchanged": 0, "conflict": 0}
+        return written
+
+    def _well_by_name(self, name: str) -> Well | None:
+        """Resolve a well by its name or identifier, cached per promoter instance."""
+        key = name.strip().casefold()
+        if key in self._wells_by_name:
+            return self._wells_by_name[key]
+        well = self.session.execute(
+            select(Well).where(Well.name == name.strip())
+        ).scalar_one_or_none()
+        if well is None:
+            well = self.session.execute(
+                select(Well).where(Well.well_identifier == name.strip())
+            ).scalar_one_or_none()
+        self._wells_by_name[key] = well
+        return well
 
     # -- report ---------------------------------------------------------------
     def _promote_report(

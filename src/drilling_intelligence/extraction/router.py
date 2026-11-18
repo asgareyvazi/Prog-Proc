@@ -124,7 +124,7 @@ class DocumentRouter:
         for extractor in self.extractors:
             try:
                 supported, _reason = extractor.supports(context)
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - a parser that cannot say whether it supports the file is skipped
                 continue
             if not supported:
                 continue
@@ -179,7 +179,7 @@ class DocumentRouter:
         for extractor in self.extractors:
             try:
                 supported, reason = extractor.supports(context)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - a failing parser is reported and the next one is tried
                 supported, reason = False, f"support check failed: {type(exc).__name__}: {exc}"
             records.append(
                 CandidateRecord(extractor=extractor.name, supported=supported, reason=reason)

@@ -73,6 +73,21 @@ def _resolve_url() -> str:
     return url
 
 
+def _resolve_url_no_side_effect() -> str:
+    """Resolve URL without creating parent directories (for offline safety)."""
+    x_args = context.get_x_argument(as_dictionary=True)
+    explicit = (x_args.get("url") or "").strip()
+    if explicit:
+        return explicit
+    from_env = (os.environ.get("DRILLINTEL_DATABASE__URL") or "").strip()
+    if from_env:
+        return from_env
+    config_path = (os.environ.get("DRILLINTEL_CONFIG") or "").strip() or None
+    settings = Settings.load(config_path)
+    url = settings.database_url_for(Path.cwd())
+    return url
+
+
 def _configure() -> None:
     from drilling_intelligence.database.migrations import alembic_config_url
 
@@ -80,10 +95,173 @@ def _configure() -> None:
 
 
 def run_migrations_offline() -> None:
-    """Emit SQL to stdout (``alembic upgrade head --sql``) for review before apply."""
-    _configure()
+    """Emit SQL to stdout (``alembic upgrade head --sql``) for review before apply.
+
+    SQLite batch migrations (``op.batch_alter_table(recreate=\"auto\")``) need a
+    live connection to reflect the existing table.  Offline mode normally has
+    only a URL, so batch would fail with
+    ``batch mode with dialect sqlite requires a live database connection``.
+
+    The previous implementation created a temporary engine from the configured
+    file URL and called ``Base.metadata.create_all(tmp_engine)``, which for a
+    file-backed URL points at the real workspace database — an offline SQL
+    render must never mutate a user's database or create a file that did not
+    exist.  This implementation uses a genuinely isolated in-memory SQLite
+    database for reflection, never touching the workspace path.
+    """
+    # Resolve URL without side effects (no mkdir, no file creation).
+    url = _resolve_url_no_side_effect()
+    from sqlalchemy.engine import make_url
+
+    if make_url(url).get_backend_name() != "sqlite":
+        raise RuntimeError(
+            "offline migration SQL is qualified for SQLite only; PostgreSQL is NOT QUALIFIED "
+            "and must use no migration path until service-backed qualification exists"
+        )
+    # Keep config url in sync for Alembic's bookkeeping, but do not create parent dirs.
+    try:
+        from drilling_intelligence.database.migrations import alembic_config_url
+
+        config.set_main_option("sqlalchemy.url", alembic_config_url(url))
+    except Exception:  # noqa: BLE001
+        config.set_main_option("sqlalchemy.url", url.replace("%", "%%"))
+    # SQLite batch offline needs a live connection for reflection; provide an isolated one.
+    if url and url.startswith("sqlite"):
+        from sqlalchemy import create_engine
+        from sqlalchemy import text as sa_text
+
+        # Always use an isolated in-memory database for reflection — never the
+        # workspace file, even when the URL is file-backed.  Creating the schema
+        # from Base.metadata gives batch the table to reflect without touching
+        # the user's file.  To make offline incremental (only pending migrations)
+        # we must seed the in-memory alembic_version from the real file if it
+        # exists, without mutating the file.
+        real_version = None
+        file_path = None
+        offline_code_keys: list[tuple[str, str | None]] = []
+        source_tables: set[str] = set()
+        lesson_has_code_key = False
+        try:
+            from urllib.parse import unquote
+
+            from sqlalchemy.engine import make_url
+
+            parsed_url = make_url(url)
+            database = parsed_url.database
+            if parsed_url.get_backend_name() == "sqlite" and database not in (None, "", ":memory:"):
+                raw = unquote(database)
+                candidate = Path(raw)
+                if not candidate.is_absolute():
+                    candidate = (Path.cwd() / candidate).resolve()
+                if candidate.exists() and candidate.is_file():
+                    file_path = candidate
+        except Exception as exc:
+            raise RuntimeError(f"cannot safely resolve SQLite offline source URL: {exc}") from exc
+        if file_path is not None:
+            import sqlite3
+
+            # Read the source snapshot strictly read-only. The emitted row updates
+            # use exactly Python strip().casefold(), unlike SQL lower()/trim().
+            source_uri = file_path.resolve().as_uri() + "?mode=ro"
+            conn = None
+            try:
+                conn = sqlite3.connect(source_uri, uri=True)
+                source_tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    ).fetchall()
+                }
+                if "alembic_version" in source_tables:
+                    versions = conn.execute("SELECT version_num FROM alembic_version").fetchall()
+                    if len(versions) > 1:
+                        raise RuntimeError(
+                            "offline migration source has multiple Alembic heads; repair online first"
+                        )
+                    real_version = versions[0][0] if versions else None
+                if "lesson_learned" in source_tables:
+                    lesson_columns = {
+                        row[1] for row in conn.execute("PRAGMA table_info(lesson_learned)")
+                    }
+                    lesson_has_code_key = "code_key" in lesson_columns
+                    for row_id, code in conn.execute(
+                        "SELECT id, code FROM lesson_learned ORDER BY id"
+                    ):
+                        canonical = (
+                            (str(code).strip().casefold() or None) if code is not None else None
+                        )
+                        offline_code_keys.append((str(row_id), canonical))
+            except sqlite3.Error as exc:
+                raise RuntimeError(
+                    f"cannot read offline SQLite source snapshot read-only: {file_path}: {exc}"
+                ) from exc
+            finally:
+                if conn is not None:
+                    conn.close()
+        if file_path is not None:
+            application_tables = source_tables - {"alembic_version"}
+            if application_tables and real_version is None:
+                raise RuntimeError(
+                    "offline migration source has application tables but no single alembic_version; "
+                    "repair/stamp online first"
+                )
+            if real_version == "0021" and lesson_has_code_key:
+                raise RuntimeError(
+                    "offline migration cannot certify partially applied 0022 with code_key already "
+                    "present; use the online idempotent repair path"
+                )
+        context.config.attributes["offline_lesson_code_keys"] = tuple(offline_code_keys)
+        # Prepare isolated in-memory DB for reflection.
+        # For offline incremental, Alembic needs to know the current heads (real_version)
+        # but the reflection DB must have tables so batch can reflect.  Using head
+        # schema for reflection while seeding alembic_version to real_version makes
+        # Alembic render only pending migrations (it reads version from the
+        # connection's alembic_version) while batch's explicit _target_table_*
+        # definitions ensure the DDL is correct regardless of the reflection DB's
+        # column set.  This avoids mutating the user's file while keeping offline
+        # incremental.
+        tmp_engine = create_engine("sqlite://")
+        if real_version:
+            Base.metadata.create_all(tmp_engine)
+            with tmp_engine.begin() as conn:
+                # Ensure alembic_version table exists (Base.metadata does not include it)
+                conn.execute(
+                    sa_text(
+                        "CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+                    )
+                )
+                conn.execute(sa_text("DELETE FROM alembic_version"))
+                conn.execute(
+                    sa_text("INSERT INTO alembic_version (version_num) VALUES (:v)"),
+                    {"v": real_version},
+                )
+        else:
+            # Empty / no version: leave empty so offline renders full creation from scratch.
+            # Create an empty alembic_version so Alembic can treat it as base
+            with tmp_engine.begin() as conn:
+                conn.execute(
+                    sa_text(
+                        "CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+                    )
+                )
+        # For empty DB, batch still needs a connection; Alembic will generate CREATE TABLEs
+        with tmp_engine.connect() as connection:
+            context.configure(
+                connection=connection,
+                url=url,
+                starting_rev=real_version,
+                target_metadata=target_metadata,
+                literal_binds=True,
+                dialect_opts={"paramstyle": "named"},
+                compare_type=True,
+                render_as_batch=True,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+        tmp_engine.dispose()
+        return
     context.configure(
-        url=config.get_main_option("sqlalchemy.url"),
+        url=url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

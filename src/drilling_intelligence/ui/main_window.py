@@ -9,11 +9,21 @@ loop.
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt, QThread, QTimer, QUrl, Slot
+from PySide6.QtCore import (
+    QModelIndex,
+    QSignalBlocker,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -37,6 +47,7 @@ from PySide6.QtWidgets import (
     QTableView,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -50,6 +61,7 @@ from ..core.errors import (
     WorkspaceError,
 )
 from ..database.integrity import KnowledgeIntegrityError
+from ..operations.ddr_comparison import compare_ddr_revisions
 from ..reporting.exhibits import exhibits_from_comparison
 from ..reporting.html import write_report_html
 from ..review import (
@@ -71,7 +83,9 @@ from .models import (
 from .worker import (
     CalculationWorker,
     ComparisonWorker,
+    DdrWorker,
     DecisionWorker,
+    IntakeWorker,
     ReportAuditWorker,
     ReportWorker,
     ReviewActionWorker,
@@ -81,6 +95,8 @@ from .worker import (
 
 _NAVIGATION = (
     "Overview",
+    "Intake",
+    "Daily DDR",
     "Decision",
     "Comparison",
     "Report",
@@ -93,6 +109,14 @@ _NAVIGATION = (
     "Calculations",
     "History",
 )
+
+
+def _sequence_preview(value: Any, *, limit: int = 250) -> str:
+    if not isinstance(value, Sequence) or isinstance(value, str | bytes):
+        return "unavailable"
+    prefix = list(value[:limit])
+    suffix = f" … ({len(value)} total)" if len(value) > limit else ""
+    return f"{prefix}{suffix}"
 
 
 def _value_text(value: Any) -> str:
@@ -154,11 +178,16 @@ _WORKER_THREAD_ATTRS = (
     "_report_audit_thread",
     "_action_thread",
     "_calculation_thread",
+    "_intake_thread",
+    "_ddr_thread",
 )
 
 
 class MainWindow(QMainWindow):
     """The first read-only desktop consumer of the Domain Review contract."""
+
+    intake_operation_finished = Signal()
+    ddr_operation_finished = Signal()
 
     def __init__(
         self,
@@ -180,6 +209,8 @@ class MainWindow(QMainWindow):
         self._comparison_worker: ComparisonWorker | None = None
         self._report_thread: QThread | None = None
         self._report_audit_thread: QThread | None = None
+        self._report_audit_worker: ReportAuditWorker | None = None
+        self._worker_destroyed_events: dict[str, threading.Event] = {}
         self._report_audit: dict | None = None
         self._report_audit_generation = 0
         self._report_audit_identity = ""
@@ -191,6 +222,22 @@ class MainWindow(QMainWindow):
         self._action_worker: ReviewActionWorker | None = None
         self._calculation_thread: QThread | None = None
         self._calculation_worker: CalculationWorker | None = None
+        self._intake_thread: QThread | None = None
+        self._intake_worker = None
+        self._active_intake_operation = ""
+        self._pending_intake_refresh = False
+        self._selected_intake_id = ""
+        self._intake_status_by_id: dict[str, str] = {}
+        self._ddr_thread: QThread | None = None
+        self._ddr_new_draft_mode = False
+        self._ddr_worker: DdrWorker | None = None
+        self._active_ddr_operation = ""
+        self._pending_ddr_refresh = False
+        self._selected_ddr_id = ""
+        self._global_busy = False
+        self._closing = False
+        self._selected_ddr_record: dict[str, Any] | None = None
+        self._ddr_records_by_id: dict[str, dict[str, Any]] = {}
         self._selected_record: ReviewRecord | None = None
         self._record_actions: tuple[ReviewAction, ...] = ()
         self._selected_conflict: ReviewConflict | None = None
@@ -294,6 +341,8 @@ class MainWindow(QMainWindow):
 
     def _build_pages(self) -> None:
         self._build_overview_page()
+        self._build_intake_page()
+        self._build_ddr_page()
         self._build_decision_page()
         self._build_comparison_page()
         self._build_report_page()
@@ -339,6 +388,169 @@ class MainWindow(QMainWindow):
             (TableColumn("key", "Observation", 260), TableColumn("value", "Value", 420))
         )
         layout.addWidget(self.observations_table, 1)
+        self.pages.addWidget(page)
+
+    def _build_intake_page(self) -> None:
+        """Persistent local file queue with a non-writing deterministic preview."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(
+            QLabel(
+                "Intake stores file references and SHA-256 only. Preview is transient. Registration is "
+                "a separate reviewed, actor/reason-attributed DocumentRegistry action; it never promotes facts."
+            )
+        )
+        controls = QHBoxLayout()
+        self.intake_add_button = QPushButton("Add files…")
+        self.intake_add_button.clicked.connect(self._choose_intake_files)
+        controls.addWidget(self.intake_add_button)
+        self.intake_refresh_button = QPushButton("Refresh queue")
+        self.intake_refresh_button.clicked.connect(self._refresh_intake_queue)
+        controls.addWidget(self.intake_refresh_button)
+        controls.addWidget(QLabel("Reviewer"))
+        self.intake_actor_input = QLineEdit()
+        self.intake_actor_input.setPlaceholderText("Required actor")
+        controls.addWidget(self.intake_actor_input, 1)
+        controls.addWidget(QLabel("Reason"))
+        self.intake_reason_input = QLineEdit()
+        self.intake_reason_input.setPlaceholderText("Required disposition reason")
+        controls.addWidget(self.intake_reason_input, 2)
+        layout.addLayout(controls)
+        actions = QHBoxLayout()
+        self.intake_preview_button = QPushButton("Preview selected")
+        self.intake_preview_button.clicked.connect(self._preview_selected_intake)
+        actions.addWidget(self.intake_preview_button)
+        self.intake_review_button = QPushButton("Mark reviewed")
+        self.intake_review_button.clicked.connect(self._mark_intake_reviewed)
+        actions.addWidget(self.intake_review_button)
+        self.intake_reject_button = QPushButton("Reject")
+        self.intake_reject_button.clicked.connect(self._reject_selected_intake)
+        actions.addWidget(self.intake_reject_button)
+        self.intake_register_button = QPushButton("Register reviewed source")
+        self.intake_register_button.clicked.connect(self._register_selected_intake)
+        actions.addWidget(self.intake_register_button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        self.intake_table = QTableWidget(0, 6)
+        self.intake_table.setHorizontalHeaderLabels(
+            ["File", "Type", "Bytes", "SHA-256", "Status", "Queued by"]
+        )
+        self.intake_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.intake_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.intake_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.intake_table.horizontalHeader().setStretchLastSection(True)
+        self.intake_table.itemSelectionChanged.connect(self._intake_selection_changed)
+        layout.addWidget(self.intake_table, 2)
+        self.intake_preview_tree = QTreeWidget()
+        self.intake_preview_tree.setHeaderLabels(["Preview", "Value"])
+        layout.addWidget(self.intake_preview_tree, 2)
+        self.pages.addWidget(page)
+
+    def _build_ddr_page(self) -> None:
+        """Manual daily-report authoring linked to candidate operational activities."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        intro = QLabel(
+            "Author a dated daily report for the selected well. Draft edits are audited and "
+            "optimistically version-checked. Submission creates CANDIDATE operations only; "
+            "confirmation remains a separate human review action. Source-derived reports are read-only here."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        identity = QHBoxLayout()
+        identity.addWidget(QLabel("Author / reviewer"))
+        self.ddr_actor_input = QLineEdit()
+        self.ddr_actor_input.setPlaceholderText("Required actor")
+        identity.addWidget(self.ddr_actor_input, 1)
+        identity.addWidget(QLabel("Reason"))
+        self.ddr_reason_input = QLineEdit()
+        self.ddr_reason_input.setPlaceholderText("Required audit reason")
+        identity.addWidget(self.ddr_reason_input, 2)
+        layout.addLayout(identity)
+
+        content = QSplitter(Qt.Orientation.Horizontal)
+        self.ddr_table = QTableWidget(0, 6)
+        self.ddr_table.setHorizontalHeaderLabels(
+            ["Date", "Report #", "Shift", "Revision", "Review", "Authoring"]
+        )
+        self.ddr_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.ddr_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.ddr_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.ddr_table.horizontalHeader().setStretchLastSection(True)
+        self.ddr_table.itemSelectionChanged.connect(self._ddr_selection_changed)
+        content.addWidget(self.ddr_table)
+
+        editor = QWidget()
+        editor_layout = QVBoxLayout(editor)
+        form = QFormLayout()
+        self.ddr_date_input = QLineEdit()
+        self.ddr_date_input.setPlaceholderText("YYYY-MM-DD; report day, not file time")
+        form.addRow("Report date", self.ddr_date_input)
+        self.ddr_number_input = QLineEdit()
+        form.addRow("Report number", self.ddr_number_input)
+        self.ddr_shift_input = QLineEdit()
+        form.addRow("Shift", self.ddr_shift_input)
+        editor_layout.addLayout(form)
+        editor_layout.addWidget(QLabel("Daily summary (source wording)"))
+        self.ddr_summary_input = QTextEdit()
+        self.ddr_summary_input.setMaximumHeight(110)
+        editor_layout.addWidget(self.ddr_summary_input)
+
+        activities = QGroupBox("Activities — each submitted row becomes a candidate WellOperation")
+        activity_layout = QVBoxLayout(activities)
+        activity_actions = QHBoxLayout()
+        self.ddr_add_activity_button = QPushButton("Add activity")
+        self.ddr_add_activity_button.clicked.connect(self._ddr_add_activity_row)
+        activity_actions.addWidget(self.ddr_add_activity_button)
+        self.ddr_remove_activity_button = QPushButton("Remove selected")
+        self.ddr_remove_activity_button.clicked.connect(self._ddr_remove_activity_row)
+        activity_actions.addWidget(self.ddr_remove_activity_button)
+        activity_actions.addStretch(1)
+        activity_layout.addLayout(activity_actions)
+        self.ddr_activities_table = QTableWidget(0, 4)
+        self.ddr_activities_table.setHorizontalHeaderLabels(
+            ["Registered operation type", "Activity label", "Description", "Period as written"]
+        )
+        self.ddr_activities_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.ddr_activities_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.ddr_activities_table.horizontalHeader().setStretchLastSection(True)
+        activity_layout.addWidget(self.ddr_activities_table)
+        editor_layout.addWidget(activities, 1)
+
+        buttons = QHBoxLayout()
+        self.ddr_new_button = QPushButton("New draft")
+        self.ddr_new_button.clicked.connect(self._ddr_toggle_new_draft)
+        buttons.addWidget(self.ddr_new_button)
+        self.ddr_create_button = QPushButton("Create draft")
+        self.ddr_create_button.clicked.connect(self._ddr_create_draft)
+        buttons.addWidget(self.ddr_create_button)
+        self.ddr_save_button = QPushButton("Save draft")
+        self.ddr_save_button.clicked.connect(self._ddr_save_draft)
+        buttons.addWidget(self.ddr_save_button)
+        self.ddr_submit_button = QPushButton("Submit for review")
+        self.ddr_submit_button.clicked.connect(self._ddr_submit)
+        buttons.addWidget(self.ddr_submit_button)
+        self.ddr_revision_button = QPushButton("Start new revision")
+        self.ddr_revision_button.clicked.connect(self._ddr_create_revision)
+        buttons.addWidget(self.ddr_revision_button)
+        self.ddr_compare_button = QPushButton("Compare with prior revision")
+        self.ddr_compare_button.clicked.connect(self._ddr_compare_selected_revision)
+        buttons.addWidget(self.ddr_compare_button)
+        self.ddr_refresh_button = QPushButton("Refresh")
+        self.ddr_refresh_button.clicked.connect(self._refresh_ddr_reports)
+        buttons.addWidget(self.ddr_refresh_button)
+        editor_layout.addLayout(buttons)
+        editor_layout.addWidget(QLabel("Revision comparison and authored provenance"))
+        self.ddr_compare_tree = QTreeWidget()
+        self.ddr_compare_tree.setHeaderLabels(["Field / provenance", "Recorded value"])
+        self.ddr_compare_tree.setMaximumHeight(190)
+        editor_layout.addWidget(self.ddr_compare_tree)
+        content.addWidget(editor)
+        content.setStretchFactor(1, 2)
+        layout.addWidget(content, 1)
         self.pages.addWidget(page)
 
     def _build_decision_page(self) -> None:
@@ -472,6 +684,12 @@ class MainWindow(QMainWindow):
     def _build_sections_page(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.addWidget(
+            QLabel(
+                "Sections are read-only here. Select a row to inspect its complete stored values "
+                "and provenance; planned targets remain separate from as-drilled actuals."
+            )
+        )
         self.sections_table, self.sections_model = self._new_table(
             tuple(
                 TableColumn(key, title, width)
@@ -489,7 +707,14 @@ class MainWindow(QMainWindow):
                 )
             )
         )
-        layout.addWidget(self.sections_table)
+        self.sections_table.selectionModel().currentChanged.connect(self._section_selection_changed)
+        self.sections_detail = self._new_detail_tree()
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self.sections_table)
+        splitter.addWidget(self.sections_detail)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter)
         self.pages.addWidget(page)
 
     def _build_plan_page(self) -> None:
@@ -807,6 +1032,7 @@ class MainWindow(QMainWindow):
             return False
 
         self._well_choices = choices
+        self._start_intake_operation("list")
         self.workspace_label.setText(f"{info['name']}  ·  {info['root']}")
         self.workspace_label.setToolTip(
             f"Database: {info['database_path']}\nSchema: {_value_text(info.get('schema'))}"
@@ -844,12 +1070,16 @@ class MainWindow(QMainWindow):
         self.well_combo.blockSignals(False)
         if not choices:
             self._review = None
+            self._ddr_records_by_id = {}
+            self.ddr_table.setRowCount(0)
+            self._ddr_set_record(None)
             self._set_status("Workspace opened, but no registered wells are available.")
             self._set_busy(False)
             return True
         if selected >= 0:
             self.well_combo.setCurrentIndex(selected)
             self.request_review(verify_citations=False)
+            self._refresh_ddr_reports()
         return True
 
     def _select_well(self, reference: str = "") -> int:
@@ -867,6 +1097,7 @@ class MainWindow(QMainWindow):
     def _well_changed(self, _index: int) -> None:
         if self.well_combo.currentData() and self.controller.workspace is not None:
             self.request_review(verify_citations=False)
+            self._refresh_ddr_reports()
 
     @Slot(int)
     def _lifecycle_changed(self, _index: int) -> None:
@@ -874,6 +1105,8 @@ class MainWindow(QMainWindow):
             self.request_review(verify_citations=False)
 
     def request_review(self, *, verify_citations: bool) -> None:
+        if self._closing:
+            return
         if self._review_thread is not None:
             return
         well_id = str(self.well_combo.currentData() or "")
@@ -900,15 +1133,17 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._review_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._review_thread_finished)
         self._review_thread = thread
         self._review_worker = worker
+        self._track_worker_lifecycle(
+            "_review_thread", "_review_worker", thread, worker, self._review_thread_finished
+        )
         thread.start()
 
     @Slot(object)
     def _review_succeeded(self, review: DomainReview) -> None:
+        if self._closing:
+            return
         self.set_review(review)
         audit = "; citations audited" if review.citation_audit is not None else ""
         self._set_status(
@@ -918,6 +1153,8 @@ class MainWindow(QMainWindow):
         self._preselect_comparison_well(str(review.request.get("well_id") or ""))
 
     def _request_decision(self, well_id: str) -> None:
+        if self._closing:
+            return
         """Fetch the pack for the same well, off the GUI thread, after every review load.
 
         A failure here is a status line and nothing else: the review already on screen stays, and
@@ -934,28 +1171,28 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._decision_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._decision_thread_finished)
         self._decision_thread = thread
         self._decision_worker = worker
+        self._track_worker_lifecycle(
+            "_decision_thread", "_decision_worker", thread, worker, self._decision_thread_finished
+        )
         thread.start()
 
     @Slot(object)
     def _decision_succeeded(self, payload: dict) -> None:
+        if self._closing:
+            return
         self.set_decision(payload)
 
     @Slot(object)
     def _decision_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"Decision pack {error.category}: {error.message}", error=True)
 
     @Slot()
     def _decision_thread_finished(self) -> None:
-        thread = self._decision_thread
-        self._decision_thread = None
-        self._decision_worker = None
-        if thread is not None:
-            thread.deleteLater()
+        self._complete_worker_lifecycle("_decision_thread", "_decision_worker")
 
     def set_decision(self, payload: dict) -> None:
         """Render a complete DecisionPack payload: label, tree, nothing reinterpreted."""
@@ -996,6 +1233,8 @@ class MainWindow(QMainWindow):
         self._request_comparison(well_ids)
 
     def _request_comparison(self, well_ids: Sequence[str]) -> None:
+        if self._closing:
+            return
         """Fetch the comparison pack off the GUI thread; failures change only the status.
 
         Every rule (two wells minimum, known ids, unit comparability) lives behind the
@@ -1014,28 +1253,32 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._comparison_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._comparison_thread_finished)
         self._comparison_thread = thread
         self._comparison_worker = worker
+        self._track_worker_lifecycle(
+            "_comparison_thread",
+            "_comparison_worker",
+            thread,
+            worker,
+            self._comparison_thread_finished,
+        )
         thread.start()
 
     @Slot(object)
     def _comparison_succeeded(self, payload: dict) -> None:
+        if self._closing:
+            return
         self.set_comparison(payload)
 
     @Slot(object)
     def _comparison_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"Comparison pack {error.category}: {error.message}", error=True)
 
     @Slot()
     def _comparison_thread_finished(self) -> None:
-        thread = self._comparison_thread
-        self._comparison_thread = None
-        self._comparison_worker = None
-        if thread is not None:
-            thread.deleteLater()
+        self._complete_worker_lifecycle("_comparison_thread", "_comparison_worker")
 
     def set_comparison(self, payload: dict) -> None:
         """Render a complete ComparisonPack payload as the matrix it is.
@@ -1178,6 +1421,8 @@ class MainWindow(QMainWindow):
         anchor: str = "",
         offsets: Sequence[str] = (),
     ) -> None:
+        if self._closing:
+            return
         if self._report_thread is not None:
             return
         thread = QThread(self)
@@ -1194,28 +1439,28 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._report_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._report_thread_finished)
         self._report_thread = thread
         self._report_worker = worker
+        self._track_worker_lifecycle(
+            "_report_thread", "_report_worker", thread, worker, self._report_thread_finished
+        )
         thread.start()
 
     @Slot(object)
     def _report_succeeded(self, payload: dict) -> None:
+        if self._closing:
+            return
         self.set_report(payload)
 
     @Slot(object)
     def _report_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"Report {error.category}: {error.message}", error=True)
 
     @Slot()
     def _report_thread_finished(self) -> None:
-        thread = self._report_thread
-        self._report_thread = None
-        self._report_worker = None
-        if thread is not None:
-            thread.deleteLater()
+        self._complete_worker_lifecycle("_report_thread", "_report_worker")
 
     def _show_report_lineage(self, payload: dict, audit: dict | None) -> None:
         from ..reporting.lineage import traceability_manifest
@@ -1254,6 +1499,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _request_report_audit(self) -> None:
+        if self._closing:
+            return
         if not self._report_payload:
             self._set_status("Build a report before verifying citations.", error=True)
             return
@@ -1275,15 +1522,22 @@ class MainWindow(QMainWindow):
         )
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._report_audit_thread_finished)
         self._report_audit_thread = thread
+        self._report_audit_worker = worker
+        self._track_worker_lifecycle(
+            "_report_audit_thread",
+            "_report_audit_worker",
+            thread,
+            worker,
+            self._report_audit_thread_finished,
+        )
         thread.start()
         self._set_status("Verifying citations…")
 
     @Slot(object)
     def _report_audit_succeeded(self, payload: dict, generation: int) -> None:
+        if self._closing:
+            return
         if generation != self._report_audit_generation or not self._report_payload:
             return
         if str(payload.get("report_identity") or "") != str(
@@ -1297,18 +1551,18 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _report_audit_failed(self, error: WorkerError, generation: int) -> None:
+        if self._closing:
+            return
         if generation != self._report_audit_generation:
             return
         self._set_status(f"Citation audit {error.category}: {error.message}", error=True)
 
     @Slot()
     def _report_audit_thread_finished(self) -> None:
-        thread = self._report_audit_thread
-        self._report_audit_thread = None
-        if hasattr(self, "report_verify_button"):
+        if not self._complete_worker_lifecycle("_report_audit_thread", "_report_audit_worker"):
+            return
+        if not self._closing and hasattr(self, "report_verify_button"):
             self.report_verify_button.setEnabled(True)
-        if thread is not None:
-            thread.deleteLater()
 
     def set_report(self, payload: dict) -> None:
         """Render a ReportPack. Export writes this payload, not a second composition."""
@@ -1399,6 +1653,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _review_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"{error.category.title()} error: {error.message}", error=True)
         detail = error.message + (f"\n\nHint: {error.hint}" if error.hint else "")
         self.banner.setText(detail)
@@ -1407,12 +1663,11 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _review_thread_finished(self) -> None:
-        thread = self._review_thread
-        self._review_thread = None
-        self._review_worker = None
-        self._set_busy(False)
-        if thread is not None:
-            thread.deleteLater()
+        if (
+            self._complete_worker_lifecycle("_review_thread", "_review_worker")
+            and not self._closing
+        ):
+            self._set_busy(False)
 
     # -- rendering --------------------------------------------------------
     def set_review(self, review: DomainReview) -> None:
@@ -1622,6 +1877,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def run_calculation(self) -> None:
+        if self._closing:
+            return
         """Start the sole executable calculation only after an explicit UI confirmation."""
         if (
             self._calculation_thread is not None
@@ -1658,17 +1915,23 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._calculation_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._calculation_thread_finished)
         self._calculation_thread = thread
         self._calculation_worker = worker
+        self._track_worker_lifecycle(
+            "_calculation_thread",
+            "_calculation_worker",
+            thread,
+            worker,
+            self._calculation_thread_finished,
+        )
         self._set_busy(True)
         self._set_status(f"Executing NPT roll-up for {self.well_combo.currentText()}…")
         thread.start()
 
     @Slot(object)
     def _calculation_succeeded(self, result: NptRollupResult) -> None:
+        if self._closing:
+            return
         self.calculation_result_label.setText(
             f"Stored calculation {result.calculation_id} "
             f"({'new' if result.created else 'unchanged'}): "
@@ -1682,6 +1945,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _calculation_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         self._set_status(f"{error.category.title()} error: {error.message}", error=True)
         self.calculation_result_label.setText(
             error.message + (f" Hint: {error.hint}" if error.hint else "")
@@ -1694,18 +1959,760 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _calculation_thread_finished(self) -> None:
-        thread = self._calculation_thread
-        self._calculation_thread = None
-        self._calculation_worker = None
-        self._set_busy(False)
-        if thread is not None:
-            thread.deleteLater()
+        if (
+            self._complete_worker_lifecycle("_calculation_thread", "_calculation_worker")
+            and not self._closing
+        ):
+            self._set_busy(False)
+
+    # -- operator intake ---------------------------------------------------
+    def _choose_intake_files(self) -> None:
+        paths, _selected = QFileDialog.getOpenFileNames(
+            self,
+            "Select source documents",
+            "",
+            "Supported documents (*.pdf *.xlsx *.xlsm *.docx *.csv *.txt);;All files (*)",
+        )
+        if not paths:
+            return
+        self._start_intake_operation("enqueue", paths=paths, actor=self.intake_actor_input.text())
+
+    def _selected_intake_item(self) -> str:
+        row = self.intake_table.currentRow()
+        item = self.intake_table.item(row, 0) if row >= 0 else None
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item is not None else ""
+
+    def _intake_selection_changed(self) -> None:
+        self._selected_intake_id = self._selected_intake_item()
+        status = self._intake_status_by_id.get(self._selected_intake_id, "")
+        enabled = bool(self._selected_intake_id) and self.controller.workspace is not None
+        self.intake_preview_button.setEnabled(enabled)
+        self.intake_review_button.setEnabled(enabled and status == "QUEUED")
+        self.intake_reject_button.setEnabled(enabled and status == "QUEUED")
+        self.intake_register_button.setEnabled(enabled and status == "REVIEWED")
+
+    def _refresh_intake_queue(self) -> None:
+        self._start_intake_operation("list")
+
+    def _mark_intake_reviewed(self) -> None:
+        self._decide_selected_intake("REVIEWED")
+
+    def _reject_selected_intake(self) -> None:
+        self._decide_selected_intake("REJECTED")
+
+    def _preview_selected_intake(self) -> None:
+        item_id = self._selected_intake_item()
+        if item_id:
+            self._start_intake_operation("preview", item_id=item_id)
+
+    def _register_selected_intake(self) -> None:
+        item_id = self._selected_intake_item()
+        if not item_id:
+            return
+        self._start_intake_operation(
+            "register",
+            item_id=item_id,
+            actor=self.intake_actor_input.text(),
+            reason=self.intake_reason_input.text(),
+            well_id=str(self.well_combo.currentData() or ""),
+        )
+
+    def _decide_selected_intake(self, decision: str) -> None:
+        item_id = self._selected_intake_item()
+        if not item_id:
+            return
+        self._start_intake_operation(
+            "decide",
+            item_id=item_id,
+            decision=decision,
+            actor=self.intake_actor_input.text(),
+            reason=self.intake_reason_input.text(),
+        )
+
+    def _start_intake_operation(self, operation: str, **payload: Any) -> None:
+        if self._closing:
+            return
+        if self.controller.workspace is None:
+            self._set_status("Open a workspace before using the intake queue.", error=True)
+            return
+        if self._intake_thread is not None:
+            self._set_status("An intake operation is already running.", error=True)
+            return
+        self._active_intake_operation = operation
+        self.intake_add_button.setEnabled(False)
+        self.intake_refresh_button.setEnabled(False)
+        self.intake_preview_button.setEnabled(False)
+        self.intake_review_button.setEnabled(False)
+        self.intake_reject_button.setEnabled(False)
+        self.intake_register_button.setEnabled(False)
+        thread = QThread(self)
+        worker = IntakeWorker(self.controller, operation, payload)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._intake_succeeded)
+        worker.failed.connect(self._intake_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        self._intake_thread = thread
+        self._intake_worker = worker
+        self._track_worker_lifecycle(
+            "_intake_thread", "_intake_worker", thread, worker, self._intake_thread_finished
+        )
+        thread.start()
+
+    @Slot(str, object)
+    def _intake_succeeded(self, operation: str, result: object) -> None:
+        if self._closing:
+            return
+        from dataclasses import asdict
+
+        if operation == "list":
+            items = result
+            self.intake_table.setRowCount(0)
+            self._intake_status_by_id = {item.id: item.status for item in items}
+            for row_index, item in enumerate(items):
+                self.intake_table.insertRow(row_index)
+                values = (
+                    item.filename,
+                    item.extension,
+                    str(item.size_bytes),
+                    item.sha256,
+                    item.status,
+                    item.enqueued_by,
+                )
+                for column, value in enumerate(values):
+                    cell = QTableWidgetItem(value)
+                    if column == 0:
+                        cell.setData(Qt.ItemDataRole.UserRole, item.id)
+                    self.intake_table.setItem(row_index, column, cell)
+            self._set_status(f"Intake queue contains {len(items)} item(s).")
+        elif operation == "enqueue":
+            self._set_status(f"Intake processed {len(result)} file selection(s).")
+            self._pending_intake_refresh = True
+        elif operation == "preview":
+            _fill_tree(self.intake_preview_tree, asdict(result))
+            self._set_status("Preview completed locally; no document or domain row was written.")
+        elif operation == "decide":
+            _fill_tree(self.intake_preview_tree, None)
+            self._set_status(f"Intake item disposition recorded as {result.status}.")
+            self._pending_intake_refresh = True
+        elif operation == "register":
+            _fill_tree(self.intake_preview_tree, result.to_dict())
+            self._set_status(f"Registered as {result.classification}; promotion was not run.")
+            self._pending_intake_refresh = True
+            QTimer.singleShot(0, self._load_current_review)
+
+    @Slot(str, object)
+    def _intake_failed(self, operation: str, error: object) -> None:
+        if self._closing:
+            return
+        message = str(getattr(error, "message", error))
+        self._set_status(f"Intake {operation} failed: {message}", error=True)
+
+    @Slot()
+    def _intake_thread_finished(self) -> None:
+        if not self._complete_worker_lifecycle("_intake_thread", "_intake_worker"):
+            return
+        if self._closing:
+            self._pending_intake_refresh = False
+            return
+        for widget_name in (
+            "intake_add_button",
+            "intake_refresh_button",
+            "intake_register_button",
+        ):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.setEnabled(self.controller.workspace is not None)
+        self._intake_selection_changed()
+        pending_refresh = self._pending_intake_refresh
+        self._pending_intake_refresh = False
+        self.intake_operation_finished.emit()
+        if pending_refresh:
+            QTimer.singleShot(0, self._start_pending_intake_refresh)
+
+    def _start_pending_intake_refresh(self) -> None:
+        if self._closing:
+            self._pending_intake_refresh = False
+            return
+        if self._intake_thread is not None:
+            self._pending_intake_refresh = True
+            return
+        self._start_intake_operation("list")
+
+    # -- DDR authoring workspace ------------------------------------------
+    def _refresh_ddr_reports(self) -> None:
+        well_id = str(self.well_combo.currentData() or "")
+        if self.controller.workspace is None or not well_id:
+            self.ddr_table.setRowCount(0)
+            self._ddr_records_by_id = {}
+            self._ddr_set_record(None)
+            return
+        self._start_ddr_operation("list", well_id=well_id, include_history=True)
+
+    def _start_ddr_operation(self, operation: str, **payload: Any) -> None:
+        if self._closing:
+            return
+        if self.controller.workspace is None:
+            self._set_status("Open a workspace before using Daily DDR.", error=True)
+            return
+        if self._ddr_thread is not None:
+            self._set_status("A DDR authoring action is already running.", error=True)
+            return
+        self._active_ddr_operation = operation
+        for name in (
+            "ddr_new_button",
+            "ddr_create_button",
+            "ddr_save_button",
+            "ddr_submit_button",
+            "ddr_revision_button",
+            "ddr_refresh_button",
+            "ddr_add_activity_button",
+            "ddr_remove_activity_button",
+        ):
+            getattr(self, name).setEnabled(False)
+        thread = QThread(self)
+        worker = DdrWorker(self.controller, operation, payload)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.succeeded.connect(self._ddr_succeeded)
+        worker.failed.connect(self._ddr_failed)
+        worker.succeeded.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        self._ddr_thread = thread
+        self._ddr_worker = worker
+        self._track_worker_lifecycle(
+            "_ddr_thread", "_ddr_worker", thread, worker, self._ddr_thread_finished
+        )
+        self._ddr_update_controls()
+        thread.start()
+
+    @Slot(str, object)
+    def _ddr_succeeded(self, operation: str, result: object) -> None:
+        if self._closing:
+            return
+        if operation == "list":
+            records = tuple(result)
+            self._ddr_records_by_id = {str(item["report_id"]): dict(item) for item in records}
+            self.ddr_table.setRowCount(0)
+            for row_index, record in enumerate(records):
+                self.ddr_table.insertRow(row_index)
+                values = (
+                    record.get("report_date_text") or record.get("report_date") or "—",
+                    record.get("report_number") or "—",
+                    record.get("shift") or "—",
+                    f"{record.get('revision_number', 1)}",
+                    record.get("status") or "—",
+                    record.get("authoring_state") or "—",
+                )
+                for column, value in enumerate(values):
+                    cell = QTableWidgetItem(str(value))
+                    if column == 0:
+                        cell.setData(Qt.ItemDataRole.UserRole, str(record["report_id"]))
+                    self.ddr_table.setItem(row_index, column, cell)
+            selected = self._selected_ddr_id
+            target_row = next(
+                (
+                    row
+                    for row in range(self.ddr_table.rowCount())
+                    if str(self.ddr_table.item(row, 0).data(Qt.ItemDataRole.UserRole) or "")
+                    == selected
+                ),
+                0 if self.ddr_table.rowCount() else -1,
+            )
+            if target_row >= 0:
+                self.ddr_table.setCurrentCell(target_row, 0)
+                self._ddr_selection_changed()
+            else:
+                self._ddr_set_record(None)
+            self._set_status(f"Daily DDR workspace loaded {len(records)} report revision(s).")
+            return
+        if operation in {"create", "save", "submit", "revision"}:
+            if operation == "create":
+                self._ddr_new_draft_mode = False
+                self._set_busy(self._global_busy)
+            self._ddr_set_record(dict(result))
+            self._selected_ddr_id = str(result["report_id"])
+            self._pending_ddr_refresh = True
+            if operation == "submit":
+                self._set_status(
+                    "DDR submitted. Candidate operations are linked; no row was auto-confirmed."
+                )
+                QTimer.singleShot(0, self._load_current_review)
+            elif operation == "revision":
+                self._set_status(
+                    f"Revision {result['revision_number']} created as a draft; the prior revision remains historical."
+                )
+            else:
+                self._set_status(
+                    f"DDR draft {result['report_id']} saved (revision {result['revision_number']})."
+                )
+
+    @Slot(str, object)
+    def _ddr_failed(self, operation: str, error: object) -> None:
+        if self._closing:
+            return
+        message = str(getattr(error, "message", error))
+        self._set_status(f"Daily DDR {operation} failed: {message}", error=True)
+
+    @Slot()
+    def _ddr_thread_finished(self) -> None:
+        if not self._complete_worker_lifecycle("_ddr_thread", "_ddr_worker"):
+            return
+        if self._closing:
+            self._pending_ddr_refresh = False
+            return
+        self._ddr_update_controls()
+        pending_refresh = self._pending_ddr_refresh
+        self._pending_ddr_refresh = False
+        self.ddr_operation_finished.emit()
+        if pending_refresh:
+            QTimer.singleShot(0, self._start_pending_ddr_refresh)
+
+    def _start_pending_ddr_refresh(self) -> None:
+        if self._closing:
+            self._pending_ddr_refresh = False
+            return
+        if self._ddr_thread is not None:
+            self._pending_ddr_refresh = True
+            return
+        self._refresh_ddr_reports()
+
+    def _ddr_selected_report_id(self) -> str:
+        row = self.ddr_table.currentRow()
+        cell = self.ddr_table.item(row, 0) if row >= 0 else None
+        return str(cell.data(Qt.ItemDataRole.UserRole) or "") if cell else ""
+
+    def _ddr_selection_changed(self) -> None:
+        report_id = self._ddr_selected_report_id()
+        self._selected_ddr_id = report_id
+        record = self._ddr_records_by_id.get(report_id)
+        self._ddr_set_record(record)
+
+    def _ddr_set_record(self, record: dict[str, Any] | None) -> None:
+        self._selected_ddr_record = dict(record) if record else None
+        self.ddr_compare_tree.clear()
+        if record is None:
+            self.ddr_date_input.clear()
+            self.ddr_number_input.clear()
+            self.ddr_shift_input.clear()
+            self.ddr_summary_input.clear()
+            self.ddr_activities_table.setRowCount(0)
+            self._ddr_update_controls()
+            return
+        self.ddr_date_input.setText(
+            str(record.get("report_date_text") or record.get("report_date") or "")
+        )
+        self.ddr_number_input.setText(str(record.get("report_number") or ""))
+        self.ddr_shift_input.setText(str(record.get("shift") or ""))
+        self.ddr_summary_input.setPlainText(str(record.get("summary") or ""))
+        self.ddr_activities_table.setRowCount(0)
+        for activity in record.get("activities") or ():
+            row = self.ddr_activities_table.rowCount()
+            self.ddr_activities_table.insertRow(row)
+            selector = QComboBox(self.ddr_activities_table)
+            selector.addItems(self.controller.ddr_operation_types())
+            selector.setCurrentText(str(activity.get("operation_type") or ""))
+            self.ddr_activities_table.setCellWidget(row, 0, selector)
+            for column, key in ((1, "label"), (2, "description"), (3, "period_text")):
+                self.ddr_activities_table.setItem(
+                    row, column, QTableWidgetItem(str(activity.get(key) or ""))
+                )
+        self._ddr_update_controls()
+
+    def _ddr_compare_selected_revision(self) -> None:
+        """Render an exact, read-only diff against the named predecessor."""
+        current = self._selected_ddr_record or {}
+        parent_id = str(current.get("supersedes_report_id") or "")
+        previous = self._ddr_records_by_id.get(parent_id)
+        self.ddr_compare_tree.clear()
+        if not parent_id:
+            QTreeWidgetItem(
+                self.ddr_compare_tree,
+                ["Comparison unavailable", "This report has no recorded predecessor."],
+            )
+            self._set_status("No predecessor is recorded for this DDR revision.", error=True)
+            return
+        if previous is None:
+            QTreeWidgetItem(
+                self.ddr_compare_tree,
+                ["Comparison unavailable", f"Predecessor {parent_id} is not in loaded history."],
+            )
+            self._set_status(
+                "The named predecessor is missing from loaded history; no comparison was inferred.",
+                error=True,
+            )
+            return
+
+        comparison = compare_ddr_revisions(previous, current)
+        before = comparison["previous"]
+        after = comparison["successor"]
+        root = QTreeWidgetItem(
+            self.ddr_compare_tree,
+            [
+                "Read-only revision comparison — not an approval",
+                f"{before.get('report_id')} (rev {before.get('revision_number')}) → "
+                f"{after.get('report_id')} (rev {after.get('revision_number')}); "
+                f"comparison={comparison.get('status')}",
+            ],
+        )
+        QTreeWidgetItem(
+            root,
+            [
+                "Review state (display only)",
+                f"predecessor={before.get('status')}/{before.get('authoring_state')}; "
+                f"successor={after.get('status')}/{after.get('authoring_state')}; "
+                "approval was not evaluated",
+            ],
+        )
+        if comparison.get("status") == "AMBIGUOUS":
+            QTreeWidgetItem(
+                root,
+                [
+                    "Alignment warning",
+                    "Some activity identity cannot be established from exact authored content; "
+                    "no pairing was guessed.",
+                ],
+            )
+        field_group = QTreeWidgetItem(root, ["Authored fields", ""])
+        for change in comparison["fields"]:
+            field = QTreeWidgetItem(
+                field_group, [str(change["field"]), str(change["status"]).lower()]
+            )
+            QTreeWidgetItem(field, ["predecessor", _value_text(change["previous"])])
+            QTreeWidgetItem(field, ["successor", _value_text(change["successor"])])
+
+        activity_diff = comparison["activities"]
+        counts = activity_diff.get("counts") or {}
+        activity_group = QTreeWidgetItem(
+            root,
+            [
+                "Activities (authored order; no calculation)",
+                ", ".join(f"{key}={value}" for key, value in counts.items())
+                or str(activity_diff.get("status", "unknown")),
+            ],
+        )
+        QTreeWidgetItem(
+            activity_group,
+            [
+                "Authored positions",
+                f"predecessor={_sequence_preview(activity_diff.get('predecessor_order', []))}; "
+                f"successor={_sequence_preview(activity_diff.get('successor_order', []))}",
+            ],
+        )
+        changes = activity_diff.get("items") or []
+        # Bound the tree below the authoring service's 200-activity maximum so
+        # valid revisions can exercise the exact omitted-item indicator.
+        display_limit = 150
+
+        def add_side(parent: Any, label: str, value: Any, positions: Any) -> None:
+            if isinstance(value, Mapping):
+                _add_tree_value(parent, label, value)
+                return
+            if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+                group = QTreeWidgetItem(parent, [label, f"{len(value)} activity row(s)"])
+                for index, row in enumerate(value):
+                    if isinstance(row, Mapping):
+                        position = positions[index] if index < len(positions) else "?"
+                        _add_tree_value(group, f"position {position}", row)
+                    else:
+                        QTreeWidgetItem(
+                            group, ["Malformed activity", "a non-object row was omitted"]
+                        )
+
+        for change in changes[:display_limit]:
+            previous_positions = change.get("previous_positions") or []
+            successor_positions = change.get("successor_positions") or []
+            activity_item = QTreeWidgetItem(
+                activity_group,
+                [
+                    f"activity positions {previous_positions or '—'} → {successor_positions or '—'}",
+                    str(change.get("status", "")).lower(),
+                ],
+            )
+            if change.get("reason"):
+                QTreeWidgetItem(activity_item, ["alignment detail", str(change["reason"])])
+            if change.get("changed_fields"):
+                QTreeWidgetItem(
+                    activity_item,
+                    ["changed authored fields", ", ".join(change["changed_fields"])],
+                )
+            prior = change.get("previous")
+            next_value = change.get("successor")
+            if change.get("status") == "UNCHANGED":
+                add_side(activity_item, "operator-authored text", next_value, successor_positions)
+            elif change.get("status") == "AMBIGUOUS":
+                add_side(activity_item, "predecessor candidate rows", prior, previous_positions)
+                add_side(activity_item, "successor candidate rows", next_value, successor_positions)
+            else:
+                add_side(activity_item, "predecessor operator text", prior, previous_positions)
+                add_side(activity_item, "successor operator text", next_value, successor_positions)
+        if len(changes) > display_limit:
+            omitted = len(changes) - display_limit
+            QTreeWidgetItem(
+                activity_group,
+                ["Display limit", f"{omitted} comparison item(s) not expanded"],
+            )
+        if comparison.get("issues"):
+            issues = QTreeWidgetItem(root, ["History diagnostics", "malformed or incomplete data"])
+            for issue in comparison["issues"]:
+                QTreeWidgetItem(issues, ["warning", str(issue)])
+
+        provenance = QTreeWidgetItem(
+            root, ["Authored provenance (declared metadata; not authentication)", ""]
+        )
+        provenance_keys = (
+            "source_kind",
+            "action",
+            "actor",
+            "reason",
+            "at",
+            "revision_number",
+            "sequence",
+        )
+
+        def add_provenance_event(parent: Any, event: Mapping[str, Any]) -> None:
+            visible = {key: event[key] for key in provenance_keys if key in event}
+            _add_tree_value(parent, "event", visible)
+
+        for label, record in (("predecessor", previous), ("successor", current)):
+            revision_provenance = QTreeWidgetItem(provenance, [label, ""])
+            events = record.get("provenance") or ()
+            if isinstance(events, Sequence) and not isinstance(events, str | bytes):
+                for entry in events[:250]:
+                    if isinstance(entry, Mapping):
+                        add_provenance_event(revision_provenance, entry)
+                    else:
+                        QTreeWidgetItem(
+                            revision_provenance,
+                            ["Malformed provenance", "a non-object event was omitted"],
+                        )
+                if len(events) > 250:
+                    QTreeWidgetItem(
+                        revision_provenance,
+                        ["Display limit", f"{len(events) - 250} provenance events not expanded"],
+                    )
+            elif events:
+                QTreeWidgetItem(
+                    revision_provenance,
+                    ["Malformed provenance", "event history is not an ordered list"],
+                )
+            raw_activities = record.get("activities") or ()
+            if not isinstance(raw_activities, Sequence) or isinstance(raw_activities, str | bytes):
+                raw_activities = ()
+            activity_display_limit = 150
+            for activity in raw_activities[:activity_display_limit]:
+                if not isinstance(activity, Mapping):
+                    continue
+                activity_item = QTreeWidgetItem(
+                    revision_provenance,
+                    [f"activity position {activity.get('sequence', '')}", ""],
+                )
+                activity_events = activity.get("provenance") or ()
+                if isinstance(activity_events, Sequence) and not isinstance(
+                    activity_events, str | bytes
+                ):
+                    for entry in activity_events[:100]:
+                        if isinstance(entry, Mapping):
+                            add_provenance_event(activity_item, entry)
+                        else:
+                            QTreeWidgetItem(
+                                activity_item,
+                                ["Malformed provenance", "a non-object event was omitted"],
+                            )
+                    if len(activity_events) > 100:
+                        QTreeWidgetItem(
+                            activity_item,
+                            [
+                                "Display limit",
+                                f"{len(activity_events) - 100} activity events not expanded",
+                            ],
+                        )
+                elif activity_events:
+                    QTreeWidgetItem(
+                        activity_item,
+                        ["Malformed provenance", "event history is not an ordered list"],
+                    )
+            if len(raw_activities) > activity_display_limit:
+                QTreeWidgetItem(
+                    revision_provenance,
+                    [
+                        "Display limit",
+                        f"{len(raw_activities) - activity_display_limit} activity provenance entries not expanded",
+                    ],
+                )
+        self.ddr_compare_tree.expandToDepth(2)
+        self._set_status(
+            "Read-only predecessor/successor comparison rendered; no state was changed and "
+            "no approval or engineering value was inferred."
+        )
+
+    def _ddr_update_controls(self) -> None:
+        available = self.controller.workspace is not None and bool(self.well_combo.currentData())
+        busy = self._ddr_thread is not None
+        record = self._selected_ddr_record or {}
+        draft = bool(
+            record.get("is_current")
+            and record.get("authoring_state") == "DRAFT"
+            and record.get("status") == "CANDIDATE"
+            and not record.get("document_version_id")
+        )
+        revisable = bool(
+            record.get("is_current")
+            and record.get("origin") == "MANUAL"
+            and not record.get("document_version_id")
+            and record.get("authoring_state") == "SUBMITTED"
+        )
+        editing = draft or self._ddr_new_draft_mode
+        self.ddr_new_button.setText("Cancel new draft" if self._ddr_new_draft_mode else "New draft")
+        self.ddr_new_button.setEnabled(available and not busy and not self._global_busy)
+        self.ddr_create_button.setEnabled(
+            available and not busy and not self._global_busy and self._ddr_new_draft_mode
+        )
+        self.ddr_save_button.setEnabled(available and not busy and draft)
+        self.ddr_submit_button.setEnabled(available and not busy and draft)
+        self.ddr_revision_button.setEnabled(available and not busy and revisable)
+        # Keep the control available when a lineage reference exists but its row is missing;
+        # the comparison panel then explains the missing predecessor instead of hiding it.
+        has_parent = bool(record.get("supersedes_report_id"))
+        self.ddr_compare_button.setEnabled(available and not busy and has_parent)
+        self.ddr_refresh_button.setEnabled(available and not busy and not self._ddr_new_draft_mode)
+        self.ddr_add_activity_button.setEnabled(editing and not busy and not self._global_busy)
+        self.ddr_remove_activity_button.setEnabled(editing and not busy and not self._global_busy)
+        for widget in (self.ddr_date_input, self.ddr_number_input, self.ddr_shift_input):
+            widget.setReadOnly(not editing or busy or self._global_busy)
+        self.ddr_summary_input.setReadOnly(not editing or busy or self._global_busy)
+        self.ddr_activities_table.setEnabled(editing and not busy and not self._global_busy)
+        self.ddr_table.setEnabled(available and not busy and not self._ddr_new_draft_mode)
+
+    def _ddr_add_activity_row(self) -> None:
+        row = self.ddr_activities_table.rowCount()
+        self.ddr_activities_table.insertRow(row)
+        selector = QComboBox(self.ddr_activities_table)
+        selector.addItems(self.controller.ddr_operation_types())
+        self.ddr_activities_table.setCellWidget(row, 0, selector)
+        for column in range(1, 4):
+            self.ddr_activities_table.setItem(row, column, QTableWidgetItem(""))
+
+    def _ddr_remove_activity_row(self) -> None:
+        row = self.ddr_activities_table.currentRow()
+        if row >= 0:
+            self.ddr_activities_table.removeRow(row)
+
+    def _ddr_collect_activities(self) -> list[dict[str, str]]:
+        activities: list[dict[str, str]] = []
+        for row in range(self.ddr_activities_table.rowCount()):
+            selector = self.ddr_activities_table.cellWidget(row, 0)
+            values = [
+                self.ddr_activities_table.item(row, column).text()
+                if self.ddr_activities_table.item(row, column) is not None
+                else ""
+                for column in (1, 2, 3)
+            ]
+            if not any(value.strip() for value in values):
+                continue
+            activities.append(
+                {
+                    "operation_type": selector.currentText()
+                    if isinstance(selector, QComboBox)
+                    else "",
+                    "label": values[0],
+                    "description": values[1],
+                    "period_text": values[2],
+                }
+            )
+        return activities
+
+    def _ddr_values(self) -> dict[str, Any]:
+        return {
+            "report_date": self.ddr_date_input.text(),
+            "report_number": self.ddr_number_input.text(),
+            "shift": self.ddr_shift_input.text(),
+            "summary": self.ddr_summary_input.toPlainText(),
+            "activities": self._ddr_collect_activities(),
+            "actor": self.ddr_actor_input.text(),
+            "reason": self.ddr_reason_input.text(),
+        }
+
+    def _ddr_toggle_new_draft(self) -> None:
+        if self._ddr_new_draft_mode:
+            self._ddr_new_draft_mode = False
+            self._ddr_set_record(None)
+            self._set_busy(self._global_busy)
+            self._set_status("New DDR draft cancelled; no data was written.")
+            return
+        record = self._selected_ddr_record or {}
+        if record.get("authoring_state") == "DRAFT":
+            answer = QMessageBox.question(
+                self,
+                "Start a new DDR draft?",
+                "Unsaved edits in the current draft will be discarded. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._ddr_new_draft_mode = True
+        self._selected_ddr_id = ""
+        self.ddr_table.clearSelection()
+        self.ddr_table.setCurrentCell(-1, -1)
+        self._ddr_set_record(None)
+        self._set_busy(self._global_busy)
+        self._set_status("Enter the report date and authored content, then create the draft.")
+
+    def _ddr_create_draft(self) -> None:
+        if not self._ddr_new_draft_mode:
+            self._set_status("Select New draft before entering a new DDR.", error=True)
+            return
+        well_id = str(self.well_combo.currentData() or "")
+        if not well_id:
+            self._set_status("Select a well before creating a DDR draft.", error=True)
+            return
+        self._start_ddr_operation("create", well_id=well_id, **self._ddr_values())
+
+    def _ddr_save_draft(self) -> None:
+        record = self._selected_ddr_record
+        if not record:
+            return
+        values = self._ddr_values()
+        values["expected_updated_at"] = str(record.get("updated_at") or "")
+        self._start_ddr_operation("save", report_id=str(record["report_id"]), values=values)
+
+    def _ddr_submit(self) -> None:
+        record = self._selected_ddr_record
+        if not record:
+            return
+        self._start_ddr_operation(
+            "submit",
+            report_id=str(record["report_id"]),
+            values={
+                "expected_updated_at": str(record.get("updated_at") or ""),
+                "actor": self.ddr_actor_input.text(),
+                "reason": self.ddr_reason_input.text(),
+            },
+        )
+
+    def _ddr_create_revision(self) -> None:
+        record = self._selected_ddr_record
+        if not record:
+            return
+        self._start_ddr_operation(
+            "revision",
+            report_id=str(record["report_id"]),
+            values={
+                "expected_updated_at": str(record.get("updated_at") or ""),
+                "actor": self.ddr_actor_input.text(),
+                "reason": self.ddr_reason_input.text(),
+            },
+        )
 
     # -- selection/filter helpers -----------------------------------------
     @Slot(int)
     def _navigation_changed(self, index: int) -> None:
         if 0 <= index < self.pages.count():
             self.pages.setCurrentIndex(index)
+            if _NAVIGATION[index] == "Daily DDR" and not self._ddr_new_draft_mode:
+                self._refresh_ddr_reports()
 
     @Slot()
     def _record_filters_changed(self) -> None:
@@ -1716,6 +2723,12 @@ class MainWindow(QMainWindow):
         self.records_proxy.set_status("" if status_value.startswith("All") else status_value)
         self.records_proxy.set_state("" if state_value == "All" else state_value)
         self.records_proxy.set_text(self.record_text_filter.text())
+
+    @Slot(QModelIndex, QModelIndex)
+    def _section_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
+        """Show the selected section DTO verbatim, including source provenance."""
+        payload = self.sections_model.row_payload(current.row()) if current.isValid() else None
+        _fill_tree(self.sections_detail, payload)
 
     @Slot(QModelIndex, QModelIndex)
     def _record_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
@@ -1765,6 +2778,8 @@ class MainWindow(QMainWindow):
             requirements.append("reason")
         if action.requires_evidence:
             requirements.append("recorded evidence")
+        if action.requires_independent_actor:
+            requirements.append("a declared reviewer ID different from the record author")
         self.record_action_hint.setText(
             f"{action.label} moves the authoritative status to {action.target_status}. "
             f"Explicit {', '.join(requirements)} required; the record will be re-read after success."
@@ -1800,6 +2815,15 @@ class MainWindow(QMainWindow):
             self.record_reason_input.setFocus()
             return
         data = record.data
+        author = str(data.get("created_by") or "").strip()
+        if action.requires_independent_actor and author and actor.casefold() == author.casefold():
+            self._set_status(
+                "This decision requires a declared reviewer ID different from the record author; "
+                "the ID is not identity-verified.",
+                error=True,
+            )
+            self.record_actor_input.setFocus()
+            return
         expected_revision = data.get("revision")
         if expected_revision is not None:
             try:
@@ -1840,6 +2864,8 @@ class MainWindow(QMainWindow):
         self._start_action_worker(request)
 
     def _start_action_worker(self, request: ReviewActionRequest) -> None:
+        if self._closing:
+            return
         thread = QThread(self)
         worker = ReviewActionWorker(self.controller, request, parent=None)
         worker.moveToThread(thread)
@@ -1848,17 +2874,19 @@ class MainWindow(QMainWindow):
         worker.failed.connect(self._action_failed)
         worker.succeeded.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        worker.succeeded.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(self._action_thread_finished)
         self._action_thread = thread
         self._action_worker = worker
+        self._track_worker_lifecycle(
+            "_action_thread", "_action_worker", thread, worker, self._action_thread_finished
+        )
         self._set_busy(True)
         self._set_status(f"Executing {request.action.replace('_', ' ')} for {request.record_id}…")
         thread.start()
 
     @Slot(object)
     def _action_succeeded(self, result: ReviewActionResult) -> None:
+        if self._closing:
+            return
         # Do not patch the displayed ReviewRecord with a client-side result.  A fresh read is the
         # only success rendering, so approval metadata, history, revision and evidence remain the
         # values the domain committed.
@@ -1871,6 +2899,8 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _action_failed(self, error: WorkerError) -> None:
+        if self._closing:
+            return
         # The existing DomainReview is deliberately left in place on failure, including its
         # selection and detail tree.  The error explains stale/ineligible actions without inventing
         # a local status.
@@ -1881,12 +2911,11 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _action_thread_finished(self) -> None:
-        thread = self._action_thread
-        self._action_thread = None
-        self._action_worker = None
-        self._set_busy(False)
-        if thread is not None:
-            thread.deleteLater()
+        if (
+            self._complete_worker_lifecycle("_action_thread", "_action_worker")
+            and not self._closing
+        ):
+            self._set_busy(False)
 
     @Slot(QModelIndex, QModelIndex)
     def _conflict_selection_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
@@ -1997,14 +3026,18 @@ class MainWindow(QMainWindow):
         self._selected_conflict = None
         self._set_record_actions(())
         self._set_conflict_actions(())
+        _fill_tree(self.sections_detail, None)
         _fill_tree(self.record_detail, None)
         _fill_tree(self.conflict_detail, None)
         self._set_source_navigation(None)
 
     # -- state and shutdown -----------------------------------------------
     def _set_busy(self, busy: bool) -> None:
+        self._global_busy = busy
         self.open_button.setEnabled(not busy)
-        self.well_combo.setEnabled(not busy and self.well_combo.count() > 0)
+        self.well_combo.setEnabled(
+            not busy and self.well_combo.count() > 0 and not self._ddr_new_draft_mode
+        )
         self.lifecycle_combo.setEnabled(not busy and self.well_combo.count() > 0)
         self.load_button.setEnabled(not busy and self.well_combo.count() > 0)
         self.verify_button.setEnabled(not busy and self.well_combo.count() > 0)
@@ -2057,6 +3090,45 @@ class MainWindow(QMainWindow):
     def _verify_citations_from_button(self) -> None:
         self.request_review(verify_citations=True)
 
+    def _track_worker_lifecycle(
+        self,
+        thread_name: str,
+        worker_name: str,
+        thread: QThread,
+        worker: Any,
+        finished_slot: Any,
+    ) -> None:
+        """Keep worker ownership until deferred QObject deletion and QThread exit."""
+        destroyed = threading.Event()
+        self._worker_destroyed_events[thread_name] = destroyed
+        worker.destroyed.connect(
+            lambda *_args: destroyed.set(),
+            Qt.ConnectionType.DirectConnection,
+        )
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(finished_slot)
+
+    def _complete_worker_lifecycle(self, thread_name: str, worker_name: str) -> bool:
+        """Release Python handles only after worker destruction and thread exit are proven."""
+        thread = getattr(self, thread_name)
+        destroyed = self._worker_destroyed_events.get(thread_name)
+        if thread is None or destroyed is None:
+            self._set_status(f"Worker lifecycle evidence is missing for {thread_name}.", error=True)
+            return False
+        if not thread.wait(self._worker_join_timeout_ms):
+            self._set_status(f"QThread {thread_name} did not fully exit.", error=True)
+            return False
+        if not destroyed.is_set():
+            self._set_status(
+                f"Worker object for {thread_name} did not reach destruction.", error=True
+            )
+            return False
+        thread.deleteLater()
+        setattr(self, thread_name, None)
+        setattr(self, worker_name, None)
+        self._worker_destroyed_events.pop(thread_name, None)
+        return True
+
     def owned_workers_running(self) -> bool:
         """True when a close would have to join a live worker.
 
@@ -2064,11 +3136,13 @@ class MainWindow(QMainWindow):
         ``thread.wait()`` after quit. On the CI host that wait does not return
         while the worker is still alive, which would defeat the shutdown budget.
         """
-        return any(
+        if any(
             thread.isRunning()
             for name in _WORKER_THREAD_ATTRS
             if (thread := getattr(self, name, None)) is not None
-        )
+        ):
+            return True
+        return any(not event.is_set() for event in self._worker_destroyed_events.values())
 
     def closeEvent(self, event: QCloseEvent) -> None:
         threads = [
@@ -2091,6 +3165,19 @@ class MainWindow(QMainWindow):
                     self._set_status("Waiting for a review worker to finish.", error=True)
                     event.ignore()
                     return
+        for thread_name, worker_destroyed in tuple(self._worker_destroyed_events.items()):
+            thread = getattr(self, thread_name)
+            if thread is not None and thread.isRunning():
+                self._set_status("Waiting for a worker thread to exit.", error=True)
+                event.ignore()
+                return
+            if not worker_destroyed.is_set():
+                self._set_status("Waiting for a worker object to be destroyed.", error=True)
+                event.ignore()
+                return
+        self._closing = True
+        self._pending_intake_refresh = False
+        self._pending_ddr_refresh = False
         self.controller.close()
         event.accept()
 

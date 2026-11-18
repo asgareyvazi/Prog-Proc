@@ -158,13 +158,26 @@ def parse_json_loose(text: str) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
+    # A tool that logs around its JSON is the case this exists for, but the
+    # *shape* of the payload must not change: searching for the first "{" in a
+    # truncated array returns the first object and silently drops the rest, and
+    # for a content list that means a document whose remaining items vanished
+    # without an error.  The delimiter the text actually starts with is tried
+    # first, and the other one only if that finds nothing.
+    # The delimiter that appears first is the one the payload opened with.
+    bracket = text.find("[")
+    brace = text.find("{")
+    array_first = bracket != -1 and (brace == -1 or bracket < brace)
+    order = (("[", "]"), ("{", "}")) if array_first else (("{", "}"), ("[", "]"))
+    for opener, closer in order:
+        start = text.find(opener)
+        end = text.rfind(closer)
+        if start == -1 or end <= start:
+            continue
         try:
             return json.loads(text[start : end + 1])
         except json.JSONDecodeError:
-            return None
+            continue
     return None
 
 
@@ -178,6 +191,7 @@ def http_json(
     headers: dict[str, str] | None = None,
     files: dict[str, Any] | None = None,
     data: dict[str, Any] | None = None,
+    follow_redirects: bool = True,
 ) -> dict[str, Any]:
     """Small HTTP helper used by the Ollama/MinerU clients (httpx under the hood).
 
@@ -196,16 +210,22 @@ def http_json(
             headers=headers or {},
             files=files,
             data=data,
-            follow_redirects=True,
+            follow_redirects=follow_redirects,
         )
     except httpx.HTTPError as exc:
-        return {"ok": False, "status_code": 0, "error": f"{type(exc).__name__}: {exc}", "url": url}
+        return {
+            "ok": False,
+            "status_code": 0,
+            "error": f"{type(exc).__name__}: {exc}",
+            "url": url,
+            "content_type": "",
+        }
     payload: Any = None
     content_type = response.headers.get("content-type", "")
-    if "json" in content_type:
+    if "json" in content_type.lower():
         try:
             payload = response.json()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - a response that is not JSON has no payload
             payload = None
     return {
         "ok": response.is_success,
@@ -214,6 +234,7 @@ def http_json(
         "text": response.text if payload is None else "",
         "url": url,
         "error": "" if response.is_success else f"HTTP {response.status_code}",
+        "content_type": content_type,
     }
 
 

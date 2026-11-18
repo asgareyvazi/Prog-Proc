@@ -1480,3 +1480,121 @@ def build_v72_site_corpus(root: Path | str) -> dict[str, Path]:
     target = Path(root)
     target.mkdir(parents=True, exist_ok=True)
     return {name: builder(target / name) for name, builder in V72_SITE_BUILDERS.items()}
+
+
+def build_lesson_tally_xlsx(path: Path, rows: list[dict[str, str]] | None = None) -> Path:
+    """Lesson tally with a table that has a `lesson` column plus code/title.
+
+    Each dict in *rows* may contain: code, title, lesson, observation, context,
+    recommendation, root_cause, problem_type, well, field, project, section,
+    applicable_operations, hole_size.  Defaults to two valid rows.
+    """
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Lessons"
+    headers = [
+        "Lesson Code",
+        "Title",
+        "Lesson",
+        "Observation",
+        "Context",
+        "Recommendation",
+        "Root Cause",
+        "Problem Type",
+        "Well",
+        "Field",
+        "Project",
+        "Section",
+        "Applicable Operations",
+        "Hole Size",
+    ]
+    for col, header in enumerate(headers, start=1):
+        sheet.cell(row=1, column=col, value=header)
+    default_rows = rows or [
+        {
+            "code": "LL-2025-001",
+            "title": "Keep hole clean",
+            "lesson": "Maintain adequate hole cleaning in 12 1/4 section",
+            "well": "A-3",
+        },
+        {
+            "code": "LL-2025-002",
+            "title": "Mud weight window",
+            "lesson": "Stay inside pore pressure / fracture gradient window",
+            "well": "A-3",
+        },
+    ]
+    for row_idx, entry in enumerate(default_rows, start=2):
+        values = [
+            entry.get("code", ""),
+            entry.get("title", ""),
+            entry.get("lesson", ""),
+            entry.get("observation", ""),
+            entry.get("context", ""),
+            entry.get("recommendation", ""),
+            entry.get("root_cause", ""),
+            entry.get("problem_type", ""),
+            entry.get("well", ""),
+            entry.get("field", ""),
+            entry.get("project", ""),
+            entry.get("section", ""),
+            entry.get("applicable_operations", ""),
+            entry.get("hole_size", ""),
+        ]
+        for col, value in enumerate(values, start=1):
+            sheet.cell(row=row_idx, column=col, value=value)
+    workbook.save(path)
+    return path
+
+
+def build_lesson_incomplete_xlsx(path: Path) -> Path:
+    """Lesson tally missing required code/title — should be refused."""
+    return build_lesson_tally_xlsx(
+        path, [{"lesson": "Lesson without code or title", "well": "A-3"}]
+    )
+
+
+def build_lesson_no_lesson_column_xlsx(path: Path) -> Path:
+    """Table without a lesson column — should be refused."""
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Lessons"
+    for col, header in enumerate(["Lesson Code", "Title", "Observation"], start=1):
+        sheet.cell(row=1, column=col, value=header)
+    sheet.cell(row=2, column=1, value="LL-2025-010")
+    sheet.cell(row=2, column=2, value="No lesson column")
+    sheet.cell(row=2, column=3, value="Some observation")
+    workbook.save(path)
+    return path
+
+
+V9_LESSON_BUILDERS = {
+    "lesson_tally_well-a3.xlsx": build_lesson_tally_xlsx,
+    "lesson_tally_incomplete_well-a3.xlsx": build_lesson_incomplete_xlsx,
+    "lesson_tally_no_lesson_column_well-a3.xlsx": build_lesson_no_lesson_column_xlsx,
+}
+
+V9_OPERATIONAL_BUILDERS: dict[str, Any] = {
+    **V72_OPERATIONAL_BUILDERS,
+    **V9_LESSON_BUILDERS,
+}
+
+
+def build_v9_operational_corpus(root: Path | str, *, include_scan: bool = True) -> dict[str, Path]:
+    """The V7.2 operational corpus plus the V9.0 lesson tally sources."""
+    target = Path(root)
+    target.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+    for name, builder in V9_OPERATIONAL_BUILDERS.items():
+        # Builders that take only path (no rows arg) are called with single arg
+        try:
+            written[name] = builder(target / name)
+        except TypeError:
+            written[name] = builder(target / name, [])
+    if include_scan:
+        (target / ".scan-marker").write_text("v9.0\n", encoding="utf-8")
+    return written

@@ -74,7 +74,9 @@ class VocabMatch:
         """The attributes key that records an unrecognised code, when there is one to record."""
         return "" if self.recognised else "source_wording"
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
+        # ``recognised`` is a flag, not text. The payload is a JSON-shaped
+        # record, so its values are not all strings.
         return {"token": self.token, "raw": self.raw, "recognised": self.recognised}
 
     def note(self) -> str:

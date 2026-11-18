@@ -660,9 +660,21 @@ def test_a_lesson_needs_evidence_and_a_reviewer_who_is_not_the_author(session, h
     )
     assert revised.revision == 2
     assert revised.status == "DRAFT"
-    assert revised.provenance == lesson.provenance, "the proof does not change with the wording"
-    assert lesson.status == "SUPERSEDED"
+    assert revised.provenance == [], "evidence must not silently transfer to revised content"
+    assert lesson.provenance == _provenance(), (
+        "the superseded revision retains its original provenance"
+    )
+    assert repository.evidence_count(revised.id) == 0
+    assert lesson.status == "SUPERSEDED" and lesson.prior_status == "APPROVED"
     assert repository.list_lessons(field_id=hierarchy["field"].id) == [revised]
+    # Re-approval requires an explicit decision that the original source also supports the new text.
+    repository.update_lesson(revised.id, provenance=_provenance())
+    assert (
+        repository.approve(
+            revised.id, by="d.okafor", note="source rechecked against revised text"
+        ).status
+        == "APPROVED"
+    )
 
 
 def test_evidence_edges_are_kept_apart_from_derivation(session, hierarchy) -> None:

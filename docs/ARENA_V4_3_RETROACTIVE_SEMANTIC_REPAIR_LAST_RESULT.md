@@ -34,7 +34,7 @@ The mission states the previous mission ended at `c279d1c`. It was told to verif
 it found something else:
 
 ```
-git rev-parse HEAD                       -> e8621136ca73108ae7b590e6baa72fedc1f00835   (grafted)
+git rev-parse HEAD                       -> e862113 (grafted, not in remote)   (grafted)
 git ls-remote origin refs/heads/...      -> c279d1c61b7301bfb5d54d6f8c285ee2186bcfd9
 git status --short                       -> 28 modified/deleted + 23 untracked
 ```

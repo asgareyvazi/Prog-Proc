@@ -128,14 +128,18 @@
     {
       "filename": "lesson_learned_ll-2025-014.txt",
       "classification": "LESSON_LEARNED",
-      "contract": null,
+      "contract": "document:LESSON_LEARNED:promotion:v8",
       "expected": "UNSUPPORTED",
       "domain_models": [],
       "scope": "well-linked evidence",
       "checks": [
+        "same-classification-different-shape",
+        "no-authoritative-row",
+        "explicit-NO_RECOGNISED_TABLE-diagnostic",
         "knowledge-provenance",
         "human-confirmation-boundary"
-      ]
+      ],
+      "denied_by": "source-shape"
     },
     {
       "filename": "mud_report_well-a3.xlsx",

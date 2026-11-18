@@ -27,9 +27,14 @@ REDACTED = "***REDACTED***"
 _DEFAULT_SENSITIVE_KEYS = ("api_key", "token", "password", "secret", "authorization", "cookie")
 
 # A bearer/token-looking string anywhere in a message is masked as well.
+#
+# A pattern that captures a *prefix* keeps that prefix and replaces the rest
+# ("Bearer " stays, the token goes).  A pattern that would capture the secret
+# itself has no capture group at all: the whole match is replaced, because a
+# replacement that re-emits the match has redacted nothing.
 _TOKEN_PATTERNS = (
     re.compile(r"(?i)\b(authorization\s*[:=]\s*)\S+"),
-    re.compile(r"(?i)\b(sk-[A-Za-z0-9_\-]{8,})\b"),
+    re.compile(r"(?i)\bsk-[A-Za-z0-9_\-]{8,}\b"),
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{8,}"),
 )
 
@@ -38,12 +43,7 @@ _RESERVED = set(vars(logging.LogRecord("", 0, "", 0, "", (), None)))
 
 def _mask(value: Any, sensitive: tuple[str, ...]) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(k): (
-                REDACTED if any(s in str(k).lower() for s in sensitive) else _mask(v, sensitive)
-            )
-            for k, v in value.items()
-        }
+        return {str(k): _mask_field(k, v, sensitive) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_mask(v, sensitive) for v in value]
     if isinstance(value, str):
@@ -52,6 +52,19 @@ def _mask(value: Any, sensitive: tuple[str, ...]) -> Any:
             text = pattern.sub(lambda m: (m.group(1) if m.groups() else "") + REDACTED, text)
         return text
     return value
+
+
+def _mask_field(key: Any, value: Any, sensitive: tuple[str, ...]) -> Any:
+    """Mask one field, by its *name* first and by its shape second.
+
+    The name is what identifies a secret: a field called ``api_key`` holds a
+    secret whatever it looks like, and masking only the values that happen to
+    match a token pattern would write a plain ``api_key="hunter2"`` to the log
+    in the clear.
+    """
+    if any(marker in str(key).lower() for marker in sensitive):
+        return REDACTED
+    return _mask(value, sensitive)
 
 
 class _JsonFormatter(logging.Formatter):
@@ -72,7 +85,7 @@ class _JsonFormatter(logging.Formatter):
         for key, value in record.__dict__.items():
             if key in _RESERVED or key.startswith("_"):
                 continue
-            payload[key] = _mask(value, self.sensitive)
+            payload[key] = _mask_field(key, value, self.sensitive)
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -88,7 +101,7 @@ class _TextFormatter(logging.Formatter):
         }
         if extras:
             rendered = " ".join(
-                f"{k}={_mask(v, self.sensitive)}" for k, v in sorted(extras.items())
+                f"{k}={_mask_field(k, v, self.sensitive)}" for k, v in sorted(extras.items())
             )
             base = f"{base} | {rendered}"
         return base
@@ -152,15 +165,37 @@ class PlatformLogger(logging.LoggerAdapter[logging.Logger]):
             payload["duration_ms"] = round(duration_ms, 1)
         self.log(level, name, extra=payload, exc_info=exception)
 
+    def _event(
+        self,
+        name: str,
+        level: int,
+        fields: dict[str, object],
+        *,
+        exception: bool = False,
+    ) -> None:
+        """Emit one event from a field mapping.
+
+        The mapping arrives as a mapping, not as ``**fields``. A field named
+        ``duration_ms`` or ``exception`` is data in that case, so it cannot
+        collide with an argument or raise a duplicate-keyword error.
+        """
+        payload: dict[str, object] = {"event": name, **fields}
+        duration = payload.get("duration_ms")
+        if isinstance(duration, bool):
+            payload.pop("duration_ms", None)
+        elif isinstance(duration, int | float):
+            payload["duration_ms"] = round(float(duration), 1)
+        self.log(level, name, extra=payload, exc_info=exception)
+
     def warning_event(self, name: str, **fields: object) -> None:
-        self.event(name, logging.WARNING, **fields)
+        self._event(name, logging.WARNING, dict(fields))
 
     def error_event(self, name: str, **fields: object) -> None:
-        self.event(
+        self._event(
             name,
             logging.ERROR,
+            {k: v for k, v in fields.items() if k != "exc_info"},
             exception=bool(fields.get("exc_info")),
-            **{k: v for k, v in fields.items() if k != "exc_info"},
         )
 
     def process(self, msg: object, kwargs: dict[str, object]) -> tuple[object, dict[str, object]]:  # type: ignore[override]
@@ -198,7 +233,10 @@ class timed:
         self._started = time.perf_counter()
         return self
 
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        # Returning None means "do not suppress". The block never swallows
+        # an exception, so the contract is written down rather than implied
+        # by a returned False.
         self.duration_ms = (time.perf_counter() - self._started) * 1000.0
         if exc_type is None:
             log_event(self.logger, self.level, self.event, self.duration_ms, **self.fields)
@@ -211,7 +249,6 @@ class timed:
                 error=str(exc),
                 **self.fields,
             )
-        return False
 
 
 __all__ = ["REDACTED", "PlatformLogger", "configure_logging", "get_logger", "log_event", "timed"]

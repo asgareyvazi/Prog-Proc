@@ -8,7 +8,7 @@ from a previous report, and the previous report's Git claims are specifically co
 ```text
 repo      asgareyvazi/Prog-Proc
 branch    arena/01a0c936-prog-proc
-baseline  e8621136ca73108ae7b590e6baa72fedc1f00835  (grafted root of this clone)
+baseline  e862113 (grafted, not in remote)  (grafted root of this clone)
 work      71112e890adea8caf6b4898026251283611de654  (merge of this work with e2cd185)
 remote    origin -> https://github.com/asgareyvazi/Prog-Proc.git
 remote    VERIFIED at 71112e890adea8caf6b4898026251283611de654 by two independent paths

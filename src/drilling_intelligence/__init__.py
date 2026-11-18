@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from importlib import metadata as _metadata
 
-__version__ = "0.0.1a0"
+__version__ = "0.0.2a0"
 
 # A version in two places is a version that drifts: ``pyproject.toml`` is what an installed
 # distribution reports, so prefer it and keep the literal above as the source-tree fallback (a

@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..__init__ import CLASSIFIER_VERSION
+from .. import CLASSIFIER_VERSION
 from ..core.enums import DocumentClassification
 from ..core.provenance import Provenance
 from .taxonomy import TAXONOMY, authority_for

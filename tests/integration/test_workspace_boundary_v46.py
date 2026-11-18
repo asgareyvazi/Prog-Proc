@@ -31,6 +31,7 @@ from io import StringIO
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from tests.fixtures.generate import build_corpus
 
 from drilling_intelligence.cli import main
@@ -439,7 +440,7 @@ def test_doctor_reports_documents_pointing_at_a_missing_workspace(tmp_path) -> N
         # hand-edited file looks like.
         for row in session.execute(select(Document)).scalars():
             row.workspace_id = "ws-does-not-exist"
-        with pytest.raises(Exception, match="FOREIGN KEY"):
+        with pytest.raises(IntegrityError, match="FOREIGN KEY"):
             session.commit()
         session.rollback()
     # A file written before that pragma, or restored from a partial backup, can still hold one -

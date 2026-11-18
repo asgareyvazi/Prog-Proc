@@ -17,8 +17,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
+from sqlalchemy import update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from ..core.enums import RecommendationLifecycle, RiskLifecycle
@@ -188,6 +190,10 @@ def _row_status(row: Any) -> str:
 def _row_revision(row: Any) -> int | None:
     value = getattr(row, "revision", None)
     if value is None:
+        # Authored DDR revisions use the explicit ``revision_number`` field; other
+        # reviewable record families conventionally expose ``revision``.
+        value = getattr(row, "revision_number", None)
+    if value is None:
         return None
     try:
         return int(value)
@@ -196,7 +202,8 @@ def _row_revision(row: Any) -> int | None:
 
 
 def _row_current(row: Any) -> bool:
-    if hasattr(row, "is_current") and not bool(row.is_current):
+    value = getattr(row, "is_current", True)
+    if value is not None and not bool(value):
         return False
     return _row_status(row) not in {"SUPERSEDED", "RETIRED"}
 
@@ -245,6 +252,8 @@ def _capabilities(
     record_type = _canonical_record_type(record_type)
     status = _canonical_status(status)
     data = data or {}
+    if record_type == "ddr_report" and str(data.get("authoring_state") or "") != "SUBMITTED":
+        return ()
     if not current:
         return ()
     if record_type == "field_pattern" and data.get("stale_at"):
@@ -320,10 +329,33 @@ def _capabilities(
         if "SUPERSEDED" in targets:
             actions.append(_action("supersede", "Supersede", "SUPERSEDED"))
     elif record_type in {"field_pattern", "cost_item", *_OPERATIONAL_MODELS}:
+        attributes = data.get("attributes")
+        authoring_channel = data.get("authoring_channel") or (
+            attributes.get("authoring_channel") if isinstance(attributes, Mapping) else ""
+        )
+        governed_ddr = record_type == "ddr_report" or (
+            record_type == "well_operation" and authoring_channel == "DDR_WORKSPACE"
+        )
         if "CONFIRMED" in targets:
-            actions.append(_action("confirm", "Confirm", "CONFIRMED"))
+            actions.append(
+                _action(
+                    "confirm",
+                    "Confirm",
+                    "CONFIRMED",
+                    reason=governed_ddr,
+                    independent=governed_ddr,
+                )
+            )
         if "REJECTED" in targets:
-            actions.append(_action("reject", "Reject", "REJECTED"))
+            actions.append(
+                _action(
+                    "reject",
+                    "Reject",
+                    "REJECTED",
+                    reason=governed_ddr,
+                    independent=governed_ddr,
+                )
+            )
         if "CANDIDATE" in targets:
             actions.append(_action("reopen", "Return to candidate", "CANDIDATE"))
     return tuple(actions)
@@ -533,6 +565,17 @@ class ReviewActionService:
             before = _row_status(row)
             capability = self._find_capability(session, row, req)
             self._validate_input(req, capability)
+            if capability.requires_independent_actor:
+                author = str(getattr(row, "created_by", "") or "").strip()
+                if not author or req.actor.casefold() == author.casefold():
+                    raise ReviewActionError(
+                        "this DDR decision requires a declared reviewer ID different from its author",
+                        hint=(
+                            "use a distinct reviewer ID and preserve the decision reason; "
+                            "the application does not authenticate actor identity"
+                        ),
+                    )
+            self._claim_ddr_snapshot(session, row)
             detail: dict[str, Any] = {}
             self._route(session, row, req, capability)
             session.flush()
@@ -560,6 +603,55 @@ class ReviewActionService:
     ) -> ReviewActionResult:
         """Explicitly named alias for the write boundary used by UI/controllers."""
         return self.execute(request)
+
+    @staticmethod
+    def _claim_ddr_snapshot(session: Session, row: Any) -> None:
+        """Serialize concurrent DDR decisions with an atomic check of the displayed row state.
+
+        SQLite has no ``SELECT ... FOR UPDATE``. A conditional no-op UPDATE takes its writer lock
+        before the owning repository changes status, so a second reviewer cannot apply a competing
+        action using the same stale snapshot. The original timestamp/status/revision remain the
+        predicates; the domain transition below remains the only value-changing write.
+        """
+        model: Any
+        if isinstance(row, DdrReport):
+            model = DdrReport
+        elif isinstance(row, WellOperation):
+            attributes = row.attributes if isinstance(row.attributes, Mapping) else {}
+            if attributes.get("authoring_channel") != "DDR_WORKSPACE":
+                return
+            model = WellOperation
+        else:
+            return
+
+        predicates = [
+            model.id == row.id,
+            model.status == row.status,
+            model.is_current.is_(row.is_current),
+            model.updated_at == row.updated_at,
+            model.well_id == row.well_id,
+        ]
+        if model is DdrReport:
+            predicates.extend(
+                [
+                    DdrReport.authoring_state == row.authoring_state,
+                    DdrReport.revision_number == row.revision_number,
+                ]
+            )
+        result = cast(
+            CursorResult[Any],
+            session.execute(
+                update(model)
+                .where(*predicates)
+                .values(updated_at=model.updated_at)
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        if result.rowcount != 1:
+            raise ReviewActionError(
+                f"review action for {row.id!r} is stale: record changed during the decision",
+                hint="reload the authoritative review before acting",
+            )
 
     def _execute_conflict(self, session: Session, req: ReviewActionRequest) -> ReviewActionResult:
         conflict = session.get(KnowledgeConflict, req.record_id)
@@ -755,6 +847,17 @@ class ReviewActionService:
             repository = LessonRepository(session)
             has_evidence = repository.evidence_count(str(row.id)) > 0
             data = {"rationale": ""}
+        elif record_type == "ddr_report":
+            data = {"authoring_state": str(getattr(row, "authoring_state", ""))}
+        elif record_type == "well_operation":
+            attributes = getattr(row, "attributes", None)
+            data = {
+                "authoring_channel": str(
+                    attributes.get("authoring_channel", "")
+                    if isinstance(attributes, Mapping)
+                    else ""
+                )
+            }
         elif record_type == "best_practice":
             data = {"rationale": str(getattr(row, "rationale", "") or "")}
         elif record_type == "field_pattern" and getattr(row, "stale_at", None) is not None:
@@ -813,15 +916,15 @@ class ReviewActionService:
                 repository.set_program_status(str(row.id), target, by=req.actor, reason=explanation)
             return
         if record_type == "lesson_learned":
-            repository = LessonRepository(session)
+            lesson_repo = LessonRepository(session)
             if req.action == "approve":
-                repository.approve(str(row.id), by=req.actor, note=explanation)
+                lesson_repo.approve(str(row.id), by=req.actor, note=explanation)
             elif req.action == "reject":
-                repository.reject(str(row.id), by=req.actor, reason=explanation)
+                lesson_repo.reject(str(row.id), by=req.actor, reason=explanation)
             elif req.action == "submit_for_review":
-                repository.submit_for_review(str(row.id), by=req.actor)
+                lesson_repo.submit_for_review(str(row.id), by=req.actor)
             elif req.action == "reopen":
-                repository.reopen(str(row.id), by=req.actor, reason=explanation)
+                lesson_repo.reopen(str(row.id), by=req.actor, reason=explanation)
             else:
                 raise ReviewActionError(f"unsupported lesson action {req.action!r}")
             return

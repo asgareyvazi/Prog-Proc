@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from ..core.hashing import sha256_text
-from ..core.provenance import Provenance
+from ..core.provenance import PdfLocator, Provenance
 from ..core.results import DataField
 
 _WS = re.compile(r"[ \t]+")
@@ -302,7 +302,7 @@ class Figure:
             page=payload.get("page"),
             kind=payload.get("kind", "image") or "image",
             caption=payload.get("caption", "") or "",
-            bbox=tuple(bbox) if bbox else None,  # type: ignore[arg-type]
+            bbox=tuple(bbox) if bbox else None,
             provenance=Provenance.from_dict(provenance) if provenance else None,
             text=payload.get("text", "") or "",
             extra=dict(payload.get("extra") or {}),
@@ -484,13 +484,15 @@ class NormalizedDocument:
             text = _render_field_for_search(item)
             if not text:
                 continue
+            locator = item.provenance.locator if item.provenance else None
             units.append(
                 SearchUnit(
                     text=text,
                     unit_type="field",
-                    page=item.provenance.locator.page
-                    if item.provenance and item.provenance.locator.kind == "pdf"
-                    else None,
+                    # Only a PDF locator carries a page. The check is the type
+                    # itself, not a kind string that another locator could
+                    # claim.
+                    page=locator.page if isinstance(locator, PdfLocator) else None,
                     section=item.name,
                     index=len(units),
                     provenance=item.provenance,

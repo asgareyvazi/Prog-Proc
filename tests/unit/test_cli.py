@@ -597,7 +597,7 @@ class TestCliEndToEnd:
         assert report["registry"]["documents"] == 6
         assert report["integrity_problems"] == []
         assert report["findings"] == []
-        assert report["version"] == __version__ == "0.0.1a0", (
+        assert report["version"] == __version__ == "0.0.2a0", (
             "the CLI must report the packaged version"
         )
 

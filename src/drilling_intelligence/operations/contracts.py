@@ -378,6 +378,32 @@ _PROMOTABLE: Final[dict[DocumentClassification, PromotionContract]] = {
         ),
         contract_revision="v7",
     ),
+    DocumentClassification.LESSON_LEARNED: PromotionContract(
+        classification=DocumentClassification.LESSON_LEARNED,
+        level=CoverageLevel.END_TO_END_CERTIFIED,
+        handler="lesson_learned",
+        target_models=("lesson_learned",),
+        required_evidence=(
+            "stored_extraction",
+            "lesson_code_or_title_plus_lesson_column",
+            "row_provenance",
+            "well_linkage",
+            "explicit_lesson_text",
+        ),
+        review_surface="DomainReviewService",
+        notes=(
+            "A lesson tally: a column named lesson / lesson learned together with at least one of "
+            "lesson code or title.  Each row is one lesson kept verbatim — context, observation, "
+            "recommendation, root cause, problem type, well/field/project/section, applicable "
+            "operations, hole size and provenance are stored when the column exists and left absent "
+            "otherwise; nothing is inferred.  Root cause text without a stated cause stays UNKNOWN, "
+            "never INFERRED.  A narrative TXT lesson stays evidence, not a promotion, because it has "
+            "no header row.  Identity is code when stated else a hash of title+lesson+well; a second "
+            "promotion of the same version is idempotent via its promotion identity stored in "
+            "attributes.  Lessons start DRAFT and require evidence plus a second reviewer for APPROVED."
+        ),
+        contract_revision="v8",
+    ),
 }
 
 
@@ -388,7 +414,6 @@ _KNOWLEDGE_SUPPORTED = frozenset(
         DocumentClassification.LOGGING,
         DocumentClassification.SERVICE_REPORT,
         DocumentClassification.EOWR,
-        DocumentClassification.LESSON_LEARNED,
         DocumentClassification.PROCEDURE,
         DocumentClassification.STANDARD,
         DocumentClassification.CONTRACT,

@@ -13,9 +13,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..__init__ import EXTRACTION_ENGINE_VERSION
+from .. import EXTRACTION_ENGINE_VERSION
 from ..core.errors import ExtractionError
-from .interfaces import DocumentComplexity, ExtractionContext, ProvenanceBuilder
+from .interfaces import (
+    DocumentComplexity,
+    ExtractionContext,
+    ProvenanceBuilder,
+    int_option,
+)
 from .normalized import (
     ExtractionMetadata,
     NormalizedDocument,
@@ -62,7 +67,7 @@ class PdfTextExtractor:
         try:
             import pymupdf
 
-            probe_pages = max(1, int(context.option("pdf_probe_pages", 12) or 12))
+            probe_pages = max(1, int_option(context, "pdf_probe_pages", 12))
             with pymupdf.open(context.path) as doc:
                 complexity.pages = doc.page_count
                 complexity.encrypted = bool(doc.is_encrypted)
@@ -126,7 +131,7 @@ class PdfTextExtractor:
                 engine=f"PyMuPDF {getattr(pymupdf, '__version__', '?')}",
             )
         )
-        max_pages = int(context.option("pdf_max_pages", 4000) or 4000)
+        max_pages = int_option(context, "pdf_max_pages", 4000)
         want_tables = bool(context.option("pdf_extract_tables", True))
 
         with pymupdf.open(context.path) as doc:
@@ -179,7 +184,7 @@ class PdfTextExtractor:
                             page=page_number + 1,
                             block=block_index,
                             paragraph=paragraph_index,
-                            bbox=locator_bbox,  # type: ignore[arg-type]
+                            bbox=locator_bbox,
                             excerpt=text[:2000],
                             confidence=block.get("confidence"),
                         ),
@@ -286,7 +291,7 @@ class PdfTextExtractor:
             page = doc[page_number]
             try:
                 finder = page.find_tables()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - table detection is best-effort; the failure is a diagnostic
                 document.diagnostics.append(
                     f"table detection failed on page {page_number + 1}: {type(exc).__name__}"
                 )
@@ -297,7 +302,7 @@ class PdfTextExtractor:
                         [None if cell is None else str(cell).strip() for cell in row]
                         for row in table.extract()
                     ]
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - table extraction is best-effort; the failure is a diagnostic
                     document.diagnostics.append(
                         f"table extraction failed (page {page_number + 1}, table {table_number}): {exc}"
                     )
@@ -338,7 +343,7 @@ def _ordered_blocks(page: Any) -> list[dict[str, Any]]:
     wrong.  Sorting by (y-band, x) restores a sane order for reports; column
     detection is MinerU's job, and the router records when it is needed.
     """
-    raw = []
+    raw: list[dict[str, Any]] = []
     data = page.get_text("dict") or {}
     for index, block in enumerate(data.get("blocks", [])):
         if block.get("type") != 0:
@@ -405,7 +410,7 @@ def _table_caption(document: NormalizedDocument, page: int, table_number: int) -
 def _pdf_metadata(doc: Any) -> dict[str, str]:
     try:
         meta = dict(doc.metadata or {})
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - a document with unreadable metadata has no metadata
         return {}
     return {str(k): str(v) for k, v in meta.items() if v not in (None, "")}
 

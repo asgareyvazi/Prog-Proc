@@ -326,7 +326,7 @@ class TestRelationContract:
 
     def test_a_dangling_endpoint_is_refused(self, session, well) -> None:
         repository = KnowledgeRepository(session)
-        with pytest.raises(Exception, match="does not exist"):
+        with pytest.raises(KnowledgeIntegrityError, match="does not exist"):
             repository.link(
                 source=EntityRef("well", well.id),
                 relation=KnowledgeRelationType.WELL_HAS_DOCUMENT.value,

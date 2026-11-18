@@ -12,6 +12,27 @@ def _tree(relative: str) -> ast.AST:
     return ast.parse(Path(relative).read_text(encoding="utf-8"), filename=relative)
 
 
+class _ScriptedTermination:
+    """A termination adapter that answers from a script.
+
+    The real adapter asks the kernel. This one answers from a list, so a
+    test can drive the shutdown path without a process-killing call.
+    """
+
+    def __init__(self, *script: object) -> None:
+        self._script = list(script)
+        self.calls: list[int] = []
+
+    def terminate(self, code: int) -> object:
+        self.calls.append(code)
+        if not self._script:
+            raise AssertionError("the adapter was called more often than the script allows")
+        entry = self._script.pop(0) if len(self._script) > 1 else self._script[0]
+        if isinstance(entry, Exception):
+            raise entry
+        return entry
+
+
 def test_release_result_is_validity_not_a_count() -> None:
     from drilling_intelligence.ui.lifetime import ReleaseResult
 
@@ -48,7 +69,7 @@ def test_close_waits_for_every_worker_thread_attribute() -> None:
 
 def test_application_and_fixture_use_the_same_shutdown_contract() -> None:
     app = Path("src/drilling_intelligence/ui/app.py").read_text(encoding="utf-8")
-    fixture = Path("tests/ui/test_workbench.py").read_text(encoding="utf-8")
+    fixture = Path("tests/ui/conftest.py").read_text(encoding="utf-8")
     lifetime = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
     assert "application_shutdown" in app
     assert "create_application" in app
@@ -213,32 +234,148 @@ def test_windows_access_violation_is_not_fail_closed_exit_4() -> None:
     assert (-1073741819) % (1 << 32) == 0xC0000005
 
 
-def test_windows_deadline_monitor_exits_without_notifying_libraries(monkeypatch) -> None:
+def test_windows_deadline_monitor_ends_the_process_through_the_kernel(monkeypatch) -> None:
+    """The monitor ends the process with ``TerminateProcess`` and nothing else.
+
+    ``TerminateProcess`` stops the threads without handing the loaded
+    libraries a ``DLL_PROCESS_DETACH`` notification, so the Qt and
+    shiboken teardown never runs against a thread that is still inside
+    them. That is the difference from ``os._exit``, and it is the
+    difference between the contracted exit 4 and ``0xC0000005``.
+    """
     import drilling_intelligence.ui.lifetime as lifetime
 
     calls: list[tuple[str, int]] = []
+    # A fresh arbiter per call: the terminal exit is claimed once per process,
+    # and this test drives the two platform variants one after the other.
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
     monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
     monkeypatch.setattr(lifetime, "_write_deadline_notice", lambda *_args: None)
     monkeypatch.setattr(
         lifetime,
-        "_terminate_current_process",
-        lambda code: calls.append(("terminate", code)),
+        "_TERMINATION",
+        _ScriptedTermination(lifetime._TerminationOutcome(True, False, None, 1)),
+    )
+    monkeypatch.setattr(
+        lifetime, "_wait_for_termination", lambda *a, **k: calls.append(("wait", 4)) or 0
     )
     monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append(("exit", code)))
     lifetime._terminal_exit()
-    assert calls == [("terminate", 4), ("exit", 4)]
+    assert calls == [("wait", 4)]
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
     monkeypatch.setattr(lifetime, "_is_windows", lambda: False)
     lifetime._terminal_exit()
-    assert calls == [("terminate", 4), ("exit", 4), ("exit", 4)]
+    assert calls == [("wait", 4), ("exit", 4)]
     source = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
     assert "QThread.terminate(" not in source
     assert "TerminateProcess" in source
     assert (
         "shiboken6.delete"
-        not in source.split("def _terminate_current_process", 1)[1].split("def _terminal_exit", 1)[
-            0
-        ]
+        not in source.split("class _KernelTermination", 1)[1].split("def _terminal_exit", 1)[0]
     )
+
+
+def test_the_coordinator_also_ends_the_process_through_the_kernel(monkeypatch) -> None:
+    """The coordinator uses the same termination as the monitor.
+
+    On Windows ``os._exit`` ends the process through ``ExitProcess``,
+    which hands every loaded DLL a ``DLL_PROCESS_DETACH`` notification
+    while the other threads are still running. A library teardown that
+    runs against a live thread faulted the process with ``0xC0000005``
+    instead of the contracted exit 4, so the contract forbids that path
+    here too.
+    """
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        lifetime,
+        "_TERMINATION",
+        _ScriptedTermination(lifetime._TerminationOutcome(True, False, None, 1)),
+    )
+    monkeypatch.setattr(
+        lifetime, "_wait_for_termination", lambda *a, **k: calls.append(("wait", 4)) or 0
+    )
+    monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append(("exit", code)))
+    lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
+    assert calls == [("wait", 4)]
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: False)
+    lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
+    assert calls == [("wait", 4), ("exit", 4)]
+    source = Path("src/drilling_intelligence/ui/lifetime.py").read_text(encoding="utf-8")
+    for name in ("def fail_closed_shutdown", "def _terminal_exit"):
+        body = source.split(name, 1)[1].split("\n\ndef ", 1)[0]
+        assert "os._exit" not in body, name
+        assert "_end_process(" in body, name
+
+
+def test_only_one_thread_may_end_the_process() -> None:
+    from drilling_intelligence.ui.lifetime import _TerminalExit
+
+    arbiter = _TerminalExit()
+    assert arbiter.claim("coordinator") is True
+    assert arbiter.claim("monitor") is False
+    assert arbiter.owner() == "coordinator"
+
+
+def test_a_thread_that_loses_the_terminal_race_stands_down(monkeypatch) -> None:
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
+    monkeypatch.setattr(lifetime, "_end_process", lambda code: calls.append(("end", code)))
+    monkeypatch.setattr(
+        lifetime,
+        "_stand_down_for_terminal_exit",
+        lambda: calls.append(("standdown", 0)),
+    )
+    assert lifetime._TERMINAL_EXIT.claim("monitor") is True
+    lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
+    assert calls == [("standdown", 0)]
+    lifetime._terminal_exit()
+    assert calls == [("standdown", 0), ("standdown", 0)]
+
+
+def test_the_coordinator_and_the_monitor_cannot_both_end_the_process(monkeypatch) -> None:
+    """The race that produced the Windows access violation.
+
+    The coordinator polls the release budget and the monitor guarantees the
+    ceiling. Both can observe the same expiry. Exactly one of them may end
+    the process.
+    """
+    import threading
+
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls: list[tuple[str, int]] = []
+    monkeypatch.setattr(lifetime, "_TERMINAL_EXIT", lifetime._TerminalExit())
+    monkeypatch.setattr(lifetime, "_write_deadline_notice", lambda *_args: None)
+    monkeypatch.setattr(lifetime, "_end_process", lambda code: calls.append(("end", code)))
+    monkeypatch.setattr(
+        lifetime,
+        "_stand_down_for_terminal_exit",
+        lambda: calls.append(("standdown", 0)),
+    )
+    barrier = threading.Barrier(2)
+
+    def coordinator() -> None:
+        barrier.wait()
+        lifetime.fail_closed_shutdown(lifetime.ReleaseResult(0, ("workbench",)))
+
+    def monitor() -> None:
+        barrier.wait()
+        lifetime._terminal_exit()
+
+    threads = [threading.Thread(target=coordinator), threading.Thread(target=monitor)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert [call for call in calls if call[0] == "end"] == [("end", 4)]
+    assert len([call for call in calls if call[0] == "standdown"]) == 1
 
 
 def test_a_late_disarm_cannot_suppress_the_terminal_exit() -> None:
@@ -389,3 +526,59 @@ def _fill_until_blocked(fd: int) -> None:
             os.write(fd, chunk)
     except (BlockingIOError, OSError):
         return
+
+
+def _record_end_calls(monkeypatch: pytest.MonkeyPatch, *, outcome: object) -> list[str]:
+    """Run the end-of-process path with the native calls recorded."""
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls: list[str] = []
+    monkeypatch.setattr(lifetime, "_is_windows", lambda: True)
+    monkeypatch.setattr(lifetime, "_flush_standard_streams", lambda: calls.append("flush"))
+    monkeypatch.setattr(lifetime, "_TERMINATION", _ScriptedTermination(outcome))
+    monkeypatch.setattr(
+        lifetime, "_wait_for_termination", lambda *a, **k: calls.append("wait") or 0
+    )
+    monkeypatch.setattr(
+        lifetime, "_hold_for_external_termination", lambda *a, **k: calls.append("hold")
+    )
+    monkeypatch.setattr(lifetime.os, "_exit", lambda code: calls.append("exit"))
+    lifetime._end_process(4)
+    return calls
+
+
+def test_an_accepted_termination_does_not_run_the_library_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An accepted ``TerminateProcess`` ends the process without the libraries.
+
+    ``TerminateProcess`` does not return when a process terminates itself,
+    so the wait is the defensive branch. The C runtime's exit is never
+    reached, and the order below is the contract.
+    """
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls = _record_end_calls(
+        monkeypatch, outcome=lifetime._TerminationOutcome(True, False, None, 1)
+    )
+    assert calls == ["flush", "wait"]
+    assert "exit" not in calls
+    assert "hold" not in calls
+
+
+def test_a_refused_termination_is_not_turned_into_a_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused native call is a failure of the platform, and it is not hidden.
+
+    The refusal is reported, the process waits for an external terminator,
+    and the C runtime's exit is not used to reach the exit code: on
+    Windows that is ``ExitProcess``, which hands every loaded DLL a
+    ``DLL_PROCESS_DETACH`` notification while the other threads run.
+    """
+    import drilling_intelligence.ui.lifetime as lifetime
+
+    calls = _record_end_calls(monkeypatch, outcome=lifetime._TerminationOutcome(False, False, 5, 3))
+    assert calls == ["flush", "hold"]
+    assert "exit" not in calls
+    assert "wait" not in calls

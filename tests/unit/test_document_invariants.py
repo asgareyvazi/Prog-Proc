@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from drilling_intelligence.core.enums import FileChangeKind
+from drilling_intelligence.core.errors import DrillingIntelligenceError
 from drilling_intelligence.database.integrity import (
     check_current_version_invariants,
     require_current_version_invariants,
@@ -126,7 +127,7 @@ def test_zero_current_versions_are_allowed_but_the_checker_says_so(session) -> N
     session.expire_all()
     problems = check_current_version_invariants(session)
     assert [problem.problem for problem in problems] == ["NO_CURRENT_VERSION"], problems
-    with pytest.raises(Exception, match="NO_CURRENT_VERSION"):
+    with pytest.raises(DrillingIntelligenceError, match="NO_CURRENT_VERSION"):
         require_current_version_invariants(session)
 
 
@@ -299,7 +300,7 @@ def test_exhausted_retries_raise_a_clear_error(session) -> None:
         origin=FileChangeKind.NEW,
     )
     repository = _StuckRepository(session, stuck_at=1)
-    with pytest.raises(Exception, match="could not allocate a version number"):
+    with pytest.raises(DrillingIntelligenceError, match="could not allocate a version number"):
         repository.create_version(
             document,
             sha256="2" * 64,
@@ -378,7 +379,7 @@ def test_the_checker_names_two_current_versions_and_says_the_pointer_disagrees(s
     codes = _codes(session)
     assert codes[0] == "MULTIPLE_CURRENT", codes
     assert codes[1] == "POINTER_MISMATCH", codes
-    with pytest.raises(Exception, match="current-version invariant violated"):
+    with pytest.raises(DrillingIntelligenceError, match="current-version invariant violated"):
         require_current_version_invariants(session)
 
     # The finding is actionable: fix the rows and the constraint can be rebuilt.
@@ -452,7 +453,9 @@ def test_the_checker_distinguishes_a_stale_pointer_from_a_foreign_one(session) -
     assert codes == ["POINTER_MISMATCH"], codes
     detail = check_current_version_invariants(session)[0].detail
     assert detail == {"points_at": mine.id, "expected": stale.id}, detail
-    with pytest.raises(Exception, match="current-version invariant violated") as caught:
+    with pytest.raises(
+        DrillingIntelligenceError, match="current-version invariant violated"
+    ) as caught:
         require_current_version_invariants(session)
     assert [item["problem"] for item in caught.value.context["problems"]] == ["POINTER_MISMATCH"]
 

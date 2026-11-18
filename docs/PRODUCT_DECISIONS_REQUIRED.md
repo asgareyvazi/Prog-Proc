@@ -1,102 +1,232 @@
 # Product decisions required before the next capabilities
 
 **Status:** decision register, not an implementation plan
-**As of:** 2026-10-17
+**As of:** 2026-11-08 (M6 remains delivered; M2–M5 and all exclusions remain owner-gated. Current code/test baseline: `8cc4c0fec923329f9371ddd1ce222a5e8ca0df80`; its exact-SHA Linux run `42449344642` and Windows run `42449344633` both succeeded. Platform counts and remaining qualification limits are tracked in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md). CI evidence cannot approve or resolve an owner decision.)
 **Companion:** [`PRODUCT_CAPABILITY.md`](PRODUCT_CAPABILITY.md)
+**V9.0 note:** `M6` (`LESSON_LEARNED` tally → `lesson_learned`) was delivered in this milestone with contract `v8`, migration `0020` and 12 corpus tests (`tests/integration/test_lesson_promotion.py`). The remaining four milestones `M2`–`M5` are still open and fail-closed as described below; none is implemented by a setting, table or protocol.
 
 These items are not defects. The current code fails closed. None of them is
 implemented by a setting name, a table, or a protocol.
 
-## OpenAI-compatible adapter
+**The count, and where it comes from.** This register holds **four open
+milestone decisions** (`M2`–`M5`) and one delivered milestone (`M6` in V9.0),
+plus the excluded list. `M6` was `LESSON_LEARNED` → `lesson_learned` (v8) and
+is no longer open. The excluded list is a product boundary, not another
+milestone decision. The lesson source-code removal/change question recorded
+at the end of this register is an additional owner-gated question surfaced by
+the 2026-11-06 audit; it is not numbered as a new milestone and does not alter
+the M2–M5 count.
+
+Each decision below carries the same six parts, so that it can be answered
+without reading the code: the precise question, the current behavior, the safe
+default, what is blocked, the trade-offs, and the acceptance evidence that has
+to exist before any code is written. The **Source** line points at the ADR and
+the code that holds the current behavior, and at the test that proves it.
+
+---
+
+## 1. OpenAI-compatible adapter
 
 **Missing decision.** Which HTTP API, which secret slot, which auth header, and
 whether `drillintel ai status` may leave the machine.
 
-**Safe alternatives.** Keep the name unsupported and send no request, which is
-the current behavior. Or document a local OpenAI-compatible base and still
+**Current behavior.** `provider = openai-compatible` is a supported *name* and
+an unimplemented *adapter*: the status reports `UNSUPPORTED` with the reason
+"openai-compatible has no adapter in this build; no request is sent". No
+socket is opened and the API key is not read.
+
+**Safe default.** Keep the name unsupported and send no request, which is the
+current behavior. Or document a local OpenAI-compatible base and still
 require an explicit probe flag.
+
+**What is blocked.** Any cloud call, any credential handling for a cloud
+provider, and any claim that `ai status` proves reachability of a cloud API.
 
 **Trade-off.** A cloud default would make doctor or status a network call and
 a credential boundary. A local-only adapter would not satisfy an operator who
 expects `https://api.openai.com/v1`.
 
-**Fail-closed now.** `provider = openai-compatible` returns unsupported and
-does not open a socket. The API key is not read.
-
 **Acceptance evidence before code.** A written request and response shape,
 timeout and retry rules, a rule that the key is never logged, and tests that
 an absent key sends no request.
 
-## Embedding sidecar
+**Source.** ADR-51 (the Ollama adapter that does not write records);
+`src/drilling_intelligence/integrations/ai/contract.py` (the status
+contract); `tests/unit/test_ai_provider.py` (the unsupported state and the
+"no request" rule).
+
+## 2. Embedding sidecar
 
 **Missing decision.** Vector dimension, distance metric, when a sidecar is
 stale, and whether retrieval may change when the sidecar is absent.
 
-**Safe alternatives.** Keep keyword and structured search as the only retrieval
+**Current behavior.** `UnavailableVectorStore` is the only vector store in the
+build. It reports that no store exists; retrieval is keyword and structured
+SQLite search, and a rejected or accepted embedding does not insert a domain
+row.
+
+**Safe default.** Keep keyword and structured search as the only retrieval
 path. Keep `embed()` as a non-authoritative call that stores nothing.
+
+**What is blocked.** A second ranking path, a vector column on a domain table,
+and any answer that changes when a sidecar is absent.
 
 **Trade-off.** Storing vectors without a retrieval contract invites a second
 ranking path. Not storing them means semantic search stays planned.
-
-**Fail-closed now.** `UnavailableVectorStore` reports that no store exists.
-A rejected or accepted embedding does not insert a domain row.
 
 **Acceptance evidence before code.** A rebuild can drop the sidecar. Retrieval
 answers are identical when it is absent. No domain table gains a vector column
 without a migration test.
 
-## Skills runtime
+**Source.** ADR-0003 (SQLite is the system of record; the index is
+disposable) and ADR-0005 (own the AI seams; talk to Ollama over HTTP); `src/drilling_intelligence/integrations/ai/contract.py`
+(`UnavailableVectorStore`); `tests/unit/test_ai_provider.py`.
+
+## 3. Skills runtime
 
 **Missing decision.** Who may install a skill, what it is allowed to read, and
 whether it may propose a record that a human must still accept.
 
-**Safe alternatives.** Leave the `skill` tables unused. Do not expose them as
+**Current behavior.** The `skill` and `skill_version` tables exist and are
+declared, and no service reads them. There is no executor, no tool surface,
+and no promotion path for a skill.
+
+**Safe default.** Leave the `skill` tables unused. Do not expose them as
 tools.
+
+**What is blocked.** A skill becoming a calculation, a promoted row, or a
+knowledge fact without a written trust boundary.
 
 **Trade-off.** An executor without a trust boundary can bypass the promotion
 and approval rules. A read-only catalog is not a runtime.
-
-**Fail-closed now.** No service reads `Skill` or `SkillVersion`.
 
 **Acceptance evidence before code.** An operator contract that a skill cannot
 become a calculation or a promoted row unless that contract says so, with a
 test that an unapproved skill writes nothing.
 
-## Additional calculation method
+**Source.** ADR-0010 (promotion is a separate, idempotent, self-reporting act)
+and ADR-0007 (the document core's invariants live in the schema, the repository
+and the checker); `src/drilling_intelligence/database/models.py`
+(the two tables);
+`tests/unit/test_document_invariants.py` (no service reads them).
+
+## 4. Additional calculation method
 
 **Missing decision.** Method id, inputs, units, outputs, and the cases that
 must be refused.
 
-**Safe alternatives.** Keep NPT roll-up V1 as the only executable method.
+**Current behavior.** NPT roll-up V1 is the only executable method. An unknown
+method is not executed, and the review never recalculates: it classifies the
+stored result and reports its dependency state.
+
+**Safe default.** Keep NPT roll-up V1 as the only executable method.
+
+**What is blocked.** A generic calculator, and any engine that would invent
+engineering meaning.
 
 **Trade-off.** A generic calculator would invent engineering meaning. One
 specified method can be tested at its boundaries.
 
-**Fail-closed now.** An unknown method is not executed. Review does not
-recalculate.
-
 **Acceptance evidence before code.** The method text exists before the
 implementation, including invalid inputs and unit mismatches.
 
-## Additional document-class writer
+**Source.** ADR-0012 (the engineering record is a table that can say where its
+number came from) and ADR-0016 (a calculation input names the durable thing it
+consumed, or admits it cannot); `src/drilling_intelligence/engineering/service.py` (the single
+executable method);
+`tests/integration/test_npt_rollup_production_path.py`.
+
+## 5. Additional document-class writer
 
 **Missing decision.** The source shape for one knowledge-supported or
 extract-only class: which columns are required, which ambiguities are refused,
 and which provenance locators are mandatory.
 
-**Safe alternatives.** Keep the class in the coverage matrix at its current
+**Current behavior.** A class without a handler does not gain a domain writer.
+Extraction may retain the artefact; promotion does not invent a row. The
+coverage matrix says which class is at which level.
+
+**Safe default.** Keep the class in the coverage matrix at its current
 level. Extraction may retain the artefact. Promotion does not invent a row.
+
+**What is blocked.** A promoted row whose columns the source did not state, and
+a coverage-matrix level that moves without a forensic corpus case.
 
 **Trade-off.** Promoting from prose without a shape contract writes authority
 the source did not state.
 
-**Fail-closed now.** A class without a handler does not gain a domain writer.
-
 **Acceptance evidence before code.** A forensic corpus case for that class,
 including a refusal, before the coverage matrix changes.
+
+**Source.** ADR-0008 (knowledge is derived facts that cite their source) and
+ADR-0015 (a citation is verified by re-reading the file, not by trusting the
+row);
+`docs/DOCUMENT_DOMAIN_COVERAGE.md` (the matrix);
+`tests/golden_corpus/` (the corpus a new class must be proven against).
+
+---
+
+## Delivered — Additional document-class writer (V9.0)
+
+**Delivered decision.** `LESSON_LEARNED` lesson tally → `lesson_learned` via `lesson_learned` handler (`v8`).
+
+**Source contract.** XLSX sheet with header containing `lesson` plus at least one of `lesson code`/`title`; optional `observation`, `context`, `recommendation`, `root cause`, `problem type`, `well`, `field`, `project`, `section`, `applicable operations`, `hole size`. Narrative TXT is `KNOWLEDGE_SUPPORTED` only.
+
+**Target model.** `lesson_learned` (`lesson`, `title`, `code`, `observation`, `context`, `recommendation`, `root_cause`/`root_cause_status`, `problem_type`, `well_id`/`field_id`/`project_id`, `applicable_operations`, `hole_size_in`, `provenance`, `origin=DERIVED`, `identity_key`, `document_id`/`document_version_id`).
+
+**Refusal reasons.** `NO_RECOGNISED_TABLE` (no lesson table), `WELL_SCOPE_CONFLICT`, `UNRESOLVED_WELL_REFERENCE`, `CONFLICT` (duplicate code), `MISSING_PROVENANCE`.
+
+**Idempotence.** `promotion_identity(version_id, kind, table_id, row_index, well_id, code)`; revision chain on same code.
+
+**Governance.** Lessons start `DRAFT`; `approve` requires evidence and `approved_by != created_by`; stale/revision/scope checks via `ReviewActionService`.
+
+**Evidence.** 12 forensic tests in `tests/integration/test_lesson_promotion.py`; contract `document:LESSON_LEARNED:promotion:v8`; migration `0020`.
+
+---
 
 ## Still excluded
 
 Risk scores, currency conversion, AFE rules, plan-versus-actual dashboards,
 and inferred survey geometry stay excluded. Their absence is a product
 boundary, not a missing patch.
+
+Authentication, roles and multi-user server behavior stay excluded as well:
+the platform is local-first and single-user by design (ADR-0001, the founding
+decision, and the README's boundary statement), and adding any of them would need the same
+kind of owner decision the five above need. They are listed here rather than
+as a sixth decision, because there is nothing to decide *yet*: a decision
+would be needed to implement them, and the boundary is what is being recorded.
+
+## How to answer one of these
+
+The register does not ask the owner anything. When a decision is taken, the
+answer belongs in this file as a new dated section, with the ADR that records
+it, and the fail-closed behavior it replaces keeps working until the code
+that implements it lands with its own acceptance evidence.
+
+## V10.3 workflow boundary (2026-11-01)
+
+The operator-intake queue delivered under ADR 004 is an approved local-first process surface, not a change to any M2–M5 product decision. The DDR/source workflow is explicitly: select file → measure/hash → local deterministic extraction/classification preview → inspect evidence and static contract → human disposition with actor/reason. No queue action itself registers, promotes, or publishes a domain row. The existing governed `DocumentRegistry`/promotion/`ReviewActionService` paths remain authoritative. M2–M5 stay blocked until the owner records their decisions.
+
+
+## Post-V10.3 implementation boundary (2026-11-02)
+
+The follow-on Intake and Daily DDR work does not change any owner-gated decision M2–M5, add a document class, or introduce a new calculation method. It refines the V10.3 workflow boundary as follows:
+
+- Intake may proceed from a human `REVIEWED` disposition to explicit `REGISTERED` only after re-measuring the same source bytes and delegating to the existing `DocumentRegistry`. This creates document/version evidence and an audit link; it does **not** promote domain facts. The V10.3 sentence “No queue action itself registers” is historical and is superseded only for this explicit reviewed registration path.
+- Daily DDR is manual authoring, not ingestion or a parser writer. A current `DRAFT` can be submitted; submission leaves the report and operations `CANDIDATE`. Independent review is a separate action and a revision is not approval. No engineering values are inferred from narrative. The `ddr` CLI is only a strict-input adapter to the same `DdrAuthoringService` and `ReviewActionService`; it adds no independent lifecycle or approval path.
+- M2–M5, additional engineering calculations, broader document writers, AI/provider/vector capabilities, Skills runtime, and multi-user/authentication remain owner-gated or excluded as already recorded above. SQLite remains the only qualified database; PostgreSQL has no service-backed qualification evidence.
+
+Implementation contracts are recorded in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), ADR 004/005, and migrations `0025`/`0026`. Their implementation status is established by source, integration tests, packaging checks, and exact-SHA CI—not by this decision register.
+
+## Additional owner question surfaced by the 2026-11-06 lesson audit — not a new milestone
+
+**Question requiring the owner.** When a source document is revised so that a lesson code disappears or changes, what disposition and identity-linking behavior is authorized for the current lesson row and its revision chain?
+
+**Observed behavior/evidence.** Lesson codes are canonicalized by strip + Unicode casefold and globally unique among current rows. Create/update/revision and promotion paths enforce the rule; the database partial unique index is the final guard. Supersession caused by an explicit replacement retains the predecessor and prior lifecycle. A temporary isolated audit of source deletion found the predecessor can become `SUPERSEDED`/non-current without a successor; the chain validator then refuses destructive follow-up because no current or withdrawn disposition exists. The current code does not define a complete owner-approved removal/rename policy for the source-identity case.
+
+**Safe interim position.** Do not invent an automatic rename, code reuse, withdrawal, deletion, or successor link. Preserve the existing fail-closed chain validation and require an owner decision before adding any such behavior. This entry does not claim that every source-removal write path itself is already fail-closed.
+
+**Blocked.** A product rule for source lesson disappearance/change, and claims that source edits preserve a complete lesson identity chain in all cases.
+
+**Acceptance evidence before implementation.** Written owner choice for disappearance vs rename vs code reuse; explicit rules for predecessor lifecycle, `prior_status`, successor identity/code, approval metadata, audit/provenance, and destructive actions; regression tests for each selected path plus refusal cases. No code change is authorized by this open question alone.

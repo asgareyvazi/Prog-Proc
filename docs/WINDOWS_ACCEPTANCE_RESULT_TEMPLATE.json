@@ -1,0 +1,86 @@
+{
+  "schema_version": "V10.3",
+  "description": "Per-run evidence contract. NOT RUN is the default; an offscreen run never represents physical display acceptance.",
+  "version": "V10.3",
+  "run": {
+    "id": "",
+    "utc_timestamp": "",
+    "ended_at": "",
+    "branch": "",
+    "sha": "",
+    "remote_state": "unknown",
+    "host": "",
+    "windows_edition": "",
+    "windows_build": "",
+    "architecture": "",
+    "powershell_version": "",
+    "python_executable": "",
+    "python_version": "NOT RUN",
+    "pyside6_version": "NOT RUN",
+    "qt_version": "NOT RUN",
+    "venv_path": "",
+    "offscreen": false
+  },
+  "ci": {
+    "linux_run_id": "",
+    "linux_sha": "",
+    "linux_conclusion": "NOT RUN",
+    "linux_jobs": [],
+    "windows_run_id": "",
+    "windows_sha": "",
+    "windows_conclusion": "NOT RUN",
+    "windows_jobs": []
+  },
+  "steps": [
+    {
+      "id": "",
+      "name": "",
+      "ran": false,
+      "exit_code": null,
+      "started_at": "",
+      "ended_at": "",
+      "status": "NOT RUN",
+      "log": "",
+      "message": ""
+    }
+  ],
+  "evidence": {
+    "ruff_check": "NOT RUN",
+    "ruff_format_check": "NOT RUN",
+    "mypy": "NOT RUN",
+    "compileall": "NOT RUN",
+    "alembic_heads": "NOT RUN",
+    "offline_sql": "NOT RUN",
+    "migration_smoke": "NOT RUN",
+    "pytest_q": "NOT RUN",
+    "pytest_q_counts": null,
+    "ui_offscreen": "NOT RUN",
+    "e2e_disposable": "NOT RUN",
+    "release_smoke": "NOT RUN",
+    "wheel_install": "NOT RUN",
+    "sdist_install": "NOT RUN"
+  },
+  "logs": {
+    "dir": "",
+    "raw_logs": [],
+    "sanitized": false,
+    "note": "Raw stdout/stderr logs are retained separately from sanitized copies."
+  },
+  "figures": {
+    "ci_ubuntu_offscreen": "NOT RUN",
+    "ci_windows_offscreen": "NOT RUN",
+    "pilot_windows_offscreen": "NOT RUN",
+    "manual_windows_display": "NOT RUN — real display and owner checklist required"
+  },
+  "windows_testing_checklist": {
+    "items_ticked": [],
+    "items_not_run": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    "checked_by": "",
+    "checked_at": "",
+    "display": "NOT RUN — requires real display"
+  },
+  "manual_checklist": "NOT RUN — offscreen is not physical Windows acceptance",
+  "status": "NOT RUN",
+  "owner_decision_required": false,
+  "blocked_reasons": []
+}

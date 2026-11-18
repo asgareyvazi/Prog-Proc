@@ -69,8 +69,24 @@ LATER_MIGRATION_COLUMNS = (
     "cost_item.document_id",  # 0013
     "cost_item.document_version_id",  # 0013
     "cost_item.is_current",  # 0013
+    "lesson_learned.document_id",  # 0020
+    "lesson_learned.document_version_id",  # 0020
+    "lesson_learned.identity_key",  # 0020
+    "lesson_learned.code_key",  # 0022
+    "lesson_learned.prior_status",  # 0023
+    "ddr_report.authoring_state",  # 0026
+    "ddr_report.revision_group_id",  # 0026
+    "ddr_report.revision_number",  # 0026
+    "ddr_report.supersedes_report_id",  # 0026
+    "ddr_report.is_current",  # 0026
+    "well_operation.is_current",  # 0026
 )
-LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015
+LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015, 0024, 0025, 0026, 0027
+    "intake_queue_item",
+    "intake_registration",
+    "ddr_activity",
+    "program_section",
+    "procedure_step",
     "problem_definition",
     "mud_report",
     "mud_measurement",

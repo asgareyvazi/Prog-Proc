@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "drilling-intelligence"
-version = "0.0.1a0"
+version = "0.0.2a0"
 description = "Drilling Intelligence & Knowledge Platform - well-centric document, knowledge and deterministic engineering intelligence (local-first)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ requires-python = ">=3.11"
 # The floor is 3.11 so the platform can be built, tested and demonstrated on
 # developer machines and CI images that do not yet ship 3.14. Code must not use
 # syntax/stdlib features newer than the floor.
-license = { text = "Proprietary - internal engineering platform (see README.md, Licensing section)" }
+license = "LicenseRef-Proprietary"
 authors = [{ name = "Drilling Intelligence Platform Team" }]
 keywords = [
     "drilling",
@@ -65,12 +65,21 @@ dev = [
     # project's own build backend before installing them into a clean environment.  It is a
     # dev/CI tool, never imported by the installed package.
     "build>=1.1",
+    # Coverage is measured in CI.  Full-suite coverage is recorded and comparable (see
+    # docs/mission-reports/), while Qt/UI coverage is enforced as a gate in the workbench
+    # job: 70% lines / 40% branches is the minimum and 71% / 42% is the contractual
+    # resilience threshold for V8.23 (see .github/workflows/ci.yml and docs/coverage_report.md).
+    "pytest-cov>=5.0",
+    # Type checking covers one package boundary (see [tool.mypy] below).  It is a dev tool
+    # and is never imported by the installed package.
+    "mypy>=1.10",
 ]
 
 [project.scripts]
 # One command, and it exists: `drillintel` is drilling_intelligence.cli (version, workspace,
-# wells, ingest, search, evidence, index, knowledge, doctor, timeline, records, fields,
-# patterns, lessons).  The optional desktop command is a thin lazy Qt launcher; it is present
+# wells, ingest, intake, ddr, search, evidence, index, knowledge, doctor, timeline, records, fields,
+# patterns, lessons). The DDR command is a thin adapter over the approved manual-authoring and
+# governed-review services. The optional desktop command is a thin lazy Qt launcher; it is present
 # only because the read-only Review Workbench is implemented and audited as a real application.
 drillintel = "drilling_intelligence.cli:main"
 drillintel-ui = "drilling_intelligence.ui.app:main"
@@ -135,3 +144,65 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011", "S101"]
+
+# --------------------------------------------------------------------------------------
+# Type checking - strict boundary (V8.19).
+#
+# The boundary now covers five packages: core, database, extraction, documents,
+# and review. Each was widened by a separate, dated step (see docs/DECISIONS.md
+# and ADR-61/62). The remaining packages (cli, ui, knowledge, etc.) are not
+# checked yet; widening the boundary is a separate, dated step.
+#
+# The boundary includes the review aggregation (deterministic JSON, bounded
+# reads, NPT rollup validation) — 5 files, 0 errors under the flags below.
+# The rules are strict on purpose: a missing annotation in the checked
+# layer is a defect in the layer that decides what a number means.
+#
+# ignore_missing_imports = true is kept because the strict boundary imports
+# third-party libraries without typed stubs (PySide6, sqlalchemy stubs, etc.).
+# Project-internal imports are still checked: every package in `files` is
+# followed normally, so a typo in a local import is an error, not a silent
+# ignore. Third-party missing imports are the only ones suppressed.
+# --------------------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+# The type-check boundary.  It now covers core, database, extraction,
+# documents, and review. Every package listed here is checked with the flags
+# below; a package that is not listed is not checked, and the report says so
+# rather than implying coverage it does not have.
+files = [
+    "src/drilling_intelligence/core",
+    "src/drilling_intelligence/database",
+    "src/drilling_intelligence/extraction",
+    "src/drilling_intelligence/documents",
+    "src/drilling_intelligence/review",
+]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_return_any = true
+# A generic without its arguments is an unchecked container.  The JSON
+# columns of the schema carry the shapes they hold, so the flag costs
+# nothing there and catches a bare ``dict`` everywhere else.
+disallow_any_generics = true
+show_error_codes = true
+pretty = true
+
+[tool.coverage.run]
+branch = true
+source = ["src/drilling_intelligence"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

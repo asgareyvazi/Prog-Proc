@@ -15,6 +15,13 @@ migrated one.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Alembic is imported inside the functions that need it, so the package
+    # stays import-light. The type of the configuration is still known.
+    from alembic.config import Config
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,7 +61,7 @@ ENV_MIGRATIONS_DIR = "DRILLINTEL_MIGRATIONS_DIR"
 #: Bump this with the migration that changes the models.  ``tests/integration`` asserts it against
 #: ``heads()``, so a new revision that forgets this constant fails there rather than silently
 #: stamping the wrong number into operators' databases.
-METADATA_REVISION = "0019"
+METADATA_REVISION = "0027"
 
 
 def find_migrations_dir(start: Path | None = None) -> Path | None:
@@ -99,7 +106,7 @@ class MigrationStatus:
         }
 
 
-def _bare_config(directory: Path) -> object:
+def _bare_config(directory: Path) -> Config:
     from alembic.config import Config
 
     config = Config()

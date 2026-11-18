@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ..core.errors import ExtractionError
 from ..core.hashing import iso_utc
 from ..core.provenance import (
     DocxLocator,
@@ -74,6 +75,31 @@ class ExtractionContext:
 
     def option(self, name: str, default: object = None) -> object:
         return self.options.get(name, default)
+
+
+def int_option(context: ExtractionContext, name: str, default: int) -> int:
+    """A numeric option, read as an integer.
+
+    The option comes from the caller, so it can be anything at all. A value
+    that is not a number is a configuration error and is reported as one:
+    silently falling back to the default would extract with a limit the
+    caller did not ask for.
+    """
+    raw = context.option(name, default)
+    if not raw:
+        raw = default
+    if isinstance(raw, bool):
+        raise ExtractionError(f"{name} must be a number, not a boolean")
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    if isinstance(raw, str):
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise ExtractionError(f"{name} must be a number: {raw!r}") from exc
+    raise ExtractionError(f"{name} must be a number, not {type(raw).__name__}")
 
 
 class ProvenanceBuilder:
@@ -252,6 +278,7 @@ __all__ = [
     "DocumentExtractor",
     "ExtractionContext",
     "ProvenanceBuilder",
+    "int_option",
     "new_provenance_builder",
     "stamp_extraction",
 ]

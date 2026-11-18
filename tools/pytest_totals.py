@@ -31,10 +31,23 @@ _XFAIL_TYPE = "pytest.xfail"
 _XPASS_MESSAGE = "xfail-marked test passes unexpectedly"
 _EXIT_LINE = re.compile(r"-?\d+")
 _HEADLESS_SKIP_REASON = "QtWidgets unavailable"
+# Additional Qt skip reasons used by ui-marked unit tests (test_ui_coverage_boost*)
+_QT_SKIP_REASONS = (
+    "QtWidgets unavailable",
+    "Qt unavailable",
+    "PySide6",
+    "Qt not available",
+)
 _PLATFORM_SKIP_REASONS = (
     "this platform does not support symlinks",
     "this platform will not move an open database file",
     "Windows process handle count is not a file-descriptor leak measurement",
+)
+_UNQUALIFIED_BACKEND_SKIP = (
+    "tests.integration.test_phase1_finalization",
+    "test_postgresql_claim_is_qualified_or_withdrawn",
+    "PostgreSQL is NOT QUALIFIED: SQLite is the only currently qualified backend; "
+    "no disposable PostgreSQL service job exists.",
 )
 _KEYS = (
     "collected",
@@ -189,18 +202,117 @@ def disagreements(
     return problems
 
 
+def _qt_available() -> bool:
+    """True when PySide6 can be imported and QtWidgets loads in this environment.
+
+    ``find_spec`` alone can be true when the package is discoverable but its
+    native libraries (libGL, platform plugins) are missing. Importing
+    ``PySide6.QtWidgets`` catches that case and prevents a headless skip from
+    being mis-classified as unexpected when Qt is not actually usable.
+    """
+
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("PySide6") is None:
+            return False
+        import PySide6
+        import PySide6.QtWidgets  # noqa: F401
+
+        return True
+    except Exception:  # noqa: BLE001 - any import probe failure means not available
+        return False
+
+
 def skip_is_expected(classname: str, name: str, message: str) -> bool:
     """Headless CI may skip UI tests only because Qt itself cannot load.
 
     A host that cannot create symlinks may skip the tests that say so. That
     skip is not a pass, and a different reason is still unexpected.
+
+    In a Qt-enabled environment (PySide6 importable) a UI test that claims
+    ``QtWidgets unavailable`` is not a genuine headless skip — it is an
+    unconditional or fake dependency message and must be treated as unexpected.
     """
     text = message or ""
+    if (classname, name, text) == _UNQUALIFIED_BACKEND_SKIP:
+        # This remains a recorded skip, never a pass. The exact named test and
+        # exact reason make the current unsupported PostgreSQL boundary visible
+        # without turning unrelated skips into green outcomes.
+        return True
     if any(reason in text for reason in _PLATFORM_SKIP_REASONS):
         return True
     identity = f"{classname} {name}"
-    ui = "tests.ui." in classname or classname.startswith("tests.ui") or "tests/ui/" in identity
-    return ui and _HEADLESS_SKIP_REASON in text
+    ui = (
+        "tests.ui." in classname
+        or classname.startswith("tests.ui")
+        or "tests/ui/" in identity
+        or "test_ui_coverage_boost" in classname
+        or "test_qt_" in classname
+        or "test_main_window_mocked" in classname
+    )
+    if not ui:
+        return False
+    if not any(reason in text for reason in _QT_SKIP_REASONS):
+        return False
+    # If Qt is actually present, a Qt-unavailable message is not credible.
+    return not _qt_available()
+
+
+def skip_is_expected_qt_enabled(classname: str, name: str, message: str) -> bool:
+    """Qt-enabled selection: no skip is expected; require real execution.
+
+    The Qt-enabled UI coverage run measures where Qt is real. Any skipped
+    UI test in that selection is a deficit, not a headless allowance.
+    Only a documented platform skip is accepted; every Qt-unavailable message
+    is unexpected when Qt is present.
+    """
+
+    text = message or ""
+    # No Qt-unavailable skips are expected in Qt-enabled mode
+    return any(reason in text for reason in _PLATFORM_SKIP_REASONS)
+
+
+def unexpected_skips_qt_enabled(path: Path) -> list[str]:
+    """JUnit skips in a Qt-enabled selection — no Qt-unavailable skips allowed."""
+
+    root = ET.parse(path).getroot()  # noqa: S314
+    found: list[str] = []
+    for case in root.iter("testcase"):
+        skipped = case.find("skipped")
+        if skipped is None:
+            continue
+        kind = skipped.attrib.get("type") or ""
+        if kind == _XFAIL_TYPE:
+            continue
+        message = skipped.attrib.get("message") or ""
+        if message.startswith(_XPASS_MESSAGE):
+            continue
+        classname = case.attrib.get("classname") or ""
+        name = case.attrib.get("name") or ""
+        if skip_is_expected_qt_enabled(classname, name, message):
+            continue
+        reason = " ".join(message.split())[:120] or "no reason"
+        found.append(f"{classname}::{name}: {reason}")
+    return found
+
+
+def failed_test_cases(path: Path) -> list[str]:
+    """Return content-free identities for failed/error test cases.
+
+    Failure bodies are deliberately excluded: they may contain host paths or
+    sensitive values. The JUnit artifact remains the detailed diagnostic.
+    """
+    root = ET.parse(path).getroot()  # noqa: S314
+    found: list[str] = []
+    for case in root.iter("testcase"):
+        outcome = next((kind for kind in ("failure", "error") if case.find(kind) is not None), None)
+        if outcome is None:
+            continue
+        classname = " ".join((case.attrib.get("classname") or "").split())
+        name = " ".join((case.attrib.get("name") or "").split())
+        found.append(f"failed test: {classname} | {name} ({outcome})")
+    return found
 
 
 def unexpected_skips(path: Path) -> list[str]:
@@ -268,6 +380,9 @@ _NOTICE_PREFIXES = (
     "runtime:",
     "stats:",
     "junit:",
+    "pytest_result:",
+    "output:",
+    "run_state:",
 )
 
 
@@ -282,14 +397,14 @@ def notice_lines(text: str) -> list[str]:
 
 
 def error_lines(text: str) -> list[str]:
-    """Disagreement lines. Notices are capped, so these must be separate."""
+    """Failure identities and record disagreements for GitHub error annotations."""
     lines: list[str] = []
     emitting = False
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("disagreement:"):
             emitting = True
-        if emitting and stripped:
+        if stripped.startswith("failed test:") or (emitting and stripped):
             lines.append(stripped[:200])
     return lines
 
@@ -336,11 +451,56 @@ def _load_stats(path: Path) -> dict[str, int | float]:
     return totals
 
 
+def _read_run_state(state_path: Path | None) -> str:
+    if state_path is None or not state_path.is_file():
+        return "NOT RECORDED"
+    try:
+        return state_path.read_text(encoding="utf-8", errors="replace").strip() or "EMPTY"
+    except OSError:
+        return "UNREADABLE"
+
+
+def _process_result(
+    exit_code: int | None,
+    output_path: Path | None,
+    state_path: Path | None = None,
+) -> str:
+    """Classify process-level evidence without treating absent reports as a test result."""
+    run_state = _read_run_state(state_path)
+    output = ""
+    if output_path is not None and output_path.is_file():
+        try:
+            output = output_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return "OUTPUT UNREADABLE"
+    elif run_state == "RUNNING":
+        return "PROCESS INTERRUPTED BEFORE EXIT RECORD"
+    else:
+        return "OUTPUT NOT PRODUCED"
+    if re.search(
+        r"Fatal Python error:\s*(?:Aborted|Segmentation fault|Windows fatal exception)",
+        output,
+        re.I,
+    ):
+        return "NATIVE PYTHON ABORT"
+    if "INTERNALERROR>" in output or "INTERNALERROR:" in output:
+        return "PYTEST INTERNAL ERROR"
+    if run_state == "RUNNING":
+        return "PROCESS INTERRUPTED BEFORE EXIT RECORD"
+    if exit_code == 3:
+        return "PROCESS EXIT 3 (PYTEST INTERNAL OR ABNORMAL PROCESS EXIT)"
+    if exit_code not in (None, 0):
+        return f"PROCESS EXIT {exit_code}"
+    return "PROCESS EXIT 0"
+
+
 def publish(
     stats_path: Path,
     junit_path: Path,
     exit_file: Path | None,
     summary_path: Path | None,
+    output_path: Path | None = None,
+    state_path: Path | None = None,
 ) -> int:
     """Print totals and fail unless the required records exist, agree, and passed.
 
@@ -358,8 +518,11 @@ def publish(
         text = "\n".join(
             [
                 "pytest totals",
-                f"stats: {'present' if stats_path.is_file() else 'missing'}",
-                f"junit: {'present' if junit_path.is_file() else 'missing'}",
+                f"stats: {'present' if stats_path.is_file() else 'missing (NOT PRODUCED)'}",
+                f"junit: {'present' if junit_path.is_file() else 'missing (NOT PRODUCED)'}",
+                f"output: {'present' if output_path is not None and output_path.is_file() else 'NOT PRODUCED'}",
+                f"run_state: {_read_run_state(state_path)}",
+                f"pytest_result: {_process_result(shell_exit, output_path, state_path)}",
                 f"shell_exit: {exit_problem or shell_exit if exit_file is not None else 'not-requested'}",
             ]
         )
@@ -368,6 +531,7 @@ def publish(
     try:
         recorded = _load_stats(stats_path)
         junit = totals_from_junit(junit_path, shell_exit)
+        failures = failed_test_cases(junit_path)
         skips = unexpected_skips(junit_path)
     except RecordError as exc:
         text = "pytest totals\nrecord: unreadable\n" + str(exc)
@@ -383,6 +547,10 @@ def publish(
         problems.append(f"exit: shell {shell_exit} != session {session_exit}")
     if _int(recorded.get("xpassed")):
         problems.append(f"xpassed: {recorded.get('xpassed')} unexpected pass is not a release pass")
+    if _int(recorded.get("collected")) > 0 and _int(recorded.get("skipped")) == _int(
+        recorded.get("collected")
+    ):
+        problems.append("all tests skipped: no test executed")
     if skips:
         problems.append("unexpected skip:\n" + "\n".join(skips))
     recorded = dict(recorded)
@@ -391,8 +559,13 @@ def publish(
     recorded["exit"] = shell_exit if shell_exit is not None else session_exit
     text = format_totals(recorded)
     text += f"\nshell_exit: {recorded['shell_exit']}\nsession_exit: {session_exit}"
+    text += f"\noutput: {'present' if output_path is not None and output_path.is_file() else 'NOT PRODUCED'}"
+    text += f"\nrun_state: {_read_run_state(state_path)}"
+    text += f"\npytest_result: {_process_result(shell_exit, output_path, state_path)}"
     if problems:
         text += "\ndisagreement:\n" + "\n".join(problems)
+    if failures:
+        text += "\nfailed test cases:\n" + "\n".join(failures)
     _write_summary(summary_path, text)
     failed = _int(recorded.get("failed"))
     errors = _int(recorded.get("errors"))
@@ -439,13 +612,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stats", type=Path, required=True)
     parser.add_argument("--junit", type=Path, required=True)
     parser.add_argument("--exit-file", type=Path, default=None)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--state-file", type=Path, default=None)
     parser.add_argument("--summary", type=Path, default=None)
     args = parser.parse_args(argv)
     summary = args.summary
     if summary is None and os.environ.get("GITHUB_STEP_SUMMARY"):
         summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
     try:
-        return publish(args.stats, args.junit, args.exit_file, summary)
+        return publish(
+            args.stats, args.junit, args.exit_file, summary, args.output, args.state_file
+        )
     except (
         ET.ParseError,
         ValueError,

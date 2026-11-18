@@ -101,15 +101,17 @@ def test_fourteen_source_shaped_cases_classify_and_promote_exactly_as_documented
     # artefact moved from "no handler is registered" to "this artefact does not satisfy the writer's
     # source contract", which is the more precise statement and the reason the count is three.
     # V7.2 added a fourth: the well-control kill sheet, now that WELL_CONTROL has a writer too.
+    # V9.0 added a fifth: the lesson narrative TXT, now that LESSON_LEARNED has a tally writer.
     shape_refusals = [
         item for item in summary["skipped_details"] if item["reason"] == "NO_RECOGNISED_TABLE"
     ]
-    assert len(shape_refusals) == 4
+    assert len(shape_refusals) == 5
     assert {
         "bottom hole assembly" in item["detail"]
         or "bit record" in item["detail"]
         or "casing run" in item["detail"]
         or "well-control event" in item["detail"]
+        or "lesson" in item["detail"]
         for item in shape_refusals
     } == {True}, "every shape refusal names the domain whose table it looked for"
 

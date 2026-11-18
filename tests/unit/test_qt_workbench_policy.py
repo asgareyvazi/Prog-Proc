@@ -3,7 +3,41 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
+
+#: The release of each GitHub Action this repository uses, verified against the
+#: upstream repository on 2026-11-03 by reading the tag refs of the action's own
+#: repository: each pin below is the commit the named upstream tag points at.
+#: The workflows pin the commit SHA; the comment beside each pin names the tag.
+#: Both the stable major tag and the precise release tag were checked for the
+#: download-artifact pin because it is intentionally on the v4 line.
+ACTION_PINS = {
+    "actions/checkout": {
+        "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "tag": "v7.0.1",
+        "moving_tag": "v7",
+        "moving_tag_sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    },
+    "actions/setup-python": {
+        "sha": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
+        "tag": "v7.1.0",
+        "moving_tag": "v7",
+        "moving_tag_sha": "6d4fd22b20465ccc0f7354476588e8df7c9ca0e0",
+    },
+    "actions/upload-artifact": {
+        "sha": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+        "tag": "v7.0.2",
+        "moving_tag": "v7",
+        "moving_tag_sha": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+    },
+    "actions/download-artifact": {
+        "sha": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+        "tag": "v4.3.0",
+        "moving_tag": "v4",
+        "moving_tag_sha": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    },
+}
 
 _SPEC = importlib.util.spec_from_file_location(
     "qt_workbench", Path(__file__).resolve().parents[2] / "tools" / "qt_workbench.py"
@@ -76,6 +110,47 @@ def test_collection_accounts_for_class_async_and_parametrized_tests(tmp_path: Pa
     assert "duplicate declared" in qt_workbench.account_for_collection(hidden, collected)
 
 
+def test_nested_qt_pytest_totals_are_scoped_to_the_attempt_log(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("PYTEST_TOTALS_PATH", "pytest-totals.json")
+    log_path = tmp_path / "qt-logs" / "test_workbench.attempt-1.txt"
+
+    env = qt_workbench._node_environment(log_path)
+    collection_env = qt_workbench._collection_environment(log_path.parent)
+
+    assert env["PYTEST_TOTALS_PATH"] == str(
+        log_path.with_name("test_workbench.attempt-1.pytest-totals.json")
+    )
+    assert collection_env["PYTEST_TOTALS_PATH"] == str(
+        log_path.parent / "collection.pytest-totals.json"
+    )
+    assert env["PYTEST_TOTALS_PATH"] != "pytest-totals.json"
+    assert collection_env["PYTEST_TOTALS_PATH"] != "pytest-totals.json"
+
+
+def test_qt_node_runner_passes_a_scoped_pytest_totals_path(monkeypatch, tmp_path: Path):
+    import platform
+    import shutil
+
+    monkeypatch.setenv("PYTEST_TOTALS_PATH", "pytest-totals.json")
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    captured: dict[str, object] = {}
+
+    def capture(command, log_path, *, env=None):
+        captured["command"] = command
+        captured["log_path"] = log_path
+        captured["env"] = env
+        return 0, ""
+
+    monkeypatch.setattr(qt_workbench, "_run_streamed", capture)
+    log_path = tmp_path / "qt-logs" / "test_workbench.attempt-1.txt"
+
+    assert qt_workbench._run_node("tests/ui/test_workbench.py::test_sample", log_path) == (0, "")
+    assert captured["env"]["PYTEST_TOTALS_PATH"] == str(
+        log_path.with_name("test_workbench.attempt-1.pytest-totals.json")
+    )
+
+
 def test_attempt_result_distinguishes_a_retry_pass():
     assert qt_workbench.attempt_result([(1, 0)]) == "FIRST_PASS"
     assert qt_workbench.attempt_result([(1, 134), (2, 0)]) == "RETRY_PASS"
@@ -106,17 +181,39 @@ def test_stability_qualification_keeps_every_failed_attempt():
     assert "stability result: PASS" in clean_summary
 
 
-def test_required_jobs_stay_on_ubuntu_24_04_and_actions_v7() -> None:
+def test_required_jobs_stay_on_pinned_ubuntu_images_and_actions_are_pinned() -> None:
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "runs-on: ubuntu-latest" not in workflow
-    assert workflow.count("runs-on: ubuntu-24.04") == 3
+    assert workflow.count("runs-on: ubuntu-24.04") == 4
     assert "runs-on: ubuntu-26.04" in workflow
     assert "qt-ubuntu-2604-logs" in workflow
     assert "tools/qt_evidence.py" in workflow
-    assert "actions/checkout@v7" in workflow
-    assert "actions/setup-python@v7" in workflow
-    assert "actions/upload-artifact@v7" in workflow
-    assert "continue-on-error" not in workflow
+    assert workflow.count("continue-on-error:") == 1
+    download_step = workflow.split("name: Download this attempt's full-suite evidence", 1)[1]
+    download_step = download_step.split("\n      - ", 1)[0]
+    assert "continue-on-error: true" in download_step
+    for action, pin in ACTION_PINS.items():
+        assert f"{action}@{pin['sha']}" in workflow, action
+
+
+def test_every_action_in_every_workflow_is_pinned_to_a_commit_sha() -> None:
+    """A tag is a name that can move. A commit SHA cannot.
+
+    The precise release and checked upstream tag refs are recorded here so the
+    pin and its source can be audited without a network call.
+    """
+    for name in ("ci.yml", "ci-windows.yml"):
+        workflow = Path(".github/workflows") / name
+        text = workflow.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("uses:"):
+                continue
+            reference = stripped.removeprefix("uses:").split("#", 1)[0].strip()
+            action, _, pin = reference.partition("@")
+            assert action.startswith("actions/"), reference
+            assert re.fullmatch(r"[0-9a-f]{40}", pin), reference
+            assert pin in {entry["sha"] for entry in ACTION_PINS.values()}, reference
 
 
 def test_stability_does_not_consult_the_retry_policy():
@@ -151,3 +248,45 @@ def test_the_normal_runner_still_retries_only_a_qualifying_abort():
 def test_collected_node_parser_ignores_the_summary_line():
     text = "tests/ui/test_workbench.py::test_alpha\n\n2 tests collected in 0.01s\n"
     assert qt_workbench.parse_collected_nodes(text) == ["tests/ui/test_workbench.py::test_alpha"]
+
+
+def _workbench_test_source() -> str:
+    path = Path(__file__).resolve().parents[2] / "tests" / "ui" / "test_workbench.py"
+    return path.read_text(encoding="utf-8")
+
+
+def test_the_workbench_tests_release_their_windows_and_not_only_close_them():
+    """A closed window is not a destroyed window.
+
+    The ``qt_app`` fixture is session-scoped, so a window that a test only
+    closes stays alive until the end of the session - long after the
+    per-test workspace it reads has been deleted.  The native abort that
+    follows used to surface in a full ``tests/ui`` run, far away from the
+    test that caused it.  The tests must use the production release path.
+    """
+    source = _workbench_test_source()
+
+    assert "window.close()" not in source, (
+        "a workbench test closes its window instead of releasing it; "
+        "use release_top_level_widgets(qt_app)"
+    )
+    assert source.count("release_top_level_widgets(qt_app)") == 7
+    assert "release_top_level_widgets" in source
+
+
+def test_the_session_fixture_releases_and_then_asserts_that_nothing_survived():
+    fixture_path = Path(__file__).resolve().parents[2] / "tests" / "ui" / "conftest.py"
+    source = fixture_path.read_text(encoding="utf-8")
+
+    assert '@pytest.fixture(scope="session")' in source
+    assert "fixture_teardown(application)" in source
+    assert "top-level widgets survived the fixture teardown" in source
+
+
+def test_the_release_path_used_by_the_tests_is_the_production_path():
+    """The test must not grow a private teardown of its own."""
+    from drilling_intelligence.ui import lifetime
+
+    assert callable(lifetime.release_top_level_widgets)
+    source = _workbench_test_source()
+    assert "from drilling_intelligence.ui.lifetime import release_top_level_widgets" in source

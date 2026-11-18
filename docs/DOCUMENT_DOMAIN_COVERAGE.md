@@ -1,17 +1,15 @@
-# Document/domain coverage matrix (V7 authority)
+# Historical document/domain coverage matrix (V7 authority snapshot)
 
-> **Note on commit references.** This checkout is a shallow clone whose history was
-> collapsed to a single grafted commit, so the commits this document describes are not in
-> the local object database and their full hashes cannot be verified here. They are cited
-> in short form for that reason; `tests/unit/test_report_integrity.py` is what enforces
-> that a report never names a full hash the repository cannot produce.
+> **Historical record (reviewed 2026-11-07):** This matrix is preserved without rewriting its historical taxonomy rows. The current source review still confirms 26 classes: 14 `END_TO_END_CERTIFIED`, 7 `KNOWLEDGE_SUPPORTED`, 5 `EXTRACT_ONLY`, and 12 named handlers. The MinerU 4 integration, operator Intake, and manual DDR workflow add no document class or parser/promotion handler. These counts are not CI evidence; current exact-SHA status and open qualification gates belong in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and the current Persian mission report.
 
-**Status:** authoritative source-derived registry and certification index
+> `Inspected HEAD`, branch, release notes, and version-specific statements below describe the historical V7/V9 matrix snapshot. Do not treat them as the current branch or current mission evidence. The taxonomy counts are the preserved product contract; this document's historical release wording is intentionally not reconciled in place.
+
+**Status:** historical source-derived registry and certification snapshot; current test/CI status is tracked separately
 **As of:** 2026-10-05 (Asia/Tehran)
 **Repository:** `asgareyvazi/Prog-Proc`
 **Branch:** `arena/01a0c936-prog-proc`
 **Inspected HEAD before final validation:** `13869f9`
-**Release state:** V7.3A closed - 26 classifications, 11 named handlers, 13 `END_TO_END_CERTIFIED` / 8 `KNOWLEDGE_SUPPORTED` / 5 `EXTRACT_ONLY`, migration head `0019`
+**Release state:** V9.0 closed - 26 classifications, 12 named handlers, 14 `END_TO_END_CERTIFIED` / 7 `KNOWLEDGE_SUPPORTED` / 5 `EXTRACT_ONLY`, migration head `0020`
 **Contract source:** `src/drilling_intelligence/operations/contracts.py`
 **Forensic corpus:** `tests/golden_corpus/manifest.json`
 
@@ -25,12 +23,13 @@ entity, filename, folder, search hit or approval stamp is not permission to writ
 | --- | ---: | --- |
 | `DocumentClassification` members | **26** | `core/enums.py` |
 | explicit static contracts | **26** | `contract_registry()` import-time completeness guard |
-| domain handlers | **11** | `program`, `report`, `mud_report`, `bha_report`, `bit_record`, `directional_survey`, `cost`, `casing`, `cement`, `well_control`, `hse` (DDR/NPT/TIME_BREAKDOWN share the named `report` handler) |
-| `END_TO_END_CERTIFIED` | **13** | drilling program, DDR, NPT, mud report, time breakdown, BHA report, bit record, directional survey, cost, casing report, cement report, well-control event, HSE incident |
+| domain handlers | **12** | `program`, `report`, `mud_report`, `bha_report`, `bit_record`, `directional_survey`, `cost`, `casing`, `cement`, `well_control`, `hse`, `lesson_learned` (DDR/NPT/TIME_BREAKDOWN share the named `report` handler) |
+| `END_TO_END_CERTIFIED` | **14** | drilling program, DDR, NPT, mud report, time breakdown, BHA report, bit record, directional survey, cost, casing report, cement report, well-control event, HSE incident, lesson learned |
 | `DOMAIN_PROMOTABLE` but not end-to-end certified | **0** | no remaining restricted domain writer |
-| `KNOWLEDGE_SUPPORTED`, no domain writer | **8** | explicit deny-by-no-handler registry entries |
+| `KNOWLEDGE_SUPPORTED`, no domain writer | **7** | explicit deny-by-no-handler registry entries (was 8; LESSON_LEARNED admitted in V9.0) |
 | `EXTRACT_ONLY`, no type-specific knowledge/domain contract | **5** | explicit deny-by-no-handler registry entries |
 | deterministic V4 corpus cases | **14** | `build_v4_forensic_corpus()` and `test_v4_forensic_corpus.py` |
+| deterministic V9 lesson corpus cases | **12** | `test_lesson_promotion.py` (M6 source-grounded writer) |
 
 The handler entries preserve the V2 contract IDs for existing writers. `MUD_REPORT` is revisioned
 `v3`; `BHA_REPORT`, `BIT_RECORD` and `DIRECTIONAL_SURVEY` are revisioned `v4`; `COST`,
@@ -83,7 +82,7 @@ mean a specialized writer exists. **Target models** are the only tables a contra
 | 22 | `CONTRACT` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Commercial evidence only; no obligation writer. |
 | 23 | `TECHNICAL_REFERENCE` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no handler | yes | Reference facts remain provenance-bound; no engineering value promotion. |
 | 24 | `BOOK` | manual/none | yes | no type-specific contract | `EXTRACT_ONLY` | no handler | evidence | No book signature or domain model; no silent reference alias. |
-| 25 | `LESSON_LEARNED` | yes | yes | yes | `KNOWLEDGE_SUPPORTED` | no source handler | yes | Human lesson repository/actions remain explicit; classification does not auto-create a lesson. |
+| 25 | `LESSON_LEARNED` | yes | yes | yes | `END_TO_END_CERTIFIED` | `lesson_learned` -> `lesson_learned` | yes | **Admitted V9.0.** Lesson tally with a `lesson` column plus at least one of `lesson code`/`title`; each row is one `lesson_learned` kept verbatim with well/field/project/section, problem type, observation, context, recommendation, root cause (UNKNOWN when not stated), applicable operations, hole size and provenance. Narrative TXT lessons stay knowledge evidence and are refused by shape. Identity is promotion identity (`version_id`+`table_id`+`row_index`+`well_id`+`code`); revision supersedes by document; lessons start `DRAFT` and require evidence plus second reviewer for `APPROVED`. No inference beyond source-stated facts. |
 | 26 | `OTHER` | fallback only | yes/degraded | no type-specific contract | `EXTRACT_ONLY` | no handler | evidence | Safe fallback; never interpreted as NPT/mud/BHA/etc. |
 
 ### Static contracts and required evidence
@@ -97,6 +96,12 @@ MUD_REPORT         -> document:MUD_REPORT:promotion:v3         -> mud_report
 BHA_REPORT         -> document:BHA_REPORT:promotion:v4         -> bha_report
 BIT_RECORD         -> document:BIT_RECORD:promotion:v4         -> bit_record
 DIRECTIONAL_SURVEY -> document:DIRECTIONAL_SURVEY:promotion:v4 -> directional_survey
+COST               -> document:COST:promotion:v7                -> cost
+CASING_REPORT      -> document:CASING_REPORT:promotion:v7      -> casing
+CEMENT_REPORT      -> document:CEMENT_REPORT:promotion:v7      -> cement
+WELL_CONTROL       -> document:WELL_CONTROL:promotion:v7       -> well_control
+HSE                -> document:HSE:promotion:v7                -> hse
+LESSON_LEARNED     -> document:LESSON_LEARNED:promotion:v8     -> lesson_learned
 ```
 
 The mud contract requires a stored extraction, a recognised summary label/value/unit shape, a repeated
@@ -170,3 +175,9 @@ for contract in contract_registry():
 The import-time registry guard fails if a new enum member is added without an explicit contract and
 matrix entry. This file is the human-readable forensic index; the registry and executable tests remain
 the machine authority.
+
+## Post-V10.3 Intake and manual DDR boundaries
+
+Intake is a cross-cutting review surface, not a 27th document classification. The queue records a canonical source path and measured hash. Preview verifies the hash, uses local built-in extractors and the deterministic classifier, displays provenance/classification evidence and the static contract level, and persists no extracted content. A separate actor/reason-attributed registration is allowed only after `REVIEWED`; it delegates to the existing Document Registry and creates no knowledge item, calculation, promotion, or operational record. `registered` status is derived from the registration evidence record, not by broadening the persisted queue status vocabulary.
+
+Manual DDR authoring is also not a new document class or promotion handler. It creates explicit drafts and activities; submitting them creates candidate operations and leaves independent confirmation/rejection to the existing review lifecycle. Revision history/currentness is retained, and neither narrative text nor a review action silently computes or promotes engineering values. M2–M5 remain owner-gated; no new provider or document-promotion writer is introduced. See `PROJECT_CONTEXT.md` for the durable lifecycle contract.

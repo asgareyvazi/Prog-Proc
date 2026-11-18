@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from drilling_intelligence.core.enums import FileChangeKind
 from drilling_intelligence.database.models import (
@@ -253,7 +254,7 @@ def test_a_second_artefact_for_the_same_key_is_refused_by_the_database(
         document_version_id=version.id,
     )
     session.flush()
-    with pytest.raises(Exception, match=r"UNIQUE constraint failed: extraction_cache"):
+    with pytest.raises(IntegrityError, match=r"UNIQUE constraint failed: extraction_cache"):
         session.execute(raw_cache_insert("d" * 64))
     session.rollback()
 

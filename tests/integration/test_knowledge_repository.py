@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 from tests.fixtures.knowledge import artefact_field, register_artefact
 
 from drilling_intelligence.core.enums import KnowledgeOrigin, KnowledgeRelationType, KnowledgeStatus
+from drilling_intelligence.database.integrity import KnowledgeIntegrityError
 from drilling_intelligence.database.models import KnowledgeItem, KnowledgeRelation, Source
 from drilling_intelligence.documents.repository import DocumentRepository
 from drilling_intelligence.knowledge.entities import EntityRef, KnowledgeError, ensure_placeholder
@@ -320,7 +321,7 @@ def test_edges_are_written_and_are_valid_against_the_registry(session, well) -> 
 def test_a_dangling_edge_is_refused_rather_than_stored(session, well) -> None:
 
     repository = KnowledgeRepository(session)
-    with pytest.raises(Exception, match="does not exist"):
+    with pytest.raises(KnowledgeIntegrityError, match="does not exist"):
         repository.link(
             source=EntityRef("well", well.id),
             relation=KnowledgeRelationType.WELL_HAS_DOCUMENT.value,

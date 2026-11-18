@@ -12,7 +12,11 @@ part of this repository serves that sentence.
 
 ## Status
 
-Phase 0, the knowledge layer, and the engineering domain core. What exists and runs today:
+> **Current DDR comparison assurance:** code/diagnostics SHA `b1deab1782d6c17552ca4334606b5521c84c44ef` has exact-SHA Linux run [`42501577186`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42501577186) and Windows run [`42501577174`](https://github.com/asgareyvazi/Prog-Proc/actions/runs/42501577174); consult those pages for their current/final state. The preceding code SHA `41f04d6a6ddd2abe4339c410b7e688004eb62c4a` had Linux full-suite failures on the stale generated exception inventory (both CPython versions) and one unidentified Ubuntu 26.04 test; Windows CPython 3.11/3.14 failed the same inventory test and both Windows history stability lanes exceeded the unchanged 45-minute limit. Those workflows were not green. Qt UI jobs on `41f04d6` passed 30/30 per runtime; Windows intake/presentation stability passed 15/15 per runtime, but history did not. On current SHA `b1deab1`, Windows history and Linux/Ubuntu offscreen stability jobs have since passed their 15-attempt gates. Linux CPython 3.11 and 3.14 full suites each completed 2,850 collected / 2,787 passed / 62 skipped / 1 failed; Windows CPython 3.11 and 3.14 each completed 2,850 / 2,785 / 64 / 1. All four failures are the expected stale exception-inventory check, identified by the added diagnostics. Ubuntu 26.04 remained `in_progress` at the 2026-11-08 20:31 UTC check, after >3h44 (no exit/test identity available); the Linux and Windows workflows are not green, and no overall cross-platform pass is claimed. The inventory is regenerated at 108 broad handlers (13 re-raised, 67 reported, 28 suppressed). Targeted local tests passed (89 DDR/MinerU/exception; 26 diagnostics); local Qt is unavailable and is not counted as a pass. Artifact ZIP downloads were blocked by the sandbox host allowlist, so the prior Ubuntu failing test identity and detailed CI skip reasons remain unknown. Prog-Proc remains Local-first, single-user and **Pre-Alpha**; SQLite alone is qualified, PostgreSQL is **NOT QUALIFIED**, and the taxonomy remains 26 classes (14 `END_TO_END_CERTIFIED`, 7 `KNOWLEDGE_SUPPORTED`, 5 `EXTRACT_ONLY`) across 12 named handlers. `drillintel config validate --json` passed without opening a workspace or probing services. On this host `drillintel mineru validate --json` truthfully reports runtime `NOT_READY`, models `NOT_CHECKED`, OCR `NOT_RUN`, and no metrics; no real OCR inference or accuracy qualification is claimed. Physical Windows acceptance and owner-gated M2–M5/O-02/O-03, PostgreSQL, auth/multi-user, risk/AFE/currency, production/DR, archive and deployment gates remain unqualified/owner-gated. See [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md), the [current DDR assurance traceability](docs/mission-reports/DDR_COMPARISON_ASSURANCE_TRACEABILITY_2026-10-20.md), and the [current Persian mission report](docs/mission-reports/AUTONOMOUS_MISSION_2026-10-20_DDR_COMPARISON_ASSURANCE_FA.md).
+
+> **Current Program/Procedure worktree status:** the headless authoring slice (SQLite migration `0027`, revision-owned Program sections/targets and Procedure steps, review attribution/history, read-only comparison, and bounded CLI) plus a monotonic optimistic-token fix are present locally on the active `arena/5957b76d-prog-proc` checkout. The wall-clock token is forced forward by at least one microsecond when the clock repeats or moves backwards. Focused local validation on this checkout reports **107 passed, 1 skipped**; the skip is not a pass. No Linux/Windows CI has run for this exact worktree, and no commit or push has been made. This authoring slice does not add a calculation method, engineering approval, Qt editor, controlled export, or exact-revision Program-to-Procedure link. See [`docs/ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md`](docs/ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md), [`docs/PROGRAM_PROCEDURE_AUTHORING_CLI.md`](docs/PROGRAM_PROCEDURE_AUTHORING_CLI.md), and [`docs/PROJECT_CONTEXT.md`](docs/PROJECT_CONTEXT.md).
+
+The following inventory is a product overview; its capability labels do not substitute for current test or CI evidence:
 
 | area | state |
 | --- | --- |
@@ -36,18 +40,22 @@ Phase 0, the knowledge layer, and the engineering domain core. What exists and r
 | Comparison pack: two or more wells side by side on the same recorded basis - per-metric values with `COMPARABLE`/`INCOMPARABLE`/`MISSING`/`UNRESOLVED` states, unit and risk-scale identity gates, offset-candidate discovery, forensic evidence, limitations (`fields compare`) | **implemented, tested, query-count scale-certified at 6 + 39 SELECTs per subject** (`docs/DECISIONS.md` ADR-36) |
 | Analyst question catalog: sixteen fixed question ids answered as typed JSON with declared params, scope, evidence, lifecycle and missing-value semantics - no natural-language parsing, no AI (`analyze`) | **implemented, tested** - every answer reuses the certified read paths unchanged (`docs/DECISIONS.md` ADR-36) |
 | Engineering report: a deterministic `engineering-report/1` document composed from the decision or comparison pack, with standalone HTML, inline SVG charts, a source-lineage appendix, and a native workbench preview (`fields report`; `--verify-citations` is optional) | **implemented, tested** - a citation match is not scope, freshness, or complete coverage; selected wells are the report subject (`docs/DECISIONS.md` ADR-37, ADR-38, ADR-39, ADR-40, ADR-41) |
-| Domain CLI: `records`, `records rollup`, `records review` (read-only evidence boundary), `timeline`, `fields`, `patterns`, `lessons`, `evidence` (addressable packages with a freshness check and an opt-in `--verify` citation audit), and `doctor`'s integrity checks over them | **implemented** — and the boundary is written down, not implied |
-| Optional Desktop Review Workbench V1 (`drillintel-ui`) | **implemented, read-only** — PySide6-Essentials is optional; it consumes `DomainReviewService`, supports current/history, evidence/citation audit, conflicts, relations, calculations and plan/actual without creating a second read model. A close refused by a running worker does not quit the process or destroy that window |
+| Domain CLI: `intake` add/list/preview/decide/register, manual `ddr` create/list/show/actions/save/submit/revise/decide/compare, `config validate`, `mineru validate`, plus `records`, `records rollup`, `records review`, `timeline`, `fields`, `patterns`, `lessons`, `evidence`, and `doctor` | **implemented through existing lifecycle services** — DDR CLI input is bounded strict JSON; save requires a complete snapshot and freshness token; compare is read-only, scoped to an explicit direct predecessor/successor pair, emits stable JSON and uses distinct exit codes; submit leaves operations candidate, and review uses only `ReviewActionService`. Declared actor strings are not authenticated. Intake registration creates registry evidence only after human review; it does not promote domain facts. Config validation is local/read-only; MinerU validation separates runtime readiness from OCR qualification. Focused CLI integration evidence: `tests/integration/test_ddr_cli.py`; exact-SHA qualification is tracked separately. |
+| Optional Desktop Workbench (`drillintel-ui`) | **Implemented; exact SHA `41f04d6…` offscreen Qt UI jobs passed 30/30 per runtime, but the overall full-suite Linux/Windows workflows were not green.** Windows history stability exceeded its unchanged 45-minute limit; intake/presentation lanes passed. On diagnostics-enabled SHA `b1deab1…`, Windows offscreen UI jobs also passed 30/30 per runtime and both history stability lanes passed 15/15; the completed Linux full-suite lanes are separately linked in the Status block and are not green because the inventory file is stale on that commit; Ubuntu and Windows full-suite results remain pending. PySide6-Essentials is optional; local Qt tests are **SKIPPED** because PySide6 is absent. The workbench includes governed review, Intake preview/registration, and Daily DDR draft/save/submit/revision with read-only predecessor/successor comparison of exact fields, authored activity changes/order, ambiguity, omitted counts, and provenance. Offscreen tests do not establish physical Windows display acceptance, which remains **NOT RUN**. |
 | Ollama provider adapter: `drillintel ai status` probes `/api/tags`; completion and embedding calls return non-authoritative text or vectors | **implemented, not on the engineering path** — an embedding is accepted only when it is finite, one vector per input, and names the requested model; a path, query, or credential in the endpoint sends no request; `doctor` does not probe; `openai-compatible` has no adapter (`docs/DECISIONS.md` ADR-51, ADR-52) |
 | Skills and additional engineering-calculation *engines* | planned — NPT roll-up V1 is the deliberately narrow exception; additional methods need an explicit capability contract and evidence policy, not a generic computation engine |
 | Risk scoring methodology, a cost/AFE engine, plan-vs-actual dashboards | **deliberately not built** — what each one refuses to invent, and why, is in `docs/DOMAIN.md` |
 
-Nothing here needs a GPU, a model download, or a server. `mineru` (for scanned pages) is a real
-optional integration: install it separately and the router will use it, otherwise the built-in
-extractors carry on. The Ollama adapter is also optional and local. `drillintel doctor` names the
-configured provider and does not contact it. `drillintel ai status` probes only when asked, and a
-successful probe does not write a record. Installing Ollama changes that probe; it does not change
-extraction, promotion, search, or citation audit.
+The built-in application path needs no GPU, model download, or server. `mineru` is a separate,
+optional runtime for PDF layout/OCR. The application defaults its model source to `local`, so ordinary
+extraction only uses preinstalled model files and does not implicitly fetch them. An operator may
+explicitly select a remote model source in configuration; that choice can contact its configured
+provider during parsing and must be governed by the operator's network/data policy. Without the
+runtime or local models, the built-in extractors carry on and report when a scanned PDF needs OCR. The Ollama adapter is also
+optional and local. `drillintel doctor` names the configured provider and does not contact it.
+`drillintel ai status` probes only when asked, and a successful probe does not write a record.
+Installing Ollama changes that probe; it does not change extraction, promotion, search, or citation
+audit.
 
 ## Quick start
 
@@ -63,6 +71,56 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/ruff format --check src tests migrations
 .venv/bin/python -m compileall -q src tests migrations
 ```
+
+For a local, human-governed intake pass, add a source reference, inspect its transient preview, record a disposition, and explicitly register only reviewed bytes:
+
+```bash
+drillintel intake add /path/to/handover.txt --workspace /path/to/workspace --by operator
+drillintel intake list --workspace /path/to/workspace --status QUEUED --json
+drillintel intake preview ITEM_ID --workspace /path/to/workspace
+drillintel intake decide ITEM_ID --workspace /path/to/workspace --decision REVIEWED --by reviewer --reason "source inspected"
+drillintel intake register ITEM_ID --workspace /path/to/workspace --by registrar --reason "register reviewed source" --well WELL_ID
+```
+
+Registration links the source through the existing Document Registry and does not promote domain records. The optional desktop workbench also exposes **Intake** and **Daily DDR** navigation pages. Daily DDR submission creates candidate operations; confirmation/rejection is a separate review action. See `docs/PROJECT_CONTEXT.md` and the relevant ADRs for the lifecycle contract.
+
+The headless `ddr` command is a service adapter for manual authoring, not an import path. Create a strict UTF-8 JSON snapshot (max 1 MiB); `save` requires every field so omitted values are never silently cleared:
+
+```json
+{
+  "report_date": "2026-11-07",
+  "report_number": "DDR-2026-311",
+  "shift": "Day",
+  "summary": "Operator-entered shift summary",
+  "activities": [
+    {
+      "operation_type": "drilling",
+      "label": "Drilled the 12 1/4 in interval",
+      "description": "Operator-entered wording",
+      "period_text": "06:00-18:00"
+    }
+  ]
+}
+```
+
+```bash
+drillintel ddr create --well A-3 --content shift.json --by operator --reason "Start daily report" --workspace /path/to/workspace --json
+drillintel ddr show REPORT_ID --workspace /path/to/workspace --json
+drillintel ddr submit REPORT_ID --expected-updated-at TIMESTAMP --by operator --reason "Ready for review" --workspace /path/to/workspace --json
+drillintel ddr actions REPORT_ID --workspace /path/to/workspace --json
+# Decide only an action shown above; scope/status/revision/timestamp are checked again by ReviewActionService.
+drillintel ddr decide REPORT_ID --well A-3 --action confirm --expected-status CANDIDATE --expected-revision 1 --expected-updated-at TIMESTAMP --by reviewer --reason "Reviewed shift evidence" --workspace /path/to/workspace --json
+```
+
+The timestamp and revision are read from `ddr show`; save also requires a complete replacement snapshot. Review actor IDs are declared audit values, not authenticated identities. Confirmation of a DDR report does not silently confirm each candidate operation.
+
+Compare one explicitly linked predecessor/successor pair without making a review decision or writing an audit/state change:
+
+```bash
+drillintel ddr compare PREDECESSOR_REPORT_ID SUCCESSOR_REPORT_ID --workspace /path/to/workspace --json
+```
+
+The command checks the exact well and direct `supersedes_report_id` link. JSON is stable and scoped to those two records. Exit `0` means the comparison is conclusive (`OK`); exit `3` means the comparison is ambiguous or malformed and must not be treated as a decision; exit `1` reports an operational/scope error, while argparse usage errors remain `2`. Activities are aligned by exact authored content and surrounding order—not sequence, row ID, or timestamps. Repeated identical text and multiple plausible changed-row pairings are marked **AMBIGUOUS** rather than guessed. The comparison preserves authored values and does not interpret engineering meaning or evaluate approval.
 
 The same gates run in CI on both supported runtimes - the CPython 3.11 floor and the 3.14 product
 target named in `docs/DECISIONS.md` ADR-0002 - see `.github/workflows/ci.yml`. Required jobs pin
@@ -86,6 +144,54 @@ wheel bootstraps its schema from the ORM metadata and stamps it at the current r
 deliberately does not carry the Alembic scripts; `doctor` reports that mode as healthy rather than
 as drift.
 
+### Optional MinerU 4 PDF runtime
+
+MinerU is an optional, separately managed parser for complex/scanned PDFs. It is **not** part of
+Prog-Proc's core dependencies, and neither application startup nor `drillintel doctor` downloads
+models or probes MinerU. Keep the parser in its own environment; use the path to its `mineru` entry
+point and let the adapter resolve the adjacent `mineru-kit` parser:
+
+```bash
+python3 -m venv /opt/prog-proc-mineru
+/opt/prog-proc-mineru/bin/python -m pip install "mineru==4.1.7"
+export DRILLINTEL_MINERU_MODE=cli
+export DRILLINTEL_MINERU_BINARY=/opt/prog-proc-mineru/bin/mineru
+export DRILLINTEL_MINERU_TIER=flash
+```
+
+MinerU 4's `mineru-kit parse` writes the `docvortex.middle` contract, which Prog-Proc normalizes
+into page-anchored text/table output with source locators. The regular HTTP adapter accepts only the
+legacy multipart/JSON parse contract; MinerU 4's attachment/ZIP `/v1/file_parse` API is not treated as
+compatible. The configured `model_source` defaults to `local`: parsing will not fetch missing models
+implicitly, and may fail until the operator installs the selected models. Set an explicit remote
+source only after reviewing the provider and data/network policy. The user-operable checks are:
+
+```bash
+drillintel mineru validate --json
+# Explicit inference attempt against one deterministic synthetic PNG; still local-only:
+drillintel mineru validate --run-synthetic-ocr --json
+```
+
+The default command checks the local CLI runtime only; it does not inspect model files, make an HTTP
+request, download a model, upload a document, or run OCR. The optional synthetic command forces CLI,
+local models, Basic tier and ONNX small backend; if inference does not complete it reports failure
+without emitting OCR metrics. Successful CER/WER values apply only to the one fixture and are not a
+general OCR qualification. The parser's text is extraction evidence, not engineering validation or an
+automatic domain record. MinerU 4.1.7 is an optional external Python runtime; the PyPI metadata
+checked for that release lists Python >=3.11,<3.15. Recheck exact runtime requirements before use;
+model files and their terms are separate. Review the exact
+upstream [MinerU license](https://github.com/opendatalab/MinerU/blob/master/LICENSE.md), model terms,
+and runtime requirements for the intended deployment. This note is not a legal determination.
+
+Validate the effective configuration without connecting to services (JSON output is available):
+
+```bash
+drillintel config validate --json
+```
+
+The command applies the same defaults and environment overrides as startup, reports unknown keys,
+and returns a nonzero exit code for invalid configuration. It never prints secret values.
+
 Ingest a folder of documents into a workspace (this is the whole point of phase 0, so it
 is worth running once on your own files).  From a terminal, nothing else is required:
 
@@ -102,9 +208,72 @@ drillintel records summary --well A-3 --workspace /tmp/well-a3
 drillintel doctor --workspace /tmp/well-a3                # what is healthy, and what to run next
 ```
 
+### Workspace backup and restore
+
+This command creates a **database snapshot only**, not a full workspace or source backup. It
+snapshots the SQLite system-of-record database with SQLite's online backup API, records SHA-256
+hashes and the migration revision, and runs SQLite integrity and foreign-key checks against the
+snapshot. The destination must be new; existing files are never overwritten. Archives are **not
+encrypted** and contain sensitive data: store them accordingly. The database limit is 8 GiB, the
+archive overhead limit is 16 MiB, metadata is limited to 1 MiB, and an archive must contain exactly
+three regular members.
+
+```bash
+mkdir -p /secure/backups
+drillintel workspace backup --workspace /tmp/well-a3 \
+    --output /secure/backups/well-a3-2026-11-03.dibak
+```
+
+Restore is deliberately non-destructive: the target directory must not exist, and when the
+registry has a workspace identity row the target must be the exact original workspace path.
+Re-homing is refused because changing that identity would break workspace scoping and provenance.
+Only the SQLite database and `workspace.toml` are archived; source corpus files and the disposable
+search index are not. This is **not a complete workspace recovery**: separately protect only the
+source assets you are authorized to retain, using an independently approved process; this restore
+will not recover them. Restore verifies archive members, hashes, SQLite page integrity, foreign
+keys, Alembic revision, and workspace identity before it creates the target. A snapshot with failed
+health checks is preserved for investigation but cannot be restored as a usable workspace. Custom
+data-directory layouts are not qualified for this workflow.
+
+```bash
+# Run only after the original workspace path is absent; no existing directory is replaced.
+drillintel workspace restore /secure/backups/well-a3-2026-11-03.dibak /tmp/well-a3
+# Then restore the source corpus separately and inspect the workspace.
+drillintel doctor --workspace /tmp/well-a3
+```
+
+For workspace-owned files as well as the registry snapshot, use the separate **full workspace-owned-files**
+archive format. This includes eligible regular files under the workspace root (including configured
+corpus files) and a transaction-consistent SQLite snapshot. It excludes the rebuildable search index,
+runtime cache/logs, VCS/environment state, credentials, and transient files. Configured sources outside
+the workspace are reported, never followed or copied; URL user-info, query strings, and fragments are
+redacted in that report. Symlinks and special files in the included scope are rejected rather than
+followed. Files are SHA-256 checked, archives are unencrypted, and files up to 8 GiB / total included
+content up to 32 GiB are bounded. This scope is broader than `workspace backup`, but is still not a
+copy of external sources or every machine-level dependency.
+
+```bash
+drillintel workspace archive --workspace /tmp/well-a3 \
+    --output /secure/backups/well-a3-2026-11-04.diwa
+# Restore only to the exact recorded workspace root, after that path is absent.
+drillintel workspace restore-archive \
+    /secure/backups/well-a3-2026-11-04.diwa /tmp/well-a3
+```
+
+Restore checks the complete manifest, all member hashes, SQLite integrity/foreign keys, schema and
+workspace identity in a staging directory before atomically publishing the new workspace. Existing
+paths and symlink destinations are refused; re-homing is not supported. Preserve a separate copy of
+the original workspace before testing restore. Neither archive command constitutes a production
+backup policy, encryption, external-source retention approval, or physical Windows acceptance.
+
+`doctor` runs read-only SQLite integrity, foreign-key, and storage preflight checks on an existing
+database and repeats the preflight after creating or upgrading a database. On failure it stops before
+claiming domain health or running domain/search checks; it does not silently repair storage.
+Domain-level invariants and disposable-index drift are checked only after storage passes.
+
 ### Desktop Review Workbench (optional)
 
-The first desktop consumer is deliberately a read-only review surface. Install it only where a Qt
+The desktop consumer is an operator review surface with a governed action boundary. Install it only where a Qt
 workbench is wanted:
 
 ```bash
@@ -114,13 +283,12 @@ drillintel-ui --workspace /tmp/well-a3 --well A-3
 ```
 
 The workbench opens the existing `workspace.toml`, loads the registered well hierarchy through the
-existing repositories, and requests `DomainReviewRequest` values from `DomainReviewService`. The
-Current/History selector changes the service lifecycle request; it does not hide rows in the client.
-`Verify citations` is an explicit opt-in call to the existing citation auditor. Tables use Qt
-model/view adapters and presentation-only filters, while the review result remains authoritative for
-scope, provenance, missing values, conflicts, calculation status and plan/actual semantics.
-
-No UI state is persisted and no review action mutates the workspace. The default installation does
+existing repositories, and requests `DomainReviewRequest` values from `DomainReviewService` — the
+read-only authoritative review. The Current/History selector changes the service lifecycle request; it
+does not hide rows in the client. `Verify citations` is an explicit opt-in call to the existing
+citation auditor. Tables use Qt model/view adapters and presentation-only filters, while the review
+result remains authoritative for scope, provenance, missing values, conflicts, calculation status and
+plan/actual semantics. The distinct mutation boundary is `ReviewActionService` (`src/drilling_intelligence/review/actions.py`): the UI derives its permitted actions from `available_actions()`, submits an immutable `ReviewActionRequest` carrying the displayed `expected_status`/revision/scope/`updated_at` preconditions, and hands it to `ReviewActionWorker` to execute outside the GUI thread. On success the window reloads a fresh `DomainReview`; on failure the displayed state is unchanged and the domain error is shown. No UI state is persisted beyond the window. The default installation does
 not import Qt. On a host where Qt's native runtime libraries cannot load, `drillintel-ui` reports the
 missing runtime dependency and `pytest -m ui` skips with the preserved loader reason; the UI tests run
 offscreen on hosts with a working Qt installation. CI retries a workbench process only when the
@@ -138,9 +306,11 @@ budget is one 120s clock, not a fresh wait per poll (ADR-45). The real-thread pr
 shutdown deadline into a hang, and exit 4 remains a failed shutdown (ADR-46). A cleanup
 that reaches the deadline is not a success, including when the monitor thread has not
 yet been scheduled (ADR-47). The release
-image stays `ubuntu-24.04`. Ubuntu 26.04 is a required compatibility lane, not a silent
-move of `ubuntu-latest`, and CPython 3.14 on that image is not yet certified. Operator-facing errors redact prefixed and quoted credential assignments without
-discarding a connection host.
+image stays `ubuntu-24.04`. Ubuntu 26.04 is a separate required compatibility lane, not a silent
+move of `ubuntu-latest`; its Qt-enabled CPython 3.14 full suite, clean-install smoke, and identity-bound
+pytest report passed on SHA `b3163bfef511fc93bd0fb57972f0cd672ab6c66c` (run `41940002906`); its full-suite lane collected 2,776, passed 2,775, skipped 1, and had zero failures/errors. This is CI evidence for that lane, not physical Windows acceptance or a general release certification.
+Operator-facing errors redact prefixed and quoted credential assignments without discarding a
+connection host.
 
 `drillintel wells list` shows what is registered.  The same bootstrap through the Python API,
 for callers embedding the library rather than driving the CLI:
@@ -225,7 +395,7 @@ src/drilling_intelligence/
   review/         deterministic read-only per-well Domain Review contract and service
   intelligence/   timelines, field rollups, recurring patterns and their snapshots
   ingestion/      scanner, planner (incremental decisions), pipeline
-  integrations/   MinerU client (subprocess/HTTP), disabled by default
+  integrations/   optional MinerU client (subprocess/legacy JSON HTTP); heavy runtime stays external
 migrations/       Alembic chain; alembic.ini carries no URL by design
 tests/            unit, engineering (real files), integration (real database)
 docs/             DECISIONS.md - the ADRs the code cites
@@ -388,7 +558,9 @@ version does. Nothing in the projection is ever written back to the domain table
   duration and a computed one are kept apart by `duration_basis` so they cannot be averaged together.
 - **A workspace is the folder and its database, and nothing else may say otherwise.** One
   SQLite file under `.drillintel/database/` is the system of record for one workspace (ADR-0003).
-  Documents are identified by `(workspace_id, identity_path)`, the identity is attached where
+  SQLite is the only currently supported and qualified database backend; PostgreSQL is NOT QUALIFIED
+  and must not be used as a deployment target (ADR-0004). Documents are identified by
+  `(workspace_id, identity_path)`, the identity is attached where
   documents are written rather than where commands are parsed, and a workspace moved to a new path
   is the same workspace because the database travels with it. An explicit `workspace_id` is
   validated against that binding, never trusted over it.
@@ -400,9 +572,11 @@ version does. Nothing in the projection is ever written back to the domain table
 Proprietary: an internal engineering platform for the drilling team. No public
 distribution, no sublicense, and no warranty of fitness is offered; see the `license`
 field in `pyproject.toml`. Third-party components keep their own terms — notably MinerU,
-which is Apache-2.0 with additional conditions (attribution if it is ever offered to
-third parties as an online service), and is not vendored or required by this repository.
-`wellpathpy` (LGPL) is planned for a later phase behind a wrapper, per `docs/DECISIONS.md`.
+which is not vendored or required by this repository. Upstream MinerU 4.1.7 supplies an
+Apache-2.0 license text with additional conditions; review the exact upstream terms (including
+service attribution/commercial-use conditions) for the intended deployment before use. This
+repository's note is not legal advice. `wellpathpy` (LGPL) is planned for a later phase behind a
+wrapper, per `docs/DECISIONS.md`.
 
 ## Production ingestion & domain promotion
 
@@ -424,10 +598,13 @@ CASING_REPORT      -> casing
 CEMENT_REPORT      -> cement
 WELL_CONTROL       -> well_control   (V7.2)
 HSE                -> hse            (V7.2)
+LESSON_LEARNED     -> lesson_learned (V9.0)
 ```
 
-That is 11 named handlers across 13 `END_TO_END_CERTIFIED` classifications out of 26. The V2 wave
-shipped only the first four of these; the list above is the current state, not the V2 state.
+That is 12 named handlers across 14 `END_TO_END_CERTIFIED` classifications out of 26; 7 classes are
+`KNOWLEDGE_SUPPORTED` and 5 are `EXTRACT_ONLY`. These counts are the current taxonomy snapshot, not
+an expansion from MinerU, Intake, or the separate manual DDR-authoring workflow. See the preserved
+historical matrix in [`docs/DOCUMENT_DOMAIN_COVERAGE.md`](docs/DOCUMENT_DOMAIN_COVERAGE.md).
 
 No other classification is promoted merely because its file has a table, its filename contains a
 keyword, a search hit exists, or an enum/knowledge entity exists. Evidence-only classes remain
