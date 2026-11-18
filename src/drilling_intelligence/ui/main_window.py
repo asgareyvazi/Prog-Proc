@@ -1,4 +1,4 @@
-"""Read-only desktop Review Workbench window.
+"""Desktop Review Workbench and Program/Procedure authoring window.
 
 The window is deliberately a presentation surface.  It receives ``DomainReview`` values from
 ``ReviewController`` and does not query the database, inspect source files, or calculate engineering
@@ -102,6 +102,8 @@ from .worker import (
 _NAVIGATION = (
     "Overview",
     "Intake",
+    "Program Builder",
+    "Procedure Builder",
     "Daily DDR",
     "Decision",
     "Comparison",
@@ -350,6 +352,8 @@ class MainWindow(QMainWindow):
     def _build_pages(self) -> None:
         self._build_overview_page()
         self._build_intake_page()
+        self._build_program_builder_page()
+        self._build_procedure_builder_page()
         self._build_ddr_page()
         self._build_decision_page()
         self._build_comparison_page()
@@ -368,6 +372,18 @@ class MainWindow(QMainWindow):
         model = MappingTableModel(columns, parent=table)
         _configure_table(table, model)
         return table, model
+
+    def _build_program_builder_page(self) -> None:
+        from .authoring_pages import ProgramBuilderPage
+
+        self.program_builder_page = ProgramBuilderPage(lambda: self.controller.workspace)
+        self.pages.addWidget(self.program_builder_page)
+
+    def _build_procedure_builder_page(self) -> None:
+        from .authoring_pages import ProcedureBuilderPage
+
+        self.procedure_builder_page = ProcedureBuilderPage(lambda: self.controller.workspace)
+        self.pages.addWidget(self.procedure_builder_page)
 
     def _build_overview_page(self) -> None:
         page = QWidget()
