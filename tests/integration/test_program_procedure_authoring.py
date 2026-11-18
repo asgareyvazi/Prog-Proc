@@ -322,3 +322,168 @@ def test_authoring_rejects_invalid_updates_before_persistence(session, hierarchy
             expected_updated_at=_stamp(procedure),
             changes={"instructions": None},
         )
+
+
+def test_freshness_token_is_strictly_monotonic_across_clock_anomalies(session, hierarchy) -> None:
+    """Repeated/backward clocks and naive stamps must never reuse a token."""
+    from datetime import datetime
+
+    repo = EngineeringRepository(session)
+    service = EngineeringAuthoringService(session)
+    program = repo.create_program(
+        code="W-17-MONO", title="Monotonic", author="a", well_id=hierarchy["well_a"].id
+    )
+
+    # Future-dated token relative to the wall clock: the next mutation must still advance.
+    program.updated_at = program.updated_at + timedelta(days=365)
+    session.flush()
+    token = _stamp(program)
+    service.add_program_section(
+        program.id,
+        expected_updated_at=token,
+        section_key="basis",
+        title="Basis",
+        content="future-dated clock fixture",
+    )
+    program = repo.get_program(program.id)
+    advanced = _stamp(program)
+    assert advanced > token
+
+    # Backward clock: force the stored token ahead of any now() the service can produce.
+    program.updated_at = program.updated_at + timedelta(days=365)
+    session.flush()
+    token = _stamp(program)
+    service.add_program_section(
+        program.id,
+        expected_updated_at=token,
+        section_key="second",
+        title="Second",
+        content="backward clock fixture",
+    )
+    program = repo.get_program(program.id)
+    assert _stamp(program) > token
+
+    # Naive stored timestamp is normalized before comparison and still advances.
+    naive = datetime(2030, 1, 1, 12, 0, 0)
+    program.updated_at = naive
+    session.flush()
+    token = service._token(program)
+    assert token.endswith("+00:00")
+    service.add_program_section(
+        program.id,
+        expected_updated_at=token,
+        section_key="third",
+        title="Third",
+        content="naive timestamp fixture",
+    )
+    program = repo.get_program(program.id)
+    assert _stamp(program) > token
+
+    # Several rapid mutations in a row must produce strictly increasing tokens.
+    tokens = [_stamp(program)]
+    for index in range(4):
+        program = repo.get_program(program.id)
+        service.add_program_section(
+            program.id,
+            expected_updated_at=tokens[-1],
+            section_key=f"rapid_{index}",
+            title=f"Rapid {index}",
+            content="same-tick fixture",
+        )
+        program = repo.get_program(program.id)
+        tokens.append(_stamp(program))
+    assert tokens == sorted(tokens) and len(set(tokens)) == len(tokens)
+
+
+def test_procedure_links_to_exact_program_revision_and_flags_staleness(session, hierarchy) -> None:
+    repo = EngineeringRepository(session)
+    service = EngineeringAuthoringService(session)
+    program = repo.create_program(
+        code="W-17-LINK", title="Linked program", author="author-a", well_id=hierarchy["well_a"].id
+    )
+    service.add_program_section(
+        program.id,
+        expected_updated_at=_stamp(program),
+        section_key="basis",
+        title="Basis",
+        content="link fixture",
+    )
+    procedure = repo.create_procedure(
+        code="W-17-LINK-P",
+        title="Linked procedure",
+        procedure_type="tripping",
+        created_by="author-a",
+        well_id=hierarchy["well_a"].id,
+    )
+    service.add_procedure_step(
+        procedure.id,
+        expected_updated_at=_stamp(procedure),
+        title="Step",
+        instructions="Fixture step.",
+    )
+
+    assert service.procedure_program_link(procedure.id)["link_status"] == "NONE"
+    service.link_procedure_to_program(
+        procedure.id,
+        program.id,
+        expected_updated_at=_stamp(repo.get_procedure(procedure.id)),
+        by="author-a",
+        note="implements this exact revision",
+    )
+    link = service.procedure_program_link(procedure.id)
+    assert link["link_status"] == "LINKED"
+    assert link["program_revision_id"] == program.id
+    assert link["review_needed"] is False
+
+    listed = service.program_linked_procedures(program.id)
+    assert [e["procedure_id"] for e in listed["linked_procedures"]] == [procedure.id]
+    assert listed["stale_links"] == []
+
+    # A new Program revision must mark the existing link STALE without relinking it.
+    revised = repo.revise_program(program.id, by="author-a")
+    link = service.procedure_program_link(procedure.id)
+    assert link["link_status"] == "STALE"
+    assert link["review_needed"] is True
+    assert link["program_revision_id"] == program.id
+    assert link["automatic_relink_performed"] is False
+    listed = service.program_linked_procedures(revised.id)
+    assert listed["linked_procedures"] == []
+    assert [e["procedure_id"] for e in listed["stale_links"]] == [procedure.id]
+
+    # Cross-well links are refused.
+    other_well = WellRepository(session).create_well(
+        "OTHER-01",
+        project_id=hierarchy["project"].id,
+        field_id=hierarchy["field"].id,
+    )
+    other_program = repo.create_program(
+        code="OTHER-DRP", title="Other", author="a", well_id=other_well.id
+    )
+    procedure2 = repo.create_procedure(
+        code="W-17-LINK-P2",
+        title="Other procedure",
+        created_by="author-a",
+        well_id=hierarchy["well_a"].id,
+    )
+    with pytest.raises(ValidationError, match="same well"):
+        service.link_procedure_to_program(
+            procedure2.id,
+            other_program.id,
+            expected_updated_at=_stamp(procedure2),
+            by="author-a",
+        )
+
+    # Linking is a DRAFT-only mutation with a freshness token.
+    procedure3 = repo.create_procedure(
+        code="W-17-LINK-P3",
+        title="Stale link attempt",
+        created_by="author-a",
+        well_id=hierarchy["well_a"].id,
+    )
+    with pytest.raises(ValidationError, match="stale"):
+        service.link_procedure_to_program(
+            procedure3.id,
+            program.id,
+            expected_updated_at="1999-01-01T00:00:00+00:00",
+            by="author-a",
+        )

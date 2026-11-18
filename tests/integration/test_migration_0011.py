@@ -43,6 +43,8 @@ LATER_MIGRATION_COLUMNS = (
     "ddr_report.supersedes_report_id",  # 0026
     "ddr_report.is_current",  # 0026
     "well_operation.is_current",  # 0026
+    "procedure_record.program_revision_id",  # 0028
+    "procedure_record.program_link_status",  # 0028
 )
 #: Tables migrations after this one create.  Listed rather than tolerated, so a parity test still
 #: detects a table that went missing rather than one that merely arrived late.

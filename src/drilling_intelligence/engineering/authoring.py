@@ -890,6 +890,112 @@ class EngineeringAuthoringService:
             "engineering_significance_assessed": False,
         }
 
+    def link_procedure_to_program(
+        self,
+        procedure_id: str,
+        program_id: str,
+        *,
+        expected_updated_at: str,
+        by: str,
+        note: str = "",
+    ) -> Any:
+        """Point a current DRAFT procedure at one exact Program revision.
+
+        The link is never inferred from names or titles: it names a concrete
+        ``drilling_program`` row, which is one exact revision.  Cross-well links are
+        refused, and relinking is an explicit authoring action on the current DRAFT only.
+        """
+        procedure = self.repository.get_procedure(procedure_id)
+        self._require_fresh(procedure, expected_updated_at)
+        self._require_draft(procedure, "Procedure")
+        program = self.repository.get_program(program_id)
+        if procedure.well_id and program.well_id and procedure.well_id != program.well_id:
+            raise ValidationError(
+                "a Procedure can only link to a Program of the same well; cross-well links are refused"
+            )
+        if not str(by or "").strip():
+            raise ValidationError("a Program link requires a declared actor attribution")
+        procedure.program_revision_id = program.id
+        procedure.program_link_status = "LINKED"
+        self._append_status_note(
+            procedure,
+            "Program link",
+            f"linked to Program {program.code or program.id} revision {program.revision}"
+            + (f" ({note.strip()})" if note.strip() else ""),
+        )
+        self._touch(procedure)
+        self.session.flush()
+        return procedure
+
+    def procedure_program_link(self, procedure_id: str) -> dict[str, Any]:
+        """Return the exact-revision link with its live staleness status."""
+        procedure = self.repository.get_procedure(procedure_id)
+        linked_id = procedure.program_revision_id
+        if not linked_id:
+            return {
+                "procedure_id": procedure.id,
+                "program_revision_id": None,
+                "link_status": "NONE",
+                "review_needed": False,
+            }
+        program = self.repository.get_program(linked_id)
+        current = self.repository.list_programs(
+            well_id=program.well_id or "", include_superseded=True, limit=0
+        )
+        current_same_code = next(
+            (row for row in current if row.code == program.code and row.is_current),
+            None,
+        )
+        stale = current_same_code is not None and current_same_code.id != program.id
+        if stale:
+            procedure.program_link_status = "STALE"
+            self.session.flush()
+        return {
+            "procedure_id": procedure.id,
+            "program_revision_id": program.id,
+            "program_code": program.code,
+            "program_revision": program.revision,
+            "program_status": str(program.status),
+            "link_status": "STALE" if stale else "LINKED",
+            "review_needed": stale,
+            "automatic_relink_performed": False,
+        }
+
+    def program_linked_procedures(self, program_id: str) -> dict[str, Any]:
+        """List procedures linked to this exact Program revision and any stale ones."""
+        program = self.repository.get_program(program_id)
+        from sqlalchemy import select as _select
+
+        from ..database.models import ProcedureRecord
+
+        rows = list(
+            self.session.scalars(
+                _select(ProcedureRecord).where(ProcedureRecord.program_revision_id.isnot(None))
+            )
+        )
+        linked, stale = [], []
+        for row in rows:
+            info = self.procedure_program_link(row.id)
+            entry = {
+                "procedure_id": row.id,
+                "code": row.code,
+                "revision": row.revision,
+                "status": str(row.status),
+                "link_status": info["link_status"],
+            }
+            if info["program_revision_id"] == program.id and info["link_status"] == "LINKED":
+                linked.append(entry)
+            elif info["link_status"] == "STALE":
+                stale.append(entry)
+        return {
+            "program_id": program.id,
+            "program_code": program.code,
+            "program_revision": program.revision,
+            "linked_procedures": linked,
+            "stale_links": stale,
+            "automatic_relink_performed": False,
+        }
+
 
 def _section_payload(row: ProgramSection | None) -> dict[str, Any] | None:
     if row is None:

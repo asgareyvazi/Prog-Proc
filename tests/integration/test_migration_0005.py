@@ -80,6 +80,8 @@ LATER_MIGRATION_COLUMNS = (
     "ddr_report.supersedes_report_id",  # 0026
     "ddr_report.is_current",  # 0026
     "well_operation.is_current",  # 0026
+    "procedure_record.program_revision_id",  # 0028
+    "procedure_record.program_link_status",  # 0028
 )
 LATER_MIGRATION_TABLES = (  # 0007, 0010, 0011, 0014, 0015, 0024, 0025, 0026, 0027
     "intake_queue_item",

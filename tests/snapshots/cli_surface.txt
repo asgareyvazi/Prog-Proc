@@ -1087,6 +1087,16 @@ command  programs reject
     arg --expected-updated-at dest=expected_updated_at type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg --by dest=by type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg --note dest=note type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  programs linked-procedures
+  prog drillintel programs linked-procedures
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (record_id) dest=record_id type=- nargs=None default=None required=True choices=- action=_StoreAction
 command  programs section-add
   prog drillintel programs section-add
   description -
@@ -1301,6 +1311,30 @@ command  procedures reject
     arg --expected-updated-at dest=expected_updated_at type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg --by dest=by type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg --note dest=note type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  procedures link-program
+  prog drillintel procedures link-program
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (record_id) dest=record_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --program dest=program_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --expected-updated-at dest=expected_updated_at type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --by dest=by type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --note dest=note type=- nargs=None default='' required=False choices=- action=_StoreAction
+command  procedures program-link
+  prog drillintel procedures program-link
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (record_id) dest=record_id type=- nargs=None default=None required=True choices=- action=_StoreAction
 command  procedures step-add
   prog drillintel procedures step-add
   description -

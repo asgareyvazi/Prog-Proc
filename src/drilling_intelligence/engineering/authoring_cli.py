@@ -146,6 +146,8 @@ def _procedure_payload(row: Any, steps: list[Any]) -> dict[str, Any]:
         "status_note": row.status_note,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+        "program_revision_id": row.program_revision_id,
+        "program_link_status": row.program_link_status,
         "steps": [
             {
                 "id": s.id,
@@ -243,6 +245,13 @@ def _add_authoring_group(sub: Any, common: list[Any], kind: str, handler: Any) -
 
     if kind == "programs":
         singular = "program"
+        linked = actions.add_parser(
+            "linked-procedures",
+            help="list procedures linked to this exact Program revision (and stale links)",
+            parents=[common],
+        )
+        linked.add_argument("record_id")
+        linked.set_defaults(handler=handler)
         for name in ("section-add", "target-add"):
             action = actions.add_parser(
                 name, help=f"add structured {name.split('-')[0]} data to a draft", parents=[common]
@@ -289,6 +298,28 @@ def _add_authoring_group(sub: Any, common: list[Any], kind: str, handler: Any) -
         reorder.set_defaults(handler=handler)
     else:
         singular = "procedure"
+        link = actions.add_parser(
+            "link-program",
+            help="link this DRAFT to one exact Program revision (never inferred)",
+            parents=[common],
+        )
+        link.add_argument("record_id")
+        link.add_argument(
+            "--program", dest="program_id", required=True, help="exact Program record ID"
+        )
+        link.add_argument("--expected-updated-at", required=True)
+        link.add_argument(
+            "--by", required=True, help="declared actor attribution (not authentication)"
+        )
+        link.add_argument("--note", default="", help="reasoned link note")
+        link.set_defaults(handler=handler)
+        link_show = actions.add_parser(
+            "program-link",
+            help="show the exact Program revision link and its staleness status",
+            parents=[common],
+        )
+        link_show.add_argument("record_id")
+        link_show.set_defaults(handler=handler)
         action = actions.add_parser(
             "step-add", help="add a structured step to a DRAFT", parents=[common]
         )
@@ -498,6 +529,8 @@ def command_program_procedure(args: Any) -> int:
                     }
                     for event in reversed(AuditLog(session).trail(kind, row.id))
                 ]
+                if kind == "procedure":
+                    payload["program_link"] = service.procedure_program_link(row.id)
                 lines = [
                     f"{kind.title()} rev {row.revision} · {row.status} · {row.title} · {row.id}",
                     f"updated_at: {service._token(row)}",
@@ -747,6 +780,32 @@ def command_program_procedure(args: Any) -> int:
             )
             lines = [
                 f"Read-only {kind} revision comparison; engineering significance is not assessed."
+            ]
+        elif action == "link-program":
+            changed = service.link_procedure_to_program(
+                args.record_id,
+                args.program_id,
+                expected_updated_at=args.expected_updated_at,
+                by=args.by,
+                note=getattr(args, "note", "") or "",
+            )
+            payload = {
+                "id": changed.id,
+                "program_revision_id": changed.program_revision_id,
+                "program_link_status": changed.program_link_status,
+                "updated_at": service._token(changed),
+                "actor_strings_are_authenticated": False,
+            }
+            lines = [
+                "Linked to one exact Program revision; no automatic relink on later Program revisions."
+            ]
+        elif action == "program-link":
+            payload = service.procedure_program_link(args.record_id)
+            lines = [f"Program link status: {payload['link_status']}"]
+        elif action == "linked-procedures":
+            payload = service.program_linked_procedures(args.record_id)
+            lines = [
+                f"{len(payload['linked_procedures'])} linked, {len(payload['stale_links'])} stale."
             ]
         elif action in {"submit", "review", "approve", "reject"}:
             row = (

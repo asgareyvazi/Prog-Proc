@@ -98,6 +98,17 @@ drillintel programs compare <OLD_ID> <NEW_ID> --workspace <WORKSPACE> --json
 
 Use the analogous `procedures` command group for Procedure revisions. `show` includes append-only technical-review history. Actor strings are not authenticated identities; the current local-first product has no authentication or digital-signature claim. Review attribution cannot qualify an engineering method or certify a design.
 
+## Exact Program revision linkage
+
+Migration `0028` adds `program_revision_id` / `program_link_status` to `procedure_record`. A current DRAFT Procedure can be linked to one exact Program revision by record ID — never inferred from names or titles. Cross-well links are refused. When a new Program revision becomes current, the existing link is reported as `STALE` and flagged `review_needed`; nothing is relinked automatically.
+
+```sh
+drillintel procedures link-program <PROCEDURE_ID> --program <PROGRAM_ID> \
+  --expected-updated-at <LATEST> --by <AUTHOR> --note "<reason>" --workspace <WORKSPACE> --json
+drillintel procedures program-link <PROCEDURE_ID> --workspace <WORKSPACE> --json
+drillintel programs linked-procedures <PROGRAM_ID> --workspace <WORKSPACE> --json
+```
+
 ## Not yet provided
 
-No writable Qt Program/Procedure editor, templates, section/step removal policy, controlled DOCX/PDF publishing, source-document-to-draft mapper, typed exact-revision Program-to-Procedure implementation link, full conflict impact analysis, or operational applicability view is included in this first headless slice. The database has no arbitrary calculation engine; only `npt.hours_rollup` V1 executes. See [`ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md`](ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md) for capability status, required evidence and release sequence.
+No writable Qt Program/Procedure editor, templates, section/step removal policy, controlled DOCX/PDF publishing, source-document-to-draft mapper, full conflict impact analysis, or operational applicability view is included in this headless slice. The database has no arbitrary calculation engine; only `npt.hours_rollup` V1 executes. See [`ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md`](ENGINEERING_PROGRAM_PROCEDURE_MASTER_PLAN.md) for capability status, required evidence and release sequence.

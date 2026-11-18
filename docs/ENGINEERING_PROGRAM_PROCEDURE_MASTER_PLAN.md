@@ -55,7 +55,7 @@ Priority 1 **Program Builder** — editable structured cover, design basis, prog
 
 Priority 2 **Procedure Builder** — full control, scope, roles, preconditions, equipment, safety, ordered steps, hold points, acceptance, contingency, completion/records, revision review and publishing. Structured step storage and CLI exist only in this worktree; UI, templates, export, richer review and operational test remain. **Ready for implementation** with safety wording always sourced and independently reviewed.
 
-Priority 3 **Program/Procedure linkage** — links to exact Program revision and section/target, stale-reference detection, impact review, operational/DDR/NPT evidence. Existing knowledge relation may point to Program but is not a typed exact-revision implementation link. **Requires technical design**, cross-well/revision invariants, and acceptance tests.
+Priority 3 **Program/Procedure linkage** — **partially implemented (migration `0028`, headless CLI)**: a current DRAFT Procedure links to one exact Program revision (`procedures link-program` / `program-link`, `programs linked-procedures`); cross-well links are refused and a newer current Program revision marks the link `STALE` with `review_needed`. Still missing: section/target-level links, impact review workflow, operational/DDR/NPT evidence linkage.
 
 Priority 4 **Engineering calculation workspace** — method registry, approved versioned calculation contracts and traceable inputs/results. Only NPT roll-up executes. **Requires owner decision and approved engineering standards** per method; directional/trajectory specifically remains disabled pending the packet in section 7.
 

@@ -30,7 +30,7 @@ $ErrorActionPreference = "Stop"
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 # Keep package-bootstrap and Doctor assertions aligned with database/migrations.py.
 # tests/powershell/test_run_card.ps1 compares this value with METADATA_REVISION.
-$script:ExpectedMigrationRevision = "0027"
+$script:ExpectedMigrationRevision = "0028"
 $script:StartedAt = [DateTime]::UtcNow.ToString("o")
 $script:RunId = [Guid]::NewGuid().ToString("N")
 $script:RunDir = Join-Path (Join-Path $script:RepoRoot $OutDir) $script:RunId

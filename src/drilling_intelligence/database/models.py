@@ -1901,6 +1901,7 @@ class ProcedureRecord(Base, TimestampMixin):
             sqlite_where=text("is_current = 1 AND code IS NOT NULL"),
             postgresql_where=text("is_current AND code IS NOT NULL"),
         ),
+        Index("ix_procedure_record_program_revision", "program_revision_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -1938,6 +1939,12 @@ class ProcedureRecord(Base, TimestampMixin):
     document_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("document_version.id", ondelete="SET NULL")
     )
+    #: Exact Program revision this procedure implements; never inferred from names.
+    #: Reference integrity is enforced by migration triggers (SQLite cannot ALTER ADD FK),
+    #: matching the ``supersedes_report_id`` convention.
+    program_revision_id: Mapped[str | None] = mapped_column(String(36))
+    #: ``NONE``, ``LINKED`` (the exact revision is still current), or ``STALE``.
+    program_link_status: Mapped[str] = mapped_column(String(24), default="NONE", nullable=False)
     provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
     origin: Mapped[str] = mapped_column(String(16), default="MANUAL", nullable=False)
     attributes: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
