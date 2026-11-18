@@ -232,6 +232,32 @@ def _add_authoring_group(sub: Any, common: list[Any], kind: str, handler: Any) -
     compare.add_argument("right_id")
     compare.set_defaults(handler=handler)
 
+    export = actions.add_parser(
+        "export",
+        help="controlled read-only export of this exact revision (no-clobber, atomic)",
+        parents=[common],
+    )
+    export.add_argument("record_id")
+    export.add_argument("--format", required=True, choices=["json", "html", "docx", "pdf"])
+    export.add_argument("--out", required=True, help="destination path; must not already exist")
+    export.set_defaults(handler=handler)
+
+    templates = actions.add_parser(
+        "templates", help="list controlled structure-only authoring templates", parents=[common]
+    )
+    templates.set_defaults(handler=handler)
+
+    from_template = actions.add_parser(
+        "create-from-template",
+        help="create a DRAFT from a controlled template (structure only, no inferred values)",
+        parents=[common],
+    )
+    from_template.add_argument("--template", required=True)
+    from_template.add_argument(
+        "--content", required=True, help="bounded strict JSON object with identity fields"
+    )
+    from_template.set_defaults(handler=handler)
+
     for name in ("submit", "review", "approve", "reject"):
         action = actions.add_parser(name, help=f"{name} this exact revision", parents=[common])
         action.add_argument("record_id")
@@ -780,6 +806,47 @@ def command_program_procedure(args: Any) -> int:
             )
             lines = [
                 f"Read-only {kind} revision comparison; engineering significance is not assessed."
+            ]
+        elif action == "templates":
+            from .templates import list_templates
+
+            payload = list_templates(kind)
+            lines = [
+                f"{name}: {len(spec.get('sections', spec.get('steps', [])))} structure items"
+                for name, spec in payload.items()
+            ]
+        elif action == "create-from-template":
+            from .templates import create_from_template
+
+            content = read_json(args.content)
+            record = create_from_template(service, kind, args.template, content=content)
+            payload = {
+                "id": record.id,
+                "revision": record.revision,
+                "status": str(record.status),
+                "origin": record.origin,
+                "updated_at": service._token(record),
+                "template": args.template,
+                "note": "structure only; engineering values require controlled sources",
+            }
+            lines = [
+                f"Created DRAFT {kind[:-1]} rev {record.revision} from template {args.template!r} "
+                "(structure only; no inferred engineering values)."
+            ]
+        elif action == "export":
+            from .export import export_record
+
+            payload = export_record(
+                service,
+                kind[:-1],
+                args.record_id,
+                fmt=args.format,
+                out_path=args.out,
+            )
+            lines = [
+                f"Exported {payload['record_type']} rev {payload['revision']} "
+                f"({payload['status']}) to {payload['path']}"
+                + (" [DRAFT watermark applied]" if payload["watermarked_draft"] else "")
             ]
         elif action == "link-program":
             changed = service.link_procedure_to_program(

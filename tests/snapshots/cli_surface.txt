@@ -1036,6 +1036,38 @@ command  programs compare
     arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
     arg (left_id) dest=left_id type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg (right_id) dest=right_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  programs export
+  prog drillintel programs export
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (record_id) dest=record_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --format dest=format type=- nargs=None default=None required=True choices=docx|html|json|pdf action=_StoreAction
+    arg --out dest=out type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  programs templates
+  prog drillintel programs templates
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  programs create-from-template
+  prog drillintel programs create-from-template
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --template dest=template type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --content dest=content type=- nargs=None default=None required=True choices=- action=_StoreAction
 command  programs submit
   prog drillintel programs submit
   description -
@@ -1260,6 +1292,38 @@ command  procedures compare
     arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
     arg (left_id) dest=left_id type=- nargs=None default=None required=True choices=- action=_StoreAction
     arg (right_id) dest=right_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  procedures export
+  prog drillintel procedures export
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg (record_id) dest=record_id type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --format dest=format type=- nargs=None default=None required=True choices=docx|html|json|pdf action=_StoreAction
+    arg --out dest=out type=- nargs=None default=None required=True choices=- action=_StoreAction
+command  procedures templates
+  prog drillintel procedures templates
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+command  procedures create-from-template
+  prog drillintel procedures create-from-template
+  description -
+  handler command_program_procedure
+    arg -h,--help dest=help type=- nargs=0 default=<suppress> required=False choices=- action=_HelpAction
+    arg --config dest=config type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --workspace dest=workspace type=- nargs=None default=<suppress> required=False choices=- action=_StoreAction
+    arg --json dest=json type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --debug dest=debug type=- nargs=0 default=<suppress> required=False choices=- action=_StoreTrueAction
+    arg --template dest=template type=- nargs=None default=None required=True choices=- action=_StoreAction
+    arg --content dest=content type=- nargs=None default=None required=True choices=- action=_StoreAction
 command  procedures submit
   prog drillintel procedures submit
   description -
