@@ -43,7 +43,7 @@ def test_backup_and_restore_round_trip_to_original_workspace_identity(tmp_path: 
 
     assert backup_result.action == "backup"
     assert backup_result.storage_health["status"] == "healthy"
-    assert backup_result.schema_revision == "0027"
+    assert backup_result.schema_revision == "0028"
     assert backup_result.database_sha256
     assert backup_result.archive_sha256
     assert backup_result.backup_scope == "database_snapshot_only"
