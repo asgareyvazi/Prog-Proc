@@ -524,10 +524,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev,ui]"
-      - name: Download this attempt's canonical collection
+      - name: Download this run's canonical collection
+        # run-id is mandatory: artifact names are not unique across workflow runs,
+        # and a name-only download can fetch another run's manifest, which the shard
+        # plugin then correctly rejects as a different test universe.
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ubuntu2604-qt-collection-a${{ github.run_attempt }}
+          run-id: ${{ github.run_id }}
           path: canonical-collection
       - name: Initialize shard process evidence
         run: echo "NOT RUN — shard pytest step has not started" > pytest-run-state.txt

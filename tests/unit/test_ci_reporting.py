@@ -568,3 +568,21 @@ def test_pytest_matrix_sha_tamper_in_downloaded_totals_invalidates_lane(
 
     assert report["rows"][0]["result"] == "INVALID"
     assert "SHA-256" in report["rows"][0]["detail"]
+
+
+def test_shard_canonical_collection_download_is_bound_to_the_current_run():
+    """Regression: shard jobs must download the canonical collection by run-id.
+
+    Artifact names like ``ubuntu2604-qt-collection-a1`` are NOT unique across
+    workflow runs. A name-only ``actions/download-artifact`` can fetch another
+    run's manifest, and the shard plugin then correctly fails with "this shard
+    collected a different test universe or configuration" (observed on Linux
+    runs 44897372058 shard 2 and 44905831005 shard 3, attempt 1). Pinning
+    ``run-id`` makes the download run-scoped and removes the cross-run race.
+    """
+    ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    block_start = ci.index("Download this run's canonical collection")
+    block = ci[block_start : block_start + 700]
+    assert "actions/download-artifact" in block
+    assert "run-id: ${{ github.run_id }}" in block
+    assert "name: ubuntu2604-qt-collection-a${{ github.run_attempt }}" in block
