@@ -105,6 +105,7 @@ _NAVIGATION = (
     "Program Builder",
     "Procedure Builder",
     "Template Library",
+    "Source Extraction",
     "Daily DDR",
     "Decision",
     "Comparison",
@@ -356,6 +357,7 @@ class MainWindow(QMainWindow):
         self._build_program_builder_page()
         self._build_procedure_builder_page()
         self._build_template_library_page()
+        self._build_source_extraction_page()
         self._build_ddr_page()
         self._build_decision_page()
         self._build_comparison_page()
@@ -480,6 +482,12 @@ class MainWindow(QMainWindow):
 
         self.template_library_page = TemplateLibraryPage(self._current_workspace)
         self.pages.addWidget(self.template_library_page)
+
+    def _build_source_extraction_page(self) -> None:
+        from .authoring_pages import SourceExtractionPage
+
+        self.source_extraction_page = SourceExtractionPage(self._current_workspace)
+        self.pages.addWidget(self.source_extraction_page)
 
     def _build_ddr_page(self) -> None:
         """Manual daily-report authoring linked to candidate operational activities."""

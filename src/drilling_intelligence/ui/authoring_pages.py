@@ -36,6 +36,12 @@ from ..engineering.export import export_record
 from ..engineering.repository import EngineeringRepository
 from ..engineering.templates import PROCEDURE_TEMPLATES, PROGRAM_TEMPLATES, create_from_template
 
+
+def _authoring_services(session: Any) -> tuple[Any, Any]:
+    repo = EngineeringRepository(session)
+    return repo, EngineeringAuthoringService(session)
+
+
 _COMPLETION_STATES = (
     "MISSING",
     "DRAFT",
@@ -1283,3 +1289,185 @@ class TemplateLibraryPage(QWidget):
             f"Family {fam['family']}: {fam['description']} "
             f"Current version: v{fam['current_version']}. All versions immutable."
         )
+
+
+class SourceExtractionPage(QWidget):
+    """Real source extraction -> DRAFT with side-by-side accept/edit/reject review.
+
+    Plain-text sources only (binary/OCR remains NOT QUALIFIED). Every extracted item keeps
+    its exact locator (document, version, sha256, line range) and stays EXTRACTED_UNVERIFIED
+    until an author accepts or edits it.
+    """
+
+    def __init__(self, current_workspace: Any) -> None:
+        super().__init__()
+        self._workspace = current_workspace
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                "<b>Source extraction</b> — creates a DRAFT from a registered plain-text "
+                "document and lets you accept/edit/reject each located item."
+            )
+        )
+        form = QFormLayout()
+        self.kind_combo = QComboBox()
+        self.kind_combo.addItems(["program", "procedure"])
+        self.document_input = QLineEdit()
+        self.document_input.setPlaceholderText("document id")
+        self.title_input = QLineEdit()
+        self.code_input = QLineEdit()
+        self.author_input = QLineEdit()
+        self.author_input.setText("ui-actor")
+        form.addRow("Kind", self.kind_combo)
+        form.addRow("Document id", self.document_input)
+        form.addRow("Title", self.title_input)
+        form.addRow("Code", self.code_input)
+        form.addRow("Author", self.author_input)
+        layout.addLayout(form)
+        self.extract_button = QPushButton("Extract into new DRAFT")
+        self.extract_button.clicked.connect(self._extract)
+        layout.addWidget(self.extract_button)
+
+        self.item_list = QListWidget()
+        self.item_list.currentItemChanged.connect(lambda *_: self._load_item())
+        layout.addWidget(QLabel("Extracted items (EXTRACTED_UNVERIFIED until decided)"))
+        layout.addWidget(self.item_list)
+
+        review_box = QGroupBox("Side-by-side review")
+        review_layout = QVBoxLayout(review_box)
+        self.locator_label = QLabel("Select an item.")
+        self.locator_label.setWordWrap(True)
+        self.source_view = QTextEdit()
+        self.source_view.setReadOnly(True)
+        self.draft_view = QTextEdit()
+        self.edit_input = QLineEdit()
+        self.edit_input.setPlaceholderText("replacement text for EDIT")
+        review_layout.addWidget(self.locator_label)
+        review_layout.addWidget(QLabel("Source excerpt (locator-backed)"))
+        review_layout.addWidget(self.source_view)
+        review_layout.addWidget(QLabel("Draft text"))
+        review_layout.addWidget(self.draft_view)
+        review_layout.addWidget(self.edit_input)
+        buttons = QHBoxLayout()
+        self.accept_button = QPushButton("Accept (SOURCE_PROVIDED)")
+        self.accept_button.clicked.connect(lambda: self._decide("accept"))
+        self.edit_button = QPushButton("Edit + accept")
+        self.edit_button.clicked.connect(lambda: self._decide("edit"))
+        self.reject_button = QPushButton("Reject (stays unverified)")
+        self.reject_button.clicked.connect(lambda: self._decide("reject"))
+        for b in (self.accept_button, self.edit_button, self.reject_button):
+            buttons.addWidget(b)
+        review_layout.addLayout(buttons)
+        layout.addWidget(review_box)
+        self.status_label = QLabel("No extraction run.")
+        layout.addWidget(self.status_label)
+        self._record_id: str | None = None
+
+    def _workspace_root(self) -> Any:
+        workspace = self._workspace()
+        return getattr(workspace, "root", None)
+
+    def _extract(self) -> None:
+        from ..engineering.source_to_draft import create_draft_from_document
+
+        document_id = self.document_input.text().strip()
+        try:
+            with _workspace_session(self._workspace()) as session:
+                _repo, service = _authoring_services(session)
+                record = create_draft_from_document(
+                    service,
+                    self.kind_combo.currentText(),
+                    document_id,
+                    content={
+                        "title": self.title_input.text().strip() or f"Draft from {document_id}",
+                        "code": self.code_input.text().strip(),
+                        "author"
+                        if self.kind_combo.currentText() == "program"
+                        else "created_by": self.author_input.text().strip(),
+                    },
+                    extract=True,
+                    workspace_root=self._workspace_root(),
+                )
+                session.flush()
+                self._record_id = record.id
+            self._reload_items()
+            self.status_label.setText(f"DRAFT created from {document_id} with located items.")
+        except Exception as exc:  # noqa: BLE001
+            self.status_label.setText(f"Error: {exc}")
+
+    def _items(self) -> list[tuple[str, Any]]:
+        if self._record_id is None:
+            return []
+        with _workspace_session(self._workspace()) as session:
+            repo, _service = _authoring_services(session)
+            if self.kind_combo.currentText() == "program":
+                rows = repo.list_program_sections(self._record_id)
+            else:
+                rows = repo.list_procedure_steps(self._record_id)
+        out = []
+        for row in rows:
+            prov = row.provenance or []
+            if any(isinstance(p, dict) and p.get("extracted") for p in prov):
+                out.append((row.id, row))
+        return out
+
+    def _reload_items(self) -> None:
+        self.item_list.clear()
+        for item_id, row in self._items():
+            title = getattr(row, "title", "")
+            state = getattr(row, "completion_state", "EXTRACTED")
+            item = QListWidgetItem(f"{row.sequence}. {title} [{state}]")
+            item.setData(Qt.ItemDataRole.UserRole, item_id)
+            self.item_list.addItem(item)
+
+    def _selected_item_id(self) -> str | None:
+        item = self.item_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _load_item(self) -> None:
+        item_id = self._selected_item_id()
+        if item_id is None:
+            return
+        for row_id, row in self._items():
+            if row_id == item_id:
+                prov = next(
+                    p for p in (row.provenance or []) if isinstance(p, dict) and p.get("extracted")
+                )
+                loc = prov["locator"]
+                self.locator_label.setText(
+                    f"Locator: document:{loc['document_id']}#{loc['document_version_id']} "
+                    f"sha256:{loc['sha256'][:12]} lines {loc['line_start']}-{loc['line_end']}"
+                )
+                text = getattr(row, "content", None) or getattr(row, "instructions", "") or ""
+                self.source_view.setPlainText(prov.get("locator", {}).get("path", "") + "\n" + text)
+                self.draft_view.setPlainText(text)
+                return
+
+    def _decide(self, decision: str) -> None:
+        from ..engineering.source_to_draft import decide_extracted_item
+
+        item_id = self._selected_item_id()
+        if item_id is None or self._record_id is None:
+            self.status_label.setText("Select an extracted item first.")
+            return
+        try:
+            with _workspace_session(self._workspace()) as session:
+                repo, service = _authoring_services(session)
+                if self.kind_combo.currentText() == "program":
+                    record = repo.get_program(self._record_id)
+                else:
+                    record = repo.get_procedure(self._record_id)
+                decide_extracted_item(
+                    service,
+                    self.kind_combo.currentText(),
+                    self._record_id,
+                    item_id,
+                    decision=decision,
+                    expected_updated_at=service._token(record),
+                    by=self.author_input.text().strip() or "ui-actor",
+                    edited_text=self.edit_input.text() if decision == "edit" else None,
+                )
+            self._reload_items()
+            self.status_label.setText(f"Decision '{decision}' recorded with locator provenance.")
+        except Exception as exc:  # noqa: BLE001
+            self.status_label.setText(f"Error: {exc}")

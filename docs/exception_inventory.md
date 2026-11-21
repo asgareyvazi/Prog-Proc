@@ -90,33 +90,35 @@ to be found by somebody else.
 | `src/drilling_intelligence/search/index.py` | 1401 | `Exception` | reported | a malformed expression means "use the scan" |
 | `src/drilling_intelligence/search/service.py` | 615 | `Exception` | reported | a malformed record is reported, not fatal |
 | `src/drilling_intelligence/search/service.py` | 699 | `Exception` | reported | an unwritable data directory must not stop the app |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 135 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 212 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 452 | `Exception` | reported | surfaced to the user, not swallowed |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 568 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 593 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 616 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 657 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 682 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 705 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 722 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 742 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 765 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 971 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 980 | `Exception` | suppressed | no workspace yet |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1054 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1092 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1115 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 141 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 218 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 458 | `Exception` | reported | surfaced to the user, not swallowed |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 574 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 599 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 622 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 663 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 688 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 711 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 728 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 748 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 771 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 979 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 988 | `Exception` | suppressed | no workspace yet |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1079 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1117 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/authoring_pages.py` | 1140 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1155 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1175 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1165 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1180 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/authoring_pages.py` | 1200 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1225 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1395 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1472 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/controller.py` | 105 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
-| `src/drilling_intelligence/ui/main_window.py` | 1063 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
-| `src/drilling_intelligence/ui/main_window.py` | 1686 | `Exception` | reported | export must not crash the window |
-| `src/drilling_intelligence/ui/main_window.py` | 2921 | `Exception` | reported | keep selection/read rendering usable |
-| `src/drilling_intelligence/ui/main_window.py` | 3114 | `Exception` | reported | preserve read-side selection on capability errors |
+| `src/drilling_intelligence/ui/main_window.py` | 1079 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
+| `src/drilling_intelligence/ui/main_window.py` | 1702 | `Exception` | reported | export must not crash the window |
+| `src/drilling_intelligence/ui/main_window.py` | 2937 | `Exception` | reported | keep selection/read rendering usable |
+| `src/drilling_intelligence/ui/main_window.py` | 3130 | `Exception` | reported | preserve read-side selection on capability errors |
 | `src/drilling_intelligence/ui/worker.py` | 70 | `Exception` | reported | thread boundary reports failures without hiding them |
 | `src/drilling_intelligence/ui/worker.py` | 130 | `Exception` | reported | report unexpected worker failures to the UI |
 | `src/drilling_intelligence/ui/worker.py` | 219 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |
@@ -145,5 +147,5 @@ to be found by somebody else.
 | kind | count |
 | --- | --- |
 | re-raised | 15 |
-| reported | 87 |
+| reported | 89 |
 | suppressed | 29 |

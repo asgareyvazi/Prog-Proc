@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
@@ -506,3 +508,106 @@ def test_create_from_superseded_template_version_is_flagged(qt_app, workspace) -
         repo = EngineeringRepository(session)
         sections = repo.list_program_sections(record.id)
         assert len(sections) == 12, "superseded v1 keeps its own 12-section structure"
+
+
+GOLDEN_NOTE = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "golden_corpus" / "field_note.md"
+)
+
+
+def _register_golden_note(workspace) -> str:
+    """Register the golden-corpus note as a document with one current version."""
+    import hashlib
+    from datetime import datetime
+
+    from drilling_intelligence.documents.repository import DocumentRepository
+
+    raw = GOLDEN_NOTE.read_bytes()
+    with workspace.database.unit_of_work() as session:
+        docs = DocumentRepository(session)
+        document = docs.create_document(
+            workspace_id=None,
+            unscoped=True,  # deliberate golden-corpus test row
+            identity_path="fixtures/golden_corpus/field_note.md",
+            filename="field_note.md",
+            extension=".md",
+            mime_type="text/markdown",
+            size_bytes=len(raw),
+            sha256=hashlib.sha256(raw).hexdigest(),
+            file_modified_at=datetime.now(UTC),
+        )
+        docs.create_version(
+            document,
+            sha256=hashlib.sha256(raw).hexdigest(),
+            source_path=str(GOLDEN_NOTE),
+            size_bytes=len(raw),
+            parser="golden-corpus",
+            parser_version="1",
+            extraction_version="1",
+            origin="NEW",
+            mime_type="text/markdown",
+            source_relative_path=str(GOLDEN_NOTE),
+        )
+        session.flush()
+        return document.id
+
+
+def test_source_extraction_ui_end_to_end(qt_app, workspace) -> None:
+    """Golden corpus: extract -> side-by-side -> accept/edit/reject via UI controls."""
+    from drilling_intelligence.engineering.repository import EngineeringRepository
+    from drilling_intelligence.ui.controller import ReviewController
+
+    document_id = _register_golden_note(workspace)
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Source Extraction")
+        page = window.source_extraction_page
+        page.kind_combo.setCurrentText("program")
+        page.document_input.setText(document_id)
+        page.title_input.setText("Golden draft")
+        page.code_input.setText("UI-GOLD")
+        page.extract_button.click()
+        assert "DRAFT created" in page.status_label.text()
+        assert page.item_list.count() == 6  # 3 headings + 3 paragraphs in the golden note
+
+        # Accept item 0
+        page.item_list.setCurrentRow(0)
+        assert "Locator:" in page.locator_label.text()
+        assert "lines" in page.locator_label.text()
+        page.accept_button.click()
+        assert "'accept'" in page.status_label.text()
+
+        # Edit item 1
+        page.item_list.setCurrentRow(1)
+        page.edit_input.setText("Author-edited mud weight text from controlled source.")
+        page.edit_button.click()
+        assert "'edit'" in page.status_label.text()
+
+        # Reject item 2
+        page.item_list.setCurrentRow(2)
+        page.reject_button.click()
+        assert "'reject'" in page.status_label.text()
+
+        with workspace.database.read_only() as session:
+            repo = EngineeringRepository(session)
+            record = repo.get_program(page._record_id)
+            sections = {s.sequence: s for s in repo.list_program_sections(record.id)}
+            assert sections[1].completion_state == "SOURCE_PROVIDED"
+            assert (
+                sections[1].source_reference.startswith("document:")
+                and ":L" in sections[1].source_reference
+            )
+            assert sections[2].completion_state == "SOURCE_PROVIDED"
+            assert sections[2].content == "Author-edited mud weight text from controlled source."
+            assert any(
+                isinstance(p, dict) and p.get("decision") == "edited"
+                for p in sections[2].provenance
+            )
+            assert sections[3].completion_state == "EXTRACTED_UNVERIFIED"
+            assert any(
+                isinstance(p, dict) and p.get("decision") == "rejected"
+                for p in sections[3].provenance
+            )
+    finally:
+        window.close()
