@@ -104,6 +104,7 @@ _NAVIGATION = (
     "Intake",
     "Program Builder",
     "Procedure Builder",
+    "Template Library",
     "Daily DDR",
     "Decision",
     "Comparison",
@@ -354,6 +355,7 @@ class MainWindow(QMainWindow):
         self._build_intake_page()
         self._build_program_builder_page()
         self._build_procedure_builder_page()
+        self._build_template_library_page()
         self._build_ddr_page()
         self._build_decision_page()
         self._build_comparison_page()
@@ -472,6 +474,12 @@ class MainWindow(QMainWindow):
         self.intake_preview_tree.setHeaderLabels(["Preview", "Value"])
         layout.addWidget(self.intake_preview_tree, 2)
         self.pages.addWidget(page)
+
+    def _build_template_library_page(self) -> None:
+        from .authoring_pages import TemplateLibraryPage
+
+        self.template_library_page = TemplateLibraryPage(self._current_workspace)
+        self.pages.addWidget(self.template_library_page)
 
     def _build_ddr_page(self) -> None:
         """Manual daily-report authoring linked to candidate operational activities."""

@@ -1221,3 +1221,65 @@ class ProcedureBuilderPage(_AuthoringPageBase):
 
 
 __all__ = ["ProcedureBuilderPage", "ProgramBuilderPage"]
+
+
+class TemplateLibraryPage(QWidget):
+    """Read-only browser for the versioned template families.
+
+    Shows every immutable version per family with CURRENT/SUPERSEDED status. Old template
+    versions are never edited or deleted here; the browser is display-only.
+    """
+
+    def __init__(self, current_workspace: Any) -> None:
+        super().__init__()
+        self._workspace = current_workspace
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel(
+                "<b>Template library</b> — versioned structure-only templates. "
+                "Templates never carry engineering values; old versions are immutable."
+            )
+        )
+        self.family_list = QListWidget()
+        self.family_list.currentItemChanged.connect(lambda *_: self._load_family())
+        layout.addWidget(self.family_list)
+        self.version_list = QListWidget()
+        layout.addWidget(self.version_list)
+        self.detail_label = QLabel("Select a family.")
+        self.detail_label.setWordWrap(True)
+        layout.addWidget(self.detail_label)
+        self.reload_button = QPushButton("Reload")
+        self.reload_button.clicked.connect(self._reload)
+        layout.addWidget(self.reload_button)
+        self._reload()
+
+    def _reload(self) -> None:
+        from ..engineering.templates import list_template_families
+
+        self.family_list.clear()
+        self.version_list.clear()
+        families = list_template_families()
+        for name, fam in sorted(families.items()):
+            item = QListWidgetItem(
+                f"{name} — current v{fam['current_version']} ({len(fam['versions'])} version(s))"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, name)
+            self.family_list.addItem(item)
+
+    def _load_family(self) -> None:
+        from ..engineering.templates import list_template_families
+
+        item = self.family_list.currentItem()
+        self.version_list.clear()
+        if item is None:
+            self.detail_label.setText("Select a family.")
+            return
+        fam = list_template_families()[item.data(Qt.ItemDataRole.UserRole)]
+        for v in fam["versions"]:
+            vitem = QListWidgetItem(f"v{v['version']} [{v['status']}] — {v['note']}")
+            vitem.setData(Qt.ItemDataRole.UserRole, v["version"])
+            self.version_list.addItem(vitem)
+        self.detail_label.setText(
+            f"Family {fam['family']}: {fam['description']} "
+            f"Current version: v{fam['current_version']}. All versions immutable."
+        )

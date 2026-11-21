@@ -450,3 +450,59 @@ def test_procedure_link_stale_and_cross_well_refusal_via_ui(qt_app, workspace) -
         assert ppage2.link_status_label.text() == "STALE"
     finally:
         window.close()
+
+
+def test_template_library_browser_shows_versioned_families(qt_app, workspace) -> None:
+    """The Template Library page lists families with immutable version history."""
+    from drilling_intelligence.ui.controller import ReviewController
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Template Library")
+        page = window.template_library_page
+        assert page.family_list.count() == 2
+        texts = [page.family_list.item(i).text() for i in range(page.family_list.count())]
+        assert any("drilling_program" in t and "current v2" in t for t in texts)
+        page.family_list.setCurrentRow(
+            next(i for i in range(page.family_list.count()) if "drilling_program" in texts[i])
+        )
+        versions = [page.version_list.item(i).text() for i in range(page.version_list.count())]
+        assert any("v1 [SUPERSEDED]" in v for v in versions)
+        assert any("v2 [CURRENT]" in v for v in versions)
+        assert "immutable" in page.detail_label.text()
+    finally:
+        window.close()
+
+
+def test_create_from_superseded_template_version_is_flagged(qt_app, workspace) -> None:
+    """Creating from a SUPERSEDED version is allowed but provenance records the version."""
+    from drilling_intelligence.engineering.authoring import EngineeringAuthoringService
+    from drilling_intelligence.engineering.repository import EngineeringRepository
+    from drilling_intelligence.engineering.templates import create_from_template
+    from drilling_intelligence.wells.repository import WellRepository
+
+    with workspace.database.unit_of_work() as session:
+        wells = WellRepository(session)
+        project = wells.get_or_create_project("UI Block")
+        well = wells.create_well("UI-04", project_id=project.id)
+        well_id = well.id
+        service = EngineeringAuthoringService(session)
+        record = create_from_template(
+            service,
+            "program",
+            "standard_drilling_program",
+            content={"title": "T", "code": "UI-TPL", "author": "a", "well_id": well_id},
+            template_version=1,
+        )
+        session.flush()
+        assert record.provenance == [
+            {
+                "template": "standard_drilling_program",
+                "kind": "structure_only",
+                "template_version": 1,
+            }
+        ]
+        repo = EngineeringRepository(session)
+        sections = repo.list_program_sections(record.id)
+        assert len(sections) == 12, "superseded v1 keeps its own 12-section structure"
