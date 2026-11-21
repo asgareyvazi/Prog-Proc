@@ -19,8 +19,6 @@ from drilling_intelligence.engineering.source_to_draft import (
 )
 from drilling_intelligence.engineering.templates import create_from_template, normalize_kind
 
-pytestmark = pytest.mark.integration
-
 
 def _register_text_document(
     workspace, tmp_path: Path, name: str, content: bytes
