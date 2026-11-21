@@ -2,7 +2,7 @@
 
 **تاریخ اجرای ثبت‌شده:** 2026-10-20 UTC (تاریخ سیستم مأموریت)
 **شاخهٔ مجاز:** `arena/5957b76d-prog-proc` (baseline اولیهٔ تأییدشده: `f73f5d2180d79ef1d1f15f2d0f76caa3c4607ed1`)
-**SHA نهایی این گزارش:** `eafe467b0b203e30230e80af75eb81cd3017d831`
+**SHA نهایی این گزارش:** `405fafa354c642d667083605d832506d664995fa`
 **وضعیت کلی:** **PARTIALLY DONE** — فازهای A–K، Q و مستندسازی انجام و push شدند؛ CI exact-SHA برای SHA نهایی در زمان نوشتن گزارش در حال اجراست؛ پذیرش فیزیکی Windows و OCR واقعی همچنان NOT RUN / NOT QUALIFIED.
 
 > گزارش‌های مأموریت پیشین تاریخی‌اند و شواهدشان فقط به SHAهای همان گزارش‌ها محدود است.
@@ -61,7 +61,7 @@ Suite کامل روی SHA نزدیک نهایی: **2,968 collected / 2,966 passe
 فقط push به `arena/5957b76d-prog-proc` با fast-forward؛ `main` دست‌نخورده.
 
 ## V. Exact-final-SHA CI + replay — IN PROGRESS در زمان نوشتن
-runهای Linux/Windows برای `eafe467` در حال اجرا هستند؛ pins با SHA renew (`ab29ca9`) green شد؛ replay تاریخی روی `f73f5d21` green بود (run `44374986517`).
+runهای Linux/Windows برای `405fafa` در حال اجرا هستند؛ pins با SHA renew (`ab29ca9`) green شد؛ replay تاریخی روی `f73f5d21` green بود (run `44374986517`).
 
 ## W. Closure
-SHA نهایی: `eafe467b0b203e30230e80af75eb81cd3017d831`.
+SHA نهایی: `405fafa354c642d667083605d832506d664995fa`.
