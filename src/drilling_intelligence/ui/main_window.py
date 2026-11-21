@@ -334,22 +334,9 @@ class MainWindow(QMainWindow):
         root.addWidget(self.status_label)
         self.setCentralWidget(central)
         self.navigation.setCurrentRow(0)
-        self.setStyleSheet(
-            """
-            QMainWindow { background: #20242a; color: #e7ebef; }
-            QWidget { color: #e7ebef; }
-            QLineEdit, QComboBox, QTableView, QTreeWidget, QListWidget {
-                background: #292f36; border: 1px solid #48515c; border-radius: 3px;
-                selection-background-color: #345e82;
-            }
-            QPushButton { padding: 5px 10px; }
-            QLabel#workspaceLabel { font-weight: 600; }
-            QLabel#statusLabel { color: #aeb9c4; }
-            QLabel#warningBanner { background: #54441e; padding: 7px; }
-            QGroupBox { border: 1px solid #48515c; margin-top: 9px; padding-top: 8px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 3px; }
-            """
-        )
+        from .design_system import apply_design_system
+
+        apply_design_system(self)
 
     def _build_pages(self) -> None:
         self._build_overview_page()
@@ -420,6 +407,37 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.observations_table, 1)
         self.pages.addWidget(page)
+
+    def _engineering_summary(self) -> str:
+        """Source-backed engineering counts for the overview dashboard (read-only)."""
+        workspace = self.controller.workspace
+        if workspace is None:
+            return ""
+        try:
+            from ..engineering.authoring import EngineeringAuthoringService
+            from ..engineering.repository import EngineeringRepository
+
+            with workspace.database.read_only() as session:
+                repo = EngineeringRepository(session)
+                service = EngineeringAuthoringService(session)
+                programs = repo.list_programs()
+                procedures = repo.list_procedures()
+                linked = sum(
+                    1
+                    for proc in procedures
+                    if service.procedure_program_link(proc.id)["link_status"] == "LINKED"
+                )
+                stale = sum(
+                    1
+                    for proc in procedures
+                    if service.procedure_program_link(proc.id)["link_status"] == "STALE"
+                )
+            return (
+                f"Programs: {len(programs)}   ·   Procedures: {len(procedures)}   ·   "
+                f"Links LINKED: {linked} / STALE: {stale}"
+            )
+        except Exception:  # noqa: BLE001 - dashboard must never break the review view
+            return ""
 
     def _build_intake_page(self) -> None:
         """Persistent local file queue with a non-writing deterministic preview."""
@@ -1758,6 +1776,9 @@ class MainWindow(QMainWindow):
             f"Conflicts: {len(review.conflicts)}   ·   Relations: {len(review.relations)}   ·   "
             f"Plan/actual rows: {len(review.plan_actual)}"
         )
+        engineering = self._engineering_summary()
+        if engineering:
+            count_text += "   ·   " + engineering
         self.overview_counts.setText(count_text)
         self.observations_model.set_rows(
             [{"key": key, "value": value} for key, value in sorted(review.observations.items())]
@@ -3247,7 +3268,9 @@ class MainWindow(QMainWindow):
 
     def _set_status(self, message: str, *, error: bool = False) -> None:
         self.status_label.setText(message)
-        self.status_label.setStyleSheet("color: #f08a8a;" if error else "")
+        from .design_system import error_text_style
+
+        self.status_label.setStyleSheet(error_text_style() if error else "")
 
     def _show_exception(self, category: str, exc: Exception) -> None:
         message = str(exc) or type(exc).__name__
