@@ -731,7 +731,10 @@ def test_synthetic_well_end_to_end_through_qt_only(qt_app, workspace, tmp_path) 
         page.target_depth_unit_input.setText("m")
         page.target_save_button.click()
         page.validate_button.click()
-        assert "structural" in page.status_label.text().lower() or "valid" in page.status_label.text().lower()
+        assert (
+            "structural" in page.status_label.text().lower()
+            or "valid" in page.status_label.text().lower()
+        )
         page.submit_button.click()
         assert "Submitted" in page.status_label.text()
         page.author_input.setText("reviewer-ui")
@@ -781,7 +784,11 @@ def test_synthetic_well_end_to_end_through_qt_only(qt_app, workspace, tmp_path) 
 
             service = EngineeringAuthoringService(session)
             export_record(
-                service, "program", new_program_id, fmt="json", out_path=out,
+                service,
+                "program",
+                new_program_id,
+                fmt="json",
+                out_path=out,
                 redact=page2.redact_combo.currentIndex() == 1,
             )
         assert out.exists()
