@@ -542,3 +542,119 @@ def test_redaction_covers_all_formats_and_nested_paths(session, hierarchy, tmp_p
         # canonical record untouched
         canon = repo.get_program(repo.list_programs()[0].id)
         assert canon.provenance == [{"source_reference": local_path}]
+
+
+def test_template_governance_rejects_mismatched_family_version(session, hierarchy) -> None:
+    """family/version/template mismatch and unknown kinds are refused."""
+    from drilling_intelligence.engineering.templates import (
+        create_from_template,
+        resolve_template_for_create,
+    )
+
+    service = EngineeringAuthoringService(session)
+    # procedure template name with program kind must be refused
+    with pytest.raises(ValidationError, match="unknown program template"):
+        resolve_template_for_create("program", "standard_operational_procedure")
+    # version 1 of drilling_program resolves to the v1 template only
+    with pytest.raises(ValidationError, match="does not belong"):
+        resolve_template_for_create("program", "standard_drilling_program_v2", 1)
+    with pytest.raises(ValidationError, match="no version"):
+        resolve_template_for_create("program", "standard_drilling_program", 99)
+    with pytest.raises(ValidationError, match="kind"):
+        create_from_template(
+            service,
+            "widget",
+            "standard_drilling_program",
+            content={"title": "t", "author": "a"},
+        )
+    # default resolution picks the actual CURRENT version (v2)
+    resolved = resolve_template_for_create("program", "standard_drilling_program_v2")
+    assert resolved["version"] == 2 and resolved["status"] == "CURRENT"
+
+
+def test_extraction_disposition_states_are_explicit(session, hierarchy, tmp_path) -> None:
+    """Pending/accepted/edited/rejected are recorded as explicit provenance events."""
+    import hashlib
+    from datetime import UTC, datetime
+
+    from drilling_intelligence.documents.repository import DocumentRepository
+    from drilling_intelligence.engineering.source_to_draft import (
+        DISPOSITION_ACCEPTED,
+        DISPOSITION_EDITED,
+        DISPOSITION_PENDING,
+        DISPOSITION_REJECTED,
+        create_draft_from_document,
+        decide_extracted_item,
+        extraction_disposition,
+    )
+
+    content = b"# A\n\nalpha\n\n# B\n\nbeta\n\n# C\n\ngamma\n"
+    src = tmp_path / "disp.md"
+    src.write_bytes(content)
+    docs = DocumentRepository(session)
+    doc = docs.create_document(
+        workspace_id=None,
+        unscoped=True,
+        identity_path="fixtures/disp.md",
+        filename="disp.md",
+        extension=".md",
+        mime_type="text/markdown",
+        size_bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        file_modified_at=datetime.now(UTC),
+    )
+    docs.create_version(
+        doc,
+        sha256=hashlib.sha256(content).hexdigest(),
+        source_path=str(src),
+        size_bytes=len(content),
+        parser="t",
+        parser_version="1",
+        extraction_version="1",
+        origin="NEW",
+        mime_type="text/markdown",
+        source_relative_path=str(src),
+    )
+    session.flush()
+    service = EngineeringAuthoringService(session)
+    record = create_draft_from_document(
+        service,
+        "program",
+        doc.id,
+        content={"title": "D", "code": "DISP-1", "author": "a"},
+        extract=True,
+        workspace_root=tmp_path,
+    )
+    session.flush()
+    repo = EngineeringRepository(session)
+    sections = repo.list_program_sections(record.id)
+    assert len(sections) == 6
+    assert all(extraction_disposition(s.provenance) == DISPOSITION_PENDING for s in sections)
+
+    def decide(idx: int, decision: str, text: str | None = None) -> list:
+        row = repo.get_program(record.id)
+        decide_extracted_item(
+            service,
+            "program",
+            record.id,
+            sections[idx].id,
+            decision=decision,
+            expected_updated_at=service._token(row),
+            by="reviewer",
+            edited_text=text,
+        )
+        session.flush()
+        return repo.list_program_sections(record.id)
+
+    sections = decide(0, "accept")
+    sections = decide(1, "edit", "author replacement text")
+    sections = decide(2, "reject")
+    assert extraction_disposition(sections[0].provenance) == DISPOSITION_ACCEPTED
+    assert extraction_disposition(sections[1].provenance) == DISPOSITION_EDITED
+    assert sections[1].content == "author replacement text"
+    # original locator retained after edit
+    loc = next(p for p in sections[1].provenance if isinstance(p, dict) and p.get("extracted"))
+    assert loc["locator"]["sha256"] == hashlib.sha256(content).hexdigest()
+    assert extraction_disposition(sections[2].provenance) == DISPOSITION_REJECTED
+    # rejected content was never promoted
+    assert sections[2].completion_state == "EXTRACTED_UNVERIFIED"

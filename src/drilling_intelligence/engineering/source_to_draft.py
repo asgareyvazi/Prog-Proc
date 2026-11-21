@@ -24,6 +24,40 @@ from .templates import (
     normalize_kind,
 )
 
+#: Explicit disposition states for extracted candidates (Phase D). The disposition is
+#: discoverable from provenance events, never inferred from a source-reference string.
+DISPOSITION_PENDING = "PENDING_REVIEW"
+DISPOSITION_ACCEPTED = "ACCEPTED"
+DISPOSITION_EDITED = "EDITED"
+DISPOSITION_REJECTED = "REJECTED"
+DISPOSITION_SUPERSEDED = "SUPERSEDED"
+DISPOSITIONS = (
+    DISPOSITION_PENDING,
+    DISPOSITION_ACCEPTED,
+    DISPOSITION_EDITED,
+    DISPOSITION_REJECTED,
+    DISPOSITION_SUPERSEDED,
+)
+
+
+def extraction_disposition(provenance: Any) -> str:
+    """Return the latest explicit disposition recorded on an item, or PENDING_REVIEW."""
+    if not isinstance(provenance, list):
+        return DISPOSITION_PENDING
+    decision = None
+    for entry in provenance:
+        if isinstance(entry, dict) and entry.get("decision") in {
+            DISPOSITION_ACCEPTED.lower(),
+            DISPOSITION_EDITED.lower(),
+            DISPOSITION_REJECTED.lower(),
+            DISPOSITION_SUPERSEDED.lower(),
+        }:
+            decision = entry["decision"]
+    if decision is None:
+        return DISPOSITION_PENDING
+    return decision.upper()
+
+
 #: Only plain-text sources are really extracted here. Binary/OCR pipelines (MinerU etc.)
 #: remain NOT QUALIFIED, so a binary source is refused rather than pretending to parse it.
 _TEXT_SUFFIXES = {".txt", ".md", ".markdown"}
@@ -207,12 +241,16 @@ def decide_extracted_item(
             changes["completion_state"] = "SOURCE_PROVIDED"
             locator = next(p for p in provenance if isinstance(p, dict) and p.get("extracted"))
             changes["source_reference"] = _locator_ref(locator["locator"])
+            provenance = [*provenance, {"decision": "accepted", "by": by}]
         elif decision == "edit":
             changes["content"] = str(edited_text)
             changes["completion_state"] = "SOURCE_PROVIDED"
             locator = next(p for p in provenance if isinstance(p, dict) and p.get("extracted"))
             changes["source_reference"] = _locator_ref(locator["locator"])
-            provenance = [*provenance, {"decision": "edited", "by": by}]
+            provenance = [
+                *provenance,
+                {"decision": "edited", "by": by},
+            ]  # original locator retained
         else:
             provenance = [*provenance, {"decision": "rejected", "by": by}]
         changes["provenance"] = provenance

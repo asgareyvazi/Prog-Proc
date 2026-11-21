@@ -499,13 +499,12 @@ def test_create_from_superseded_template_version_is_flagged(qt_app, workspace) -
             template_version=1,
         )
         session.flush()
-        assert record.provenance == [
-            {
-                "template": "standard_drilling_program",
-                "kind": "structure_only",
-                "template_version": 1,
-            }
-        ]
+        prov = record.provenance[0]
+        assert prov["template"] == "standard_drilling_program"
+        assert prov["template_version"] == 1
+        assert prov["template_status"] == "SUPERSEDED"
+        assert prov["template_family"] == "drilling_program"
+        assert len(prov["template_definition_hash"]) == 64
         repo = EngineeringRepository(session)
         sections = repo.list_program_sections(record.id)
         assert len(sections) == 12, "superseded v1 keeps its own 12-section structure"

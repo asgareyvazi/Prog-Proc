@@ -190,6 +190,69 @@ def normalize_kind(kind: Any) -> str:
     return normalized
 
 
+def template_definition_hash(spec: dict[str, Any]) -> str:
+    """Stable content hash of an immutable template definition."""
+    import hashlib
+    import json
+
+    return hashlib.sha256(
+        json.dumps(spec, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def resolve_template_for_create(
+    kind: str, template_name: str, template_version: int | None = None
+) -> dict[str, Any]:
+    """Resolve and cross-check family/version/template for creation.
+
+    The resolved family version must map to exactly the selected template name; arbitrary
+    mismatched combinations are refused. Returns the version record plus the definition
+    hash for provenance.
+    """
+    singular = normalize_kind(kind)
+    family = "drilling_program" if singular == "program" else "operational_procedure"
+    catalog = PROGRAM_TEMPLATES if singular == "program" else PROCEDURE_TEMPLATES
+    if template_name not in catalog:
+        raise ValidationError(
+            f"unknown {singular} template", available=sorted(catalog), got=template_name
+        )
+    if template_version is None:
+        # An explicit template name selects the version that actually contains it; when the
+        # name is the CURRENT template this is the current version, and when it is a
+        # superseded name it is that superseded version (explicit selection only).
+        matches = [
+            v for v in TEMPLATE_FAMILIES[family]["versions"] if v["template"] == template_name
+        ]
+        if not matches:
+            raise ValidationError(
+                "template name does not belong to any version of this family",
+                family=family,
+                requested_template=template_name,
+            )
+        version = max(matches, key=lambda v: v["version"])
+        if version["status"] != "CURRENT" and any(
+            v["status"] == "CURRENT" and v["template"] == template_name
+            for v in TEMPLATE_FAMILIES[family]["versions"]
+        ):
+            version = next(
+                v
+                for v in TEMPLATE_FAMILIES[family]["versions"]
+                if v["template"] == template_name and v["status"] == "CURRENT"
+            )
+    else:
+        version = resolve_template_version(family, template_version)
+        if version["template"] != template_name:
+            raise ValidationError(
+                "template name does not belong to the resolved family version",
+                family=family,
+                version=version["version"],
+                resolved_template=version["template"],
+                requested_template=template_name,
+            )
+    spec = (PROGRAM_TEMPLATES if singular == "program" else PROCEDURE_TEMPLATES)[template_name]
+    return {**version, "definition_hash": template_definition_hash(spec), "spec": spec}
+
+
 def list_templates(kind: str) -> dict[str, Any]:
     kind = normalize_kind(kind)
     if kind == "program":
@@ -219,12 +282,9 @@ def create_from_template(
     instructions and no acceptance criteria.
     """
     singular = normalize_kind(kind)
-    catalog = PROGRAM_TEMPLATES if singular == "program" else PROCEDURE_TEMPLATES
-    if template_name not in catalog:
-        raise ValidationError(
-            f"unknown {singular} template", available=sorted(catalog), got=template_name
-        )
-    spec = catalog[template_name]
+    resolved = resolve_template_for_create(singular, template_name, template_version)
+    spec = resolved["spec"]
+    family = "drilling_program" if singular == "program" else "operational_procedure"
     author_key = "author" if singular == "program" else "created_by"
     title = content.get("title")
     author = content.get(author_key)
@@ -236,8 +296,11 @@ def create_from_template(
     provenance = [
         {
             "template": template_name,
+            "template_family": family,
+            "template_version": resolved["version"],
+            "template_status": resolved["status"],
+            "template_definition_hash": resolved["definition_hash"],
             "kind": "structure_only",
-            **({"template_version": int(template_version)} if template_version is not None else {}),
         }
     ]
     if singular == "program":

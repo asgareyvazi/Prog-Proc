@@ -1422,6 +1422,7 @@ class SourceExtractionPage(QWidget):
                 rows = repo.list_program_sections(self._record_id)
             else:
                 rows = repo.list_procedure_steps(self._record_id)
+
         out = []
         for row in rows:
             prov = row.provenance or []
@@ -1431,10 +1432,13 @@ class SourceExtractionPage(QWidget):
 
     def _reload_items(self) -> None:
         self.item_list.clear()
+        from ..engineering.source_to_draft import extraction_disposition
+
         for item_id, row in self._items():
             title = getattr(row, "title", "")
             state = getattr(row, "completion_state", "EXTRACTED")
-            item = QListWidgetItem(f"{row.sequence}. {title} [{state}]")
+            disposition = extraction_disposition(row.provenance)
+            item = QListWidgetItem(f"{row.sequence}. {title} [{state} / {disposition}]")
             item.setData(Qt.ItemDataRole.UserRole, item_id)
             self.item_list.addItem(item)
 

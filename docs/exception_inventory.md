@@ -111,7 +111,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/ui/authoring_pages.py` | 1213 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/authoring_pages.py` | 1243 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/authoring_pages.py` | 1413 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1490 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1494 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/controller.py` | 105 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
 | `src/drilling_intelligence/ui/main_window.py` | 439 | `Exception` | suppressed | dashboard must never break the review view |
