@@ -131,7 +131,9 @@ def _validate_replay(
         raise ReplayError("replay did not preserve the historical failed workflow outcome")
     if report.get("run_completion_verified") is not True:
         raise ReplayError("historical completed-run evidence was not verified")
-    if report.get("workflow_conclusion_verified") is not False:
+    if report.get("workflow_conclusion_verified") is not True:
+        raise ReplayError("the historical workflow conclusion was not observed/verified")
+    if report.get("workflow_conclusion") != "failure":
         raise ReplayError("the failed historical workflow was incorrectly represented as success")
     if report.get("coverage_complete") is not True:
         raise ReplayError("canonical test-universe coverage is incomplete")

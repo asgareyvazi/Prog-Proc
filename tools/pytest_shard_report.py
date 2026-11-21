@@ -913,8 +913,11 @@ def aggregate(
         "run_attempt": str(attempt),
         "run_status_at_aggregation": run_status,
         "run_completion_verified": run_status == "completed",
+        # "verified" means the final conclusion was observed - NOT that it was success.
+        # A completed run whose conclusion is "failure" is verified as failure.
         "workflow_conclusion_verified": run_status == "completed"
-        and run.get("conclusion") == "success",
+        and run.get("conclusion") is not None,
+        "workflow_conclusion": run.get("conclusion") if run_status == "completed" else None,
         "workflow_run_completion_pending": run_status != "completed",
         "platform": "Ubuntu 26.04",
         "python_version": manifest["python_version"],
@@ -953,6 +956,7 @@ def aggregate(
         f"- Branch: `{branch}`; workflow ref: `{workflow_ref}`",
         f"- Exact SHA: `{expected_sha}`",
         f"- Workflow conclusion verified: {'yes' if report['workflow_conclusion_verified'] else 'no — final run status must be checked after this report job'}",
+        f"- Workflow conclusion: `{report.get('workflow_conclusion')}` (observed value; a verified failure is not a success)",
         f"- Python: `{manifest['python_version']}`; pytest: `{manifest['pytest_version']}`; Qt enabled: **yes**",
         f"- Collection manifest SHA-256: `{manifest['manifest_sha256']}`",
         f"- Complete universe: {len(nodeids)} collected; {len(seen)} assigned and executed exactly once",
@@ -997,6 +1001,7 @@ def _failure_report(args: argparse.Namespace, status: str, message: str) -> None
         },
         "run_completion_verified": False,
         "workflow_conclusion_verified": False,
+        "workflow_conclusion": None,
         "repository": args.repository,
         "workflow": args.workflow,
         "branch": args.branch,

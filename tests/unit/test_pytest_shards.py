@@ -538,6 +538,7 @@ def test_in_progress_is_incomplete_unless_report_job_explicitly_allows_pending_r
     result = _run(other, pending, allow_in_progress_run=True)
     assert result["status"] == "PASS"
     assert result["workflow_conclusion_verified"] is False
+    assert result["workflow_conclusion"] is None
     assert result["workflow_run_completion_pending"] is True
     assert result["run_completion_verified"] is False
     assert result["coverage_complete"] is True
@@ -867,6 +868,7 @@ def test_exact_postgresql_boundary_skip_is_counted_and_qualifies_the_complete_ru
     )
     assert result["run_completion_verified"] is True
     assert result["workflow_conclusion_verified"] is True
+    assert result["workflow_conclusion"] == "success"
     assert result["overall_status"] == "PASS"
     assert result["skips"] == [
         {

@@ -50,7 +50,8 @@ def _evidence() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         "status": "FAIL",
         "overall_status": "FAIL",
         "run_completion_verified": True,
-        "workflow_conclusion_verified": False,
+        "workflow_conclusion_verified": True,
+        "workflow_conclusion": "failure",
         "coverage_complete": True,
         "exact_once_assignment": True,
         "exact_once_execution": True,
@@ -373,7 +374,7 @@ def test_original_failed_report_artifact_is_bound_to_original_run_and_totals() -
             0
         ].update(reason=_REASON),
         lambda report, downloads, run: report["issues"].clear(),
-        lambda report, downloads, run: report.update(workflow_conclusion_verified=True),
+        lambda report, downloads, run: report.update(workflow_conclusion="success"),
     ],
     ids=(
         "missing-artifact",
