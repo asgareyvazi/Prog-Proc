@@ -60,8 +60,13 @@ Suite کامل روی SHA نزدیک نهایی: **2,968 collected / 2,966 passe
 ## U. Commit/push — DONE
 فقط push به `arena/5957b76d-prog-proc` با fast-forward؛ `main` دست‌نخورده.
 
-## V. Exact-final-SHA CI + replay — IN PROGRESS در زمان نوشتن
-runهای Linux/Windows برای `405fafa` در حال اجرا هستند؛ pins با SHA renew (`ab29ca9`) green شد؛ replay تاریخی روی `f73f5d21` green بود (run `44374986517`).
+## V. Exact-final-SHA CI + replay — DONE (green)
+برای SHA نهایی `154a520ccecb00548324fd1a20b65701ee991c78`:
+- Linux push run `44897372058` (attempt 3): **success** — همهٔ jobها (test cp3.11/cp3.14, Ubuntu 26.04, shardهای 0-3, reconciliation, workbench offscreen).
+- Windows push run `44897372050`: **success** — همهٔ jobها incl. windows test cp3.11/cp3.14 و offscreen UI.
+- Historical replay (workflow_dispatch run `44905357277` روی همین SHA): job «Replay historical Linux shard evidence (read-only)» **success**؛ run تاریخی `43695755434` روی `114173a4` همچنان failure ثبت‌شده است و replay green ๆ آن را تغییر نمی‌دهد.
+- Pins check: با commit `ab29ca9` (renewUSH pinned sets) green شد؛ failure قبلی independent از کد بود (نسخه‌های جدید PyPI).
+- خطای collection در jobهای بدون ui extra (importGui top-level PySide6 در تست UI) با commit `eafe467` برطرف شد.
 
 ## W. Closure
 SHA کار: `405fafa354c642d667083605d832506d664995fa` (commit حامل گزارش در `git log`).
