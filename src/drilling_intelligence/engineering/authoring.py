@@ -299,12 +299,18 @@ class EngineeringAuthoringService:
             "planned_npt_hours",
             "planned_cost_value",
             "planned_cost_unit",
+            "provenance",
         }
         unknown = sorted(set(changes) - allowed)
         if unknown:
             raise ValidationError(
                 "unknown Program target field(s)", fields=unknown, allowed=sorted(allowed)
             )
+        if "provenance" in changes and (
+            not isinstance(changes["provenance"], list)
+            or any(not isinstance(item, dict) for item in changes["provenance"])
+        ):
+            raise ValidationError("Program target provenance must be an array of objects")
         self._require_text_fields(
             changes,
             set(),

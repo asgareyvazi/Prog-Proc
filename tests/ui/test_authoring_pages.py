@@ -64,22 +64,25 @@ def test_program_builder_creates_edits_and_persists_a_real_program(qt_app, works
         page.section_save_button.click()
         assert "Section saved" in page.status_label.text()
 
-        # Add one planned target through the service (the UI target editor is a later phase).
-        from drilling_intelligence.engineering.authoring import EngineeringAuthoringService
-
-        with workspace.database.unit_of_work() as session:
-            repo = EngineeringRepository(session)
-            service = EngineeringAuthoringService(session)
-            program = repo.get_program(page._program_id)
-            service.add_program_target(
-                program.id,
-                expected_updated_at=service._token(program),
-                name="12 1/4 in",
-                hole_size_in=12.25,
-                planned_depth_md_value=1800.0,
-                planned_depth_md_unit="m",
-            )
-        page._load_record_into_editor()
+        # Add and edit the planned target entirely through UI controls.
+        page.target_add_button.click()
+        assert page.target_list.count() == 1
+        page.target_list.setCurrentRow(0)
+        page.target_name_input.setText("12 1/4 in")
+        page.target_hole_input.setText("12.25")
+        page.target_casing_input.setText("9 5/8 in casing")
+        page.target_formation_input.setText("Fixture Sand")
+        page.target_depth_value_input.setText("1800.5")
+        page.target_depth_unit_input.setText("m")
+        page.target_duration_input.setText("9.5")
+        page.target_mud_value_input.setText("1.42")
+        page.target_mud_unit_input.setText("kg/m3")
+        page.target_npt_input.setText("4")
+        page.target_cost_value_input.setText("98000")
+        page.target_cost_unit_input.setText("EUR")
+        page.target_source_input.setText("FIXTURE-SRC-UI")
+        page.target_save_button.click()
+        assert "Target saved" in page.status_label.text()
         page.validate_button.click()
         assert "ready_for_review=True" in page.status_label.text()
 
@@ -93,6 +96,22 @@ def test_program_builder_creates_edits_and_persists_a_real_program(qt_app, works
             assert sections[0].title == "Design basis"
             assert sections[0].completion_state == "SOURCE_PROVIDED"
             assert sections[0].content == "UI-entered fixture basis text."
+            targets = repo.list_targets(program.id)
+            assert len(targets) == 1
+            t = targets[0]
+            assert t.name == "12 1/4 in"
+            assert t.hole_size_in == 12.25
+            assert t.casing_program == "9 5/8 in casing"
+            assert t.formation_top == "Fixture Sand"
+            assert t.planned_depth_md_value == 1800.5
+            assert t.planned_depth_md_unit == "m"
+            assert t.planned_duration_days == 9.5
+            assert t.planned_mud_weight_value == 1.42
+            assert t.planned_mud_weight_unit == "kg/m3"
+            assert t.planned_npt_hours == 4.0
+            assert t.planned_cost_value == 98000.0
+            assert t.planned_cost_unit == "EUR"
+            assert t.provenance == [{"source_reference": "FIXTURE-SRC-UI"}]
     finally:
         window.close()
 
@@ -187,7 +206,16 @@ def test_procedure_builder_steps_and_exact_program_link(qt_app, workspace) -> No
         page.step_title_input.setText("Notify driller")
         page.step_instructions_input.setPlainText("UI fixture instruction text.")
         page.step_role_input.setText("driller")
+        page.step_equipment_input.setPlainText("radio, PPE")
+        page.step_preconditions_input.setPlainText("permit signed")
+        page.step_parameters_input.setPlainText(
+            '[{"name": "WOB", "value": 25, "unit": "kN", "source_reference": "FIXTURE-SRC-UI"}]'
+        )
+        page.step_expected_input.setPlainText("acknowledged")
         page.step_acceptance_input.setPlainText("Acknowledged in log.")
+        page.step_evidence_input.setPlainText("DDR entry")
+        page.step_safety_input.setPlainText("fixture control text from source")
+        page.step_contingency_input.setPlainText("stop and escalate per source")
         page.step_hold_check.setCurrentIndex(1)
         page.step_source_input.setText("FIXTURE-SRC-UI")
         page.step_save_button.click()
@@ -206,8 +234,20 @@ def test_procedure_builder_steps_and_exact_program_link(qt_app, workspace) -> No
             assert procedure.program_revision_id == program_id
             assert procedure.program_link_status == "LINKED"
             steps = repo.list_procedure_steps(procedure.id)
-            assert steps[0].hold_point is True
-            assert steps[0].responsible_role == "driller"
+            step = steps[0]
+            assert step.hold_point is True
+            assert step.responsible_role == "driller"
+            assert step.equipment == "radio, PPE"
+            assert step.preconditions == "permit signed"
+            assert step.parameters == [
+                {"name": "WOB", "value": 25, "unit": "kN", "source_reference": "FIXTURE-SRC-UI"}
+            ]
+            assert step.expected_result == "acknowledged"
+            assert step.acceptance_criteria == "Acknowledged in log."
+            assert step.evidence_required == "DDR entry"
+            assert step.safety_controls == "fixture control text from source"
+            assert step.contingency == "stop and escalate per source"
+            assert step.source_reference == "FIXTURE-SRC-UI"
             assert service.procedure_program_link(procedure.id)["link_status"] == "LINKED"
     finally:
         window.close()
@@ -222,5 +262,80 @@ def test_builder_pages_present_without_workspace(qt_app) -> None:
         assert window.program_builder_page.record_list.count() == 0
         _select_navigation_page(window, "Procedure Builder")
         assert window.procedure_builder_page.record_list.count() == 0
+    finally:
+        window.close()
+
+
+def test_program_lifecycle_through_ui_buttons(qt_app, workspace) -> None:
+    """Submit -> review -> approve -> revise -> compare, all via Qt controls."""
+    from drilling_intelligence.engineering.repository import EngineeringRepository
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.wells.repository import WellRepository
+
+    with workspace.database.unit_of_work() as session:
+        wells = WellRepository(session)
+        project = wells.get_or_create_project("UI Block")
+        well = wells.create_well("UI-03", project_id=project.id)
+        well_id = well.id
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Program Builder")
+        page = window.program_builder_page
+        page.title_input.setText("Lifecycle program")
+        page.code_input.setText("UI-LC-1")
+        page.author_input.setText("author-ui")
+        page.well_input.setText(well_id)
+        page.template_combo.setCurrentIndex(0)  # blank; sections added via UI below
+        page.create_button.click()
+        program_id = page._program_id
+
+        page.section_add_button.click()
+        page.section_list.setCurrentRow(0)
+        page.section_title_input.setText("Design basis")
+        page.section_state_combo.setCurrentText("SOURCE_PROVIDED")
+        page.section_source_input.setText("SRC-UI")
+        page.section_content_input.setPlainText("UI lifecycle basis.")
+        page.section_save_button.click()
+        page.target_add_button.click()
+        page.target_list.setCurrentRow(0)
+        page.target_name_input.setText("8 1/2 in")
+        page.target_hole_input.setText("8.5")
+        page.target_depth_value_input.setText("2200")
+        page.target_depth_unit_input.setText("m")
+        page.target_save_button.click()
+
+        page.submit_button.click()
+        assert "Submitted" in page.status_label.text()
+        page.author_input.setText("reviewer-ui")  # distinct declared reviewer attribution
+        page.note_input.setText("structural check done")
+        page.review_button.click()
+        assert "Review recorded" in page.status_label.text()
+        page.note_input.setText("approved as exact revision")
+        page.approve_button.click()
+        assert "APPROVED" in page.status_label.text()
+
+        with workspace.database.read_only() as session:
+            repo = EngineeringRepository(session)
+            approved = repo.get_program(program_id)
+            assert str(approved.status) == "APPROVED"
+
+        page.revise_button.click()
+        assert "DRAFT revision created" in page.status_label.text()
+        with workspace.database.read_only() as session:
+            repo = EngineeringRepository(session)
+            new_rev = repo.get_program(page._program_id)
+            # revise creates a new current revision; the page now shows it
+            assert new_rev.revision == 2
+            assert str(new_rev.status) == "DRAFT"
+            old = repo.get_program(program_id)
+            assert old.is_current is False
+            # supersession is mechanical; the approved content stays readable and unchanged
+            assert str(old.status) in {"APPROVED", "SUPERSEDED"}
+            assert old.approved_at is not None
+
+        page.compare_button.click()
+        assert "Comparison" in page.status_label.text()
     finally:
         window.close()

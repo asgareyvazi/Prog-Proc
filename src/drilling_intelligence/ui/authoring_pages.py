@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -113,6 +114,104 @@ class _AuthoringPageBase(QWidget):
             )
         self._load_record_into_editor()
 
+    # -- lifecycle actions (shared by Program and Procedure pages) ----------
+    def _actor(self) -> str:
+        return self.author_input.text().strip() or "ui-actor"
+
+    def _lifecycle_call(self, fn, *args, **kwargs) -> bool:
+        """Run one lifecycle transition; return True only if it actually succeeded."""
+        if self._program_id is None:
+            self._notify("Open a record first.")
+            return False
+        try:
+            with _workspace_session(self._workspace()) as session:
+                repo, service = self._services(session)
+                row = (
+                    repo.get_program(self._program_id)
+                    if self.kind == "program"
+                    else repo.get_procedure(self._program_id)
+                )
+                fn(service, repo, row, session, *args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            self._error(exc)
+            return False
+        self._refresh_records()
+        self._load_record_into_editor()
+        return True
+
+    def _do_review(self) -> None:
+        note = self.note_input.text().strip() or "reviewed via UI"
+
+        def call(service, repo, row, session):
+            service.record_review(
+                self.kind,
+                row.id,
+                expected_updated_at=self._token(session, row),
+                by=self._actor(),
+                note=note,
+            )
+
+        if self._lifecycle_call(call):
+            self._notify(
+                "Review recorded (declared attribution; structural review is not approval)."
+            )
+
+    def _do_decide(self, approved: bool) -> None:
+        reason = self.note_input.text().strip() or ("approve" if approved else "reject")
+
+        def call(service, repo, row, session):
+            service.decide(
+                self.kind,
+                row.id,
+                expected_updated_at=self._token(session, row),
+                by=self._actor(),
+                approved=approved,
+                reason=reason,
+            )
+
+        if self._lifecycle_call(call):
+            self._notify(
+                f"Decision recorded: {'APPROVED' if approved else 'REJECTED'} (exact revision)."
+            )
+
+    def _do_revise(self) -> None:
+        def call(service, repo, row, session):
+            new_row = (
+                repo.revise_program(row.id, by=self._actor())
+                if self.kind == "program"
+                else repo.revise_procedure(row.id, by=self._actor())
+            )
+            self._program_id = new_row.id  # open the new DRAFT revision in the editor
+
+        if self._lifecycle_call(call):
+            self._notify("New DRAFT revision created; approval is not inherited.")
+
+    def _do_compare_previous(self) -> None:
+        if self._program_id is None:
+            self._notify("Open a record first.")
+            return
+        try:
+            with _workspace_session(self._workspace()) as session:
+                repo, service = self._services(session)
+                row = (
+                    repo.get_program(self._program_id)
+                    if self.kind == "program"
+                    else repo.get_procedure(self._program_id)
+                )
+                old_id = row.supersedes_id
+                if not old_id:
+                    self._notify("This revision has no predecessor to compare with.")
+                    return
+                result = (
+                    service.compare_programs(old_id, row.id)
+                    if self.kind == "program"
+                    else service.compare_procedures(old_id, row.id)
+                )
+            changed = result.get("changed", result)
+            self._notify(f"Comparison vs rev predecessor: {str(changed)[:200]}")
+        except Exception as exc:  # noqa: BLE001
+            self._error(exc)
+
     # -- subclass hooks ----------------------------------------------------
     def _build_ui(self) -> None:
         raise NotImplementedError
@@ -178,8 +277,9 @@ class ProgramBuilderPage(_AuthoringPageBase):
         left_layout.addWidget(self.open_button)
         splitter.addWidget(left)
 
-        middle = QWidget()
-        mid_layout = QVBoxLayout(middle)
+        middle = QTabWidget()
+        sections_tab = QWidget()
+        mid_layout = QVBoxLayout(sections_tab)
         mid_layout.addWidget(QLabel("Sections (table of contents)"))
         self.section_list = QListWidget()
         self.section_list.currentItemChanged.connect(lambda *_: self._load_section())
@@ -193,8 +293,26 @@ class ProgramBuilderPage(_AuthoringPageBase):
         self.section_down_button.clicked.connect(lambda: self._move_section(1))
         for button in (self.section_add_button, self.section_up_button, self.section_down_button):
             section_buttons.addWidget(button)
-        mid_layout.addWidget(QWidget())
         mid_layout.addLayout(section_buttons)
+        middle.addTab(sections_tab, "Sections")
+
+        targets_tab = QWidget()
+        targets_layout = QVBoxLayout(targets_tab)
+        targets_layout.addWidget(QLabel("Planned targets (explicit values and units)"))
+        self.target_list = QListWidget()
+        self.target_list.currentItemChanged.connect(lambda *_: self._load_target())
+        targets_layout.addWidget(self.target_list)
+        target_buttons = QHBoxLayout()
+        self.target_add_button = QPushButton("Add target")
+        self.target_add_button.clicked.connect(self._add_target)
+        self.target_up_button = QPushButton("Move up")
+        self.target_up_button.clicked.connect(lambda: self._move_target(-1))
+        self.target_down_button = QPushButton("Move down")
+        self.target_down_button.clicked.connect(lambda: self._move_target(1))
+        for button in (self.target_add_button, self.target_up_button, self.target_down_button):
+            target_buttons.addWidget(button)
+        targets_layout.addLayout(target_buttons)
+        middle.addTab(targets_tab, "Targets")
         splitter.addWidget(middle)
 
         right = QWidget()
@@ -216,6 +334,45 @@ class ProgramBuilderPage(_AuthoringPageBase):
         self.section_save_button.clicked.connect(self._save_section)
         editor_form.addRow(self.section_save_button)
         right_layout.addWidget(editor_box)
+
+        target_box = QGroupBox("Target editor")
+        target_form = QFormLayout(target_box)
+        self.target_name_input = QLineEdit()
+        self.target_hole_input = QLineEdit()
+        self.target_hole_input.setPlaceholderText("in")
+        self.target_casing_input = QLineEdit()
+        self.target_formation_input = QLineEdit()
+        self.target_depth_value_input = QLineEdit()
+        self.target_depth_unit_input = QLineEdit()
+        self.target_depth_unit_input.setPlaceholderText("explicit unit, e.g. m")
+        self.target_duration_input = QLineEdit()
+        self.target_duration_input.setPlaceholderText("days")
+        self.target_mud_value_input = QLineEdit()
+        self.target_mud_unit_input = QLineEdit()
+        self.target_mud_unit_input.setPlaceholderText("explicit unit, e.g. ppg")
+        self.target_npt_input = QLineEdit()
+        self.target_npt_input.setPlaceholderText("hours")
+        self.target_cost_value_input = QLineEdit()
+        self.target_cost_unit_input = QLineEdit()
+        self.target_cost_unit_input.setPlaceholderText("currency/unit, e.g. USD")
+        self.target_source_input = QLineEdit()
+        target_form.addRow("Target name", self.target_name_input)
+        target_form.addRow("Hole size (in)", self.target_hole_input)
+        target_form.addRow("Casing program", self.target_casing_input)
+        target_form.addRow("Formation top", self.target_formation_input)
+        target_form.addRow("Planned depth value", self.target_depth_value_input)
+        target_form.addRow("Depth unit", self.target_depth_unit_input)
+        target_form.addRow("Duration (days)", self.target_duration_input)
+        target_form.addRow("Mud weight value", self.target_mud_value_input)
+        target_form.addRow("MW unit", self.target_mud_unit_input)
+        target_form.addRow("NPT allowance (h)", self.target_npt_input)
+        target_form.addRow("Cost value", self.target_cost_value_input)
+        target_form.addRow("Cost currency/unit", self.target_cost_unit_input)
+        target_form.addRow("Source reference", self.target_source_input)
+        self.target_save_button = QPushButton("Save target")
+        self.target_save_button.clicked.connect(self._save_target)
+        target_form.addRow(self.target_save_button)
+        right_layout.addWidget(target_box)
         splitter.addWidget(right)
         root.addWidget(splitter, 1)
 
@@ -224,10 +381,33 @@ class ProgramBuilderPage(_AuthoringPageBase):
         self.validate_button.clicked.connect(self._validate)
         self.submit_button = QPushButton("Submit for review")
         self.submit_button.clicked.connect(self._submit)
+        self.review_button = QPushButton("Review")
+        self.review_button.clicked.connect(self._do_review)
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.clicked.connect(lambda: self._do_decide(True))
+        self.reject_button = QPushButton("Reject")
+        self.reject_button.clicked.connect(lambda: self._do_decide(False))
+        self.revise_button = QPushButton("Revise (new DRAFT)")
+        self.revise_button.clicked.connect(self._do_revise)
+        self.compare_button = QPushButton("Compare vs predecessor")
+        self.compare_button.clicked.connect(self._do_compare_previous)
         self.export_button = QPushButton("Export…")
         self.export_button.clicked.connect(self._export)
-        for button in (self.validate_button, self.submit_button, self.export_button):
+        for button in (
+            self.validate_button,
+            self.submit_button,
+            self.review_button,
+            self.approve_button,
+            self.reject_button,
+            self.revise_button,
+            self.compare_button,
+            self.export_button,
+        ):
             actions.addWidget(button)
+        actions.addWidget(QLabel("Note/reason"))
+        self.note_input = QLineEdit()
+        self.note_input.setPlaceholderText("reasoned note (required by review/decision)")
+        actions.addWidget(self.note_input)
         root.addLayout(actions)
         self.status_label = QLabel("No Program selected.")
         root.addWidget(self.status_label)
@@ -284,10 +464,157 @@ class ProgramBuilderPage(_AuthoringPageBase):
             item = QListWidgetItem(f"{s.sequence}. {s.title} [{s.completion_state}]")
             item.setData(Qt.ItemDataRole.UserRole, s.id)
             self.section_list.addItem(item)
+        targets = repo.list_targets(self._program_id)
+        self.target_list.clear()
+        for t in targets:
+            item = QListWidgetItem(
+                f"{t.sequence}. {t.name or '-'} — depth "
+                f"{t.planned_depth_md_value if t.planned_depth_md_value is not None else '-'} "
+                f"{t.planned_depth_md_unit or ''}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, t.id)
+            self.target_list.addItem(item)
         self._notify(
             f"{self._record.code or '-'} rev {self._record.revision} — {self._record.status}"
             + (" (current)" if self._record.is_current else " (historical)")
         )
+
+    # -- target editor -----------------------------------------------------
+    @staticmethod
+    def _num(text: str) -> float | None:
+        text = text.strip()
+        if not text:
+            return None
+        value = float(text)  # ValueError surfaces as a validation error below
+        return value
+
+    def _selected_target_id(self) -> str | None:
+        item = self.target_list.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _load_target(self) -> None:
+        target_id = self._selected_target_id()
+        if target_id is None or self._program_id is None:
+            return
+        with _workspace_session(self._workspace()) as session:
+            repo, _service = self._services(session)
+            targets = {t.id: t for t in repo.list_targets(self._program_id)}
+        t = targets.get(target_id)
+        if t is None:
+            return
+        self.target_name_input.setText(t.name or "")
+        self.target_hole_input.setText("" if t.hole_size_in is None else str(t.hole_size_in))
+        self.target_casing_input.setText(t.casing_program or "")
+        self.target_formation_input.setText(t.formation_top or "")
+        self.target_depth_value_input.setText(
+            "" if t.planned_depth_md_value is None else str(t.planned_depth_md_value)
+        )
+        self.target_depth_unit_input.setText(t.planned_depth_md_unit or "")
+        self.target_duration_input.setText(
+            "" if t.planned_duration_days is None else str(t.planned_duration_days)
+        )
+        self.target_mud_value_input.setText(
+            "" if t.planned_mud_weight_value is None else str(t.planned_mud_weight_value)
+        )
+        self.target_mud_unit_input.setText(t.planned_mud_weight_unit or "")
+        self.target_npt_input.setText(
+            "" if t.planned_npt_hours is None else str(t.planned_npt_hours)
+        )
+        self.target_cost_value_input.setText(
+            "" if t.planned_cost_value is None else str(t.planned_cost_value)
+        )
+        self.target_cost_unit_input.setText(t.planned_cost_unit or "")
+        source = ""
+        for entry in t.provenance or []:
+            if isinstance(entry, dict) and entry.get("source_reference"):
+                source = str(entry["source_reference"])
+                break
+        self.target_source_input.setText(source)
+
+    def _target_fields(self) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            "name": self.target_name_input.text().strip(),
+            "hole_size_in": self._num(self.target_hole_input.text()),
+            "casing_program": self.target_casing_input.text().strip() or None,
+            "formation_top": self.target_formation_input.text().strip() or None,
+            "planned_depth_md_value": self._num(self.target_depth_value_input.text()),
+            "planned_depth_md_unit": self.target_depth_unit_input.text().strip(),
+            "planned_duration_days": self._num(self.target_duration_input.text()),
+            "planned_mud_weight_value": self._num(self.target_mud_value_input.text()),
+            "planned_mud_weight_unit": self.target_mud_unit_input.text().strip(),
+            "planned_npt_hours": self._num(self.target_npt_input.text()),
+            "planned_cost_value": self._num(self.target_cost_value_input.text()),
+            "planned_cost_unit": self.target_cost_unit_input.text().strip(),
+        }
+        source = self.target_source_input.text().strip()
+        fields["provenance"] = [{"source_reference": source}] if source else []
+        return fields
+
+    def _add_target(self) -> None:
+        if self._program_id is None:
+            self._notify("Open or create a Program first.")
+            return
+        try:
+            with _workspace_session(self._workspace()) as session:
+                repo, service = self._services(session)
+                program = repo.get_program(self._program_id)
+                service.add_program_target(
+                    program.id,
+                    expected_updated_at=self._token(session, program),
+                    name=f"Target {self.target_list.count() + 1}",
+                )
+            self._load_record_into_editor()
+            self._notify("Target added (DRAFT).")
+        except Exception as exc:  # noqa: BLE001
+            self._error(exc)
+
+    def _save_target(self) -> None:
+        target_id = self._selected_target_id()
+        if target_id is None or self._program_id is None:
+            self._notify("Select a target to save.")
+            return
+        try:
+            fields = self._target_fields()
+        except ValueError:
+            self._notify("Error: numeric fields must be finite numbers (no NaN/Infinity/bool).")
+            return
+        try:
+            with _workspace_session(self._workspace()) as session:
+                repo, service = self._services(session)
+                program = repo.get_program(self._program_id)
+                service.update_program_target(
+                    program.id,
+                    target_id,
+                    expected_updated_at=self._token(session, program),
+                    changes=fields,
+                )
+            self._load_record_into_editor()
+            self._notify("Target saved.")
+        except Exception as exc:  # noqa: BLE001
+            self._error(exc)
+
+    def _move_target(self, delta: int) -> None:
+        target_id = self._selected_target_id()
+        if target_id is None or self._program_id is None:
+            return
+        try:
+            with _workspace_session(self._workspace()) as session:
+                repo, service = self._services(session)
+                program = repo.get_program(self._program_id)
+                targets = repo.list_targets(self._program_id)
+                ordered = [t.id for t in targets]
+                index = ordered.index(target_id)
+                new_index = max(0, min(len(ordered) - 1, index + delta))
+                if new_index != index:
+                    ordered.insert(new_index, ordered.pop(index))
+                    service.reorder_program_targets(
+                        program.id,
+                        expected_updated_at=self._token(session, program),
+                        ordered_ids=ordered,
+                    )
+            self._load_record_into_editor()
+        except Exception as exc:  # noqa: BLE001
+            self._error(exc)
 
     def _selected_section_id(self) -> str | None:
         item = self.section_list.currentItem()
@@ -519,14 +846,32 @@ class ProcedureBuilderPage(_AuthoringPageBase):
         self.step_title_input = QLineEdit()
         self.step_instructions_input = QTextEdit()
         self.step_role_input = QLineEdit()
+        self.step_equipment_input = QTextEdit()
+        self.step_preconditions_input = QTextEdit()
+        self.step_parameters_input = QTextEdit()
+        self.step_parameters_input.setPlaceholderText(
+            'strict JSON array, e.g. [{"name":"WOB","value":25,"unit":"kN",'
+            '"source_reference":"SRC-1"}]'
+        )
+        self.step_expected_input = QTextEdit()
         self.step_acceptance_input = QTextEdit()
+        self.step_evidence_input = QTextEdit()
+        self.step_safety_input = QTextEdit()
+        self.step_contingency_input = QTextEdit()
         self.step_hold_check = QComboBox()
         self.step_hold_check.addItems(["no", "yes (HOLD POINT)"])
         self.step_source_input = QLineEdit()
         editor_form.addRow("Title", self.step_title_input)
         editor_form.addRow("Instructions", self.step_instructions_input)
         editor_form.addRow("Responsible role", self.step_role_input)
+        editor_form.addRow("Equipment", self.step_equipment_input)
+        editor_form.addRow("Preconditions", self.step_preconditions_input)
+        editor_form.addRow("Parameters (JSON)", self.step_parameters_input)
+        editor_form.addRow("Expected result", self.step_expected_input)
         editor_form.addRow("Acceptance criteria", self.step_acceptance_input)
+        editor_form.addRow("Evidence required", self.step_evidence_input)
+        editor_form.addRow("Safety controls", self.step_safety_input)
+        editor_form.addRow("Contingency", self.step_contingency_input)
         editor_form.addRow("Hold point", self.step_hold_check)
         editor_form.addRow("Source reference", self.step_source_input)
         self.step_save_button = QPushButton("Save step")
@@ -556,10 +901,33 @@ class ProcedureBuilderPage(_AuthoringPageBase):
         self.validate_button.clicked.connect(self._validate)
         self.submit_button = QPushButton("Submit for review")
         self.submit_button.clicked.connect(self._submit)
+        self.review_button = QPushButton("Review")
+        self.review_button.clicked.connect(self._do_review)
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.clicked.connect(lambda: self._do_decide(True))
+        self.reject_button = QPushButton("Reject")
+        self.reject_button.clicked.connect(lambda: self._do_decide(False))
+        self.revise_button = QPushButton("Revise (new DRAFT)")
+        self.revise_button.clicked.connect(self._do_revise)
+        self.compare_button = QPushButton("Compare vs predecessor")
+        self.compare_button.clicked.connect(self._do_compare_previous)
         self.export_button = QPushButton("Export…")
         self.export_button.clicked.connect(self._export)
-        for button in (self.validate_button, self.submit_button, self.export_button):
+        for button in (
+            self.validate_button,
+            self.submit_button,
+            self.review_button,
+            self.approve_button,
+            self.reject_button,
+            self.revise_button,
+            self.compare_button,
+            self.export_button,
+        ):
             actions.addWidget(button)
+        actions.addWidget(QLabel("Note/reason"))
+        self.note_input = QLineEdit()
+        self.note_input.setPlaceholderText("reasoned note (required by review/decision)")
+        actions.addWidget(self.note_input)
         root.addLayout(actions)
         self.status_label = QLabel("No Procedure selected.")
         root.addWidget(self.status_label)
@@ -649,10 +1017,21 @@ class ProcedureBuilderPage(_AuthoringPageBase):
         s = steps.get(step_id)
         if s is None:
             return
+        import json as _json
+
         self.step_title_input.setText(s.title)
         self.step_instructions_input.setPlainText(s.instructions or "")
         self.step_role_input.setText(s.responsible_role or "")
+        self.step_equipment_input.setPlainText(s.equipment or "")
+        self.step_preconditions_input.setPlainText(s.preconditions or "")
+        self.step_parameters_input.setPlainText(
+            _json.dumps(s.parameters, ensure_ascii=False) if s.parameters else ""
+        )
+        self.step_expected_input.setPlainText(s.expected_result or "")
         self.step_acceptance_input.setPlainText(s.acceptance_criteria or "")
+        self.step_evidence_input.setPlainText(s.evidence_required or "")
+        self.step_safety_input.setPlainText(s.safety_controls or "")
+        self.step_contingency_input.setPlainText(s.contingency or "")
         self.step_hold_check.setCurrentIndex(1 if s.hold_point else 0)
         self.step_source_input.setText(s.source_reference or "")
 
@@ -684,6 +1063,10 @@ class ProcedureBuilderPage(_AuthoringPageBase):
             with _workspace_session(self._workspace()) as session:
                 repo, service = self._services(session)
                 procedure = repo.get_procedure(self._program_id)
+                import json as _json
+
+                params_text = self.step_parameters_input.toPlainText().strip()
+                parameters = _json.loads(params_text) if params_text else []
                 service.update_procedure_step(
                     procedure.id,
                     step_id,
@@ -692,7 +1075,14 @@ class ProcedureBuilderPage(_AuthoringPageBase):
                         "title": self.step_title_input.text(),
                         "instructions": self.step_instructions_input.toPlainText(),
                         "responsible_role": self.step_role_input.text() or None,
+                        "equipment": self.step_equipment_input.toPlainText() or None,
+                        "preconditions": self.step_preconditions_input.toPlainText() or None,
+                        "parameters": parameters,
+                        "expected_result": self.step_expected_input.toPlainText() or None,
                         "acceptance_criteria": self.step_acceptance_input.toPlainText() or None,
+                        "evidence_required": self.step_evidence_input.toPlainText() or None,
+                        "safety_controls": self.step_safety_input.toPlainText() or None,
+                        "contingency": self.step_contingency_input.toPlainText() or None,
                         "hold_point": self.step_hold_check.currentIndex() == 1,
                         "source_reference": self.step_source_input.text() or None,
                     },

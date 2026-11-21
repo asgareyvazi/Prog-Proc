@@ -227,6 +227,8 @@ TARGET_FIELDS: frozenset[str] = frozenset(
         "planned_npt_hours",
         "planned_cost_value",
         "planned_cost_unit",
+        "provenance",
+        "attributes",
     }
 )
 
