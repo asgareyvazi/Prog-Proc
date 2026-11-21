@@ -895,6 +895,8 @@ class ProcedureBuilderPage(_AuthoringPageBase):
         link_layout.addWidget(self.link_button)
         link_layout.addWidget(self.link_status_label)
         root.addWidget(link_box)
+        self.link_impact_label = QLabel("Link impact: NONE — no exact Program revision is linked.")
+        root.addWidget(self.link_impact_label)
 
         actions = QHBoxLayout()
         self.validate_button = QPushButton("Validate (structural only)")
@@ -998,6 +1000,23 @@ class ProcedureBuilderPage(_AuthoringPageBase):
             item.setData(Qt.ItemDataRole.UserRole, s.id)
             self.step_list.addItem(item)
         self.link_status_label.setText(str(link.get("link_status", "NONE")))
+        status = str(link.get("link_status", "NONE"))
+        if status == "STALE":
+            self.link_impact_label.setText(
+                "Link impact: STALE — the linked Program revision is superseded. "
+                "Review the linked revision's diff before relying on this procedure; "
+                "the link is never auto-updated."
+            )
+        elif status == "LINKED":
+            self.link_impact_label.setText(
+                f"Link impact: LINKED to Program {link.get('program_code') or ''} "
+                f"rev {link.get('program_revision')} [{link.get('program_status')}] "
+                "(exact revision; no automatic relinking)."
+            )
+        else:
+            self.link_impact_label.setText(
+                "Link impact: NONE — no exact Program revision is linked."
+            )
         self._notify(
             f"{self._record.code or '-'} rev {self._record.revision} — {self._record.status}"
             + (" (current)" if self._record.is_current else " (historical)")

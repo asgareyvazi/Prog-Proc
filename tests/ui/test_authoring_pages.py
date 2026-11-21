@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from PySide6.QtCore import Qt
 
 pytestmark = pytest.mark.ui
 
@@ -337,5 +338,115 @@ def test_program_lifecycle_through_ui_buttons(qt_app, workspace) -> None:
 
         page.compare_button.click()
         assert "Comparison" in page.status_label.text()
+    finally:
+        window.close()
+
+
+def _make_program_with_target(qt_app, workspace, code: str, well_id: str, depth: float) -> str:
+    """Create a minimal valid DRAFT program through the Program Builder UI."""
+    from drilling_intelligence.ui.controller import ReviewController
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Program Builder")
+        page = window.program_builder_page
+        page.title_input.setText(f"Program {code}")
+        page.code_input.setText(code)
+        page.author_input.setText("author-ui")
+        page.well_input.setText(well_id)
+        page.template_combo.setCurrentIndex(0)
+        page.create_button.click()
+        program_id = page._program_id
+        page.section_add_button.click()
+        page.section_list.setCurrentRow(0)
+        page.section_title_input.setText("Design basis")
+        page.section_state_combo.setCurrentText("SOURCE_PROVIDED")
+        page.section_source_input.setText("SRC-UI")
+        page.section_content_input.setPlainText("UI basis.")
+        page.section_save_button.click()
+        page.target_add_button.click()
+        page.target_list.setCurrentRow(0)
+        page.target_name_input.setText("8 1/2 in")
+        page.target_hole_input.setText("8.5")
+        page.target_depth_value_input.setText(str(depth))
+        page.target_depth_unit_input.setText("m")
+        page.target_save_button.click()
+        return program_id
+    finally:
+        window.close()
+
+
+def _select_record_by_id(list_widget, record_id: str) -> None:
+    for row in range(list_widget.count()):
+        item = list_widget.item(row)
+        if item.data(Qt.ItemDataRole.UserRole) == record_id:
+            list_widget.setCurrentRow(row)
+            return
+    raise AssertionError(f"record {record_id} not present in list")
+
+
+def test_procedure_link_stale_and_cross_well_refusal_via_ui(qt_app, workspace) -> None:
+    """Exact-revision link: LINKED -> STALE after program revision; cross-well refused."""
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.wells.repository import WellRepository
+
+    with workspace.database.unit_of_work() as session:
+        wells = WellRepository(session)
+        project = wells.get_or_create_project("UI Block")
+        well_a = wells.create_well("UI-A", project_id=project.id)
+        well_b = wells.create_well("UI-B", project_id=project.id)
+        well_a_id, well_b_id = well_a.id, well_b.id
+
+    program_a = _make_program_with_target(qt_app, workspace, "UI-PA", well_a_id, 2000.0)
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Procedure Builder")
+        page = window.procedure_builder_page
+        page.title_input.setText("Procedure A")
+        page.code_input.setText("UI-PR-A")
+        page.author_input.setText("author-ui")
+        page.well_input.setText(well_a_id)
+        page.create_button.click()
+        procedure_id = page._program_id
+
+        page._reload_programs()
+        index = page.program_combo.findData(program_a)
+        assert index >= 0
+        page.program_combo.setCurrentIndex(index)
+        page.link_button.click()
+        assert "Linked to exact Program revision" in page.status_label.text()
+        assert page.link_status_label.text() == "LINKED"
+        assert "exact revision" in page.link_impact_label.text()
+
+        # Revise the program through its UI page -> the procedure link becomes STALE.
+        _select_navigation_page(window, "Program Builder")
+        ppage = window.program_builder_page
+        ppage._refresh_records()
+        _select_record_by_id(ppage.record_list, program_a)
+        ppage.author_input.setText("reviewer-ui")
+        ppage.revise_button.click()
+        assert "DRAFT revision created" in ppage.status_label.text()
+
+        _select_navigation_page(window, "Procedure Builder")
+        ppage2 = window.procedure_builder_page
+        ppage2._refresh_records()
+        _select_record_by_id(ppage2.record_list, procedure_id)
+        assert ppage2.link_status_label.text() == "STALE"
+        assert "STALE" in ppage2.link_impact_label.text()
+        assert "never auto-updated" in ppage2.link_impact_label.text()
+
+        # Cross-well link attempt must be refused by the service through the UI.
+        program_b = _make_program_with_target(qt_app, workspace, "UI-PB", well_b_id, 3000.0)
+        ppage2._reload_programs()
+        index = ppage2.program_combo.findData(program_b)
+        assert index >= 0
+        ppage2.program_combo.setCurrentIndex(index)
+        ppage2.link_button.click()
+        assert "cross-well" in ppage2.status_label.text()
+        # link must remain the previous (stale) one, not the cross-well program
+        assert ppage2.link_status_label.text() == "STALE"
     finally:
         window.close()
