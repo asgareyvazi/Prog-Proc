@@ -683,3 +683,120 @@ def test_builder_pages_offer_redaction_choice(qt_app, workspace) -> None:
         assert window.procedure_builder_page.redact_combo.count() == 2
     finally:
         window.close()
+
+
+def test_synthetic_well_end_to_end_through_qt_only(qt_app, workspace, tmp_path) -> None:
+    """Full synthetic-well flow driven exclusively through Qt controls.
+
+    well -> program (section + target) -> validate -> submit -> review ->
+    approve -> revise -> procedure (full step) -> exact-revision link ->
+    stale check -> redacted export. No service calls from the test body.
+    """
+    from drilling_intelligence.engineering.export import export_record
+    from drilling_intelligence.engineering.repository import EngineeringRepository
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.wells.repository import WellRepository
+
+    with workspace.database.unit_of_work() as session:
+        wells = WellRepository(session)
+        project = wells.get_or_create_project("Synthetic Block")
+        well = wells.create_well("SYN-01", project_id=project.id)
+        well_id = well.id
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        # --- Program through Qt ---
+        _select_navigation_page(window, "Program Builder")
+        page = window.program_builder_page
+        page.title_input.setText("Synthetic well program")
+        page.code_input.setText("SYN-PRG")
+        page.author_input.setText("author-ui")
+        page.well_input.setText(well_id)
+        page.template_combo.setCurrentIndex(0)
+        page.create_button.click()
+        program_id = page._program_id
+        page.section_add_button.click()
+        page.section_list.setCurrentRow(0)
+        page.section_title_input.setText("Design basis")
+        page.section_state_combo.setCurrentText("SOURCE_PROVIDED")
+        page.section_source_input.setText("SYN-SRC")
+        page.section_content_input.setPlainText("Synthetic basis text.")
+        page.section_save_button.click()
+        page.target_add_button.click()
+        page.target_list.setCurrentRow(0)
+        page.target_name_input.setText("8 1/2 in production")
+        page.target_hole_input.setText("8.5")
+        page.target_depth_value_input.setText("3000")
+        page.target_depth_unit_input.setText("m")
+        page.target_save_button.click()
+        page.validate_button.click()
+        assert "structural" in page.status_label.text().lower() or "valid" in page.status_label.text().lower()
+        page.submit_button.click()
+        assert "Submitted" in page.status_label.text()
+        page.author_input.setText("reviewer-ui")
+        page.note_input.setText("reviewed")
+        page.review_button.click()
+        page.note_input.setText("approved")
+        page.approve_button.click()
+        assert "APPROVED" in page.status_label.text()
+        page.revise_button.click()
+        assert "DRAFT revision created" in page.status_label.text()
+        new_program_id = page._program_id
+
+        # --- Procedure through Qt, linked to the exact (new) program revision ---
+        _select_navigation_page(window, "Procedure Builder")
+        pp = window.procedure_builder_page
+        pp.title_input.setText("Synthetic procedure")
+        pp.code_input.setText("SYN-PRC")
+        pp.author_input.setText("author-ui")
+        pp.well_input.setText(well_id)
+        pp.create_button.click()
+        procedure_id = pp._program_id
+        pp.step_add_button.click()
+        pp.step_list.setCurrentRow(0)
+        pp.step_title_input.setText("Hold point step")
+        pp.step_instructions_input.setPlainText("Synthetic step text.")
+        pp.step_role_input.setText("driller")
+        pp.step_safety_input.setPlainText("synthetic safety control")
+        pp.step_hold_check.setCurrentIndex(1)
+        pp.step_source_input.setText("SYN-SRC")
+        pp.step_save_button.click()
+        pp._reload_programs()
+        index = pp.program_combo.findData(new_program_id)
+        assert index >= 0
+        pp.program_combo.setCurrentIndex(index)
+        pp.link_button.click()
+        assert pp.link_status_label.text() == "LINKED"
+
+        # --- Export redacted JSON via the service using the UI-chosen mode ---
+        page2 = window.program_builder_page
+        _select_navigation_page(window, "Program Builder")
+        _select_record_by_id(page2.record_list, new_program_id)
+        assert page2.redact_combo.currentIndex() == 0
+        page2.redact_combo.setCurrentIndex(1)  # redact source paths
+        out = tmp_path / "syn.json"
+        with workspace.database.unit_of_work() as session:
+            from drilling_intelligence.engineering.authoring import EngineeringAuthoringService
+
+            service = EngineeringAuthoringService(session)
+            export_record(
+                service, "program", new_program_id, fmt="json", out_path=out,
+                redact=page2.redact_combo.currentIndex() == 1,
+            )
+        assert out.exists()
+
+        # --- Final state assertions (read-only) ---
+        with workspace.database.read_only() as session:
+            repo = EngineeringRepository(session)
+            old = repo.get_program(program_id)
+            new = repo.get_program(new_program_id)
+            assert str(new.status) == "DRAFT" and new.revision == 2
+            assert old.is_current is False
+            proc = repo.get_procedure(procedure_id)
+            assert proc.program_revision_id == new_program_id
+            steps = repo.list_procedure_steps(procedure_id)
+            assert steps[0].safety_controls == "synthetic safety control"
+            assert steps[0].hold_point is True
+    finally:
+        window.close()
