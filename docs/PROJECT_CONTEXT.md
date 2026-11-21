@@ -2,14 +2,14 @@
 
 ## Snapshot مأموریت جاری — ادامهٔ Program / Procedure
 
-## Snapshot جاری — 2026-11-18 (UTC)، SHA نوک شاخه `b52a917f460492f18f275abacb875bc9735355a4`
+## Snapshot جاری — 2026-10-20 (UTC)، SHA نوک شاخه `0abd8fbc4ac6a0a5f1d41c82e16293c6fb87cf5e`
 
 - Baseline تأییدشدهٔ قبلی: `2dc7ddde7d595729f98e67485449514a277b07fc` — Linux run `44279805151` و Windows run `44279805136` هر دو success (2,951 collected؛ 0 failed)، و historical replay run `44299260397` (job `134784363027`) success با artifact `14425148074`؛ run تاریخی `43695755434` روی `114173a4` همچنان failure ثبت شده است.
 - Migrationهای `0027` و `0028` (لینک دقیق Program↔Procedure revision با NONE/LINKED/STALE و بدون auto-relink) در head هستند؛ head Alembic `0028` است.
 - قابلیت‌های headless: authoring service کامل (sections/targets/steps، freshness token، validate، submit/review/decide، revise، compare)، templateهای فقط‌ساختاری، `draft-from-document` (صرفاً لینک ساختاری به سند — استخراج واقعی محتوا نیست)، و export JSON/HTML/DOCX/PDF با watermark DRAFT، fidelity کامل، unitهای ذخیره‌شده، redaction opt-in (`path-redaction-v1`) و انتشار race-safe no-clobber.
-- Qt: صفحات **Program Builder** و **Procedure Builder** اضافه شدند (`ui/authoring_pages.py`) — ویرایشگر واقعی با persistence؛ ۴ تست offscreen جدید + ۳۱ تست workbench موجود سبز هستند. Screenshots فیزیکی به‌علت فقدان libGL در host هنوز NOT RUN است.
+- Qt: صفحات **Program Builder** و **Procedure Builder** کامل شدند (`ui/authoring_pages.py`) — ویرایشگر Program target با همهٔ champها و واحدها و provenance، ویرایشگر کامل step با equipment/preconditions/پارامترهای JSON/expected result/evidence/safety/contingency، و دکمه‌های lifecycle (validate/submit/review/approve/reject/revise/compare) همگی از طریق کنترل‌های Qt؛ ۵ تست offscreen UI + ۳۶ تست workbench سبز هستند. Screenshots فیزیکی به‌علت فقدان libGL در host هنوز NOT RUN است.
 - `out/performance.json` دست‌نخورده (همان blob.tracked remoto؛ بدون تغییر).
-- CI exact-SHA برای SHA جاری (`b52a917`) در زمان snapshot در حال اجراست؛证据 نهایی در گزارش پایانی مأموریت ثبت می‌شود.
+- CI exact-SHA برای SHA جاری (`0abd8fb`) در زمان snapshot در حال اجراست (Linux run `44875347194`, Windows run `44875347155`)؛ tip قبلی `f73f5d21` با Linux run `44360206371`, Windows run `44360206575`, و replay run `44374986517` (success) qualifای شده بود.证据 نهایی در گزارش پایانی مأموریت ثبت می‌شود.
 
 ## وضعیت تکمیلی مأموریت قبلی — تاریخی؛ superseded by snapshot above
 
