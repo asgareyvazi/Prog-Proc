@@ -7,7 +7,6 @@ from datetime import UTC
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
 
 pytestmark = pytest.mark.ui
 
@@ -380,6 +379,8 @@ def _make_program_with_target(qt_app, workspace, code: str, well_id: str, depth:
 
 
 def _select_record_by_id(list_widget, record_id: str) -> None:
+    from PySide6.QtCore import Qt
+
     for row in range(list_widget.count()):
         item = list_widget.item(row)
         if item.data(Qt.ItemDataRole.UserRole) == record_id:
