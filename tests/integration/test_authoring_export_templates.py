@@ -181,7 +181,7 @@ def test_list_templates_covers_both_kinds() -> None:
     procedures = list_templates("procedures")
     assert "standard_drilling_program" in programs
     assert "standard_operational_procedure" in procedures
-    with pytest.raises(ValidationError, match="must be 'program' or 'procedure'"):
+    with pytest.raises(ValidationError, match="kind must be one of"):
         list_templates("widgets")
 
 

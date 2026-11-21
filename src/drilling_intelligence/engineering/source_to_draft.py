@@ -17,7 +17,12 @@ from typing import Any
 from ..core.errors import ValidationError
 from ..database.models import ProcedureStep, ProgramSection
 from ..documents.repository import DocumentRepository
-from .templates import PROCEDURE_TEMPLATES, PROGRAM_TEMPLATES, STEP_PLACEHOLDER
+from .templates import (
+    PROCEDURE_TEMPLATES,
+    PROGRAM_TEMPLATES,
+    STEP_PLACEHOLDER,
+    normalize_kind,
+)
 
 #: Only plain-text sources are really extracted here. Binary/OCR pipelines (MinerU etc.)
 #: remain NOT QUALIFIED, so a binary source is refused rather than pretending to parse it.
@@ -88,7 +93,29 @@ def extract_candidates(
             "real extraction supports plain-text sources only; binary/OCR extraction is NOT QUALIFIED",
             suffix=path.suffix,
         )
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    # Provenance integrity: verify the PHYSICAL BYTES against the registered version hash
+    # before attributing any extracted text to that version. A replaced or modified file
+    # must be refused, not silently attributed to the old registered SHA.
+    raw_bytes = path.read_bytes()
+    actual_sha = hashlib.sha256(raw_bytes).hexdigest()
+    if actual_sha != version.sha256:
+        raise ValidationError(
+            "source bytes do not match the registered document version; "
+            "register a new document version through the registry workflow instead of "
+            "extracting from stale-version bytes",
+            document_id=document_id,
+            document_version_id=version.id,
+            registered_sha256=version.sha256,
+            actual_sha256=actual_sha,
+        )
+    try:
+        raw = raw_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(
+            "source is not valid UTF-8; refusing to treat replaced bytes as faithful source content",
+            document_id=document_id,
+            document_version_id=version.id,
+        ) from exc
     rel = path.name if workspace_root is None else str(path)
     candidates: list[dict[str, Any]] = []
     for block in _text_blocks(raw):
@@ -99,7 +126,7 @@ def extract_candidates(
             "path": rel,
             "document_id": document_id,
             "document_version_id": version.id,
-            "sha256": version.sha256,
+            "sha256": actual_sha,  # verified against the physical bytes above
             "line_start": block["line_start"],
             "line_end": block["line_end"],
         }
@@ -128,7 +155,7 @@ def extract_candidates(
     return {
         "document_id": document_id,
         "document_version_id": version.id,
-        "sha256": version.sha256,
+        "sha256": actual_sha,
         "candidate_count": len(candidates),
         "candidates": candidates,
     }
@@ -159,8 +186,7 @@ def decide_extracted_item(
     - ``reject`` leaves the item EXTRACTED_UNVERIFIED and records the rejection; nothing is
       silently dropped or silently promoted.
     """
-    kind = str(kind).strip().lower()
-    singular = "program" if kind in {"program", "programs"} else "procedure"
+    singular = normalize_kind(kind)
     decision = str(decision).strip().lower()
     if decision not in {"accept", "edit", "reject"}:
         raise ValidationError("decision must be accept, edit, or reject")
@@ -226,10 +252,7 @@ def create_draft_from_document(
     extract: bool = False,
     workspace_root: _Path | str | None = None,
 ) -> Any:
-    kind = str(kind).strip().lower()
-    singular = "program" if kind in {"program", "programs"} else "procedure"
-    if singular not in {"program", "procedure"}:
-        raise ValidationError("kind must be 'program' or 'procedure'")
+    singular = normalize_kind(kind)
 
     documents = DocumentRepository(service.session)
     document = documents.get(document_id)
@@ -244,6 +267,18 @@ def create_draft_from_document(
                 document_version_id=document_version_id,
             )
 
+    # Pin the effective source version exactly once: when the caller omits it, resolve the
+    # current version here and use that exact ID for the parent record, provenance and all
+    # candidate locators, so no mixed-version draft can be created.
+    if document_version_id is None:
+        _v = DocumentRepository(service.session).version(
+            next(
+                v.id
+                for v in DocumentRepository(service.session).versions_for(document_id)
+                if v.is_current
+            )
+        )
+        document_version_id = _v.id
     extracted: list[dict[str, Any]] | None = None
     if extract:
         extracted = extract_candidates(

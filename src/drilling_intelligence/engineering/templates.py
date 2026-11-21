@@ -113,12 +113,13 @@ PROGRAM_TEMPLATES["standard_drilling_program_v2"] = {
 def list_template_families(kind: str | None = None) -> dict[str, Any]:
     """List template families with their immutable version history."""
     families = TEMPLATE_FAMILIES
-    if kind in {"program", "programs"}:
-        families = {k: v for k, v in families.items() if k == "drilling_program"}
-    elif kind in {"procedure", "procedures"}:
-        families = {k: v for k, v in families.items() if k == "operational_procedure"}
-    elif kind is not None:
-        raise ValidationError("kind must be 'program', 'procedure', or None")
+    if kind is not None:
+        normalized = normalize_kind(kind)
+        families = {
+            k: v
+            for k, v in families.items()
+            if k == ("drilling_program" if normalized == "program" else "operational_procedure")
+        }
     out: dict[str, Any] = {}
     for name, fam in families.items():
         current = max(
@@ -167,9 +168,31 @@ def resolve_template_version(family: str, version: int | None = None) -> dict[st
     return {**chosen, "superseded": chosen["status"] != "CURRENT", "immutable": True}
 
 
+_KIND_ALIASES = {
+    "program": "program",
+    "programs": "program",
+    "procedure": "procedure",
+    "procedures": "procedure",
+}
+
+
+def normalize_kind(kind: Any) -> str:
+    """Strictly normalize a record kind; unknown values are rejected, never defaulted."""
+    if not isinstance(kind, str):
+        raise ValidationError("kind must be a string", got=repr(kind))
+    normalized = _KIND_ALIASES.get(kind.strip().lower())
+    if normalized is None:
+        raise ValidationError(
+            "kind must be one of 'program', 'programs', 'procedure', 'procedures'",
+            got=repr(kind),
+            allowed=sorted(_KIND_ALIASES),
+        )
+    return normalized
+
+
 def list_templates(kind: str) -> dict[str, Any]:
-    kind = str(kind).strip().lower()
-    if kind in {"program", "programs"}:
+    kind = normalize_kind(kind)
+    if kind == "program":
         return {
             name: {
                 "sections": [s[1] for s in spec["sections"]],
@@ -177,9 +200,7 @@ def list_templates(kind: str) -> dict[str, Any]:
             }
             for name, spec in PROGRAM_TEMPLATES.items()
         }
-    if kind in {"procedure", "procedures"}:
-        return dict(PROCEDURE_TEMPLATES)
-    raise ValidationError("kind must be 'program' or 'procedure'")
+    return dict(PROCEDURE_TEMPLATES)
 
 
 def create_from_template(
@@ -197,9 +218,8 @@ def create_from_template(
     ``completion_state=OWNER_DECISION_REQUIRED`` and empty content, steps with empty
     instructions and no acceptance criteria.
     """
-    kind = str(kind).strip().lower()
-    catalog = PROGRAM_TEMPLATES if kind in {"program", "programs"} else PROCEDURE_TEMPLATES
-    singular = "program" if kind in {"program", "programs"} else "procedure"
+    singular = normalize_kind(kind)
+    catalog = PROGRAM_TEMPLATES if singular == "program" else PROCEDURE_TEMPLATES
     if template_name not in catalog:
         raise ValidationError(
             f"unknown {singular} template", available=sorted(catalog), got=template_name
