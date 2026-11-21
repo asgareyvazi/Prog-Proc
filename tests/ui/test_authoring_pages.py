@@ -611,3 +611,75 @@ def test_source_extraction_ui_end_to_end(qt_app, workspace) -> None:
             )
     finally:
         window.close()
+
+
+def test_export_redaction_is_opt_in_and_never_mutates_canonical(
+    qt_app, workspace, tmp_path
+) -> None:
+    """Redacted export redacts paths in the copy only; the canonical record is untouched."""
+    from drilling_intelligence.engineering.authoring import EngineeringAuthoringService
+    from drilling_intelligence.engineering.export import export_record
+    from drilling_intelligence.engineering.repository import EngineeringRepository
+
+    with workspace.database.unit_of_work() as session:
+        repo = EngineeringRepository(session)
+        service = EngineeringAuthoringService(session)
+        program = repo.create_program(
+            title="Redact test",
+            code="UI-RD",
+            author="a",
+            created_by="a",
+            origin="HUMAN",
+            provenance=[{"source_reference": "/home/user/secret/path/plan.docx"}],
+        )
+        token = service._token(program)
+        service.add_program_section(
+            program.id,
+            expected_updated_at=token,
+            sequence=1,
+            section_key="s",
+            title="S",
+            content="body",
+            source_reference="/home/user/secret/path/plan.docx",
+            completion_state="SOURCE_PROVIDED",
+            origin="HUMAN",
+        )
+        session.flush()
+        program_id = program.id
+
+        full = export_record(
+            service, "program", program_id, fmt="json", out_path=tmp_path / "full.json"
+        )
+        redacted = export_record(
+            service,
+            "program",
+            program_id,
+            fmt="json",
+            out_path=tmp_path / "redacted.json",
+            redact=True,
+        )
+
+        full_text = Path(full["path"]).read_text()
+        red_text = Path(redacted["path"]).read_text()
+        assert "/home/user/secret/path/plan.docx" in full_text
+        assert "/home/user/secret/path/plan.docx" not in red_text
+        assert "path-redaction-v1" in red_text
+        # canonical record unchanged by redaction
+        canon = EngineeringRepository(session).get_program(program_id)
+        assert canon.provenance == [{"source_reference": "/home/user/secret/path/plan.docx"}]
+        sections = EngineeringRepository(session).list_program_sections(program_id)
+        assert sections[0].source_reference == "/home/user/secret/path/plan.docx"
+
+
+def test_builder_pages_offer_redaction_choice(qt_app, workspace) -> None:
+    from drilling_intelligence.ui.controller import ReviewController
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Program Builder")
+        assert window.program_builder_page.redact_combo.count() == 2
+        _select_navigation_page(window, "Procedure Builder")
+        assert window.procedure_builder_page.redact_combo.count() == 2
+    finally:
+        window.close()

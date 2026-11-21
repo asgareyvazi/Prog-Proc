@@ -410,6 +410,9 @@ class ProgramBuilderPage(_AuthoringPageBase):
             self.export_button,
         ):
             actions.addWidget(button)
+        self.redact_combo = QComboBox()
+        self.redact_combo.addItems(["full fidelity", "redact source paths (path-redaction-v1)"])
+        actions.addWidget(self.redact_combo)
         actions.addWidget(QLabel("Note/reason"))
         self.note_input = QLineEdit()
         self.note_input.setPlaceholderText("reasoned note (required by review/decision)")
@@ -766,7 +769,14 @@ class ProgramBuilderPage(_AuthoringPageBase):
         try:
             with _workspace_session(self._workspace()) as session:
                 _repo, service = self._services(session)
-                result = export_record(service, "program", self._program_id, fmt=fmt, out_path=path)
+                result = export_record(
+                    service,
+                    "program",
+                    self._program_id,
+                    fmt=fmt,
+                    out_path=path,
+                    redact=self.redact_combo.currentIndex() == 1,
+                )
             self._notify(f"Exported to {result['path']} ({result['format']}).")
         except Exception as exc:  # noqa: BLE001
             self._error(exc)
@@ -932,6 +942,9 @@ class ProcedureBuilderPage(_AuthoringPageBase):
             self.export_button,
         ):
             actions.addWidget(button)
+        self.redact_combo = QComboBox()
+        self.redact_combo.addItems(["full fidelity", "redact source paths (path-redaction-v1)"])
+        actions.addWidget(self.redact_combo)
         actions.addWidget(QLabel("Note/reason"))
         self.note_input = QLineEdit()
         self.note_input.setPlaceholderText("reasoned note (required by review/decision)")
@@ -1219,7 +1232,12 @@ class ProcedureBuilderPage(_AuthoringPageBase):
             with _workspace_session(self._workspace()) as session:
                 _repo, service = self._services(session)
                 result = export_record(
-                    service, "procedure", self._program_id, fmt=fmt, out_path=path
+                    service,
+                    "procedure",
+                    self._program_id,
+                    fmt=fmt,
+                    out_path=path,
+                    redact=self.redact_combo.currentIndex() == 1,
                 )
             self._notify(f"Exported to {result['path']} ({result['format']}).")
         except Exception as exc:  # noqa: BLE001
