@@ -23,6 +23,7 @@ import html
 import json
 import os
 import re
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -536,13 +537,70 @@ def _render_pdf(payload: dict[str, Any], path: Path) -> None:
     doc.close()
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write the complete buffer, looping until every byte is written."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+
+
+def _rename_noreplace(src: Path, dst: Path) -> bool:
+    """Atomically move ``src`` to ``dst`` without ever replacing an existing entry.
+
+    Linux: ``renameat2`` with ``RENAME_NOREPLACE`` (fails with EEXIST if dst exists).
+    Windows: ``os.rename`` already fails atomically when dst exists.
+    Returns False when the platform offers no atomic no-replace rename.
+    """
+    if os.name == "nt":
+        try:
+            src.rename(dst)
+            return True
+        except FileExistsError:
+            raise ValidationError(
+                "refusing to overwrite an existing export (no-clobber)", path=str(dst)
+            ) from None
+        except OSError:
+            return False
+    if sys.platform.startswith("linux"):
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            return False
+        AT_FDCWD = -100
+        RENAME_NOREPLACE = 1
+        renameat2.restype = ctypes.c_int
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        result = renameat2(AT_FDCWD, os.fsencode(src), AT_FDCWD, os.fsencode(dst), RENAME_NOREPLACE)
+        if result == 0:
+            return True
+        err = ctypes.get_errno()
+        if err == errno.EEXIST:
+            raise ValidationError(
+                "refusing to overwrite an existing export (no-clobber)", path=str(dst)
+            ) from None
+        return False
+    return False
+
+
 def _publish_atomic(tmp: Path, target: Path) -> None:
     """Publish ``tmp`` at ``target`` without ever replacing an existing file.
 
-    A hard link is created at the destination: ``os.link`` fails atomically with EEXIST if
-    anything (file, symlink, directory) already occupies the path, so a concurrent creator
-    can never be clobbered. If hard links are unsupported, fall back to claiming the
-    destination with ``O_CREAT|O_EXCL`` before moving the content into place.
+    Preferred path: create a hard link at the destination - ``os.link`` fails atomically
+    with EEXIST if anything (file, symlink, directory) already occupies the path. When hard
+    links are unsupported, fall back to an atomic no-replace rename (renameat2
+    RENAME_NOREPLACE on Linux, os.rename on Windows). The content is always fully written
+    to ``tmp`` BEFORE publication, so no partially written file can ever become visible at
+    the destination. If no atomic no-replace mechanism exists, fail closed instead of
+    publishing into the destination directly.
     """
     try:
         os.link(tmp, target)
@@ -553,17 +611,12 @@ def _publish_atomic(tmp: Path, target: Path) -> None:
             ) from exc
         if exc.errno not in (errno.EPERM, errno.EXDEV, errno.ENOSYS, errno.EOPNOTSUPP):
             raise
-        # Fallback: claim the destination exclusively, then write into the file this call
-        # itself created. The placeholder is removed only if this call created it.
-        data = tmp.read_bytes()
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-        try:
-            os.write(fd, data)
-        except Exception:
-            os.close(fd)
-            target.unlink(missing_ok=True)
-            raise
-        os.close(fd)
+        if not _rename_noreplace(tmp, target):
+            raise ValidationError(
+                "atomic no-clobber publication is unavailable on this filesystem; "
+                "refusing to expose a possibly partial export",
+                path=str(target),
+            ) from exc
     finally:
         tmp.unlink(missing_ok=True)
 

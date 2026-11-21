@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -404,3 +405,140 @@ def test_export_no_clobber_refuses_existing_symlink_and_race(session, hierarchy,
     assert target.read_bytes() == b"concurrent"
     # No stray temp files remain after refusals.
     assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".export-")] == []
+
+
+def _race_worker(target_str: str, payload: bytes, q) -> None:
+    import os
+    import tempfile
+
+    from drilling_intelligence.engineering.export import _publish_atomic
+
+    target = Path(target_str)
+    fd, name = tempfile.mkstemp(dir=str(target.parent), prefix=".race-")
+    try:
+        view = memoryview(payload)
+        while view:
+            n = os.write(fd, view)
+            view = view[n:]
+        os.close(fd)
+        _publish_atomic(Path(name), target)
+        q.put("ok")
+    except Exception as exc:  # noqa: BLE001
+        q.put(f"refused:{type(exc).__name__}")
+
+
+def test_export_publication_race_exactly_one_winner(tmp_path) -> None:
+    """Multi-process race: N processes publish to the same target; exactly one wins."""
+    import multiprocessing as mp
+
+    target = tmp_path / "race.bin"
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    procs = [
+        ctx.Process(target=_race_worker, args=(str(target), bytes([i]) * 100_000, q))
+        for i in range(6)
+    ]
+    for proc in procs:
+        proc.start()
+    results = [q.get(timeout=60) for _ in procs]
+    for proc in procs:
+        proc.join(timeout=60)
+    assert results.count("ok") == 1, results
+    assert target.read_bytes() in [bytes([i]) * 100_000 for i in range(6)]
+    leftovers = [
+        p
+        for p in tmp_path.iterdir()
+        if p.name.startswith(".race-") or p.name.startswith(".export-")
+    ]
+    assert leftovers == []
+
+
+def test_export_publication_refuses_existing_and_symlink(tmp_path) -> None:
+    from drilling_intelligence.engineering.export import _publish_atomic
+
+    target = tmp_path / "taken.bin"
+    target.write_bytes(b"original")
+    src = tmp_path / "s.bin"
+    src.write_bytes(b"new")
+    with pytest.raises(ValidationError, match="no-clobber"):
+        _publish_atomic(src, target)
+    assert target.read_bytes() == b"original"
+
+    link = tmp_path / "link.bin"
+    link.symlink_to(target)
+    src2 = tmp_path / "s2.bin"
+    src2.write_bytes(b"new2")
+    with pytest.raises(ValidationError, match="no-clobber"):
+        _publish_atomic(src2, link)
+    assert target.read_bytes() == b"original"
+    assert link.is_symlink()
+
+
+def test_redaction_covers_all_formats_and_nested_paths(session, hierarchy, tmp_path) -> None:
+    """Redacted JSON/HTML/DOCX/PDF must not leak the local source path anywhere."""
+    local_path = "/home/user/secret/plan.docx"  # synthetic fixture path, not a credential
+    from drilling_intelligence.engineering.authoring import EngineeringAuthoringService
+    from drilling_intelligence.engineering.export import export_record
+
+    service = EngineeringAuthoringService(session)
+    repo = EngineeringRepository(session)
+    program = repo.create_program(
+        title="Redact fmt",
+        code="RD-1",
+        author="a",
+        created_by="a",
+        origin="HUMAN",
+        well_id=hierarchy["well"].id,
+        provenance=[{"source_reference": local_path}],
+    )
+    token = service._token(program)
+    service.add_program_section(
+        program.id,
+        expected_updated_at=token,
+        sequence=1,
+        section_key="s",
+        title="S",
+        content="body",
+        source_reference=local_path,
+        completion_state="SOURCE_PROVIDED",
+        origin="HUMAN",
+    )
+    session.flush()
+    for fmt, suffix in (("json", ".json"), ("html", ".html"), ("docx", ".docx"), ("pdf", ".pdf")):
+        full = export_record(
+            service,
+            "program",
+            repo.list_programs()[0].id,
+            fmt=fmt,
+            out_path=tmp_path / f"full{suffix}",
+        )
+        red = export_record(
+            service,
+            "program",
+            repo.list_programs()[0].id,
+            fmt=fmt,
+            out_path=tmp_path / f"red{suffix}",
+            redact=True,
+        )
+
+        def _blob(path: Path, sfx: str = suffix) -> bytes:
+            data = path.read_bytes()
+            if sfx == ".docx":
+                import zipfile
+
+                with zipfile.ZipFile(path) as zf:
+                    return b"\n".join(zf.read(n) for n in zf.namelist())
+            if sfx == ".pdf":
+                import fitz
+
+                with fitz.open(path) as doc:
+                    return b"\n".join(page.get_text().encode() for page in doc)
+            return data
+
+        full_bytes = _blob(Path(full["path"]))
+        red_bytes = _blob(Path(red["path"]))
+        assert local_path.encode() in full_bytes, fmt
+        assert local_path.encode() not in red_bytes, f"{fmt} redacted export leaked the local path"
+        # canonical record untouched
+        canon = repo.get_program(repo.list_programs()[0].id)
+        assert canon.provenance == [{"source_reference": local_path}]

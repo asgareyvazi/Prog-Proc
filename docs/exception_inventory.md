@@ -18,8 +18,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/database/session.py` | 85 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/database/session.py` | 121 | `Exception` | suppressed | absent table simply means "no data" |
 | `src/drilling_intelligence/documents/registry.py` | 400 | `Exception` | reported | third-party parser boundary |
-| `src/drilling_intelligence/engineering/export.py` | 615 | `Exception` | re-raised |  |
-| `src/drilling_intelligence/engineering/export.py` | 562 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/engineering/export.py` | 668 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/engineering/service.py` | 126 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/evidence/verify.py` | 297 | `Exception` | reported | a malformed record is reported, not fatal |
 | `src/drilling_intelligence/evidence/verify.py` | 192 | `Exception` | reported |  |
@@ -147,6 +146,6 @@ to be found by somebody else.
 
 | kind | count |
 | --- | --- |
-| re-raised | 15 |
+| re-raised | 14 |
 | reported | 89 |
 | suppressed | 30 |
