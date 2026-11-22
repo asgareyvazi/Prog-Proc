@@ -56,5 +56,24 @@ def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS trg_procedure_step_state_update")
     op.execute("DROP TRIGGER IF EXISTS trg_procedure_step_state_insert")
     existing = {col["name"] for col in sa.inspect(op.get_bind()).get_columns("procedure_step")}
-    if "completion_state" in existing:
-        op.drop_column("procedure_step", "completion_state")
+    if "completion_state" not in existing:
+        return
+    # SQLite cannot DROP COLUMN while a CHECK constraint references it, so rebuild the
+    # table without the column (table-copy), preserving every row and the sequence index.
+    op.execute(
+        "CREATE TABLE procedure_step_rebuild AS SELECT "
+        "id, procedure_id, sequence, title, instructions, responsible_role, equipment, "
+        "preconditions, parameters, expected_result, acceptance_criteria, evidence_required, "
+        "hold_point, safety_controls, contingency, source_reference, provenance, "
+        "created_at, updated_at FROM procedure_step"
+    )
+    op.execute("DROP TABLE procedure_step")
+    op.execute("ALTER TABLE procedure_step_rebuild RENAME TO procedure_step")
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_procedure_step_sequence "
+        "ON procedure_step (procedure_id, sequence)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_procedure_step_procedure "
+        "ON procedure_step (procedure_id, sequence)"
+    )
