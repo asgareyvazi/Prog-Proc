@@ -53,7 +53,9 @@ from ..operations.repository import OperationsRepository
 from .repository import EngineeringRepository
 
 __all__ = [
+    "APPROVED_CALCULATION_METHODS",
     "NPT_ROLLUP_METHOD_ID",
+    "execute_calculation",
     "NPT_ROLLUP_METHOD_VERSION",
     "NPT_ROLLUP_PROPERTY",
     "NPT_ROLLUP_UNIT",
@@ -62,6 +64,37 @@ __all__ = [
 
 #: The method this service applies, named so a stored row can be traced back to the code that wrote it.
 NPT_ROLLUP_METHOD_ID = "npt.hours_rollup"
+
+#: The only calculation methods qualified for execution from ANY entry point (Phase Q).
+#: Anything else - invented, remembered, or copied from a report - is refused here, so no
+#: CLI, UI, or service path can run an unapproved formula.
+APPROVED_CALCULATION_METHODS = frozenset({NPT_ROLLUP_METHOD_ID})
+
+
+def execute_calculation(
+    database: Any,
+    *,
+    well_id: str,
+    method_id: str,
+    created_by: str = "system",
+) -> Any:
+    """Execute a calculation only when its method is in the approved registry.
+
+    This is the single gate every entry point must go through; an unapproved method id
+    is refused before any input is read, so no invented engineering formula can run.
+    """
+    from ..core.errors import ValidationError
+
+    if str(method_id or "").strip() not in APPROVED_CALCULATION_METHODS:
+        raise ValidationError(
+            "calculation method is not approved for execution from any entry point",
+            method_id=method_id,
+            approved=sorted(APPROVED_CALCULATION_METHODS),
+        )
+    service = EngineeringService(database=database)
+    calc, _created = service.record_npt_rollup(well_id=well_id, created_by=created_by)
+    return calc
+
 
 #: Bumped when the *arithmetic* changes, never when unrelated code moves.  It is part of the identity, so
 #: a new version is a new result rather than a silent edit of an old one.
