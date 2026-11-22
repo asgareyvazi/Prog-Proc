@@ -2088,6 +2088,11 @@ class ProcedureStep(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("procedure_id", "sequence", name="uq_procedure_step_sequence"),
         CheckConstraint("sequence > 0", name="ck_procedure_step_sequence_positive"),
+        CheckConstraint(
+            "completion_state IN ('MISSING','DRAFT','SOURCE_PROVIDED','EXTRACTED_UNVERIFIED',"
+            "'TECHNICALLY_REVIEWED','APPROVED','NOT_APPLICABLE','OWNER_DECISION_REQUIRED')",
+            name="ck_procedure_step_completion_state",
+        ),
         Index("ix_procedure_step_procedure", "procedure_id", "sequence"),
     )
 
@@ -2109,7 +2114,30 @@ class ProcedureStep(Base, TimestampMixin):
     safety_controls: Mapped[str | None] = mapped_column(Text)
     contingency: Mapped[str | None] = mapped_column(Text)
     source_reference: Mapped[str | None] = mapped_column(String(500))
+    #: Same completion-state vocabulary as ProgramSection so extraction dispositions are
+    #: identical across both record kinds (migration 0029 adds the column to old workspaces).
+    completion_state: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
     provenance: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, default=list)
+
+
+# Migration 0029 adds completion_state to upgraded SQLite workspaces; install the same
+# vocabulary guard for metadata-created (wheel/bootstrap) schemas.
+for _ddl in (
+    "CREATE TRIGGER IF NOT EXISTS trg_procedure_step_state_insert BEFORE INSERT ON procedure_step "
+    "WHEN NEW.completion_state NOT IN ('MISSING','DRAFT','SOURCE_PROVIDED','EXTRACTED_UNVERIFIED',"
+    "'TECHNICALLY_REVIEWED','APPROVED','NOT_APPLICABLE','OWNER_DECISION_REQUIRED') "
+    "BEGIN SELECT RAISE(ABORT, 'invalid procedure step completion state'); END",
+    "CREATE TRIGGER IF NOT EXISTS trg_procedure_step_state_update BEFORE UPDATE OF completion_state "
+    "ON procedure_step WHEN NEW.completion_state NOT IN ('MISSING','DRAFT','SOURCE_PROVIDED',"
+    "'EXTRACTED_UNVERIFIED','TECHNICALLY_REVIEWED','APPROVED','NOT_APPLICABLE',"
+    "'OWNER_DECISION_REQUIRED') "
+    "BEGIN SELECT RAISE(ABORT, 'invalid procedure step completion state'); END",
+):
+    event.listen(
+        ProcedureStep.__table__,
+        "after_create",
+        DDL(_ddl).execute_if(dialect="sqlite"),
+    )
 
 
 class RiskRecord(Base, TimestampMixin):

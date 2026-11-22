@@ -1,0 +1,51 @@
+"""add completion_state to procedure_step (shared extraction disposition state)
+
+Revision ID: 0029
+Revises: 0028
+Create Date: 2026-11-22
+"""
+
+from __future__ import annotations
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "0029"
+down_revision = "0028"
+branch_labels = None
+depends_on = None
+
+_STATES = (
+    "'MISSING','DRAFT','SOURCE_PROVIDED','EXTRACTED_UNVERIFIED',"
+    "'TECHNICALLY_REVIEWED','APPROVED','NOT_APPLICABLE','OWNER_DECISION_REQUIRED'"
+)
+
+
+def upgrade() -> None:
+    if op.get_bind().dialect.name != "sqlite":
+        raise RuntimeError(
+            "ProcedureStep completion-state migration 0029 is qualified for SQLite only; "
+            "PostgreSQL is NOT QUALIFIED"
+        )
+    op.add_column(
+        "procedure_step",
+        sa.Column("completion_state", sa.String(32), nullable=False, server_default="DRAFT"),
+    )
+    # SQLite cannot ALTER a table to add a CHECK constraint; enforce the same vocabulary as
+    # program_section with triggers (models.py installs the same guards for fresh schemas).
+    op.execute(
+        "CREATE TRIGGER IF NOT EXISTS trg_procedure_step_state_insert BEFORE INSERT ON procedure_step "
+        f"WHEN NEW.completion_state NOT IN ({_STATES}) "
+        "BEGIN SELECT RAISE(ABORT, 'invalid procedure step completion state'); END"
+    )
+    op.execute(
+        "CREATE TRIGGER IF NOT EXISTS trg_procedure_step_state_update BEFORE UPDATE OF completion_state "
+        f"ON procedure_step WHEN NEW.completion_state NOT IN ({_STATES}) "
+        "BEGIN SELECT RAISE(ABORT, 'invalid procedure step completion state'); END"
+    )
+
+
+def downgrade() -> None:
+    op.execute("DROP TRIGGER IF EXISTS trg_procedure_step_state_update")
+    op.execute("DROP TRIGGER IF EXISTS trg_procedure_step_state_insert")
+    op.drop_column("procedure_step", "completion_state")

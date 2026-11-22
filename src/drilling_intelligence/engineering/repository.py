@@ -1255,6 +1255,7 @@ class EngineeringRepository:
         safety_controls: str = "",
         contingency: str = "",
         source_reference: str = "",
+        completion_state: str = "DRAFT",
         provenance: Sequence[Mapping[str, Any]] | None = None,
     ) -> ProcedureStep:
         procedure = self.get_procedure(procedure_id)
@@ -1279,6 +1280,7 @@ class EngineeringRepository:
             safety_controls=str(safety_controls or "").strip() or None,
             contingency=str(contingency or "").strip() or None,
             source_reference=str(source_reference or "").strip() or None,
+            completion_state=str(completion_state or "DRAFT"),
             provenance=[dict(item) for item in provenance or ()],
         )
         self.session.add(row)

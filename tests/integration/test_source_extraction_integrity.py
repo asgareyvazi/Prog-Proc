@@ -287,7 +287,7 @@ def test_procedure_disposition_uses_canonical_events(workspace, tmp_path) -> Non
         extraction_disposition,
     )
 
-    doc_id, _ver = _make_doc(
+    doc_id, ver_id = _make_doc(
         workspace, tmp_path, "p.md", b"# S1\n\nalpha\n\n# S2\n\nbeta\n\n# S3\n\ngamma\n"
     )
     with workspace.database.unit_of_work() as session:
@@ -325,9 +325,21 @@ def test_procedure_disposition_uses_canonical_events(workspace, tmp_path) -> Non
         steps = decide(1, "edit", "replacement instructions")
         steps = decide(2, "reject")
         assert extraction_disposition(steps[0].provenance) == DISPOSITION_ACCEPTED
+        assert steps[0].completion_state == "SOURCE_PROVIDED"  # D-01: persisted state
         assert extraction_disposition(steps[1].provenance) == DISPOSITION_EDITED
+        assert steps[1].completion_state == "SOURCE_PROVIDED"
         assert steps[1].instructions == "replacement instructions"
         assert extraction_disposition(steps[2].provenance) == DISPOSITION_REJECTED
+        assert steps[2].completion_state == "EXTRACTED_UNVERIFIED"
+        # D-02: top-level event version id equals the exact registered version id
+        ev = [
+            q
+            for q in steps[0].provenance
+            if isinstance(q, dict) and q.get("event") == "extraction_disposition"
+        ][-1]
+        assert ev["version_id"] == ver_id
+        assert ev["document_id"] == doc_id
+        assert len(ev["sha256"]) == 64
         # canonical event schema present on all three
         for st in steps[:3]:
             ev = [
@@ -342,6 +354,8 @@ def test_procedure_disposition_uses_canonical_events(workspace, tmp_path) -> Non
 
 def test_repeat_decision_policy(workspace, tmp_path) -> None:
     """Allowed re-decisions update state; SUPERSEDED is terminal; history preserved."""
+    import hashlib
+
     from drilling_intelligence.engineering.source_to_draft import (
         DISPOSITION_ACCEPTED,
         DISPOSITION_EDITED,
@@ -351,7 +365,8 @@ def test_repeat_decision_policy(workspace, tmp_path) -> None:
         extraction_disposition,
     )
 
-    doc_id, _ = _make_doc(workspace, tmp_path, "r.md", b"# S1\n\none\n\n# S2\n\ntwo\n")
+    raw = b"# S1\n\none\n\n# S2\n\ntwo\n"
+    doc_id, ver_id = _make_doc(workspace, tmp_path, "r.md", raw)
     with workspace.database.unit_of_work() as session:
         service = _svc(session)
         record = create_draft_from_document(
@@ -412,9 +427,9 @@ def test_repeat_decision_policy(workspace, tmp_path) -> None:
                 by="rev",
                 candidate_id=target.id,
                 document_id=doc_id,
-                version_id="",
-                sha256="",
-                locator={},
+                version_id=ver_id,
+                sha256=hashlib.sha256(raw).hexdigest(),
+                locator={"document_version_id": ver_id},
             ),
         ]
         with pytest.raises(ValidationError, match="forbidden"):

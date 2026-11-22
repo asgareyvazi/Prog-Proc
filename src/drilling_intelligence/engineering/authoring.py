@@ -554,6 +554,7 @@ class EngineeringAuthoringService:
             "safety_controls",
             "contingency",
             "source_reference",
+            "completion_state",
             "provenance",
         }
         unknown = sorted(set(changes) - allowed)

@@ -580,7 +580,8 @@ def test_source_extraction_ui_end_to_end(qt_app, workspace) -> None:
         golden_text = GOLDEN_NOTE.read_text(encoding="utf-8")
         first_line = next(line for line in golden_text.splitlines() if line.strip())
         assert first_line in page.source_view.toPlainText()  # real source bytes displayed
-        assert page.source_view.toPlainText() != page.draft_view.toPlainText() or True
+        # panels are independent: source shows the verified source excerpt header
+        assert page.source_view.toPlainText().startswith("[verified source excerpt")
         page.accept_button.click()
         assert "'accept'" in page.status_label.text()
 
@@ -884,6 +885,115 @@ def test_source_pane_blocked_when_bytes_tampered(qt_app, workspace, tmp_path) ->
         # tamper the physical file
         src.write_bytes(b"# Changed heading\n\nEVIL body\n")
         page.item_list.setCurrentRow(1) if page.item_list.count() > 1 else None
+        page.item_list.setCurrentRow(0)
+        assert "BLOCKED" in page.source_view.toPlainText()
+        assert "no longer match" in page.source_view.toPlainText()
+    finally:
+        window.close()
+
+
+def test_procedure_source_extraction_ui_end_to_end(qt_app, workspace, tmp_path) -> None:
+    """D-05: full UI-driven Procedure journey: extract -> verified source -> decide -> reload -> tamper."""
+    import hashlib
+    from datetime import UTC, datetime
+
+    from drilling_intelligence.documents.repository import DocumentRepository
+    from drilling_intelligence.engineering.repository import EngineeringRepository
+    from drilling_intelligence.ui.controller import ReviewController
+
+    content = b"# Step A\n\ndo alpha carefully\n\n# Step B\n\ndo beta\n\n# Step C\n\ndo gamma\n"
+    src = tmp_path / "proc_src.md"
+    src.write_bytes(content)
+    with workspace.database.unit_of_work() as session:
+        docs = DocumentRepository(session)
+        document = docs.create_document(
+            workspace_id=None,
+            unscoped=True,
+            identity_path="fixtures/proc_src.md",
+            filename="proc_src.md",
+            extension=".md",
+            mime_type="text/markdown",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            file_modified_at=datetime.now(UTC),
+        )
+        ver = docs.create_version(
+            document,
+            sha256=hashlib.sha256(content).hexdigest(),
+            source_path=str(src),
+            size_bytes=len(content),
+            parser="t",
+            parser_version="1",
+            extraction_version="1",
+            origin="NEW",
+            mime_type="text/markdown",
+            source_relative_path=str(src),
+        )
+        session.flush()
+        document_id, version_id = document.id, ver.id
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Source Extraction")
+        page = window.source_extraction_page
+        page._workspace_root = lambda: tmp_path
+        page.kind_combo.setCurrentText("procedure")
+        page.document_input.setText(document_id)
+        page.title_input.setText("Proc UI draft")
+        page.code_input.setText("UI-PROC")
+        page.extract_button.click()
+        assert "DRAFT created" in page.status_label.text()
+        assert page.item_list.count() == 6
+
+        # select first candidate: verified source pane shows real bytes + sha prefix
+        page.item_list.setCurrentRow(0)
+        assert "verified source excerpt" in page.source_view.toPlainText()
+        assert "Step A" in page.source_view.toPlainText()
+        assert version_id[:8] in page.locator_label.text() or "sha256" in page.locator_label.text()
+        assert "PENDING_REVIEW" in page.locator_label.text()
+
+        # accept via UI
+        page.accept_button.click()
+        assert "ACCEPTED" in page.locator_label.text()
+        # edit via UI: draft changes, verified source does not
+        page.item_list.setCurrentRow(1)
+        source_before = page.source_view.toPlainText()
+        page.edit_input.setText("Edited instruction text by author.")
+        page.edit_button.click()
+        assert page.draft_view.toPlainText() == "Edited instruction text by author."
+        assert page.source_view.toPlainText() == source_before  # source unchanged by edit
+        assert "EDITED" in page.locator_label.text()
+        # reject via UI
+        page.item_list.setCurrentRow(2)
+        page.reject_button.click()
+        assert "REJECTED" in page.locator_label.text()
+
+        # persistence reload
+        page.extract_button.setEnabled(False)
+        page._record_id = page._record_id
+        page._reload_items()
+        page.item_list.setCurrentRow(0)
+        assert "ACCEPTED" in page.locator_label.text()
+        with workspace.database.read_only() as session:
+            repo = EngineeringRepository(session)
+            record = repo.get_procedure(page._record_id)
+            steps = {s.sequence: s for s in repo.list_procedure_steps(record.id)}
+            assert steps[1].completion_state == "SOURCE_PROVIDED"
+            assert steps[2].completion_state == "SOURCE_PROVIDED"
+            assert steps[2].instructions == "Edited instruction text by author."
+            assert steps[3].completion_state == "EXTRACTED_UNVERIFIED"  # D-01
+            ev = [
+                q
+                for q in steps[1].provenance
+                if isinstance(q, dict) and q.get("event") == "extraction_disposition"
+            ][-1]
+            assert ev["version_id"] == version_id  # D-02
+            assert ev["document_id"] == document_id
+
+        # tamper: source pane must block, never show stale text as verified
+        src.write_bytes(b"# EVIL\n\ntampered\n")
+        page.item_list.setCurrentRow(1)  # force currentItemChanged
         page.item_list.setCurrentRow(0)
         assert "BLOCKED" in page.source_view.toPlainText()
         assert "no longer match" in page.source_view.toPlainText()

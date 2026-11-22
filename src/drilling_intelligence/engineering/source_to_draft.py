@@ -82,6 +82,18 @@ def extraction_disposition(provenance: Any) -> str:
     return decision
 
 
+def exact_version_id(locator: dict[str, Any]) -> str:
+    """The exact registered source version ID carried by a candidate locator.
+
+    The locator records ``document_version_id``; any other key is not authoritative.
+    An empty or missing version ID would fabricate a 'verified' event, so refuse it.
+    """
+    value = str(locator.get("document_version_id") or "").strip()
+    if not value:
+        raise ValidationError("candidate locator has no registered document version id")
+    return value
+
+
 def disposition_event(
     decision: str,
     *,
@@ -98,6 +110,10 @@ def disposition_event(
 
     if decision not in DISPOSITIONS or decision == DISPOSITION_PENDING:
         raise ValidationError("not a recordable disposition", decision=decision)
+    if not str(version_id or "").strip():
+        raise ValidationError("disposition event requires the exact source version id")
+    if not str(sha256 or "").strip():
+        raise ValidationError("disposition event requires the verified source hash")
     event: dict[str, Any] = {
         "event": "extraction_disposition",
         "decision": decision,
@@ -289,6 +305,27 @@ def _locator_ref(locator: dict[str, Any]) -> str:
     )
 
 
+#: Required completion state per canonical disposition (identical for Program and Procedure).
+DISPOSITION_COMPLETION_STATE = {
+    DISPOSITION_ACCEPTED: "SOURCE_PROVIDED",
+    DISPOSITION_EDITED: "SOURCE_PROVIDED",
+    DISPOSITION_REJECTED: "EXTRACTED_UNVERIFIED",
+}
+
+
+def _decision_fields(decision: str, locator: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """One shared state-transition contract for Program sections and Procedure steps."""
+    canonical = {
+        "accept": DISPOSITION_ACCEPTED,
+        "edit": DISPOSITION_EDITED,
+        "reject": DISPOSITION_REJECTED,
+    }[decision]
+    fields: dict[str, Any] = {"completion_state": DISPOSITION_COMPLETION_STATE[canonical]}
+    if canonical in (DISPOSITION_ACCEPTED, DISPOSITION_EDITED):
+        fields["source_reference"] = _locator_ref(locator)
+    return fields, canonical
+
+
 def decide_extracted_item(
     service: Any,
     kind: str,
@@ -327,31 +364,21 @@ def decide_extracted_item(
         if extracted is None:
             raise ValidationError("item is not an extracted candidate")
         locator = extracted["locator"]
-        canonical = {
-            "accept": DISPOSITION_ACCEPTED,
-            "edit": DISPOSITION_EDITED,
-            "reject": DISPOSITION_REJECTED,
-        }[decision]
+        changes, canonical = _decision_fields(decision, locator)
         check_disposition_transition(extraction_disposition(provenance), canonical)
-        changes: dict[str, Any] = {}
-        if decision in {"accept", "edit"}:
-            changes["completion_state"] = "SOURCE_PROVIDED"
-            changes["source_reference"] = _locator_ref(locator)
-            if decision == "edit":
-                changes["content"] = str(edited_text)
-        else:
-            # A rejected item must never remain SOURCE_PROVIDED; the original locator and
-            # every prior event stay in provenance (evidence is never erased).
-            changes["completion_state"] = "EXTRACTED_UNVERIFIED"
+        if decision == "edit":
+            changes["content"] = str(edited_text)
+        # A rejected item must never remain SOURCE_PROVIDED; the original locator and
+        # every prior event stay in provenance (evidence is never erased).
         provenance = [
             *provenance,
             disposition_event(
                 canonical,
                 by=by,
                 candidate_id=str(item_id),
-                document_id=str(locator.get("document_id", document_id_of(locator))),
-                version_id=str(locator.get("version_id", "")),
-                sha256=str(locator.get("sha256", "")),
+                document_id=str(locator["document_id"]),
+                version_id=exact_version_id(locator),
+                sha256=str(locator["sha256"]),
                 locator=locator,
                 edited=(decision == "edit"),
             ),
@@ -369,26 +396,19 @@ def decide_extracted_item(
     if extracted is None:
         raise ValidationError("item is not an extracted candidate")
     locator = extracted["locator"]
-    canonical = {
-        "accept": DISPOSITION_ACCEPTED,
-        "edit": DISPOSITION_EDITED,
-        "reject": DISPOSITION_REJECTED,
-    }[decision]
+    changes, canonical = _decision_fields(decision, locator)
     check_disposition_transition(extraction_disposition(provenance), canonical)
-    changes = {}
-    if decision in {"accept", "edit"}:
-        changes["source_reference"] = _locator_ref(locator)
-        if decision == "edit":
-            changes["instructions"] = str(edited_text)
+    if decision == "edit":
+        changes["instructions"] = str(edited_text)
     provenance = [
         *provenance,
         disposition_event(
             canonical,
             by=by,
             candidate_id=str(item_id),
-            document_id=str(document_id_of(locator)),
-            version_id=str(locator.get("version_id", "")),
-            sha256=str(locator.get("sha256", "")),
+            document_id=str(locator["document_id"]),
+            version_id=exact_version_id(locator),
+            sha256=str(locator["sha256"]),
             locator=locator,
             edited=(decision == "edit"),
         ),
@@ -612,6 +632,7 @@ def create_draft_from_document(
                     title=str(cand["suggested_title"])[:120],
                     instructions=cand["excerpt"],
                     hold_point=False,
+                    completion_state="EXTRACTED_UNVERIFIED",
                     source_reference=_locator_ref(cand["locator"]),
                     provenance=[
                         *provenance,
