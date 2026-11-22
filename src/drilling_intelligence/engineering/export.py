@@ -172,6 +172,7 @@ def _record_payload(service: Any, kind: str, record_id: str, *, redact: bool) ->
                     "id": s.id,
                     "sequence": s.sequence,
                     "title": s.title,
+                    "completion_state": s.completion_state,
                     "instructions": s.instructions,
                     "responsible_role": s.responsible_role,
                     "equipment": s.equipment,
@@ -286,7 +287,8 @@ def _render_html(payload: dict[str, Any]) -> str:
         parts.append("<h2>Steps</h2><ol>")
         for s in payload.get("steps", []):
             hold = " <b>[HOLD POINT]</b>" if s.get("hold_point") else ""
-            parts.append(f"<li><b>{esc(str(s.get('title', '')))}</b>{hold}")
+            state = f" [{esc(str(s.get('completion_state', '')))}]" if s.get("completion_state") else ""
+            parts.append(f"<li><b>{esc(str(s.get('title', '')))}</b>{hold}{state}")
             if s.get("instructions"):
                 parts.append(f"<p>{esc(str(s.get('instructions')))}</p>")
             if s.get("responsible_role"):
@@ -381,6 +383,8 @@ def _render_docx(payload: dict[str, Any], path: Path) -> None:
             if s.get("hold_point"):
                 title += " [HOLD POINT]"
             doc.add_heading(title, level=2)
+            if s.get("completion_state"):
+                doc.add_paragraph(f"State: {s.get('completion_state')}")
             if s.get("instructions"):
                 doc.add_paragraph(str(s.get("instructions")))
             if s.get("responsible_role"):
@@ -451,7 +455,8 @@ def _pdf_flow_lines(payload: dict[str, Any]) -> list[str]:
         lines += ["", "Steps:"]
         for s in payload.get("steps", []):
             hold = " [HOLD POINT]" if s.get("hold_point") else ""
-            lines.append(f"  {s.get('sequence')}. {s.get('title')}{hold}")
+            state = f" [{s.get('completion_state')}]" if s.get("completion_state") else ""
+            lines.append(f"  {s.get('sequence')}. {s.get('title')}{hold}{state}")
             for label, key in (
                 ("instructions", "instructions"),
                 ("responsible", "responsible_role"),

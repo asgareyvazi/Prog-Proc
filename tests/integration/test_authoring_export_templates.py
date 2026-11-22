@@ -771,3 +771,66 @@ def test_template_definitions_are_immutable_and_hash_stable() -> None:
     spec["sections"][0] = "MUTATED"
     assert template_definition_hash(spec) != h1  # mutation is detectable
     assert template_definition_hash(PROGRAM_TEMPLATES[name]) == h1  # catalogue untouched
+
+
+def test_procedure_export_includes_completion_state_in_all_formats(
+    session, hierarchy, tmp_path
+) -> None:
+    """D-08: ProcedureStep.completion_state must appear in JSON/HTML/DOCX/PDF exports."""
+    import zipfile
+
+    import fitz
+
+    repo = EngineeringRepository(session)
+    service = EngineeringAuthoringService(session)
+    procedure = repo.create_procedure(
+        code="EXP-PROC-STATE",
+        title="State fixture procedure",
+        created_by="author-a",
+        well_id=hierarchy["well"].id,
+    )
+    service.add_procedure_step(
+        procedure.id,
+        expected_updated_at=_stamp(procedure),
+        title="Notify",
+        instructions="Fixture instruction text.",
+        completion_state="TECHNICALLY_REVIEWED",
+        source_reference="C:\\synthetic\\fixture\\src.pdf",
+    )
+    for fmt in ("json", "html", "docx", "pdf"):
+        out = tmp_path / f"proc-state.{fmt}"
+        export_record(service, "procedure", procedure.id, fmt=fmt, out_path=out)
+        assert out.exists() and out.stat().st_size > 0
+
+    payload = json.loads((tmp_path / "proc-state.json").read_text())
+    assert payload["steps"][0]["completion_state"] == "TECHNICALLY_REVIEWED"
+
+    html_text = (tmp_path / "proc-state.html").read_text()
+    assert "TECHNICALLY_REVIEWED" in html_text
+
+    with zipfile.ZipFile(tmp_path / "proc-state.docx") as zf:
+        docx_xml = zf.read("word/document.xml").decode("utf-8")
+    assert "TECHNICALLY_REVIEWED" in docx_xml
+
+    with fitz.open(tmp_path / "proc-state.pdf") as doc:
+        pdf_text = "".join(page.get_text() for page in doc)
+    assert "TECHNICALLY_REVIEWED" in pdf_text
+
+    # Redaction must never strip or mutate completion_state (it is not a path), and
+    # the canonical in-DB value must be unchanged after a redacted export.
+    redacted = export_record(
+        service,
+        "procedure",
+        procedure.id,
+        fmt="json",
+        out_path=tmp_path / "proc-state-redacted.json",
+        redact=True,
+    )
+    assert redacted["redacted"] is True
+    redacted_payload = json.loads((tmp_path / "proc-state-redacted.json").read_text())
+    assert redacted_payload["steps"][0]["completion_state"] == "TECHNICALLY_REVIEWED"
+    assert "synthetic" not in json.dumps(redacted_payload["steps"][0]["source_reference"])
+    fresh = repo.get_procedure(procedure.id)
+    step = service.repository.list_procedure_steps(fresh.id)[0]
+    assert step.completion_state == "TECHNICALLY_REVIEWED"
+    assert step.source_reference == "C:\\synthetic\\fixture\\src.pdf"
