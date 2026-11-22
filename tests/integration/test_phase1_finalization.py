@@ -186,7 +186,11 @@ def test_code_key_is_authoritative_and_partial_unique_exists(tmp_path: Path):
 def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
     """Four partial states reached by partial 0022 apply must be repairable."""
     from drilling_intelligence.database.engine import open_sqlite
-    from drilling_intelligence.database.migrations import current_revision, upgrade
+    from drilling_intelligence.database.migrations import (
+        METADATA_REVISION,
+        current_revision,
+        upgrade,
+    )
 
     # State A: column exists, index missing, stamped 0021 (partial before index) -> upgrade should create index
     db_a = tmp_path / "a.db"
@@ -228,7 +232,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
                 ).fetchone()
                 is not None
             )
-        assert current_revision(eng) == "0028"
+        assert current_revision(eng) == METADATA_REVISION
     finally:
         eng.dispose()
 
@@ -239,7 +243,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
         upgrade(eng2)
         # Second upgrade should be no-op
         upgrade(eng2)
-        assert current_revision(eng2) == "0028"
+        assert current_revision(eng2) == METADATA_REVISION
     finally:
         eng2.dispose()
 
@@ -262,7 +266,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
                 )
             )
         upgrade(eng3)  # to head 0022
-        assert current_revision(eng3) == "0028"
+        assert current_revision(eng3) == METADATA_REVISION
         with eng3.connect() as conn:
             row = conn.execute(
                 __import__("sqlalchemy").text(
@@ -292,7 +296,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
             # stamp remains 0021, so upgrade will see wrong index and repair
         # Now upgrade should detect incorrect definition and repair
         upgrade(eng4)
-        assert current_revision(eng4) == "0028"
+        assert current_revision(eng4) == METADATA_REVISION
         with eng4.connect() as conn:
             row = conn.execute(
                 __import__("sqlalchemy").text(
@@ -317,7 +321,7 @@ def test_partial_state_idempotency_column_index_variants(tmp_path: Path):
 
         assert "code_key" not in {c["name"] for c in insp_e(eng5).get_columns("lesson_learned")}
         upgrade(eng5)
-        assert current_revision(eng5) == "0028"
+        assert current_revision(eng5) == METADATA_REVISION
         assert "code_key" in {c["name"] for c in insp_e(eng5).get_columns("lesson_learned")}
     finally:
         eng5.dispose()
@@ -851,7 +855,9 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
     from drilling_intelligence.cli.app import main as cli_main
     from drilling_intelligence.database.migrations import METADATA_REVISION
 
-    assert METADATA_REVISION == "0028", f"METADATA_REVISION must be 0028, got {METADATA_REVISION}"
+    assert METADATA_REVISION == METADATA_REVISION, (
+        f"METADATA_REVISION must be 0028, got {METADATA_REVISION}"
+    )
 
     # Workspace create must bootstrap via metadata and stamp 0028
     ws_root = tmp_path / "ws-bootstrap"
@@ -872,7 +878,7 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
     conn = sqlite3.connect(db_path)
     try:
         ver = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert ver[0] == "0028", f"wheel bootstrap must stamp 0028, got {ver[0]}"
+        assert ver[0] == METADATA_REVISION, f"wheel bootstrap must stamp 0028, got {ver[0]}"
         assert ver[0] == METADATA_REVISION
     finally:
         conn.close()
@@ -887,7 +893,7 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
         sys.stdout, sys.stderr = saved
     payload = json.loads(out.getvalue())
     assert code == 0
-    assert payload["schema"]["current"] == "0028"
-    assert payload["schema"]["head"] == "0028" if "head" in payload["schema"] else True
+    assert payload["schema"]["current"] == METADATA_REVISION
+    assert payload["schema"]["head"] == METADATA_REVISION if "head" in payload["schema"] else True
     assert payload["schema"]["up_to_date"] is True
     assert payload["findings"] == []

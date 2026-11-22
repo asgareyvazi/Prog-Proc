@@ -27,10 +27,17 @@ def upgrade() -> None:
             "ProcedureStep completion-state migration 0029 is qualified for SQLite only; "
             "PostgreSQL is NOT QUALIFIED"
         )
-    op.add_column(
-        "procedure_step",
-        sa.Column("completion_state", sa.String(32), nullable=False, server_default="DRAFT"),
-    )
+    # Offline (--sql) mode binds a MockConnection that cannot be inspected; treat the
+    # column as absent there. Online, skip when it already exists (wheel-stamped DBs).
+    try:
+        existing = {col["name"] for col in sa.inspect(op.get_bind()).get_columns("procedure_step")}
+    except sa.exc.NoInspectionAvailable:
+        existing = set()
+    if "completion_state" not in existing:
+        op.add_column(
+            "procedure_step",
+            sa.Column("completion_state", sa.String(32), nullable=False, server_default="DRAFT"),
+        )
     # SQLite cannot ALTER a table to add a CHECK constraint; enforce the same vocabulary as
     # program_section with triggers (models.py installs the same guards for fresh schemas).
     op.execute(
@@ -48,4 +55,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("DROP TRIGGER IF EXISTS trg_procedure_step_state_update")
     op.execute("DROP TRIGGER IF EXISTS trg_procedure_step_state_insert")
-    op.drop_column("procedure_step", "completion_state")
+    existing = {col["name"] for col in sa.inspect(op.get_bind()).get_columns("procedure_step")}
+    if "completion_state" in existing:
+        op.drop_column("procedure_step", "completion_state")
