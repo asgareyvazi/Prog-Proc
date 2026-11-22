@@ -1,10 +1,10 @@
 # Product capability inventory
-## Snapshot جاری — 2026-11-22 (UTC)، SHA نوک شاخه `arena/5957b76d-prog-proc` = `48040f81a895d4b7de372a03aa58e1c7214816e6`
+## Snapshot جاری — 2026-11-22 (UTC)، SHA نوک شاخه `arena/5957b76d-prog-proc` = `feb1661ea5d71108c491740d5b76281713d6a9c4`
 
 
-- به‌روزرسانی ۲۰۲۶-۱۰-۲۰ (این اسنپ‌شات): resolved نسخهٔ canonical از طریق pointer (‌`current_version`)؛ schema رویداد واحد ‌`extraction_disposition`‌ برای Program و Procedure با policy تصمیم مجدد؛ پنل منبع واقعی با re-verify هش فیزیکی (‌`read_source_excerpt`‌) در UI؛ تست‌های اجباری مسیر fallback انتشار (renameat2 NOREPLACE / fail-closed)؛ و regression تست manifest شارد run-scoped. tip فعلی ‌`48040f81a895d4b7de372a03aa58e1c7214816e6`‌؛ گزارش مأموریت به فارسی در ‌`docs/mission-reports/`‌ و SHA نهایی CI در گزارش پایانی ثبت می‌شود.
+- به‌روزرسانی ۲۰۲۶-۱۰-۲۰ (این اسنپ‌شات): resolved نسخهٔ canonical از طریق pointer (‌`current_version`)؛ schema رویداد واحد ‌`extraction_disposition`‌ برای Program و Procedure با policy تصمیم مجدد؛ پنل منبع واقعی با re-verify هش فیزیکی (‌`read_source_excerpt`‌) در UI؛ تست‌های اجباری مسیر fallback انتشار (renameat2 NOREPLACE / fail-closed)؛ و regression تست manifest شارد run-scoped. tip فعلی ‌`feb1661ea5d71108c491740d5b76281713d6a9c4`‌؛ گزارش مأموریت به فارسی در ‌`docs/mission-reports/`‌ و SHA نهایی CI در گزارش پایانی ثبت می‌شود.
 - Baseline تأییدشدهٔ قبلی: `2dc7ddde7d595729f98e67485449514a277b07fc` — Linux run `44279805151` و Windows run `44279805136` هر دو success (2,951 collected؛ 0 failed)، و historical replay run `44299260397` (job `134784363027`) success با artifact `14425148074`؛ run تاریخی `43695755434` روی `114173a4` همچنان failure ثبت شده است.
-- Migrationهای `0027` و `0028` (لینک دقیق Program↔Procedure revision با NONE/LINKED/STALE و بدون auto-relink) در head هستند؛ head Alembic `0028` است.
+- Migrationهای `0027`، `0028` (لینک دقیق Program↔Procedure revision با NONE/LINKED/STALE و بدون auto-relink) و `0029` (ستون `completion_state` روی `procedure_step` با triggerهای vocabulary و downgrade بازسازی جدول با حفظ constraintها) در head هستند؛ head Alembic `0029` است.
 - قابلیت‌های headless: authoring service کامل (sections/targets/steps، freshness token، validate، submit/review/decide، revise، compare)، templateهای فقط‌ساختاری، `draft-from-document` (استخراج واقعی متن ساده با re-verify هش فیزیکی، resolve نسخهٔ canonical، و event dispositions مشترک Program/Procedure)، و export JSON/HTML/DOCX/PDF با watermark DRAFT، fidelity کامل، unitهای ذخیره‌شده، redaction opt-in (`path-redaction-v1`) و انتشار race-safe no-clobber.
 - Qt: صفحات **Program Builder** و **Procedure Builder** کامل شدند (`ui/authoring_pages.py`) — ویرایشگر Program target با همهٔ champها و واحدها و provenance، ویرایشگر کامل step با equipment/preconditions/پارامترهای JSON/expected result/evidence/safety/contingency، و دکمه‌های lifecycle (validate/submit/review/approve/reject/revise/compare) همگی از طریق کنترل‌های Qt؛ ۵ تست offscreen UI + ۳۶ تست workbench سبز هستند. Screenshots فیزیکی به‌علت فقدان libGL در host هنوز NOT RUN است.
 - `out/performance.json` دست‌نخورده (همان blob.tracked remoto؛ بدون تغییر).
@@ -106,7 +106,7 @@ Exit criteria for this milestone:
 - A promoted lesson can be approved only with evidence and a different reviewer; stale and self-approval are rejected.
 - Full workflow test crosses the public boundary from workspace creation to report.
 - README and WINDOWS_TESTING describe the `DomainReviewService`/`ReviewActionService` split correctly.
-- Alembic head is `0020`.
+- Alembic head is `0029`.
 
 The blocked milestones below are specified further in
 [`PRODUCT_DECISIONS_REQUIRED.md`](PRODUCT_DECISIONS_REQUIRED.md). That file
