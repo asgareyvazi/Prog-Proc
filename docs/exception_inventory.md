@@ -18,8 +18,8 @@ to be found by somebody else.
 | `src/drilling_intelligence/database/session.py` | 85 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/database/session.py` | 121 | `Exception` | suppressed | absent table simply means "no data" |
 | `src/drilling_intelligence/documents/registry.py` | 400 | `Exception` | reported | third-party parser boundary |
-| `src/drilling_intelligence/engineering/export.py` | 673 | `Exception` | re-raised |  |
-| `src/drilling_intelligence/engineering/service.py` | 126 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/engineering/export.py` | 675 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/engineering/service.py` | 159 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/evidence/verify.py` | 297 | `Exception` | reported | a malformed record is reported, not fatal |
 | `src/drilling_intelligence/evidence/verify.py` | 192 | `Exception` | reported |  |
 | `src/drilling_intelligence/extraction/docx.py` | 259 | `Exception` | suppressed | a table whose text cannot be read has no caption |
@@ -76,6 +76,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/knowledge/service.py` | 564 | `Exception` | reported | the index is disposable; the registry is not |
 | `src/drilling_intelligence/knowledge/service.py` | 195 | `Exception` | reported | a workspace without a usable sidecar still gets knowledge |
 | `src/drilling_intelligence/knowledge/service.py` | 912 | `Exception` | reported | a broken sidecar must not hide the registry's answer |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 185 | `Exception` | reported | batch must survive a single bad entry |
 | `src/drilling_intelligence/operations/promote.py` | 4273 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4299 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4309 | `Exception` | reported | noqa marker |
@@ -147,5 +148,5 @@ to be found by somebody else.
 | kind | count |
 | --- | --- |
 | re-raised | 14 |
-| reported | 89 |
+| reported | 90 |
 | suppressed | 30 |
