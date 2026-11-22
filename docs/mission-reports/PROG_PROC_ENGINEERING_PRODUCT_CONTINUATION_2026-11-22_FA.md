@@ -1,6 +1,6 @@
 # گزارش ادامهٔ مأموریت مهندسی محصول — ۲۰۲۶-۱۱-۲۲ (FA)
 
-**شاخه:** `arena/5957b76d-prog-proc` — **tip این مأموریت:** SHA نهایی در §۳۰ ثبت می‌شود
+**شاخه:** `arena/5957b76d-prog-proc` — **tip این مأموریت:** `3196d51` (Evidence در §۳۰)
 **پایگاه‌دادهٔ qualified:** فقط SQLite — **head Alembic:** `0029`
 **حفاظت:** فایل `out/performance.json` هرگز خوانده یا stage نشده است؛ فقط با `git ls-tree` تأیید شد.
 
@@ -35,7 +35,7 @@
 ۲۷. **Phase AA — CI exact-SHA** — §۳۰.
 ۲۸. **Phase AB — re-audit adversarial** — DONE: sweep assertهای vacuous، SHAهای stale، redaction safety، protected blob.
 ۲۹. **خلاصهٔ inventory** — ۵۴ حوزه: بیشتر DONE؛ ۳ PARTIALLY DONE؛ NOT QUALIFIED برای OCR/PostgreSQL/auth/physical Windows/DR؛ OWNER-GATED برای performance blob.
-۳۰. **CI evidence** — start-SHA: Linux run `45016257108` success، Windows run `45016257110` success؛ runهای SHA نهایی پس از push نهایی.
+۳۰. **CI evidence (exact final SHA `3196d51`)** — Linux run `45034750854` success؛ Windows run `45034750825` success (تمام shardها + reconciliation + run-card PowerShell). start-SHA evidence: Linux `45016257108`، Windows `45016257110`.
 ۳۱. **exclusions** — بدون فرمول/واحد/approval اختراعی؛ submission ≠ approval؛ actor ≠ authentication.
 ۳۲. **closure** — checkout مأموریت clean؛ main دست‌نخورده.
 ۳۳. **verdict کلی** — DONE با PARTIALLY DONE (M, P) و NOT QUALIFIEDهای ثبت‌شده در roadmap.
