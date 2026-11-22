@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
+from drilling_intelligence.cli.app import _workspace_row_id
 from drilling_intelligence.core.errors import ValidationError
 from drilling_intelligence.documents.registry import DocumentRegistry
 from drilling_intelligence.documents.repository import DocumentRepository
 from drilling_intelligence.extraction.registry import build_default_router
-from drilling_intelligence.cli.app import _workspace_row_id
 from drilling_intelligence.operations.ddr_batch import (
     MANIFEST_FORMAT,
     import_ddr_batch,

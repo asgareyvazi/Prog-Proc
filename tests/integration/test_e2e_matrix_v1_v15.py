@@ -8,21 +8,20 @@ provenance, refusal) rather than engineering truth.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from drilling_intelligence.cli.app import _workspace_row_id
 from drilling_intelligence.database.backup import create_workspace_backup
+from drilling_intelligence.documents.registry import DocumentRegistry
+from drilling_intelligence.documents.repository import DocumentRepository
 from drilling_intelligence.engineering.authoring import EngineeringAuthoringService
 from drilling_intelligence.engineering.export import export_record
 from drilling_intelligence.engineering.repository import EngineeringRepository
 from drilling_intelligence.engineering.service import EngineeringService
-from drilling_intelligence.operations.ddr import DdrAuthoringService
-from drilling_intelligence.operations.ddr_batch import MANIFEST_FORMAT, import_ddr_batch
-from drilling_intelligence.documents.registry import DocumentRegistry
-from drilling_intelligence.documents.repository import DocumentRepository
 from drilling_intelligence.extraction.registry import build_default_router
+from drilling_intelligence.operations.ddr import DdrAuthoringService
+from drilling_intelligence.operations.ddr_batch import import_ddr_batch
 from drilling_intelligence.wells.repository import WellRepository
 
 pytestmark = pytest.mark.integration
@@ -92,7 +91,7 @@ def test_v3_ddr_manual_journey_create_submit(workspace) -> None:
 
 
 def test_v4_ddr_batch_import_matrix_entry(workspace, tmp_path) -> None:
-    from tests.integration.test_ddr_batch_import import _pdf_bytes, _write_corpus
+    from tests.integration.test_ddr_batch_import import _write_corpus
 
     manifest = _write_corpus(tmp_path)
     with workspace.database.unit_of_work() as session:
@@ -114,7 +113,7 @@ def test_v4_ddr_batch_import_matrix_entry(workspace, tmp_path) -> None:
 # ---------------------------------------------------------------- V5-V8
 def test_v5_document_intake_registration_classification(workspace, tmp_path) -> None:
     pdf = tmp_path / "syn_report.pdf"
-    from tests.integration.test_ddr_batch_import import _pdf_bytes, DDR_TEXT
+    from tests.integration.test_ddr_batch_import import DDR_TEXT, _pdf_bytes
 
     pdf.write_bytes(_pdf_bytes(DDR_TEXT))
     with workspace.database.unit_of_work() as session:
@@ -284,7 +283,7 @@ def test_v10_npt_rollup_only_approved_method(workspace) -> None:
         NPT_ROLLUP_METHOD_ID,
     )
 
-    assert APPROVED_CALCULATION_METHODS == frozenset({"npt.hours_rollup"})
+    assert frozenset({"npt.hours_rollup"}) == APPROVED_CALCULATION_METHODS
     service = EngineeringService.for_workspace(workspace)
     # A roll-up of nothing is refused honestly, not reported as zero hours.
     with pytest.raises(ValidationError, match="no NPT row that states a duration"):
@@ -293,7 +292,7 @@ def test_v10_npt_rollup_only_approved_method(workspace) -> None:
 
 
 def test_v11_provenance_grounded_search(workspace) -> None:
-    well_id = _well(workspace, "E2E-11")
+    _well(workspace, "E2E-11")
     from drilling_intelligence.search.index import InMemorySearchIndex
     from drilling_intelligence.search.service import SearchService
 

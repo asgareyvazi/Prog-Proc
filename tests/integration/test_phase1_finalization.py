@@ -855,9 +855,7 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
     from drilling_intelligence.cli.app import main as cli_main
     from drilling_intelligence.database.migrations import METADATA_REVISION
 
-    assert METADATA_REVISION == "0029", (
-        f"METADATA_REVISION must be 0029, got {METADATA_REVISION}"
-    )
+    assert METADATA_REVISION == "0029", f"METADATA_REVISION must be 0029, got {METADATA_REVISION}"
 
     # Workspace create must bootstrap via metadata and stamp 0029
     ws_root = tmp_path / "ws-bootstrap"
@@ -878,7 +876,9 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
     conn = sqlite3.connect(db_path)
     try:
         ver = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert ver[0] == "0029" == METADATA_REVISION, f"wheel bootstrap must stamp 0029, got {ver[0]}"
+        assert ver[0] == "0029" == METADATA_REVISION, (
+            f"wheel bootstrap must stamp 0029, got {ver[0]}"
+        )
     finally:
         conn.close()
 
@@ -892,7 +892,9 @@ def test_wheel_bootstrap_and_doctor_truthfulness(tmp_path: Path):
         sys.stdout, sys.stderr = saved
     payload = json.loads(out.getvalue())
     assert code == 0
-    assert "head" in payload["schema"], "doctor JSON must always report schema.head (no fail-open branch)"
+    assert "head" in payload["schema"], (
+        "doctor JSON must always report schema.head (no fail-open branch)"
+    )
     assert payload["schema"]["current"] == "0029" == METADATA_REVISION
     assert payload["schema"]["head"] == "0029" == METADATA_REVISION
     assert payload["schema"]["up_to_date"] is True

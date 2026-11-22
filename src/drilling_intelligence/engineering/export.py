@@ -287,7 +287,9 @@ def _render_html(payload: dict[str, Any]) -> str:
         parts.append("<h2>Steps</h2><ol>")
         for s in payload.get("steps", []):
             hold = " <b>[HOLD POINT]</b>" if s.get("hold_point") else ""
-            state = f" [{esc(str(s.get('completion_state', '')))}]" if s.get("completion_state") else ""
+            state = (
+                f" [{esc(str(s.get('completion_state', '')))}]" if s.get("completion_state") else ""
+            )
             parts.append(f"<li><b>{esc(str(s.get('title', '')))}</b>{hold}{state}")
             if s.get("instructions"):
                 parts.append(f"<p>{esc(str(s.get('instructions')))}</p>")

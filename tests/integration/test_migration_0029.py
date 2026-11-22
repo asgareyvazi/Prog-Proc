@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+import sqlalchemy.exc
 from sqlalchemy import create_engine, text
 
 from drilling_intelligence.database.migrations import current_revision, upgrade
@@ -130,43 +131,45 @@ def test_0029_round_trip_preserves_schema_and_data(tmp_path) -> None:
     con.close()
     assert states == ["DRAFT", "DRAFT", "DRAFT"]
     # invalid completion state rejected by trigger
-    with pytest.raises(Exception, match="invalid procedure step completion state"):
-        with eng.begin() as c:
-            c.execute(text("UPDATE procedure_step SET completion_state='BOGUS' WHERE id='step-1'"))
+    with (
+        pytest.raises(
+            sqlalchemy.exc.IntegrityError, match="invalid procedure step completion state"
+        ),
+        eng.begin() as c,
+    ):
+        c.execute(text("UPDATE procedure_step SET completion_state='BOGUS' WHERE id='step-1'"))
     # duplicate sequence still rejected
-    with pytest.raises(Exception):
-        with eng.begin() as c:
-            c.execute(
-                text(
-                    "INSERT INTO procedure_step (id, procedure_id, sequence, title, "
-                    "instructions, hold_point, completion_state, created_at, updated_at) "
-                    "VALUES ('step-dup', 'proc-1', 1, 'dup', 'x', 0, 'DRAFT', "
-                    "'2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')"
-                )
+    with eng.begin() as c, pytest.raises(sqlalchemy.exc.IntegrityError):
+        c.execute(
+            text(
+                "INSERT INTO procedure_step (id, procedure_id, sequence, title, "
+                "instructions, hold_point, completion_state, created_at, updated_at) "
+                "VALUES ('step-dup', 'proc-1', 1, 'dup', 'x', 0, 'DRAFT', "
+                "'2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')"
             )
+        )
     # non-positive sequence rejected
-    with pytest.raises(Exception):
-        with eng.begin() as c:
-            c.execute(
-                text(
-                    "INSERT INTO procedure_step (id, procedure_id, sequence, title, "
-                    "instructions, hold_point, completion_state, created_at, updated_at) "
-                    "VALUES ('step-zero', 'proc-1', 0, 'zero', 'x', 0, 'DRAFT', "
-                    "'2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')"
-                )
+    with eng.begin() as c, pytest.raises(sqlalchemy.exc.IntegrityError):
+        c.execute(
+            text(
+                "INSERT INTO procedure_step (id, procedure_id, sequence, title, "
+                "instructions, hold_point, completion_state, created_at, updated_at) "
+                "VALUES ('step-zero', 'proc-1', 0, 'zero', 'x', 0, 'DRAFT', "
+                "'2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')"
             )
+        )
     # orphaned step rejected (FK enforced)
     with eng.begin() as c:
         c.execute(text("PRAGMA foreign_keys=ON"))
-        with pytest.raises(Exception):
-            c.execute(
-                text(
-                    "INSERT INTO procedure_step (id, procedure_id, sequence, title, "
-                    "instructions, hold_point, completion_state, created_at, updated_at) "
-                    "VALUES ('step-orphan', 'no-such-proc', 9, 'orphan', 'x', 0, 'DRAFT', "
-                    "'2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')"
-                )
+    with eng.begin() as c, pytest.raises(sqlalchemy.exc.IntegrityError):
+        c.execute(
+            text(
+                "INSERT INTO procedure_step (id, procedure_id, sequence, title, "
+                "instructions, hold_point, completion_state, created_at, updated_at) "
+                "VALUES ('step-orphan', 'no-such-proc', 9, 'orphan', 'x', 0, 'DRAFT', "
+                "'2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')"
             )
+        )
     eng.dispose()
 
     # 0029 -> 0028: full schema contract must survive

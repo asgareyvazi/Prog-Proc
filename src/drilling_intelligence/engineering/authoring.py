@@ -582,9 +582,7 @@ class EngineeringAuthoringService:
             changes.get("completion_state") == "NOT_APPLICABLE"
             and not str(changes.get("instructions", row.instructions) or "").strip()
         ):
-            raise ValidationError(
-                "NOT_APPLICABLE requires a recorded reason in step instructions"
-            )
+            raise ValidationError("NOT_APPLICABLE requires a recorded reason in step instructions")
         for key, value in changes.items():
             if key == "parameters":
                 self._require_parameters(value, "Procedure step parameters")
