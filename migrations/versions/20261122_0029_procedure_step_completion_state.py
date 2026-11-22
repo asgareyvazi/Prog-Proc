@@ -107,6 +107,4 @@ def downgrade() -> None:
     )
     op.drop_table("procedure_step")
     op.execute("ALTER TABLE procedure_step_rebuild RENAME TO procedure_step")
-    op.create_index(
-        "ix_procedure_step_procedure", "procedure_step", ["procedure_id", "sequence"]
-    )
+    op.create_index("ix_procedure_step_procedure", "procedure_step", ["procedure_id", "sequence"])
