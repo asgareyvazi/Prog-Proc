@@ -752,3 +752,22 @@ def test_publish_existing_directory_refused(tmp_path) -> None:
     with pytest.raises(ValidationError, match="no-clobber"):
         _publish_atomic(src, target)
     assert target.is_dir()
+
+
+def test_template_definitions_are_immutable_and_hash_stable() -> None:
+    """Code-owned catalogue: definitions are frozen; any mutation changes the hash."""
+    from drilling_intelligence.engineering.templates import (
+        PROGRAM_TEMPLATES,
+        template_definition_hash,
+    )
+
+    name = "standard_drilling_program_v2"
+    h1 = template_definition_hash(PROGRAM_TEMPLATES[name])
+    h2 = template_definition_hash(PROGRAM_TEMPLATES[name])
+    assert h1 == h2  # deterministic
+    import copy
+
+    spec = copy.deepcopy(PROGRAM_TEMPLATES[name])
+    spec["sections"][0] = "MUTATED"
+    assert template_definition_hash(spec) != h1  # mutation is detectable
+    assert template_definition_hash(PROGRAM_TEMPLATES[name]) == h1  # catalogue untouched

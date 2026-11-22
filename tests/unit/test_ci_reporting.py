@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 def test_ci_reports_not_run_when_prerequisite_failed():
     ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -586,3 +588,59 @@ def test_shard_canonical_collection_download_is_bound_to_the_current_run():
     assert "actions/download-artifact" in block
     assert "run-id: ${{ github.run_id }}" in block
     assert "name: ubuntu2604-qt-collection-a${{ github.run_attempt }}" in block
+
+
+def test_shard_plugin_rejects_manifest_from_another_run(tmp_path) -> None:
+    """Two different run IDs sharing one artifact name must never exchange manifests."""
+    import json
+    import sys
+
+    sys.path.insert(0, str(Path("tools")))
+    import hashlib
+
+    import pytest_shard_contract as arts
+
+    nodeids = ["tests/test_a.py::test_1"]
+    body = {
+        "schema_version": arts.SCHEMA_VERSION,
+        "head_sha": "a" * 40,
+        "repository": "asgareyvazi/Prog-Proc",
+        "workflow": "CI",
+        "workflow_ref": "refs/heads/x",
+        "run_id": "111",
+        "run_attempt": "1",
+        "platform": "Linux",
+        "platform_system": "Linux",
+        "python_version": "3.11",
+        "implementation": "cpython",
+        "pytest_version": "8",
+        "pytest_config_sha256": "x",
+        "assignment_algorithm": arts.ASSIGNMENT_ALGORITHM,
+        "nodeids": nodeids,
+        "node_count": len(nodeids),
+        "nodeids_sha256": hashlib.sha256(arts.canonical({"nodeids": nodeids})).hexdigest(),
+    }
+    body["manifest_sha256"] = hashlib.sha256(arts.canonical(body)).hexdigest()
+    manifest_run_a = body
+    path = tmp_path / "collection.json"
+    path.write_text(json.dumps(manifest_run_a))
+    # Same artifact name, different run: run 222 consuming run 111's manifest must fail.
+    with pytest.raises(ValueError, match="run"):
+        arts.validate_manifest(
+            json.loads(path.read_text()),
+            expected_sha="a" * 40,
+            expected_run_id="222",
+            expected_attempt="1",
+            expected_repository="asgareyvazi/Prog-Proc",
+            expected_workflow="CI",
+        )
+    # Same run, same everything: accepted.
+    ok = arts.validate_manifest(
+        json.loads(path.read_text()),
+        expected_sha="a" * 40,
+        expected_run_id="111",
+        expected_attempt="1",
+        expected_repository="asgareyvazi/Prog-Proc",
+        expected_workflow="CI",
+    )
+    assert ok["run_id"] == "111"
