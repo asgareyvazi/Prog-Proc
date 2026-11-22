@@ -39,12 +39,19 @@ def _procedure_and_steps(eng) -> None:
                     "instructions, responsible_role, equipment, parameters, hold_point, "
                     "safety_controls, source_reference, provenance, created_at, updated_at) "
                     "VALUES (:id, 'proc-1', :seq, :title, :instr, 'driller', 'rig', "
-                    "'[{\"name\":\"p\",\"value\":\"1\",\"unit\":\"m\"}]', :hold, "
+                    '\'[{"name":"p","value":"1","unit":"m"}]\', :hold, '
                     "'synthetic control', 'document:doc-1#v1', "
                     "(:prov), '2026-01-02 00:00:00+00:00', "
                     "'2026-01-03 00:00:00+00:00')"
                 ),
-                {"id": sid, "seq": seq, "title": title, "instr": instr, "hold": hold, "prov": '[{"extracted": true}]'},
+                {
+                    "id": sid,
+                    "seq": seq,
+                    "title": title,
+                    "instr": instr,
+                    "hold": hold,
+                    "prov": '[{"extracted": true}]',
+                },
             )
 
 
@@ -74,7 +81,10 @@ def _schema_objects(db_path: Path) -> dict:
             "table_info": list(con.execute("PRAGMA table_info(procedure_step)")),
             "ddl": con.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='procedure_step'"
-            ).fetchone()[0].replace('"', "").replace("procedure_step_rebuild", "procedure_step"),
+            )
+            .fetchone()[0]
+            .replace('"', "")
+            .replace("procedure_step_rebuild", "procedure_step"),
         }
     finally:
         con.close()
@@ -114,17 +124,15 @@ def test_0029_round_trip_preserves_schema_and_data(tmp_path) -> None:
     # legacy rows got the default DRAFT state
     assert _rows(db)[0][0] == "step-1"
     con = sqlite3.connect(db)
-    states = [r[0] for r in con.execute("SELECT completion_state FROM procedure_step ORDER BY sequence")]
+    states = [
+        r[0] for r in con.execute("SELECT completion_state FROM procedure_step ORDER BY sequence")
+    ]
     con.close()
     assert states == ["DRAFT", "DRAFT", "DRAFT"]
     # invalid completion state rejected by trigger
     with pytest.raises(Exception, match="invalid procedure step completion state"):
         with eng.begin() as c:
-            c.execute(
-                text(
-                    "UPDATE procedure_step SET completion_state='BOGUS' WHERE id='step-1'"
-                )
-            )
+            c.execute(text("UPDATE procedure_step SET completion_state='BOGUS' WHERE id='step-1'"))
     # duplicate sequence still rejected
     with pytest.raises(Exception):
         with eng.begin() as c:

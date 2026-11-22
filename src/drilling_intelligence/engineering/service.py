@@ -55,11 +55,11 @@ from .repository import EngineeringRepository
 __all__ = [
     "APPROVED_CALCULATION_METHODS",
     "NPT_ROLLUP_METHOD_ID",
-    "execute_calculation",
     "NPT_ROLLUP_METHOD_VERSION",
     "NPT_ROLLUP_PROPERTY",
     "NPT_ROLLUP_UNIT",
     "EngineeringService",
+    "execute_calculation",
 ]
 
 #: The method this service applies, named so a stored row can be traced back to the code that wrote it.

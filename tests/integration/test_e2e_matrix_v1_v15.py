@@ -38,7 +38,9 @@ def _well(workspace, name="E2E-01"):
 def _stamp(workspace, record_id: str, kind: str = "procedure") -> str:
     with workspace.database.read_only() as session:
         repo = EngineeringRepository(session)
-        record = repo.get_procedure(record_id) if kind == "procedure" else repo.get_program(record_id)
+        record = (
+            repo.get_procedure(record_id) if kind == "procedure" else repo.get_program(record_id)
+        )
         return record.updated_at.isoformat()
 
 
@@ -67,7 +69,14 @@ def test_v3_ddr_manual_journey_create_submit(workspace) -> None:
         report_date="2026-10-20",
         report_number="SYN-E2E-03",
         summary="synthetic fixture summary",
-        activities=[{"operation_type": "drilling", "label": "synthetic drill activity", "period_text": "06:00-08:00", "description": "synthetic"}],
+        activities=[
+            {
+                "operation_type": "drilling",
+                "label": "synthetic drill activity",
+                "period_text": "06:00-08:00",
+                "description": "synthetic",
+            }
+        ],
         actor="e2e-tester",
         reason="synthetic E2E fixture",
     )
@@ -128,8 +137,12 @@ def test_v6_program_authoring_validate_submit(workspace) -> None:
         repo = EngineeringRepository(session)
         service = EngineeringAuthoringService(session)
         program = repo.create_program(
-            code="E2E-DRP", title="Synthetic E2E program", summary="synthetic",
-            author="e2e", created_by="e2e", well_id=well_id,
+            code="E2E-DRP",
+            title="Synthetic E2E program",
+            summary="synthetic",
+            author="e2e",
+            created_by="e2e",
+            well_id=well_id,
         )
         service.add_program_section(
             program.id,
@@ -221,7 +234,11 @@ def test_v9_revision_marks_link_stale(workspace) -> None:
         repo = EngineeringRepository(session)
         service = EngineeringAuthoringService(session)
         program = repo.create_program(
-            code="E2E-STALE", title="Stale link target", author="e2e", created_by="e2e", well_id=well_id
+            code="E2E-STALE",
+            title="Stale link target",
+            author="e2e",
+            created_by="e2e",
+            well_id=well_id,
         )
         service.add_program_section(
             program.id,
@@ -262,7 +279,10 @@ def test_v9_revision_marks_link_stale(workspace) -> None:
 def test_v10_npt_rollup_only_approved_method(workspace) -> None:
     well_id = _well(workspace, "E2E-10")
     from drilling_intelligence.core.errors import ValidationError
-    from drilling_intelligence.engineering.service import APPROVED_CALCULATION_METHODS, NPT_ROLLUP_METHOD_ID
+    from drilling_intelligence.engineering.service import (
+        APPROVED_CALCULATION_METHODS,
+        NPT_ROLLUP_METHOD_ID,
+    )
 
     assert APPROVED_CALCULATION_METHODS == frozenset({"npt.hours_rollup"})
     service = EngineeringService.for_workspace(workspace)

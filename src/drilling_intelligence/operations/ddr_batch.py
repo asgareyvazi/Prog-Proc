@@ -91,11 +91,15 @@ def load_manifest(path: Path | str) -> list[ManifestEntry]:
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValidationError(
-            "batch manifest is unreadable or not valid JSON", path=str(manifest_path), error=str(exc)
+            "batch manifest is unreadable or not valid JSON",
+            path=str(manifest_path),
+            error=str(exc),
         ) from exc
     if not isinstance(raw, dict) or raw.get("format") != MANIFEST_FORMAT:
         raise ValidationError(
-            "unsupported batch manifest format", expected=MANIFEST_FORMAT, got=raw.get("format") if isinstance(raw, dict) else None
+            "unsupported batch manifest format",
+            expected=MANIFEST_FORMAT,
+            got=raw.get("format") if isinstance(raw, dict) else None,
         )
     files = raw.get("files")
     if not isinstance(files, list) or not files:
@@ -153,7 +157,9 @@ def import_ddr_batch(
                     result.document_id = existing.document_id
                     doc = registry.repository.get(existing.document_id)
                     result.classification = getattr(doc, "classification", None)
-                    result.queued_for_review = result.classification == DocumentClassification.DDR.value
+                    result.queued_for_review = (
+                        result.classification == DocumentClassification.DDR.value
+                    )
                     summary.skipped_duplicate += 1
                     if result.queued_for_review:
                         summary.queued_for_review += 1

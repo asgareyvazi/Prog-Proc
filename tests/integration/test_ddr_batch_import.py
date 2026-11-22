@@ -39,13 +39,11 @@ def _pdf_bytes(text: str) -> bytes:
         offsets.append(len(out))
         out += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
     xref = len(out)
-    out += f"xref\n0 {len(objs)+1}\n".encode()
+    out += f"xref\n0 {len(objs) + 1}\n".encode()
     out += b"0000000000 65535 f \n"
     for off in offsets:
         out += f"{off:010d} 00000 n \n".encode()
-    out += (
-        f"trailer\n<< /Size {len(objs)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode()
-    )
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode()
     return out
 
 
@@ -134,7 +132,9 @@ def test_batch_import_manifest_classification_queue_idempotency_and_partial_fail
 
     # Review queue lists the DDR-classified documents without disposition.
     assert len(queue) == 2
-    assert all(item["classification"] == "DDR" and not item["disposition_recorded"] for item in queue)
+    assert all(
+        item["classification"] == "DDR" and not item["disposition_recorded"] for item in queue
+    )
 
     # Idempotency: re-importing the same manifest creates nothing new.
     again, _ = _import(workspace, manifest, tmp_path)
