@@ -1,6 +1,8 @@
 # Product capability inventory
-## Snapshot جاری — 2026-10-20 (UTC)، SHA نوک شاخه `eafe467b0b203e30230e80af75eb81cd3017d831`
+## Snapshot جاری — 2026-10-20 (UTC)، SHA نوک شاخه `arena/5957b76d-prog-proc` = `4896285252911532b0052091120795109df1b55b`
 
+
+- به‌روزرسانی ۲۰۲۶-۱۰-۲۰ (این اسنپ‌شات): resolved نسخهٔ canonical از طریق pointer (‌`current_version`)؛ schema رویداد واحد ‌`extraction_disposition`‌ برای Program و Procedure با policy تصمیم مجدد؛ پنل منبع واقعی با re-verify هش فیزیکی (‌`read_source_excerpt`‌) در UI؛ تست‌های اجباری مسیر fallback انتشار (renameat2 NOREPLACE / fail-closed)؛ و regression تست manifest شارد run-scoped. tip فعلی ‌`4896285252911532b0052091120795109df1b55b`‌؛ گزارش مأموریت به فارسی در ‌`docs/mission-reports/`‌ و SHA نهایی CI در گزارش پایانی ثبت می‌شود.
 - Baseline تأییدشدهٔ قبلی: `2dc7ddde7d595729f98e67485449514a277b07fc` — Linux run `44279805151` و Windows run `44279805136` هر دو success (2,951 collected؛ 0 failed)، و historical replay run `44299260397` (job `134784363027`) success با artifact `14425148074`؛ run تاریخی `43695755434` روی `114173a4` همچنان failure ثبت شده است.
 - Migrationهای `0027` و `0028` (لینک دقیق Program↔Procedure revision با NONE/LINKED/STALE و بدون auto-relink) در head هستند؛ head Alembic `0028` است.
 - قابلیت‌های headless: authoring service کامل (sections/targets/steps، freshness token، validate، submit/review/decide، revise، compare)، templateهای فقط‌ساختاری، `draft-from-document` (صرفاً لینک ساختاری به سند — استخراج واقعی محتوا نیست)، و export JSON/HTML/DOCX/PDF با watermark DRAFT، fidelity کامل، unitهای ذخیره‌شده، redaction opt-in (`path-redaction-v1`) و انتشار race-safe no-clobber.
