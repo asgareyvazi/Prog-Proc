@@ -1,0 +1,63 @@
+# Capability inventory — 2026-11-22 (branch `arena/5957b76d-prog-proc`)
+
+Status vocabulary: **DONE** / **PARTIALLY DONE** / **BLOCKED** / **NOT RUN** /
+**NOT QUALIFIED** / **OWNER-GATED** / **PLANNED** / **DELIBERATELY EXCLUDED**.
+Every claim points at code + tests; text alone is not acceptance. SQLite is the only
+qualified backend. Submission ≠ approval; actor strings ≠ authentication.
+
+| # | Area | Status | Evidence |
+|---|------|--------|----------|
+| 1 | Workspace lifecycle (create/open/doctor) | DONE | `wells/workspace.py`; `test_workspace_lifecycle.py`, `test_doctor_*` |
+| 2 | Schema migrations (Alembic, head 0029) | DONE | `migrations/versions/*`; `test_migration_0029.py` (round-trip contract) |
+| 3 | 0029 downgrade constraint-preserving rebuild (D-06) | DONE | `test_migration_0029.py` — DDL/FK/index/trigger comparison, FK+integrity check |
+| 4 | Well/project/field hierarchy | DONE | `wells/repository.py`; `test_well_section_contract.py` |
+| 5 | Well sections plan-vs-actual | DONE | `test_section_population.py`, `test_plan_actual_forensics.py` |
+| 6 | DDR manual authoring (Qt + service) | DONE | `operations/ddr.py`; `test_ddr_authoring.py`, `test_ddr_cli.py`, UI workbench |
+| 7 | DDR batch PDF import (manifest, classification, queue, idempotency, partial failure) | DONE | `operations/ddr_batch.py`; `test_ddr_batch_import.py` (Phase L) |
+| 8 | DDR revision comparison | DONE | `operations/ddr_comparison.py`; `test_comparison_v76.py` |
+| 9 | Document intake queue + registration | DONE | `review/intake.py`; `test_intake_registration.py`, `test_intake_e2e.py` |
+| 10 | Document registry, immutable versions | DONE | `documents/registry.py`, `documents/repository.py` |
+| 11 | Deterministic classification taxonomy | DONE | `classification/taxonomy.py`, `classification/rules.py` |
+| 12 | PDF text extraction (real, hash-verified) | DONE | `extraction/pdf_text.py`; `test_source_extraction_integrity.py` |
+| 13 | XLSX/DOCX/CSV/text extraction | DONE | `extraction/excel.py`, `docx.py`, `text.py` |
+| 14 | Multi-layout PDF/table extraction | PARTIALLY DONE | table-shape normalisation in `operations/tableshape.py`, `extraction/normalized.py`; no synthetic multi-layout corpus gate yet (Phase M remainder) |
+| 15 | OCR / MinerU binary extraction | NOT QUALIFIED | `integrations/mineru/*`; probe reports absent-with-reason; no real inference run |
+| 16 | Extraction cache + corruption refusal | DONE | `test_extraction_cache.py`, `test_corrupt_persistence.py` |
+| 17 | Source-to-draft with dispositions | DONE | `engineering/source_to_draft.py`; shared `extraction_disposition` events |
+| 18 | Program authoring service (sections/targets) | DONE | `engineering/authoring.py`; `test_program_procedure_authoring.py` |
+| 19 | Procedure authoring service (steps) | DONE | same; steps incl. hold points, parameters JSON |
+| 20 | Program/Procedure CLI | DONE | `engineering/authoring_cli.py`; `test_program_procedure_cli.py` |
+| 21 | Program Builder Qt page | DONE | `ui/authoring_pages.py`; `tests/ui/test_authoring_pages.py` (offscreen) |
+| 22 | Procedure Builder Qt page | DONE | same; completion state visible, governed transitions (D-09) |
+| 23 | Completion-state vocabulary + DB triggers | DONE | migration 0029 + models.py triggers; `test_migration_0029.py` |
+| 24 | Governed state transitions (no self-approval) | DONE | `authoring.py` refuses TECHNICALLY_REVIEWED/APPROVED self-assignment (D-09) |
+| 25 | Exact Program↔Procedure revision link (NONE/LINKED/STALE) | DONE | migration 0028; `test_program_procedure_authoring.py` |
+| 26 | Export JSON/HTML/DOCX/PDF, watermark, no-clobber | DONE | `engineering/export.py`; `test_authoring_export_templates.py` |
+| 27 | Export includes completion_state in all formats (D-08) | DONE | same file, `test_procedure_export_includes_completion_state_in_all_formats` |
+| 28 | Redaction (path-redaction-v1), canonical records untouched | DONE | `core/redact.py`; export redaction test |
+| 29 | Templates (structural only) | DONE | `engineering/templates.py` |
+| 30 | Review/approval lifecycle + audit | DONE | `review/`, `core/lifecycle.py`; `test_review_v72.py` |
+| 31 | NPT records + `npt.hours_rollup` V1 (only approved calc) | DONE | `engineering/service.py`; `test_npt_rollup_production_path.py` |
+| 32 | Calculation registry gate — unapproved methods refused everywhere | DONE | `execute_calculation` + `APPROVED_CALCULATION_METHODS` (Phase Q); `test_e2e_matrix_v1_v15.py::test_v14` |
+| 33 | Arbitrary formula engine | DELIBERATELY EXCLUDED | record storage only; no invented formulas |
+| 34 | Survey import/validation | PARTIALLY DONE | `operations/survey.py` parses/validates stored surveys; no unapproved trajectory calcs; UI import review = PLANNED |
+| 35 | Search (FTS + structured, provenance-grounded) | DONE | `search/`; `test_search_*.py` |
+| 36 | Knowledge facts/conflicts/provenance | DONE | `knowledge/`; `test_knowledge_*.py` |
+| 37 | Evidence chain + citation forensics | DONE | `evidence/`; `test_evidence_*.py` |
+| 38 | Professional reports (HTML/PDF/DOCX) | DONE | `reporting/`; `test_report_*.py` |
+| 39 | Audit reporting | DONE | `reporting/audit.py`; `test_report_audit_*.py` |
+| 40 | Lessons/best practices/recommendations | DONE | `lessons/`, `operations/promote.py` |
+| 41 | Costs (source-value records) | DONE | `engineering/costs.py`; FX/AFE OWNER-GATED |
+| 42 | BHA/bit/casing/cement/mud/well-control/HSE records | DONE | `operations/`; promotion test suites |
+| 43 | Time breakdown certification | DONE | `test_time_breakdown_certification.py` |
+| 44 | Qt workbench navigation (offscreen-verified) | DONE | `ui/main_window.py`; `tests/ui/` (QT_QPA_PLATFORM=offscreen) |
+| 45 | Physical Windows display acceptance | NOT QUALIFIED | offscreen only; no physical display evidence |
+| 46 | DB backup/restore snapshot (no-clobber, identity-bound) | DONE | `database/backup.py`; `test_workspace_backup.py` |
+| 47 | DB concurrency safety | DONE | `test_sqlite_concurrency.py` |
+| 48 | PostgreSQL backend | NOT QUALIFIED | SQLite-only qualified; explicit refusal in migrations |
+| 49 | Auth/multi-user/signatures | NOT QUALIFIED | actor strings are declared attributions only |
+| 50 | Production DR / encrypted archives | NOT QUALIFIED | archive unencrypted by design; DR owner-gated |
+| 51 | E2E synthetic matrix V1–V15 | DONE | `test_e2e_matrix_v1_v15.py` (Phase V) |
+| 52 | Full quality suite (unit+integration+UI) | DONE (local) / CI-bound | exact-SHA CI runs recorded in final report (Phase AA) |
+| 53 | Performance evidence (`out/performance.json`) | OWNER-GATED | protected blob, never read/staged by the agent |
+| 54 | Windows run-card / PowerShell acceptance | DONE | `docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1` (head 0029); CI Windows runs |
