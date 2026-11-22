@@ -24,8 +24,6 @@ from drilling_intelligence.operations.ddr import DdrAuthoringService
 from drilling_intelligence.operations.ddr_batch import import_ddr_batch
 from drilling_intelligence.wells.repository import WellRepository
 
-pytestmark = pytest.mark.integration
-
 
 def _well(workspace, name="E2E-01"):
     with workspace.database.unit_of_work() as session:
