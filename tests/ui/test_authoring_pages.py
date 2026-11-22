@@ -999,3 +999,68 @@ def test_procedure_source_extraction_ui_end_to_end(qt_app, workspace, tmp_path) 
         assert "no longer match" in page.source_view.toPlainText()
     finally:
         window.close()
+
+
+def test_procedure_builder_shows_and_governs_step_completion_state(qt_app, workspace) -> None:
+    """D-09: step completion state visible in list + editor; only governed states settable."""
+    from drilling_intelligence.core.errors import ValidationError
+    from drilling_intelligence.engineering.authoring import EngineeringAuthoringService
+    from drilling_intelligence.engineering.repository import EngineeringRepository
+    from drilling_intelligence.ui.controller import ReviewController
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Procedure Builder")
+        page = window.procedure_builder_page
+        page.title_input.setText("UI state procedure")
+        page.author_input.setText("ui-author")
+        page.template_combo.setCurrentIndex(0)
+        page.create_button.click()
+        assert page._program_id is not None
+
+        page.step_add_button.click()
+        assert page.step_list.count() == 1
+        # New step defaults to DRAFT and the list item displays it.
+        assert "[DRAFT]" in page.step_list.item(0).text()
+
+        page.step_list.setCurrentRow(0)
+        page.step_title_input.setText("Notify driller")
+        page.step_instructions_input.setPlainText("UI fixture instruction text.")
+        # Governed transition: editor combo offers only user-settable states.
+        offered = [page.step_state_combo.itemText(i) for i in range(page.step_state_combo.count())]
+        assert "TECHNICALLY_REVIEWED" not in offered and "APPROVED" not in offered
+        idx = page.step_state_combo.findText("SOURCE_PROVIDED")
+        assert idx >= 0
+        page.step_state_combo.setCurrentIndex(idx)
+        page.step_save_button.click()
+        assert "Step saved" in page.status_label.text()
+        assert "[SOURCE_PROVIDED]" in page.step_list.item(0).text()
+
+        # Editor reload reflects persisted state.
+        page.step_list.setCurrentRow(0)
+        assert page.step_state_combo.currentText() == "SOURCE_PROVIDED"
+
+        # Service boundary rejects self-assigned review/approval states.
+        with workspace.database.unit_of_work() as session:
+            repo = EngineeringRepository(session)
+            service = EngineeringAuthoringService(session)
+            procedure = repo.get_procedure(page._program_id)
+            step = repo.list_procedure_steps(procedure.id)[0]
+            assert step.completion_state == "SOURCE_PROVIDED"
+            with pytest.raises(ValidationError, match="cannot be self-assigned"):
+                service.update_procedure_step(
+                    procedure.id,
+                    step.id,
+                    expected_updated_at=service._token(procedure),
+                    changes={"completion_state": "APPROVED"},
+                )
+            with pytest.raises(ValidationError, match="cannot be self-assigned"):
+                service.update_procedure_step(
+                    procedure.id,
+                    step.id,
+                    expected_updated_at=service._token(procedure),
+                    changes={"completion_state": "TECHNICALLY_REVIEWED"},
+                )
+    finally:
+        window.close()

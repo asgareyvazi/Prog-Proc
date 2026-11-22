@@ -562,6 +562,29 @@ class EngineeringAuthoringService:
             raise ValidationError(
                 "unknown Procedure step field(s)", fields=unknown, allowed=sorted(allowed)
             )
+        if "completion_state" in changes:
+            allowed_states = {
+                "MISSING",
+                "DRAFT",
+                "SOURCE_PROVIDED",
+                "EXTRACTED_UNVERIFIED",
+                "NOT_APPLICABLE",
+                "OWNER_DECISION_REQUIRED",
+            }
+            state = str(changes["completion_state"] or "").upper()
+            if state not in allowed_states:
+                raise ValidationError(
+                    "step review/approval state cannot be self-assigned",
+                    allowed=sorted(allowed_states),
+                )
+            changes["completion_state"] = state
+        if (
+            changes.get("completion_state") == "NOT_APPLICABLE"
+            and not str(changes.get("instructions", row.instructions) or "").strip()
+        ):
+            raise ValidationError(
+                "NOT_APPLICABLE requires a recorded reason in step instructions"
+            )
         for key, value in changes.items():
             if key == "parameters":
                 self._require_parameters(value, "Procedure step parameters")

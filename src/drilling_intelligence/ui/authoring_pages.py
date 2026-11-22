@@ -876,6 +876,8 @@ class ProcedureBuilderPage(_AuthoringPageBase):
         self.step_contingency_input = QTextEdit()
         self.step_hold_check = QComboBox()
         self.step_hold_check.addItems(["no", "yes (HOLD POINT)"])
+        self.step_state_combo = QComboBox()
+        self.step_state_combo.addItems(_COMPLETION_STATES)
         self.step_source_input = QLineEdit()
         editor_form.addRow("Title", self.step_title_input)
         editor_form.addRow("Instructions", self.step_instructions_input)
@@ -889,6 +891,7 @@ class ProcedureBuilderPage(_AuthoringPageBase):
         editor_form.addRow("Safety controls", self.step_safety_input)
         editor_form.addRow("Contingency", self.step_contingency_input)
         editor_form.addRow("Hold point", self.step_hold_check)
+        editor_form.addRow("Completion state", self.step_state_combo)
         editor_form.addRow("Source reference", self.step_source_input)
         self.step_save_button = QPushButton("Save step")
         self.step_save_button.clicked.connect(self._save_step)
@@ -1015,7 +1018,10 @@ class ProcedureBuilderPage(_AuthoringPageBase):
             link = service.procedure_program_link(self._program_id)
         self.step_list.clear()
         for s in steps:
-            item = QListWidgetItem(f"{s.sequence}. {s.title}" + (" [HOLD]" if s.hold_point else ""))
+            item = QListWidgetItem(
+                f"{s.sequence}. {s.title} [{s.completion_state}]"
+                + (" [HOLD]" if s.hold_point else "")
+            )
             item.setData(Qt.ItemDataRole.UserRole, s.id)
             self.step_list.addItem(item)
         self.link_status_label.setText(str(link.get("link_status", "NONE")))
@@ -1071,6 +1077,8 @@ class ProcedureBuilderPage(_AuthoringPageBase):
         self.step_safety_input.setPlainText(s.safety_controls or "")
         self.step_contingency_input.setPlainText(s.contingency or "")
         self.step_hold_check.setCurrentIndex(1 if s.hold_point else 0)
+        state_index = self.step_state_combo.findText(s.completion_state)
+        self.step_state_combo.setCurrentIndex(state_index if state_index >= 0 else 0)
         self.step_source_input.setText(s.source_reference or "")
 
     def _add_step(self) -> None:
@@ -1122,6 +1130,7 @@ class ProcedureBuilderPage(_AuthoringPageBase):
                         "safety_controls": self.step_safety_input.toPlainText() or None,
                         "contingency": self.step_contingency_input.toPlainText() or None,
                         "hold_point": self.step_hold_check.currentIndex() == 1,
+                        "completion_state": self.step_state_combo.currentText(),
                         "source_reference": self.step_source_input.text() or None,
                     },
                 )

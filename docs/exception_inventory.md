@@ -18,7 +18,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/database/session.py` | 85 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/database/session.py` | 121 | `Exception` | suppressed | absent table simply means "no data" |
 | `src/drilling_intelligence/documents/registry.py` | 400 | `Exception` | reported | third-party parser boundary |
-| `src/drilling_intelligence/engineering/export.py` | 668 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/engineering/export.py` | 673 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/engineering/service.py` | 126 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/evidence/verify.py` | 297 | `Exception` | reported | a malformed record is reported, not fatal |
 | `src/drilling_intelligence/evidence/verify.py` | 192 | `Exception` | reported |  |
@@ -101,17 +101,17 @@ to be found by somebody else.
 | `src/drilling_intelligence/ui/authoring_pages.py` | 731 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/authoring_pages.py` | 751 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/authoring_pages.py` | 781 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 992 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1001 | `Exception` | suppressed | no workspace yet |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1092 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1130 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1153 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1178 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1193 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1213 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1243 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1413 | `Exception` | reported | noqa marker |
-| `src/drilling_intelligence/ui/authoring_pages.py` | 1531 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 995 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1004 | `Exception` | suppressed | no workspace yet |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1100 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1139 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1162 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1187 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1202 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1222 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1252 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1422 | `Exception` | reported | noqa marker |
+| `src/drilling_intelligence/ui/authoring_pages.py` | 1540 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/controller.py` | 105 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
 | `src/drilling_intelligence/ui/main_window.py` | 439 | `Exception` | suppressed | dashboard must never break the review view |
