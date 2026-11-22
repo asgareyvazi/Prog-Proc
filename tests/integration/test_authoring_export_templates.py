@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -658,3 +659,96 @@ def test_extraction_disposition_states_are_explicit(session, hierarchy, tmp_path
     assert extraction_disposition(sections[2].provenance) == DISPOSITION_REJECTED
     # rejected content was never promoted
     assert sections[2].completion_state == "EXTRACTED_UNVERIFIED"
+
+
+def test_publish_fallback_rename_noreplace_path(tmp_path, monkeypatch) -> None:
+    """Force os.link to fail with EXDEV: publication must go through renameat2 NOREPLACE."""
+    import errno
+
+    from drilling_intelligence.engineering import export as export_mod
+
+    real_link = os.link
+
+    def fake_link(src, dst, **kw):
+        raise OSError(errno.EXDEV, "cross-device link")
+
+    monkeypatch.setattr(export_mod.os, "link", fake_link)
+    target = tmp_path / "fb.bin"
+    src = tmp_path / "fb-src.bin"
+    src.write_bytes(b"fallback-payload" * 1000)
+    export_mod._publish_atomic(src, target)
+    assert target.read_bytes() == b"fallback-payload" * 1000
+    assert not src.exists()  # temp consumed
+    monkeypatch.setattr(export_mod.os, "link", real_link)
+
+
+def test_publish_fallback_refuses_existing_target(tmp_path, monkeypatch) -> None:
+    """Fallback path must also refuse an existing destination (no clobber)."""
+    import errno
+
+    from drilling_intelligence.engineering import export as export_mod
+
+    def fake_link(src, dst, **kw):
+        raise OSError(errno.EPERM, "operation not permitted")
+
+    monkeypatch.setattr(export_mod.os, "link", fake_link)
+    target = tmp_path / "exists.bin"
+    target.write_bytes(b"original")
+    src = tmp_path / "s.bin"
+    src.write_bytes(b"new")
+    with pytest.raises(ValidationError, match="no-clobber"):
+        export_mod._publish_atomic(src, target)
+    assert target.read_bytes() == b"original"
+    assert not src.exists()  # own temp cleaned, destination untouched
+
+
+def test_publish_fails_closed_when_no_atomic_mechanism(tmp_path, monkeypatch) -> None:
+    """Both hard-link and no-replace rename unavailable -> fail closed, no file exposed."""
+    import errno
+
+    from drilling_intelligence.engineering import export as export_mod
+
+    def fake_link(src, dst, **kw):
+        raise OSError(errno.EPERM, "nope")
+
+    monkeypatch.setattr(export_mod.os, "link", fake_link)
+    monkeypatch.setattr(export_mod, "_rename_noreplace", lambda s, d: False)
+    target = tmp_path / "closed.bin"
+    src = tmp_path / "c.bin"
+    src.write_bytes(b"data")
+    with pytest.raises(ValidationError, match="unavailable"):
+        export_mod._publish_atomic(src, target)
+    assert not target.exists()
+
+
+def test_publish_fallback_existing_symlink_race(tmp_path, monkeypatch) -> None:
+    """A symlink appearing at the destination must never be replaced, even on fallback."""
+    import errno
+
+    from drilling_intelligence.engineering import export as export_mod
+
+    def fake_link(src, dst, **kw):
+        raise OSError(errno.ENOSYS, "no link")
+
+    monkeypatch.setattr(export_mod.os, "link", fake_link)
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(b"victim")
+    target = tmp_path / "link.bin"
+    target.symlink_to(victim)
+    src = tmp_path / "s2.bin"
+    src.write_bytes(b"attacker")
+    with pytest.raises(ValidationError, match="no-clobber"):
+        export_mod._publish_atomic(src, target)
+    assert target.is_symlink() and victim.read_bytes() == b"victim"
+
+
+def test_publish_existing_directory_refused(tmp_path) -> None:
+    from drilling_intelligence.engineering.export import _publish_atomic
+
+    target = tmp_path / "dir.bin"
+    target.mkdir()
+    src = tmp_path / "s3.bin"
+    src.write_bytes(b"x")
+    with pytest.raises(ValidationError, match="no-clobber"):
+        _publish_atomic(src, target)
+    assert target.is_dir()

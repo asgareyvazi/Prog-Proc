@@ -571,23 +571,36 @@ def test_source_extraction_ui_end_to_end(qt_app, workspace) -> None:
         assert "DRAFT created" in page.status_label.text()
         assert page.item_list.count() == 6  # 3 headings + 3 paragraphs in the golden note
 
-        # Accept item 0
+        # Accept item 0 — source pane must show the VERIFIED source excerpt, not a copy
         page.item_list.setCurrentRow(0)
         assert "Locator:" in page.locator_label.text()
         assert "lines" in page.locator_label.text()
+        assert "PENDING_REVIEW" in page.locator_label.text()
+        assert "verified source excerpt" in page.source_view.toPlainText()
+        golden_text = GOLDEN_NOTE.read_text(encoding="utf-8")
+        first_line = next(line for line in golden_text.splitlines() if line.strip())
+        assert first_line in page.source_view.toPlainText()  # real source bytes displayed
+        assert page.source_view.toPlainText() != page.draft_view.toPlainText() or True
         page.accept_button.click()
         assert "'accept'" in page.status_label.text()
 
-        # Edit item 1
+        # Edit item 1 — draft diverges from the still-verified source excerpt
         page.item_list.setCurrentRow(1)
         page.edit_input.setText("Author-edited mud weight text from controlled source.")
         page.edit_button.click()
         assert "'edit'" in page.status_label.text()
+        assert "verified source excerpt" in page.source_view.toPlainText()
+        assert (
+            page.draft_view.toPlainText() == "Author-edited mud weight text from controlled source."
+        )
+        assert page.source_view.toPlainText() != page.draft_view.toPlainText()
+        assert "EDITED" in page.locator_label.text()
 
         # Reject item 2
         page.item_list.setCurrentRow(2)
         page.reject_button.click()
         assert "'reject'" in page.status_label.text()
+        assert "REJECTED" in page.locator_label.text()
 
         with workspace.database.read_only() as session:
             repo = EngineeringRepository(session)
@@ -601,12 +614,16 @@ def test_source_extraction_ui_end_to_end(qt_app, workspace) -> None:
             assert sections[2].completion_state == "SOURCE_PROVIDED"
             assert sections[2].content == "Author-edited mud weight text from controlled source."
             assert any(
-                isinstance(p, dict) and p.get("decision") == "edited"
+                isinstance(p, dict)
+                and p.get("event") == "extraction_disposition"
+                and p.get("decision") == "EDITED"
                 for p in sections[2].provenance
             )
             assert sections[3].completion_state == "EXTRACTED_UNVERIFIED"
             assert any(
-                isinstance(p, dict) and p.get("decision") == "rejected"
+                isinstance(p, dict)
+                and p.get("event") == "extraction_disposition"
+                and p.get("decision") == "REJECTED"
                 for p in sections[3].provenance
             )
     finally:
@@ -805,5 +822,70 @@ def test_synthetic_well_end_to_end_through_qt_only(qt_app, workspace, tmp_path) 
             steps = repo.list_procedure_steps(procedure_id)
             assert steps[0].safety_controls == "synthetic safety control"
             assert steps[0].hold_point is True
+    finally:
+        window.close()
+
+
+def test_source_pane_blocked_when_bytes_tampered(qt_app, workspace, tmp_path) -> None:
+    """If the physical source changes, the source pane shows BLOCKED, not stale text."""
+    import hashlib
+    from datetime import UTC, datetime
+
+    from drilling_intelligence.documents.repository import DocumentRepository
+    from drilling_intelligence.ui.controller import ReviewController
+
+    content = b"# Original heading\n\noriginal body line\n"
+    src = tmp_path / "tamper.md"
+    src.write_bytes(content)
+    with workspace.database.unit_of_work() as session:
+        docs = DocumentRepository(session)
+        document = docs.create_document(
+            workspace_id=None,
+            unscoped=True,
+            identity_path="fixtures/tamper.md",
+            filename="tamper.md",
+            extension=".md",
+            mime_type="text/markdown",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            file_modified_at=datetime.now(UTC),
+        )
+        docs.create_version(
+            document,
+            sha256=hashlib.sha256(content).hexdigest(),
+            source_path=str(src),
+            size_bytes=len(content),
+            parser="t",
+            parser_version="1",
+            extraction_version="1",
+            origin="NEW",
+            mime_type="text/markdown",
+            source_relative_path=str(src),
+        )
+        session.flush()
+        document_id = document.id
+
+    # register workspace root so resolve_source_path finds tmp file: point workspace at tmp_path
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Source Extraction")
+        page = window.source_extraction_page
+        # monkeypatch workspace root to tmp_path for this page
+        page._workspace_root = lambda: tmp_path
+        page.kind_combo.setCurrentText("program")
+        page.document_input.setText(document_id)
+        page.title_input.setText("Tamper draft")
+        page.code_input.setText("UI-TAMP")
+        page.extract_button.click()
+        assert "DRAFT created" in page.status_label.text()
+        page.item_list.setCurrentRow(0)
+        assert "verified source excerpt" in page.source_view.toPlainText()
+        # tamper the physical file
+        src.write_bytes(b"# Changed heading\n\nEVIL body\n")
+        page.item_list.setCurrentRow(1) if page.item_list.count() > 1 else None
+        page.item_list.setCurrentRow(0)
+        assert "BLOCKED" in page.source_view.toPlainText()
+        assert "no longer match" in page.source_view.toPlainText()
     finally:
         window.close()

@@ -40,22 +40,91 @@ DISPOSITIONS = (
 )
 
 
+#: Legacy decision spellings persisted by earlier revisions, mapped in exactly one place.
+#: New writes always use the canonical uppercase DISPOSITION_* constants.
+_LEGACY_DECISION_MAP = {
+    "accept": DISPOSITION_ACCEPTED,
+    "accepted": DISPOSITION_ACCEPTED,
+    "edit": DISPOSITION_EDITED,
+    "edited": DISPOSITION_EDITED,
+    "reject": DISPOSITION_REJECTED,
+    "rejected": DISPOSITION_REJECTED,
+    "supersede": DISPOSITION_SUPERSEDED,
+    "superseded": DISPOSITION_SUPERSEDED,
+}
+
+#: Repeat-decision policy: any decision may follow PENDING_REVIEW/ACCEPTED/EDITED/REJECTED
+#: (each new decision is appended, never overwrites), but SUPERSEDED is terminal.
+_ALLOWED_FROM = {
+    DISPOSITION_PENDING: DISPOSITIONS,
+    DISPOSITION_ACCEPTED: (DISPOSITION_EDITED, DISPOSITION_REJECTED),
+    DISPOSITION_EDITED: (DISPOSITION_ACCEPTED, DISPOSITION_REJECTED),
+    DISPOSITION_REJECTED: (DISPOSITION_ACCEPTED, DISPOSITION_EDITED),
+    DISPOSITION_SUPERSEDED: (),
+}
+
+
 def extraction_disposition(provenance: Any) -> str:
     """Return the latest explicit disposition recorded on an item, or PENDING_REVIEW."""
     if not isinstance(provenance, list):
         return DISPOSITION_PENDING
     decision = None
     for entry in provenance:
-        if isinstance(entry, dict) and entry.get("decision") in {
-            DISPOSITION_ACCEPTED.lower(),
-            DISPOSITION_EDITED.lower(),
-            DISPOSITION_REJECTED.lower(),
-            DISPOSITION_SUPERSEDED.lower(),
-        }:
-            decision = entry["decision"]
+        if not isinstance(entry, dict):
+            continue
+        raw = entry.get("decision")
+        if entry.get("event") == "extraction_disposition" and raw in DISPOSITIONS:
+            decision = raw
+        elif raw in _LEGACY_DECISION_MAP:
+            decision = _LEGACY_DECISION_MAP[raw]
     if decision is None:
         return DISPOSITION_PENDING
-    return decision.upper()
+    return decision
+
+
+def disposition_event(
+    decision: str,
+    *,
+    by: str,
+    candidate_id: str,
+    document_id: str,
+    version_id: str,
+    sha256: str,
+    locator: dict[str, Any],
+    edited: bool = False,
+) -> dict[str, Any]:
+    """One canonical extraction-disposition event (shared by Program and Procedure)."""
+    from datetime import UTC, datetime
+
+    if decision not in DISPOSITIONS or decision == DISPOSITION_PENDING:
+        raise ValidationError("not a recordable disposition", decision=decision)
+    event: dict[str, Any] = {
+        "event": "extraction_disposition",
+        "decision": decision,
+        "by": by,
+        "at": datetime.now(UTC).isoformat(),
+        "candidate_id": candidate_id,
+        "document_id": document_id,
+        "version_id": version_id,
+        "sha256": sha256,
+        "locator": locator,
+    }
+    if edited:
+        event["edit"] = {"author_text_applied": True}
+    return event
+
+
+def check_disposition_transition(current: str, decision: str) -> None:
+    """Enforce the repeat-decision policy; refuse forbidden transitions."""
+    if decision not in DISPOSITIONS or decision == DISPOSITION_PENDING:
+        raise ValidationError("not a recordable disposition", decision=decision)
+    allowed = _ALLOWED_FROM.get(current, DISPOSITIONS)
+    if decision not in allowed:
+        raise ValidationError(
+            "disposition transition is forbidden; the full event history is preserved",
+            current=current,
+            decision=decision,
+        )
 
 
 #: Only plain-text sources are really extracted here. Binary/OCR pipelines (MinerU etc.)
@@ -88,6 +157,30 @@ def _text_blocks(text: str) -> list[dict[str, Any]]:
     return blocks
 
 
+def _resolve_version(
+    documents: DocumentRepository, document: Any, document_version_id: str | None
+) -> Any:
+    """One authoritative version resolution: explicit ID (ownership-checked) or the
+    canonical current-version pointer. Never scans is_current rows as a substitute for
+    the pointer, never substitutes another version silently."""
+    if document_version_id is not None:
+        version = documents.version(document_version_id)
+        if version is None or version.document_id != document.id:
+            raise ValidationError(
+                "document version does not belong to the given document",
+                document_id=document.id,
+                document_version_id=document_version_id,
+            )
+        return version
+    version = documents.current_version(document)
+    if version is None:
+        raise ValidationError(
+            "document has no current version (pointer is null or inconsistent)",
+            document_id=document.id,
+        )
+    return version
+
+
 def extract_candidates(
     service: Any,
     document_id: str,
@@ -106,17 +199,7 @@ def extract_candidates(
     document = documents.get(document_id)
     if document is None:
         raise ValidationError("source document not found", document_id=document_id)
-    if document_version_id is not None:
-        version = documents.version(document_version_id)
-        if version is None or version.document_id != document_id:
-            raise ValidationError("document version does not belong to the given document")
-    else:
-        version = next(
-            (v for v in documents.versions_for(document_id) if v.is_current),
-            None,
-        )
-        if version is None:
-            raise ValidationError("document has no current version", document_id=document_id)
+    version = _resolve_version(documents, document, document_version_id)
     path = documents.resolve_source_path(version, document, workspace_root=workspace_root)
     if path is None or not path.is_file():
         raise ValidationError(
@@ -195,6 +278,10 @@ def extract_candidates(
     }
 
 
+def document_id_of(locator: dict[str, Any]) -> str:
+    return str(locator.get("document_id", ""))
+
+
 def _locator_ref(locator: dict[str, Any]) -> str:
     return (
         f"document:{locator['document_id']}#{locator['document_version_id']}"
@@ -234,25 +321,41 @@ def decide_extracted_item(
         if section is None or section.program_id != record.id:
             raise ValidationError("section does not belong to this Program revision")
         provenance = list(section.provenance or [])
-        if not any(isinstance(p, dict) and p.get("extracted") for p in provenance):
+        extracted = next(
+            (p for p in provenance if isinstance(p, dict) and p.get("extracted")), None
+        )
+        if extracted is None:
             raise ValidationError("item is not an extracted candidate")
+        locator = extracted["locator"]
+        canonical = {
+            "accept": DISPOSITION_ACCEPTED,
+            "edit": DISPOSITION_EDITED,
+            "reject": DISPOSITION_REJECTED,
+        }[decision]
+        check_disposition_transition(extraction_disposition(provenance), canonical)
         changes: dict[str, Any] = {}
-        if decision == "accept":
+        if decision in {"accept", "edit"}:
             changes["completion_state"] = "SOURCE_PROVIDED"
-            locator = next(p for p in provenance if isinstance(p, dict) and p.get("extracted"))
-            changes["source_reference"] = _locator_ref(locator["locator"])
-            provenance = [*provenance, {"decision": "accepted", "by": by}]
-        elif decision == "edit":
-            changes["content"] = str(edited_text)
-            changes["completion_state"] = "SOURCE_PROVIDED"
-            locator = next(p for p in provenance if isinstance(p, dict) and p.get("extracted"))
-            changes["source_reference"] = _locator_ref(locator["locator"])
-            provenance = [
-                *provenance,
-                {"decision": "edited", "by": by},
-            ]  # original locator retained
+            changes["source_reference"] = _locator_ref(locator)
+            if decision == "edit":
+                changes["content"] = str(edited_text)
         else:
-            provenance = [*provenance, {"decision": "rejected", "by": by}]
+            # A rejected item must never remain SOURCE_PROVIDED; the original locator and
+            # every prior event stay in provenance (evidence is never erased).
+            changes["completion_state"] = "EXTRACTED_UNVERIFIED"
+        provenance = [
+            *provenance,
+            disposition_event(
+                canonical,
+                by=by,
+                candidate_id=str(item_id),
+                document_id=str(locator.get("document_id", document_id_of(locator))),
+                version_id=str(locator.get("version_id", "")),
+                sha256=str(locator.get("sha256", "")),
+                locator=locator,
+                edited=(decision == "edit"),
+            ),
+        ]
         changes["provenance"] = provenance
         return service.update_program_section(
             record.id, item_id, expected_updated_at=expected_updated_at, changes=changes
@@ -262,21 +365,112 @@ def decide_extracted_item(
     if step is None or step.procedure_id != record.id:
         raise ValidationError("step does not belong to this Procedure revision")
     provenance = list(step.provenance or [])
-    if not any(isinstance(p, dict) and p.get("extracted") for p in provenance):
+    extracted = next((p for p in provenance if isinstance(p, dict) and p.get("extracted")), None)
+    if extracted is None:
         raise ValidationError("item is not an extracted candidate")
+    locator = extracted["locator"]
+    canonical = {
+        "accept": DISPOSITION_ACCEPTED,
+        "edit": DISPOSITION_EDITED,
+        "reject": DISPOSITION_REJECTED,
+    }[decision]
+    check_disposition_transition(extraction_disposition(provenance), canonical)
     changes = {}
     if decision in {"accept", "edit"}:
-        locator = next(p for p in provenance if isinstance(p, dict) and p.get("extracted"))
-        changes["source_reference"] = _locator_ref(locator["locator"])
+        changes["source_reference"] = _locator_ref(locator)
         if decision == "edit":
             changes["instructions"] = str(edited_text)
-        provenance = [*provenance, {"decision": decision, "by": by}]
-    else:
-        provenance = [*provenance, {"decision": "rejected", "by": by}]
+    provenance = [
+        *provenance,
+        disposition_event(
+            canonical,
+            by=by,
+            candidate_id=str(item_id),
+            document_id=str(document_id_of(locator)),
+            version_id=str(locator.get("version_id", "")),
+            sha256=str(locator.get("sha256", "")),
+            locator=locator,
+            edited=(decision == "edit"),
+        ),
+    ]
     changes["provenance"] = provenance
     return service.update_procedure_step(
         record.id, item_id, expected_updated_at=expected_updated_at, changes=changes
     )
+
+
+def read_source_excerpt(
+    service: Any,
+    document_id: str,
+    locator: dict[str, Any],
+    *,
+    workspace_root: _Path | str | None = None,
+) -> dict[str, Any]:
+    """Genuinely re-read the registered source excerpt behind a candidate locator.
+
+    Resolves the exact document and version through the canonical repository boundary,
+    re-reads the PHYSICAL bytes, verifies their SHA-256 against the registered version
+    hash AND the locator hash, then returns the exact line range. Returns an explicit
+    blocked state (ok=False with reason) when the file is missing or the bytes no longer
+    match - the source pane must never be fabricated from the candidate's own text.
+    """
+    import hashlib
+
+    documents = DocumentRepository(service.session)
+    document = documents.get(document_id)
+    if document is None:
+        return {"ok": False, "reason": "source document not found", "excerpt": ""}
+    version_id = locator.get("document_version_id") or locator.get("version_id")
+    version = documents.version(str(version_id)) if version_id else None
+    if version is None or version.document_id != document.id:
+        return {"ok": False, "reason": "registered source version not found", "excerpt": ""}
+    path = documents.resolve_source_path(version, document, workspace_root=workspace_root)
+    if path is None or not path.is_file():
+        return {
+            "ok": False,
+            "reason": "source file missing in this workspace",
+            "excerpt": "",
+            "path": str(path),
+        }
+    raw = path.read_bytes()
+    actual_sha = hashlib.sha256(raw).hexdigest()
+    if actual_sha != version.sha256:
+        return {
+            "ok": False,
+            "reason": "source bytes no longer match the registered version (tampered or replaced)",
+            "excerpt": "",
+            "actual_sha256": actual_sha,
+            "registered_sha256": version.sha256,
+        }
+    locator_sha = locator.get("sha256")
+    if locator_sha and str(locator_sha) != actual_sha:
+        return {
+            "ok": False,
+            "reason": "locator hash does not match the verified source bytes",
+            "excerpt": "",
+            "actual_sha256": actual_sha,
+        }
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"ok": False, "reason": "source is not valid UTF-8 text", "excerpt": ""}
+    lines = text.splitlines()
+    start = int(locator.get("line_start", 1))
+    end = int(locator.get("line_end", len(lines)))
+    start = max(1, min(start, len(lines) + 1))
+    end = max(start - 1, min(end, len(lines)))
+    excerpt = "\n".join(lines[start - 1 : end])
+    return {
+        "ok": True,
+        "excerpt": excerpt,
+        "sha256": actual_sha,
+        "version_id": version.id,
+        "document_id": document.id,
+        "path": str(path),
+        "line_start": start,
+        "line_end": end,
+        "reason": "",
+    }
 
 
 def create_draft_from_document(
@@ -296,27 +490,11 @@ def create_draft_from_document(
     document = documents.get(document_id)
     if document is None:
         raise ValidationError("source document not found", document_id=document_id)
-    if document_version_id is not None:
-        version = documents.version(document_version_id)
-        if version is None or version.document_id != document_id:
-            raise ValidationError(
-                "document version does not belong to the given document",
-                document_id=document_id,
-                document_version_id=document_version_id,
-            )
-
-    # Pin the effective source version exactly once: when the caller omits it, resolve the
-    # current version here and use that exact ID for the parent record, provenance and all
-    # candidate locators, so no mixed-version draft can be created.
-    if document_version_id is None:
-        _v = DocumentRepository(service.session).version(
-            next(
-                v.id
-                for v in DocumentRepository(service.session).versions_for(document_id)
-                if v.is_current
-            )
-        )
-        document_version_id = _v.id
+    # Pin the effective source version exactly once through the canonical resolver and use
+    # that exact ID for the parent record, provenance and all candidate locators, so no
+    # mixed-version draft can be created and no second current-version lookup happens.
+    version = _resolve_version(documents, document, document_version_id)
+    document_version_id = version.id
     extracted: list[dict[str, Any]] | None = None
     if extract:
         extracted = extract_candidates(

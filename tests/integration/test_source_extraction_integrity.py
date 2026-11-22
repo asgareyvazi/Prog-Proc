@@ -174,3 +174,252 @@ def test_create_from_template_rejects_unknown_kind(workspace) -> None:
                 "standard_drilling_program",
                 content={"title": "t", "author": "a"},
             )
+
+
+def _make_doc(workspace, tmp_path, name="v.md", content=b"# H\n\nbody text\n"):
+    import hashlib
+    from datetime import UTC, datetime
+
+    docs = DocumentRepository(workspace.database.unit_of_work().__enter__()) if False else None
+    with workspace.database.unit_of_work() as session:
+        docs = DocumentRepository(session)
+        doc = docs.create_document(
+            workspace_id=None,
+            unscoped=True,
+            identity_path=f"fixtures/{name}",
+            filename=name,
+            extension=".md",
+            mime_type="text/markdown",
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            file_modified_at=datetime.now(UTC),
+        )
+        src = tmp_path / name
+        src.write_bytes(content)
+        ver = docs.create_version(
+            doc,
+            sha256=hashlib.sha256(content).hexdigest(),
+            source_path=str(src),
+            size_bytes=len(content),
+            parser="t",
+            parser_version="1",
+            extraction_version="1",
+            origin="NEW",
+            mime_type="text/markdown",
+            source_relative_path=str(src),
+        )
+        return doc.id, ver.id
+
+
+def test_resolver_refuses_document_without_any_version(workspace, tmp_path) -> None:
+    import hashlib
+    from datetime import UTC, datetime
+
+    with workspace.database.unit_of_work() as session:
+        docs = DocumentRepository(session)
+        doc = docs.create_document(
+            workspace_id=None,
+            unscoped=True,
+            identity_path="fixtures/empty.md",
+            filename="empty.md",
+            extension=".md",
+            mime_type="text/markdown",
+            size_bytes=0,
+            sha256=hashlib.sha256(b"").hexdigest(),
+            file_modified_at=datetime.now(UTC),
+        )
+        session.flush()
+        from drilling_intelligence.engineering.source_to_draft import extract_candidates
+
+        with pytest.raises(ValidationError, match="no current version"):
+            extract_candidates(_svc(session), doc.id, workspace_root=tmp_path)
+
+
+def test_resolver_pointer_wins_over_is_current_disagreement(workspace, tmp_path) -> None:
+    """Pointer/is_current disagreement: the canonical pointer is authoritative."""
+    doc_id, ver_id = _make_doc(workspace, tmp_path)
+    with workspace.database.unit_of_work() as session:
+        docs = DocumentRepository(session)
+        doc = docs.get(doc_id)
+        for v in docs.versions_for(doc_id):
+            v.is_current = False  # row flag cleared, pointer intact
+        session.flush()
+        from drilling_intelligence.engineering.source_to_draft import _resolve_version
+
+        resolved = _resolve_version(docs, doc, None)
+        assert resolved.id == ver_id  # pointer wins, no silent substitution
+
+
+def test_resolver_rejects_version_of_other_document(workspace, tmp_path) -> None:
+    doc_a, _ = _make_doc(workspace, tmp_path, "a.md", b"# A\n\na\n")
+    _doc_b, ver_b = _make_doc(workspace, tmp_path, "b.md", b"# B\n\nb\n")
+    with workspace.database.unit_of_work() as session:
+        from drilling_intelligence.engineering.source_to_draft import extract_candidates
+
+        with pytest.raises(ValidationError, match="does not belong"):
+            extract_candidates(_svc(session), doc_a, ver_b, workspace_root=tmp_path)
+
+
+def test_resolver_rejects_missing_version_id(workspace, tmp_path) -> None:
+    doc_id, _ = _make_doc(workspace, tmp_path)
+    with workspace.database.unit_of_work() as session:
+        from drilling_intelligence.engineering.source_to_draft import extract_candidates
+
+        with pytest.raises(ValidationError, match="does not belong"):
+            extract_candidates(_svc(session), doc_id, "no-such-version", workspace_root=tmp_path)
+
+
+def _svc(session):
+    from drilling_intelligence.engineering.authoring import EngineeringAuthoringService
+
+    return EngineeringAuthoringService(session)
+
+
+def test_procedure_disposition_uses_canonical_events(workspace, tmp_path) -> None:
+    """Procedure accept/edit/reject must persist canonical dispositions like Program."""
+    from drilling_intelligence.engineering.source_to_draft import (
+        DISPOSITION_ACCEPTED,
+        DISPOSITION_EDITED,
+        DISPOSITION_PENDING,
+        DISPOSITION_REJECTED,
+        create_draft_from_document,
+        decide_extracted_item,
+        extraction_disposition,
+    )
+
+    doc_id, _ver = _make_doc(
+        workspace, tmp_path, "p.md", b"# S1\n\nalpha\n\n# S2\n\nbeta\n\n# S3\n\ngamma\n"
+    )
+    with workspace.database.unit_of_work() as session:
+        service = _svc(session)
+        record = create_draft_from_document(
+            service,
+            "procedure",
+            doc_id,
+            content={"title": "P", "code": "PRC-DISP", "author": "a", "created_by": "a"},
+            extract=True,
+            workspace_root=tmp_path,
+        )
+        session.flush()
+        repo = EngineeringRepository(session)
+        steps = repo.list_procedure_steps(record.id)
+        assert len(steps) == 6
+        assert all(extraction_disposition(s.provenance) == DISPOSITION_PENDING for s in steps)
+
+        def decide(idx, decision, text=None):
+            row = repo.get_procedure(record.id)
+            decide_extracted_item(
+                service,
+                "procedure",
+                record.id,
+                steps[idx].id,
+                decision=decision,
+                expected_updated_at=service._token(row),
+                by="reviewer",
+                edited_text=text,
+            )
+            session.flush()
+            return repo.list_procedure_steps(record.id)
+
+        steps = decide(0, "accept")
+        steps = decide(1, "edit", "replacement instructions")
+        steps = decide(2, "reject")
+        assert extraction_disposition(steps[0].provenance) == DISPOSITION_ACCEPTED
+        assert extraction_disposition(steps[1].provenance) == DISPOSITION_EDITED
+        assert steps[1].instructions == "replacement instructions"
+        assert extraction_disposition(steps[2].provenance) == DISPOSITION_REJECTED
+        # canonical event schema present on all three
+        for st in steps[:3]:
+            ev = [
+                p
+                for p in st.provenance
+                if isinstance(p, dict) and p.get("event") == "extraction_disposition"
+            ]
+            assert ev, "canonical disposition event missing"
+            assert ev[-1]["decision"] in {"ACCEPTED", "EDITED", "REJECTED"}
+            assert ev[-1]["by"] == "reviewer" and ev[-1]["at"] and ev[-1]["sha256"]
+
+
+def test_repeat_decision_policy(workspace, tmp_path) -> None:
+    """Allowed re-decisions update state; SUPERSEDED is terminal; history preserved."""
+    from drilling_intelligence.engineering.source_to_draft import (
+        DISPOSITION_ACCEPTED,
+        DISPOSITION_EDITED,
+        DISPOSITION_REJECTED,
+        create_draft_from_document,
+        decide_extracted_item,
+        extraction_disposition,
+    )
+
+    doc_id, _ = _make_doc(workspace, tmp_path, "r.md", b"# S1\n\none\n\n# S2\n\ntwo\n")
+    with workspace.database.unit_of_work() as session:
+        service = _svc(session)
+        record = create_draft_from_document(
+            service,
+            "program",
+            doc_id,
+            content={"title": "R", "code": "PR-DISP", "author": "a"},
+            extract=True,
+            workspace_root=tmp_path,
+        )
+        session.flush()
+        repo = EngineeringRepository(session)
+        sections = repo.list_program_sections(record.id)
+        target = sections[0]
+
+        def decide(dec, text=None):
+            row = repo.get_program(record.id)
+            decide_extracted_item(
+                service,
+                "program",
+                record.id,
+                target.id,
+                decision=dec,
+                expected_updated_at=service._token(row),
+                by="rev",
+                edited_text=text,
+            )
+            session.flush()
+            return repo.list_program_sections(record.id)[0]
+
+        target = decide("accept")
+        assert extraction_disposition(target.provenance) == DISPOSITION_ACCEPTED
+        assert target.completion_state == "SOURCE_PROVIDED"
+        # accepted -> rejected: allowed, and completion state must not stay SOURCE_PROVIDED
+        target = decide("reject")
+        assert extraction_disposition(target.provenance) == DISPOSITION_REJECTED
+        assert target.completion_state == "EXTRACTED_UNVERIFIED"
+        # rejected -> accepted: allowed again
+        target = decide("accept")
+        assert extraction_disposition(target.provenance) == DISPOSITION_ACCEPTED
+        # accepted -> edited: allowed
+        target = decide("edit", "new text")
+        assert extraction_disposition(target.provenance) == DISPOSITION_EDITED
+        # full history preserved: 4 canonical events
+        events = [
+            p
+            for p in target.provenance
+            if isinstance(p, dict) and p.get("event") == "extraction_disposition"
+        ]
+        assert [e["decision"] for e in events] == ["ACCEPTED", "REJECTED", "ACCEPTED", "EDITED"]
+        # superseded is terminal
+        from drilling_intelligence.engineering.source_to_draft import disposition_event
+
+        [
+            *target.provenance,
+            disposition_event(
+                "SUPERSEDED",
+                by="rev",
+                candidate_id=target.id,
+                document_id=doc_id,
+                version_id="",
+                sha256="",
+                locator={},
+            ),
+        ]
+        with pytest.raises(ValidationError, match="forbidden"):
+            from drilling_intelligence.engineering.source_to_draft import (
+                check_disposition_transition,
+            )
+
+            check_disposition_transition("SUPERSEDED", DISPOSITION_ACCEPTED)

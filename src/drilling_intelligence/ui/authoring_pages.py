@@ -1456,13 +1456,44 @@ class SourceExtractionPage(QWidget):
                     p for p in (row.provenance or []) if isinstance(p, dict) and p.get("extracted")
                 )
                 loc = prov["locator"]
-                self.locator_label.setText(
-                    f"Locator: document:{loc['document_id']}#{loc['document_version_id']} "
-                    f"sha256:{loc['sha256'][:12]} lines {loc['line_start']}-{loc['line_end']}"
+                from ..engineering.source_to_draft import (
+                    extraction_disposition,
+                    read_source_excerpt,
                 )
-                text = getattr(row, "content", None) or getattr(row, "instructions", "") or ""
-                self.source_view.setPlainText(prov.get("locator", {}).get("path", "") + "\n" + text)
-                self.draft_view.setPlainText(text)
+
+                disposition = extraction_disposition(row.provenance)
+                self.locator_label.setText(
+                    f"Locator: document:{loc.get('document_id')}#"
+                    f"{loc.get('document_version_id', loc.get('version_id'))} "
+                    f"sha256:{str(loc.get('sha256', ''))[:12]} "
+                    f"lines {loc.get('line_start')}-{loc.get('line_end')} "
+                    f"| disposition: {disposition}"
+                )
+                # Genuine source pane: re-read and hash-verify the registered source bytes,
+                # never fabricate the excerpt from the candidate's own stored text.
+                with _workspace_session(self._workspace()) as session:
+                    _repo, service = _authoring_services(session)
+                    excerpt = read_source_excerpt(
+                        service,
+                        str(loc.get("document_id")),
+                        loc,
+                        workspace_root=self._workspace_root(),
+                    )
+                if excerpt.get("ok"):
+                    self.source_view.setPlainText(
+                        f"[verified source excerpt sha256:{excerpt['sha256'][:12]}]\n"
+                        f"{excerpt['excerpt']}"
+                    )
+                else:
+                    self.source_view.setPlainText(
+                        f"BLOCKED — source unavailable: {excerpt.get('reason', 'unknown')}"
+                    )
+                draft_text = getattr(row, "content", None) or getattr(row, "instructions", "") or ""
+                self.draft_view.setPlainText(draft_text)
+                if excerpt.get("ok") and draft_text != excerpt["excerpt"]:
+                    self.status_label.setText(
+                        "Draft text differs from the verified source excerpt (edited)."
+                    )
                 return
 
     def _decide(self, decision: str) -> None:
@@ -1490,6 +1521,12 @@ class SourceExtractionPage(QWidget):
                     edited_text=self.edit_input.text() if decision == "edit" else None,
                 )
             self._reload_items()
+            # keep the same item selected and refresh the side-by-side panes
+            for i in range(self.item_list.count()):
+                if self.item_list.item(i).data(Qt.ItemDataRole.UserRole) == item_id:
+                    self.item_list.setCurrentRow(i)
+                    break
+            self._load_item()
             self.status_label.setText(f"Decision '{decision}' recorded with locator provenance.")
         except Exception as exc:  # noqa: BLE001
             self.status_label.setText(f"Error: {exc}")
