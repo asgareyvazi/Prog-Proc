@@ -8,6 +8,7 @@ provenance, refusal) rather than engineering truth.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -21,8 +22,65 @@ from drilling_intelligence.engineering.repository import EngineeringRepository
 from drilling_intelligence.engineering.service import EngineeringService
 from drilling_intelligence.extraction.registry import build_default_router
 from drilling_intelligence.operations.ddr import DdrAuthoringService
-from drilling_intelligence.operations.ddr_batch import import_ddr_batch
+from drilling_intelligence.operations.ddr_batch import MANIFEST_FORMAT, import_ddr_batch
 from drilling_intelligence.wells.repository import WellRepository
+
+
+def _pdf_bytes(text: str) -> bytes:
+    """Minimal synthetic single-page PDF carrying plain text (labelled synthetic)."""
+    content = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET"
+    stream = content.encode()
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for i, obj in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode()
+    return out
+
+
+_DDR_TEXT = (
+    "Daily Drilling Report - SYNTHETIC FIXTURE - Rig RIG-1 spud. "
+    "Report No. SYN-1. Depth from 100 to 200 m. Activity code DRILL. 06:00 08:00."
+)
+
+
+def _write_corpus(base) -> Path:
+    (base / "ddr_syn_1.pdf").write_bytes(_pdf_bytes(_DDR_TEXT))
+    (base / "ddr_syn_2.pdf").write_bytes(_pdf_bytes(_DDR_TEXT + " Report No. SYN-2."))
+    (base / "notes.txt.pdf").write_bytes(
+        _pdf_bytes("unrelated synthetic text, not a drilling report")
+    )
+    (base / "plain.txt").write_text("not a pdf")
+    manifest = base / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "format": MANIFEST_FORMAT,
+                "files": [
+                    {"path": "ddr_syn_1.pdf", "note": "synthetic fixture"},
+                    {"path": "ddr_syn_2.pdf"},
+                    {"path": "notes.txt.pdf"},
+                    {"path": "missing.pdf"},
+                    {"path": "plain.txt"},
+                ],
+            }
+        )
+    )
+    return manifest
 
 
 def _well(workspace, name="E2E-01"):
@@ -89,7 +147,6 @@ def test_v3_ddr_manual_journey_create_submit(workspace) -> None:
 
 
 def test_v4_ddr_batch_import_matrix_entry(workspace, tmp_path) -> None:
-    from tests.integration.test_ddr_batch_import import _write_corpus
 
     manifest = _write_corpus(tmp_path)
     with workspace.database.unit_of_work() as session:
@@ -111,9 +168,8 @@ def test_v4_ddr_batch_import_matrix_entry(workspace, tmp_path) -> None:
 # ---------------------------------------------------------------- V5-V8
 def test_v5_document_intake_registration_classification(workspace, tmp_path) -> None:
     pdf = tmp_path / "syn_report.pdf"
-    from tests.integration.test_ddr_batch_import import DDR_TEXT, _pdf_bytes
 
-    pdf.write_bytes(_pdf_bytes(DDR_TEXT))
+    pdf.write_bytes(_pdf_bytes(_DDR_TEXT))
     with workspace.database.unit_of_work() as session:
         registry = DocumentRegistry(
             DocumentRepository(session),
