@@ -1201,3 +1201,21 @@ def test_survey_import_page_validates_and_persists_run(qt_app, workspace, tmp_pa
         assert runs[0].provenance[0]["sha256"]
     finally:
         window.close()
+
+
+def test_ui_e2e_navigation_covers_new_pages(qt_app, workspace):
+    """D-19 UI E2E: main-window navigation exposes Batch DDR Import and Survey Import."""
+    from drilling_intelligence.ui.controller import ReviewController
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        names = [window.navigation.item(i).text() for i in range(window.navigation.count())]
+        assert "Batch DDR Import" in names
+        assert "Survey Import" in names
+        _select_navigation_page(window, "Survey Import")
+        assert window.pages.currentWidget() is window.survey_import_page
+        _select_navigation_page(window, "Batch DDR Import")
+        assert window.pages.currentWidget() is window.batch_import_page
+    finally:
+        window.close()

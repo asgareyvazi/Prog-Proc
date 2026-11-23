@@ -25,6 +25,10 @@ from drilling_intelligence.operations.ddr import DdrAuthoringService
 from drilling_intelligence.operations.ddr_batch import MANIFEST_FORMAT, import_ddr_batch
 from drilling_intelligence.wells.repository import WellRepository
 
+#: Every scenario is synthetic and asserts workflow mechanics only - never
+#: engineering truth. Scope labels make that explicit per scenario (D-19).
+SCOPE = "SYNTHETIC-WORKFLOW-MECHANICS-ONLY"
+
 
 def _pdf_bytes(text: str) -> bytes:
     """Minimal synthetic single-page PDF carrying plain text (labelled synthetic)."""
@@ -101,12 +105,14 @@ def _stamp(workspace, record_id: str, kind: str = "procedure") -> str:
 
 # ---------------------------------------------------------------- V1-V4
 def test_v1_workspace_bootstrap_and_head(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     from drilling_intelligence.database.migrations import METADATA_REVISION, current_revision
 
     assert current_revision(workspace.database.engine) == "0029" == METADATA_REVISION
 
 
 def test_v2_well_registration_and_sections(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     well_id = _well(workspace)
     with workspace.database.unit_of_work() as session:
         wells = WellRepository(session)
@@ -117,6 +123,7 @@ def test_v2_well_registration_and_sections(workspace) -> None:
 
 
 def test_v3_ddr_manual_journey_create_submit(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     well_id = _well(workspace, "E2E-03")
     service = DdrAuthoringService(workspace.database)
     draft = service.create_draft(
@@ -147,6 +154,7 @@ def test_v3_ddr_manual_journey_create_submit(workspace) -> None:
 
 
 def test_v4_ddr_batch_import_matrix_entry(workspace, tmp_path) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
 
     manifest = _write_corpus(tmp_path)
     with workspace.database.unit_of_work() as session:
@@ -167,6 +175,7 @@ def test_v4_ddr_batch_import_matrix_entry(workspace, tmp_path) -> None:
 
 # ---------------------------------------------------------------- V5-V8
 def test_v5_document_intake_registration_classification(workspace, tmp_path) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     pdf = tmp_path / "syn_report.pdf"
 
     pdf.write_bytes(_pdf_bytes(_DDR_TEXT))
@@ -185,6 +194,7 @@ def test_v5_document_intake_registration_classification(workspace, tmp_path) -> 
 
 
 def test_v6_program_authoring_validate_submit(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     well_id = _well(workspace, "E2E-06")
     with workspace.database.unit_of_work() as session:
         repo = EngineeringRepository(session)
@@ -225,6 +235,7 @@ def test_v6_program_authoring_validate_submit(workspace) -> None:
 
 
 def test_v7_procedure_authoring_hold_point_and_link(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     well_id = _well(workspace, "E2E-07")
     with workspace.database.unit_of_work() as session:
         repo = EngineeringRepository(session)
@@ -257,6 +268,7 @@ def test_v7_procedure_authoring_hold_point_and_link(workspace) -> None:
 
 
 def test_v8_procedure_export_all_formats_watermarked(workspace, tmp_path) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     well_id = _well(workspace, "E2E-08")
     with workspace.database.unit_of_work() as session:
         repo = EngineeringRepository(session)
@@ -282,6 +294,7 @@ def test_v8_procedure_export_all_formats_watermarked(workspace, tmp_path) -> Non
 
 # ---------------------------------------------------------------- V9-V12
 def test_v9_revision_marks_link_stale(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     well_id = _well(workspace, "E2E-09")
     with workspace.database.unit_of_work() as session:
         repo = EngineeringRepository(session)
@@ -330,6 +343,7 @@ def test_v9_revision_marks_link_stale(workspace) -> None:
 
 
 def test_v10_npt_rollup_only_approved_method(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     well_id = _well(workspace, "E2E-10")
     from drilling_intelligence.core.errors import ValidationError
     from drilling_intelligence.engineering.service import (
@@ -346,6 +360,7 @@ def test_v10_npt_rollup_only_approved_method(workspace) -> None:
 
 
 def test_v11_provenance_grounded_search(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     _well(workspace, "E2E-11")
     from drilling_intelligence.search.index import InMemorySearchIndex
     from drilling_intelligence.search.service import SearchService
@@ -356,6 +371,7 @@ def test_v11_provenance_grounded_search(workspace) -> None:
 
 
 def test_v12_report_composition_smoke(workspace, tmp_path) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     from drilling_intelligence.reporting.service import build_report
 
     well_id = _well(workspace, "E2E-12")
@@ -366,6 +382,7 @@ def test_v12_report_composition_smoke(workspace, tmp_path) -> None:
 
 # ---------------------------------------------------------------- V13-V15
 def test_v13_backup_snapshot_no_clobber(workspace, tmp_path) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     dest = tmp_path / "backup.zip"
     _ = workspace.database.engine  # materialise the lazily-created database first
     result = create_workspace_backup(workspace, dest)
@@ -377,6 +394,7 @@ def test_v13_backup_snapshot_no_clobber(workspace, tmp_path) -> None:
 
 
 def test_v14_unapproved_calculation_refused(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     from drilling_intelligence.core.errors import ValidationError
 
     well_id = _well(workspace, "E2E-14")
@@ -393,6 +411,7 @@ def test_v14_unapproved_calculation_refused(workspace) -> None:
 
 
 def test_v15_cli_surface_smoke(workspace) -> None:
+    """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     from drilling_intelligence.cli.app import main as cli_main
 
     assert cli_main(["doctor", "--workspace", str(workspace.root), "--json"]) == 0
