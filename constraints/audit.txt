@@ -12,12 +12,12 @@
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
-# Generated on 2026-11-22.
+# Generated on 2026-11-23.
 
 boolean.py==5.0
 CacheControl==0.15.0
 certifi==2026.11.20
-charset-normalizer==3.5.2
+charset-normalizer==3.5.3
 cyclonedx-python-lib==11.12.0
 defusedxml==0.7.1
 filelock==4.3.0
