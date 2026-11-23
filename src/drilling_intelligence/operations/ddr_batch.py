@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -106,7 +105,7 @@ def _validate_entry_path(raw: str, base_resolved: Path) -> Path:
     """D-15: prove the entry resolves to a regular file strictly inside base_dir."""
     if not isinstance(raw, str) or not raw.strip():
         raise ValidationError("manifest file entry 'path' must be a non-empty string")
-    if os.path.isabs(raw) or raw.startswith("~"):
+    if Path(raw).is_absolute() or raw.startswith("~"):
         raise ValidationError(
             "manifest paths must be relative to the batch base directory", path=raw
         )
@@ -225,14 +224,16 @@ def _current_version_disposition(registry: Any, document_id: str) -> str | None:
         return None
     needle = f'"document_version_id": "{current.id}"'
     session = registry.repository.session
+    # Table names are a fixed internal constant pair, never user input.
     for table in ("program_section", "procedure_step"):
-        row = session.execute(
-            text(f"SELECT provenance FROM {table} WHERE provenance LIKE :needle"),
+        rows = session.execute(
+            text("SELECT provenance FROM " + table + " WHERE provenance LIKE :needle"),  # noqa: S608
             {"needle": f"%{needle}%"},
         ).fetchall()
-        for (provenance,) in row:
-            if isinstance(provenance, str):
-                provenance = json.loads(provenance)
+        for (raw_provenance,) in rows:
+            provenance = (
+                json.loads(raw_provenance) if isinstance(raw_provenance, str) else raw_provenance
+            )
             for item in reversed(provenance or []):
                 if isinstance(item, dict) and item.get("event") == "extraction_disposition":
                     locator = item.get("locator") or {}
