@@ -152,6 +152,26 @@ class DocumentRepository:
             .limit(1)
         ).scalar_one_or_none()
 
+    def version_by_sha_in_workspace(
+        self, sha256: str, workspace_id: str | None
+    ) -> DocumentVersion | None:
+        """A version with identical bytes **owned by this workspace only** (D-16).
+
+        SHA-based extraction-cache reuse may be global, but document ownership and
+        registration are workspace-scoped: identical bytes filed in another workspace
+        must never be reported as this workspace's duplicate.
+        """
+        return self.session.execute(
+            select(DocumentVersion)
+            .join(Document, DocumentVersion.document_id == Document.id)
+            .where(
+                DocumentVersion.sha256 == sha256,
+                Document.workspace_id == workspace_id,
+            )
+            .order_by(DocumentVersion.is_current.desc(), DocumentVersion.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
     def versions_for(self, document_id: str) -> list[DocumentVersion]:
         return list(
             self.session.execute(

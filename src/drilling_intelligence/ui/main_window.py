@@ -106,6 +106,7 @@ _NAVIGATION = (
     "Procedure Builder",
     "Template Library",
     "Source Extraction",
+    "Batch DDR Import",
     "Daily DDR",
     "Decision",
     "Comparison",
@@ -345,6 +346,7 @@ class MainWindow(QMainWindow):
         self._build_procedure_builder_page()
         self._build_template_library_page()
         self._build_source_extraction_page()
+        self._build_batch_import_page()
         self._build_ddr_page()
         self._build_decision_page()
         self._build_comparison_page()
@@ -506,6 +508,12 @@ class MainWindow(QMainWindow):
 
         self.source_extraction_page = SourceExtractionPage(self._current_workspace)
         self.pages.addWidget(self.source_extraction_page)
+
+    def _build_batch_import_page(self) -> None:
+        from .batch_import_page import BatchImportPage
+
+        self.batch_import_page = BatchImportPage(self._current_workspace)
+        self.pages.addWidget(self.batch_import_page)
 
     def _build_ddr_page(self) -> None:
         """Manual daily-report authoring linked to candidate operational activities."""
@@ -3357,6 +3365,13 @@ class MainWindow(QMainWindow):
         return any(not event.is_set() for event in self._worker_destroyed_events.values())
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        # Stop page-owned worker threads (e.g. Batch DDR Import) before the window's
+        # own workers, so no child QThread is destroyed while still running.
+        for index in range(self.pages.count()):
+            page = self.pages.widget(index)
+            cleanup = getattr(page, "_cleanup_thread", None)
+            if callable(cleanup):
+                cleanup()
         threads = [
             thread
             for name in _WORKER_THREAD_ATTRS

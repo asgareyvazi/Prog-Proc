@@ -1,19 +1,24 @@
-"""DDR batch PDF import (Phase L).
+"""DDR batch PDF import (Phase C hardened / D-14..D-18).
 
 Manifest-driven import of daily drilling report PDFs into the document registry.
 Guarantees:
 
-* **Manifest-driven** — a JSON manifest lists the files; nothing outside the manifest
-  is touched.
-* **Classification** — every imported file gets the deterministic registry
-  classification; only DDR-classified files enter the review queue.
-* **Review queue** — `review_queue()` lists DDR-classified documents that have no
-  extraction disposition yet; import never auto-dispositions content.
-* **Idempotency** — re-importing a file whose SHA-256 is already registered as a
-  document version is reported SKIPPED_DUPLICATE and creates nothing new.
-* **Partial-failure reporting** — a bad entry (missing file, non-PDF, registry
-  refusal) is recorded as FAILED with its reason and never aborts the rest of the
-  batch; the batch summary reports every outcome.
+* **Strict manifest contract** — versioned JSON manifest; unknown keys, duplicate
+  entries, absolute paths, `..` traversal and over-limit batches are rejected
+  deterministically before any file is read (D-18).
+* **Path containment (D-15)** — the base directory is resolved once; every manifest
+  entry must be a relative, traversal-free, non-symlink-escaping regular file whose
+  canonical resolved path stays inside the base. No string-prefix comparison.
+* **Workspace-scoped identity (D-16)** — duplicate detection only considers versions
+  owned by the same workspace; identical bytes in another workspace are a legitimate
+  separate document, never a borrowed document id.
+* **Exact-version review queue (D-17)** — the queue is keyed by
+  (document_id, current document_version_id, sha256); a disposition on an older
+  version never disposes the current one.
+* **Resource bounds (D-18)** — max file count, per-file size, aggregate batch size,
+  PDF signature check; streaming SHA-256; per-entry failure isolation.
+* **Partial-failure reporting** — a bad entry is recorded FAILED and never aborts the
+  batch or leaves a half-registered document.
 
 Imported DDRs stay evidence/candidates until an explicit disposition — import is
 not approval, and classification is not authorship.
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,6 +37,16 @@ from ..classification.taxonomy import DocumentClassification
 from ..core.errors import ValidationError
 
 MANIFEST_FORMAT = "ddr-batch-manifest/v1"
+
+#: Resource bounds (D-18): a manifest larger than this is rejected before any I/O.
+MAX_MANIFEST_ENTRIES = 500
+MAX_FILE_BYTES = 64 * 1024 * 1024  # 64 MiB per file
+MAX_BATCH_BYTES = 512 * 1024 * 1024  # 512 MiB aggregate
+MAX_MANIFEST_BYTES = 1024 * 1024  # 1 MiB manifest JSON
+
+_PDF_SIGNATURE = b"%PDF-"
+
+_ALLOWED_ENTRY_KEYS = {"path", "well_id", "note"}
 
 
 @dataclass(frozen=True)
@@ -44,10 +60,11 @@ class ManifestEntry:
 class BatchEntryResult:
     filename: str
     sha256: str = ""
-    status: str = "FAILED"  # IMPORTED | SKIPPED_DUPLICATE | FAILED
+    status: str = "FAILED"  # IMPORTED | SKIPPED_DUPLICATE | FAILED | UNSUPPORTED
     document_id: str | None = None
+    document_version_id: str | None = None
     classification: str | None = None
-    queued_for_review: bool = False
+    pending_review: bool = False
     error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,8 +73,9 @@ class BatchEntryResult:
             "sha256": self.sha256,
             "status": self.status,
             "document_id": self.document_id,
+            "document_version_id": self.document_version_id,
             "classification": self.classification,
-            "queued_for_review": self.queued_for_review,
+            "pending_review": self.pending_review,
             "error": self.error,
         }
 
@@ -69,7 +87,7 @@ class BatchImportSummary:
     imported: int = 0
     skipped_duplicate: int = 0
     failed: int = 0
-    queued_for_review: int = 0
+    pending_review: int = 0
     entries: list[BatchEntryResult] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -79,16 +97,49 @@ class BatchImportSummary:
             "imported": self.imported,
             "skipped_duplicate": self.skipped_duplicate,
             "failed": self.failed,
-            "queued_for_review": self.queued_for_review,
+            "pending_review": self.pending_review,
             "entries": [e.to_dict() for e in self.entries],
         }
 
 
-def load_manifest(path: Path | str) -> list[ManifestEntry]:
-    """Load and validate a batch manifest JSON file."""
+def _validate_entry_path(raw: str, base_resolved: Path) -> Path:
+    """D-15: prove the entry resolves to a regular file strictly inside base_dir."""
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValidationError("manifest file entry 'path' must be a non-empty string")
+    if os.path.isabs(raw) or raw.startswith("~"):
+        raise ValidationError(
+            "manifest paths must be relative to the batch base directory", path=raw
+        )
+    parts = Path(raw).parts
+    if any(part == ".." for part in parts):
+        raise ValidationError("manifest path must not contain '..' traversal", path=raw)
+    candidate = base_resolved / raw
+    # Resolve and require canonical containment — never a string-prefix check.
+    resolved = candidate.resolve(strict=False)
+    if resolved != base_resolved and base_resolved not in resolved.parents:
+        raise ValidationError("manifest path escapes the batch base directory", path=raw)
+    # Symlink policy: no component of the relative path may be a symlink.
+    probe = base_resolved
+    for part in parts:
+        probe = probe / part
+        if probe.is_symlink():
+            raise ValidationError("symlinks are not allowed in batch import paths", path=raw)
+    if not resolved.is_file():
+        raise ValidationError("manifest entry is not an existing regular file", path=raw)
+    return resolved
+
+
+def load_manifest(path: Path | str, *, base_dir: Path | str | None = None) -> list[ManifestEntry]:
+    """Load and strictly validate a batch manifest JSON file (D-18)."""
     manifest_path = Path(path)
     try:
+        if manifest_path.stat().st_size > MAX_MANIFEST_BYTES:
+            raise ValidationError(
+                "manifest file exceeds the maximum allowed size", limit_bytes=MAX_MANIFEST_BYTES
+            )
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except ValidationError:
+        raise
     except (OSError, json.JSONDecodeError) as exc:
         raise ValidationError(
             "batch manifest is unreadable or not valid JSON",
@@ -101,20 +152,43 @@ def load_manifest(path: Path | str) -> list[ManifestEntry]:
             expected=MANIFEST_FORMAT,
             got=raw.get("format") if isinstance(raw, dict) else None,
         )
+    unknown_top = sorted(set(raw) - {"format", "files"})
+    if unknown_top:
+        raise ValidationError("unknown manifest top-level key(s)", keys=unknown_top)
     files = raw.get("files")
     if not isinstance(files, list) or not files:
         raise ValidationError("batch manifest must list at least one file under 'files'")
+    if len(files) > MAX_MANIFEST_ENTRIES:
+        raise ValidationError(
+            "manifest exceeds the maximum entry count",
+            limit=MAX_MANIFEST_ENTRIES,
+            got=len(files),
+        )
     entries: list[ManifestEntry] = []
+    seen: set[str] = set()
     for item in files:
-        if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not item["path"]:
+        if not isinstance(item, dict):
+            raise ValidationError("every manifest file entry must be an object")
+        unknown = sorted(set(item) - _ALLOWED_ENTRY_KEYS)
+        if unknown:
+            raise ValidationError("unknown manifest entry key(s)", keys=unknown)
+        entry_path = item.get("path")
+        if not isinstance(entry_path, str) or not entry_path:
             raise ValidationError("every manifest file entry must have a non-empty 'path'")
+        if entry_path in seen:
+            raise ValidationError("duplicate manifest entry", path=entry_path)
+        seen.add(entry_path)
         entries.append(
             ManifestEntry(
-                path=item["path"],
+                path=entry_path,
                 well_id=item.get("well_id") if isinstance(item.get("well_id"), str) else None,
                 note=item.get("note") if isinstance(item.get("note"), str) else "",
             )
         )
+    if base_dir is not None:
+        base_resolved = Path(base_dir).resolve()
+        for entry in entries:
+            _validate_entry_path(entry.path, base_resolved)
     return entries
 
 
@@ -126,6 +200,47 @@ def _sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _has_pdf_signature(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(5) == _PDF_SIGNATURE
+    except OSError:
+        return False
+
+
+def _current_version_disposition(registry: Any, document_id: str) -> str | None:
+    """D-17: disposition of the exact CURRENT version only, or None if pending.
+
+    Extraction dispositions are provenance events on extracted candidates, and the
+    event's locator names the exact ``document_version_id`` it disposes. A decision
+    on version 1 therefore never disposes version 2.
+    """
+    from sqlalchemy import text
+
+    doc = registry.repository.get(document_id)
+    if doc is None:
+        return None
+    current = registry.repository.current_version(doc)
+    if current is None:
+        return None
+    needle = f'"document_version_id": "{current.id}"'
+    session = registry.repository.session
+    for table in ("program_section", "procedure_step"):
+        row = session.execute(
+            text(f"SELECT provenance FROM {table} WHERE provenance LIKE :needle"),
+            {"needle": f"%{needle}%"},
+        ).fetchall()
+        for (provenance,) in row:
+            if isinstance(provenance, str):
+                provenance = json.loads(provenance)
+            for item in reversed(provenance or []):
+                if isinstance(item, dict) and item.get("event") == "extraction_disposition":
+                    locator = item.get("locator") or {}
+                    if str(locator.get("document_version_id") or "") == current.id:
+                        return str(item.get("decision", ""))
+    return None
+
+
 def import_ddr_batch(
     registry: Any,
     *,
@@ -134,89 +249,126 @@ def import_ddr_batch(
     workspace_root: Path | str,
     workspace_id: str | None,
     default_well_id: str | None = None,
+    should_cancel: Any = None,
+    on_entry: Any = None,
 ) -> BatchImportSummary:
-    """Import every manifest entry; never abort the batch on a single failure."""
+    """Import every manifest entry with per-entry failure isolation (D-18).
+
+    Duplicate detection is workspace-scoped (D-16); path containment is enforced
+    per entry (D-15); pending-review counting uses the exact current version (D-17).
+    """
+    base_resolved = Path(base_dir).resolve()
+    # Manifest structure is validated wholesale; each path is validated per entry so
+    # one bad path is a FAILED entry, never a whole-batch abort (D-18 partial failure).
     entries = load_manifest(manifest_path)
-    base = Path(base_dir)
     summary = BatchImportSummary(total=len(entries))
+    total_bytes = 0
     for entry in entries:
+        if should_cancel is not None and should_cancel():
+            result = BatchEntryResult(filename=Path(entry.path).name, status="CANCELLED")
+            summary.entries.append(result)
+            continue
         result = BatchEntryResult(filename=Path(entry.path).name)
         summary.entries.append(result)
+        if on_entry is not None:
+            on_entry(result)
         try:
-            source = (base / entry.path).resolve()
-            if not source.is_file():
-                result.error = "file missing"
-            elif source.suffix.lower() != ".pdf":
+            source = _validate_entry_path(entry.path, base_resolved)
+            if source.suffix.lower() != ".pdf":
+                result.status = "UNSUPPORTED"
                 result.error = "only PDF files are accepted for DDR batch import"
+            elif not _has_pdf_signature(source):
+                result.status = "UNSUPPORTED"
+                result.error = "file does not carry a PDF signature"
             else:
-                result.sha256 = _sha256_of(source)
-                # Idempotency: same content already registered -> duplicate, no new rows.
-                existing = registry.repository.version_by_sha(result.sha256)
-                if existing is not None:
-                    result.status = "SKIPPED_DUPLICATE"
-                    result.document_id = existing.document_id
-                    doc = registry.repository.get(existing.document_id)
-                    result.classification = getattr(doc, "classification", None)
-                    result.queued_for_review = (
-                        result.classification == DocumentClassification.DDR.value
-                    )
-                    summary.skipped_duplicate += 1
-                    if result.queued_for_review:
-                        summary.queued_for_review += 1
+                size = source.stat().st_size
+                if size > MAX_FILE_BYTES:
+                    result.error = f"file exceeds the per-file size limit ({MAX_FILE_BYTES} bytes)"
+                elif total_bytes + size > MAX_BATCH_BYTES:
+                    result.error = "batch aggregate size limit exceeded"
                 else:
-                    registered = registry.register(
-                        path=source,
-                        workspace_root=workspace_root,
-                        workspace_id=workspace_id,
-                        well_id=entry.well_id or default_well_id,
+                    total_bytes += size
+                    result.sha256 = _sha256_of(source)
+                    # D-16: duplicates are workspace-scoped, never borrowed across workspaces.
+                    existing = registry.repository.version_by_sha_in_workspace(
+                        result.sha256, workspace_id
                     )
-                    if not registered.ok:
-                        result.error = registered.error or "registry refused the file"
-                    else:
-                        result.status = "IMPORTED"
-                        result.document_id = registered.document_id
-                        result.classification = registered.classification
-                        result.queued_for_review = (
-                            registered.classification == DocumentClassification.DDR.value
+                    if existing is not None:
+                        result.status = "SKIPPED_DUPLICATE"
+                        result.document_id = existing.document_id
+                        result.document_version_id = existing.id
+                        doc = registry.repository.get(existing.document_id)
+                        result.classification = getattr(doc, "classification", None)
+                        result.pending_review = (
+                            result.classification == DocumentClassification.DDR.value
+                            and _current_version_disposition(registry, existing.document_id) is None
                         )
-                        summary.imported += 1
-                        if result.queued_for_review:
-                            summary.queued_for_review += 1
+                        summary.skipped_duplicate += 1
+                        if result.pending_review:
+                            summary.pending_review += 1
+                    else:
+                        registered = registry.register(
+                            path=source,
+                            workspace_root=workspace_root,
+                            workspace_id=workspace_id,
+                            well_id=entry.well_id or default_well_id,
+                        )
+                        if not registered.ok:
+                            result.error = registered.error or "registry refused the file"
+                        else:
+                            result.status = "IMPORTED"
+                            result.document_id = registered.document_id
+                            version = registry.repository.current_version(
+                                registry.repository.get(registered.document_id)
+                            )
+                            result.document_version_id = version.id if version else None
+                            result.classification = registered.classification
+                            result.pending_review = (
+                                registered.classification == DocumentClassification.DDR.value
+                                and _current_version_disposition(registry, registered.document_id)
+                                is None
+                            )
+                            summary.imported += 1
+                            if result.pending_review:
+                                summary.pending_review += 1
+        except ValidationError as exc:
+            result.status = "FAILED"
+            result.error = str(exc)
         except Exception as exc:  # noqa: BLE001 - batch must survive a single bad entry
             result.status = "FAILED"
             result.error = f"{type(exc).__name__}: {exc}"
-        if result.status == "FAILED":
+        if result.status in ("FAILED", "UNSUPPORTED"):
             summary.failed += 1
+        if on_entry is not None and result.status not in ("CANCELLED",):
+            on_entry(result)
     return summary
 
 
 def review_queue(registry: Any, *, workspace_id: str | None = None) -> list[dict[str, Any]]:
-    """DDR-classified documents awaiting an explicit extraction disposition.
+    """D-17: exact-current-version review queue.
 
-    Import never dispositions content; this queue is the operator's review surface.
+    Each entry identifies the exact document, its current version, the SHA-256 and
+    the disposition recorded for THAT version. A decision on an older version never
+    disposes the current one; historical decisions stay readable in version history.
     """
     documents = registry.repository.list_documents(
         workspace_id=workspace_id, classification=DocumentClassification.DDR.value
     )
     queue: list[dict[str, Any]] = []
     for doc in documents:
-        # Dispositions are provenance events on document versions (never a silent
-        # status flip); a DDR is queue-pending until one is recorded.
-        has_disposition = False
-        for version in registry.repository.versions_for(doc.id):
-            provenance = getattr(version, "provenance", None) or []
-            if any(
-                isinstance(item, dict) and item.get("event") == "extraction_disposition"
-                for item in provenance
-            ):
-                has_disposition = True
-                break
+        current = registry.repository.current_version(doc)
+        if current is None:
+            continue
+        disposition = _current_version_disposition(registry, doc.id)
         queue.append(
             {
                 "document_id": doc.id,
+                "document_version_id": current.id,
+                "sha256": current.sha256,
                 "filename": doc.filename,
                 "classification": doc.classification,
-                "disposition_recorded": has_disposition,
+                "version_disposition": disposition or "PENDING_REVIEW",
+                "pending_review": disposition is None,
                 "well_id": doc.well_id,
             }
         )

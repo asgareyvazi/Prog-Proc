@@ -1064,3 +1064,78 @@ def test_procedure_builder_shows_and_governs_step_completion_state(qt_app, works
                 )
     finally:
         window.close()
+
+
+def test_batch_import_page_runs_a_real_batch_through_qt(qt_app, workspace, tmp_path) -> None:
+    """Phase D / D-14: Batch DDR Import page drives the domain service through Qt controls."""
+    from tests.integration.test_ddr_batch_import import DDR_TEXT, _pdf_bytes
+
+    from drilling_intelligence.ui.controller import ReviewController
+
+    pdf1 = tmp_path / "ui_ddr_1.pdf"
+    pdf2 = tmp_path / "ui_ddr_2.pdf"
+    bad = tmp_path / "ui_bad.pdf"
+    pdf1.write_bytes(_pdf_bytes(DDR_TEXT))
+    pdf2.write_bytes(_pdf_bytes(DDR_TEXT + " Report No. UI-2."))
+    bad.write_bytes(b"not a pdf signature")
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Batch DDR Import")
+        page = window.batch_import_page
+        assert window.pages.currentWidget() is page
+
+        # Select files through the page's own selection model (dialog is bypassed in
+        # offscreen runs; the file list + start button are the real controls).
+        page._selected = [pdf1, pdf2, bad]
+        for p in page._selected:
+            from PySide6.QtWidgets import QListWidgetItem
+
+            page.file_list.addItem(QListWidgetItem(str(p)))
+        page.start_button.click()
+        assert page.start_button.isEnabled() is False  # running
+
+        # Pump the event loop (with wall-clock slices so the worker thread can run)
+        # until the batch summary arrives.
+        import time as _t
+
+        from PySide6.QtWidgets import QApplication
+
+        for _ in range(400):
+            QApplication.processEvents()
+            _t.sleep(0.02)
+            if page._last_summary is not None:
+                break
+        assert page._last_summary is not None, f"batch did not finish: {page.status_label.text()}"
+        for _ in range(50):
+            QApplication.processEvents()
+        assert page.start_button.isEnabled() is True
+        assert page._last_summary is not None
+        d = page._last_summary.to_dict()
+        assert d["total"] == 3
+        assert d["imported"] == 2
+        assert d["failed"] == 1  # bad signature refused
+        assert d["pending_review"] == 2
+        assert "imported=2" in page.summary_label.text()
+        assert page.results_table.rowCount() == 3
+        # outcome persisted for later reopening
+        assert (page._staging / "outcome.json").exists()
+        assert (page._staging / "manifest.json").exists()
+
+        # Review queue via the page control shows the two DDR versions pending.
+        page.queue_button.click()
+        assert "Review queue: 2" in page.summary_label.text()
+
+        # Retry path: re-run only the failed file through the retry control.
+        page.retry_button.click()
+        for _ in range(400):
+            QApplication.processEvents()
+            _t.sleep(0.02)
+            if page._last_summary.to_dict()["total"] == 1:
+                break
+        assert page._last_summary.to_dict()["total"] == 1
+        assert page._last_summary.to_dict()["failed"] == 1
+        page._cleanup_thread()
+    finally:
+        window.close()

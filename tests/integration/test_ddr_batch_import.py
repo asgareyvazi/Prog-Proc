@@ -1,5 +1,6 @@
-"""Phase L: DDR batch PDF import — manifest, classification, review queue,
-idempotency, partial-failure reporting."""
+"""Phase C: DDR batch PDF import — hardened manifest, path containment (D-15),
+workspace-scoped duplicates (D-16), exact-version review queue (D-17),
+resource limits and partial-failure isolation (D-18)."""
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from drilling_intelligence.documents.repository import DocumentRepository
 from drilling_intelligence.extraction.registry import build_default_router
 from drilling_intelligence.operations.ddr_batch import (
     MANIFEST_FORMAT,
+    MAX_MANIFEST_ENTRIES,
     import_ddr_batch,
     load_manifest,
     review_queue,
@@ -54,12 +56,12 @@ DDR_TEXT = (
 
 
 def _write_corpus(base: Path) -> Path:
-    ddr1 = base / "ddr_syn_1.pdf"
-    ddr2 = base / "ddr_syn_2.pdf"
-    other = base / "notes.txt.pdf"  # wrong content for DDR classification
-    ddr1.write_bytes(_pdf_bytes(DDR_TEXT))
-    ddr2.write_bytes(_pdf_bytes(DDR_TEXT + " Report No. SYN-2."))
-    other.write_bytes(_pdf_bytes("unrelated synthetic text, not a drilling report"))
+    (base / "ddr_syn_1.pdf").write_bytes(_pdf_bytes(DDR_TEXT))
+    (base / "ddr_syn_2.pdf").write_bytes(_pdf_bytes(DDR_TEXT + " Report No. SYN-2."))
+    (base / "notes.txt.pdf").write_bytes(
+        _pdf_bytes("unrelated synthetic text, not a drilling report")
+    )
+    (base / "plain.txt").write_text("not a pdf")
     manifest = base / "manifest.json"
     manifest.write_text(
         json.dumps(
@@ -75,18 +77,20 @@ def _write_corpus(base: Path) -> Path:
             }
         )
     )
-    (base / "plain.txt").write_text("not a pdf")
     return manifest
 
 
+def _registry(workspace, session):
+    return DocumentRegistry(
+        DocumentRepository(session),
+        router=build_default_router(workspace.settings),
+        settings=workspace.settings,
+    )
+
+
 def _import(workspace, manifest, base_dir):
-    """Run one batch import in a committing unit of work."""
     with workspace.database.unit_of_work() as session:
-        registry = DocumentRegistry(
-            DocumentRepository(session),
-            router=build_default_router(workspace.settings),
-            settings=workspace.settings,
-        )
+        registry = _registry(workspace, session)
         summary = import_ddr_batch(
             registry,
             manifest_path=manifest,
@@ -103,7 +107,6 @@ def test_batch_import_manifest_classification_queue_idempotency_and_partial_fail
 ) -> None:
     manifest = _write_corpus(tmp_path)
 
-    # Manifest validation
     with pytest.raises(ValidationError, match="unreadable or not valid JSON"):
         load_manifest(tmp_path / "plain.txt")
     bad = tmp_path / "bad.json"
@@ -115,30 +118,213 @@ def test_batch_import_manifest_classification_queue_idempotency_and_partial_fail
 
     summary, queue = _import(workspace, manifest, tmp_path)
     assert summary.total == 5
-    assert summary.imported == 3  # two DDR-classified + one non-DDR pdf, all registered
+    assert summary.imported == 3
     assert summary.failed == 2  # missing file + non-PDF
     assert summary.skipped_duplicate == 0
     statuses = {e.filename: e.status for e in summary.entries}
     assert statuses["missing.pdf"] == "FAILED"
-    assert "file missing" in next(e.error for e in summary.entries if e.filename == "missing.pdf")
-    assert statuses["plain.txt"] == "FAILED"
+    assert "file missing" in next(
+        e.error for e in summary.entries if e.filename == "missing.pdf"
+    ) or "not an existing regular file" in next(
+        e.error for e in summary.entries if e.filename == "missing.pdf"
+    )
+    assert statuses["plain.txt"] == "UNSUPPORTED"
     ddr_entries = [e for e in summary.entries if e.filename.startswith("ddr_syn")]
     assert all(e.status == "IMPORTED" for e in ddr_entries)
     assert all(e.classification == "DDR" for e in ddr_entries)
-    assert all(e.queued_for_review for e in ddr_entries)
-    assert summary.queued_for_review == 2
+    assert all(e.pending_review for e in ddr_entries)
+    assert summary.pending_review == 2
     non_ddr = next(e for e in summary.entries if e.filename == "notes.txt.pdf")
-    assert non_ddr.status == "IMPORTED" and not non_ddr.queued_for_review
+    assert non_ddr.status == "IMPORTED" and not non_ddr.pending_review
 
-    # Review queue lists the DDR-classified documents without disposition.
+    # D-17: queue is keyed by exact current version with SHA and pending state.
     assert len(queue) == 2
-    assert all(
-        item["classification"] == "DDR" and not item["disposition_recorded"] for item in queue
-    )
+    for item in queue:
+        assert item["classification"] == "DDR"
+        assert item["pending_review"] is True
+        assert item["version_disposition"] == "PENDING_REVIEW"
+        assert item["document_version_id"]
+        assert len(item["sha256"]) == 64
 
     # Idempotency: re-importing the same manifest creates nothing new.
     again, _ = _import(workspace, manifest, tmp_path)
     assert again.imported == 0
-    assert again.skipped_duplicate == 3  # all three PDFs already registered by content hash
+    assert again.skipped_duplicate == 3
     assert again.failed == 2
     assert again.entries[0].status == "SKIPPED_DUPLICATE"
+
+
+# ------------------------------------------------------------- D-15
+def test_d15_path_traversal_and_symlink_escape_refused(workspace, tmp_path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.pdf").write_bytes(_pdf_bytes(DDR_TEXT))
+    base = tmp_path / "batch"
+    base.mkdir()
+    (base / "ok.pdf").write_bytes(_pdf_bytes(DDR_TEXT))
+    link = base / "link.pdf"
+    link.symlink_to(outside / "secret.pdf")
+
+    cases = {
+        "traversal": "../outside/secret.pdf",
+        "absolute": str(outside / "secret.pdf"),
+        "symlink": "link.pdf",
+        "nonexistent": "nope.pdf",
+    }
+    for name, rel in cases.items():
+        manifest = base / f"m_{name}.json"
+        manifest.write_text(json.dumps({"format": MANIFEST_FORMAT, "files": [{"path": rel}]}))
+        with pytest.raises(ValidationError):
+            load_manifest(manifest, base_dir=base)
+        summary, _ = _import(workspace, manifest, base)
+        assert summary.entries[0].status in ("FAILED", "UNSUPPORTED")
+        assert summary.imported == 0
+
+
+# ------------------------------------------------------------- D-16
+def test_d16_duplicate_detection_is_workspace_scoped(workspace, tmp_path, settings) -> None:
+    from drilling_intelligence.wells.workspace import Workspace
+
+    manifest = _write_corpus(tmp_path)
+    summary, _ = _import(workspace, manifest, tmp_path)
+    assert summary.imported == 3
+
+    # Same bytes in a SECOND workspace must register as that workspace's own document.
+    ws2 = Workspace.create(tmp_path / "ws2", settings, name="Second Workspace")
+    summary2, _ = _import(ws2, manifest, tmp_path)
+    assert summary2.imported == 3, "identical bytes in another workspace are not duplicates"
+    assert summary2.skipped_duplicate == 0
+
+    # Same workspace, same bytes again -> duplicates, same document ids.
+    again, _ = _import(workspace, manifest, tmp_path)
+    assert again.skipped_duplicate == 3
+    first_ids = {e.document_id for e in summary.entries if e.status == "IMPORTED"}
+    again_ids = {e.document_id for e in again.entries if e.status == "SKIPPED_DUPLICATE"}
+    assert first_ids == again_ids
+    ws2.close()
+
+
+def test_d16_same_sha_different_path_and_different_well(workspace, tmp_path) -> None:
+    base = tmp_path / "b"
+    base.mkdir()
+    (base / "a.pdf").write_bytes(_pdf_bytes(DDR_TEXT))
+    (base / "copy_of_a.pdf").write_bytes(_pdf_bytes(DDR_TEXT))  # identical bytes, new path
+    manifest = base / "m.json"
+    manifest.write_text(
+        json.dumps(
+            {"format": MANIFEST_FORMAT, "files": [{"path": "a.pdf"}, {"path": "copy_of_a.pdf"}]}
+        )
+    )
+    summary, _ = _import(workspace, manifest, base)
+    assert summary.imported == 1
+    assert summary.skipped_duplicate == 1  # same workspace, same bytes -> duplicate
+    assert summary.entries[1].document_id == summary.entries[0].document_id
+
+
+# ------------------------------------------------------------- D-17
+def test_d17_review_is_exact_version_scoped(workspace, tmp_path) -> None:
+    from drilling_intelligence.engineering.source_to_draft import disposition_event
+
+    base = tmp_path / "b"
+    base.mkdir()
+    (base / "v1.pdf").write_bytes(_pdf_bytes(DDR_TEXT))
+    manifest = base / "m.json"
+    manifest.write_text(json.dumps({"format": MANIFEST_FORMAT, "files": [{"path": "v1.pdf"}]}))
+    summary, queue = _import(workspace, manifest, base)
+    assert len(queue) == 1 and queue[0]["pending_review"] is True
+    doc_id = summary.entries[0].document_id
+    ver1 = summary.entries[0].document_version_id
+
+    # Record a disposition on version 1 via a candidate provenance event whose
+    # locator names exactly that version -> queue clears for that exact version.
+    from drilling_intelligence.database.models import ProcedureStep
+    from drilling_intelligence.engineering.repository import EngineeringRepository
+
+    with workspace.database.unit_of_work() as session:
+        registry = _registry(workspace, session)
+        doc = registry.repository.get(doc_id)
+        current = registry.repository.current_version(doc)
+        proc = EngineeringRepository(session).create_procedure(
+            title="D17 fixture procedure", created_by="reviewer"
+        )
+        step = ProcedureStep(
+            id="step-d17",
+            procedure_id=proc.id,
+            sequence=1,
+            title="candidate",
+            instructions="synthetic candidate",
+            completion_state="DRAFT",
+            provenance=[
+                {
+                    "extracted": True,
+                    "locator": {
+                        "document_id": doc_id,
+                        "document_version_id": current.id,
+                        "sha256": current.sha256,
+                    },
+                },
+                disposition_event(
+                    decision="ACCEPTED",
+                    by="reviewer",
+                    candidate_id="step-d17",
+                    document_id=doc_id,
+                    version_id=current.id,
+                    sha256=current.sha256,
+                    locator={
+                        "document_id": doc_id,
+                        "document_version_id": current.id,
+                        "sha256": current.sha256,
+                    },
+                ),
+            ],
+        )
+        session.add(step)
+    with workspace.database.unit_of_work() as session:
+        registry = _registry(workspace, session)
+        queue = review_queue(registry, workspace_id=_workspace_row_id(workspace))
+    assert queue[0]["document_version_id"] == ver1
+    assert queue[0]["pending_review"] is False
+    assert queue[0]["version_disposition"] == "ACCEPTED"
+
+
+# ------------------------------------------------------------- D-18
+def test_d18_manifest_hardening_limits(workspace, tmp_path) -> None:
+    base = tmp_path / "b"
+    base.mkdir()
+    # duplicate entries refused
+    dup = base / "dup.json"
+    dup.write_text(
+        json.dumps(
+            {
+                "format": MANIFEST_FORMAT,
+                "files": [{"path": "x.pdf"}, {"path": "x.pdf"}],
+            }
+        )
+    )
+    with pytest.raises(ValidationError, match="duplicate manifest entry"):
+        load_manifest(dup, base_dir=base)
+    # unknown keys refused
+    unk = base / "unk.json"
+    unk.write_text(json.dumps({"format": MANIFEST_FORMAT, "files": [{"path": "x.pdf", "evil": 1}]}))
+    with pytest.raises(ValidationError, match="unknown manifest entry key"):
+        load_manifest(unk, base_dir=base)
+    # over-limit entry count refused
+    big = base / "big.json"
+    big.write_text(
+        json.dumps(
+            {
+                "format": MANIFEST_FORMAT,
+                "files": [{"path": f"f{i}.pdf"} for i in range(MAX_MANIFEST_ENTRIES + 1)],
+            }
+        )
+    )
+    with pytest.raises(ValidationError, match="maximum entry count"):
+        load_manifest(big, base_dir=base)
+    # non-PDF-signature .pdf refused at import time
+    fake = base / "fake.pdf"
+    fake.write_bytes(b"this is not a pdf at all")
+    m = base / "m.json"
+    m.write_text(json.dumps({"format": MANIFEST_FORMAT, "files": [{"path": "fake.pdf"}]}))
+    summary, _ = _import(workspace, m, base)
+    assert summary.entries[0].status == "UNSUPPORTED"
+    assert "PDF signature" in summary.entries[0].error
