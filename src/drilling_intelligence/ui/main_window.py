@@ -86,6 +86,7 @@ from .models import (
     ReviewRecordsModel,
     TableColumn,
 )
+from .survey_page import SurveyImportPage
 from .worker import (
     CalculationWorker,
     ComparisonWorker,
@@ -107,6 +108,7 @@ _NAVIGATION = (
     "Template Library",
     "Source Extraction",
     "Batch DDR Import",
+    "Survey Import",
     "Daily DDR",
     "Decision",
     "Comparison",
@@ -347,6 +349,7 @@ class MainWindow(QMainWindow):
         self._build_template_library_page()
         self._build_source_extraction_page()
         self._build_batch_import_page()
+        self._build_survey_import_page()
         self._build_ddr_page()
         self._build_decision_page()
         self._build_comparison_page()
@@ -514,6 +517,10 @@ class MainWindow(QMainWindow):
 
         self.batch_import_page = BatchImportPage(self._current_workspace)
         self.pages.addWidget(self.batch_import_page)
+
+    def _build_survey_import_page(self) -> None:
+        self.survey_import_page = SurveyImportPage(self._current_workspace)
+        self.pages.addWidget(self.survey_import_page)
 
     def _build_ddr_page(self) -> None:
         """Manual daily-report authoring linked to candidate operational activities."""

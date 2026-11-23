@@ -1139,3 +1139,65 @@ def test_batch_import_page_runs_a_real_batch_through_qt(qt_app, workspace, tmp_p
         page._cleanup_thread()
     finally:
         window.close()
+
+
+def test_survey_import_page_validates_and_persists_run(qt_app, workspace, tmp_path):
+    """D-21: the survey workbench validates CSV, persists a CANDIDATE run, reloads it."""
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.wells.repository import WellRepository
+
+    with workspace.database.unit_of_work() as session:
+        well = WellRepository(session).create_well(name="Survey Well")
+        well_id = well.id
+
+    csv_path = tmp_path / "survey.csv"
+    csv_path.write_text(
+        "md,md_unit,inclination,inclination_unit,azimuth,azimuth_unit\n"
+        "100.0,m,1.5,deg,45.0,deg\n"
+        "200.0,m,2.0,deg,46.5,deg\n",
+        encoding="utf-8",
+    )
+    bad_path = tmp_path / "bad.csv"
+    bad_path.write_text(
+        "md,md_unit,inclination,inclination_unit,azimuth,azimuth_unit\n"
+        "100.0,m,1.5,deg,45.0,deg\n"
+        "100.0,m,1.6,deg,45.5,deg\n",  # duplicate MD
+        encoding="utf-8",
+    )
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Survey Import")
+        page = window.survey_import_page
+        page._reload_wells()
+        page.well_combo.setCurrentIndex(page.well_combo.findData(well_id))
+        page._csv_path = bad_path
+        page._import()
+        assert page.status_label.text().startswith("Error:"), page.status_label.text()
+
+        page._csv_path = csv_path
+        page.source_view.setPlainText(csv_path.read_text(encoding="utf-8"))
+        page._import()
+        assert "2 stations" in page.status_label.text(), page.status_label.text()
+        assert "CANDIDATE" in page.status_label.text()
+        assert page.station_table.rowCount() == 2
+        assert page.run_combo.count() >= 1
+
+        # Idempotency: same bytes -> same run, already_existing.
+        page._import()
+        assert "idempotent" in page.status_label.text(), page.status_label.text()
+
+        # Reload persisted run through the combo.
+        page._show_run()
+        assert page.station_table.rowCount() == 2
+        from drilling_intelligence.operations.repository import OperationsRepository
+
+        with workspace.database.read_only() as session:
+            runs = OperationsRepository(session).list_survey_runs(well_id=well_id)
+        assert len(runs) == 1
+        assert runs[0].status == "CANDIDATE"
+        assert runs[0].origin == "MANUAL"
+        assert runs[0].provenance[0]["sha256"]
+    finally:
+        window.close()
