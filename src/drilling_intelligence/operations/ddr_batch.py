@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -209,20 +210,112 @@ def _has_pdf_signature(path: Path) -> bool:
         return False
 
 
-def _read_verified_entry(source: Path, workspace_root: Path) -> tuple[str, Path]:
-    """D2: read an entry exactly once through a safe handle and stage the verified bytes.
+def _open_entry_fd(base_resolved: Path, raw: str) -> int:
+    """E2: TOCTOU-safe fd-based traversal of a manifest path — not O_NOFOLLOW-only.
 
-    The path is validated (D-15) and then opened with ``O_NOFOLLOW``; the fd is
-    fstat-ed to a regular file and read once, bounded by the per-file limit. The
-    SHA-256 is computed over those exact bytes, which are staged to a private file
-    that is what actually gets registered — so the bytes hashed are the bytes
-    registered, and a file swapped between validation and use cannot slip through.
-    Returns ``(sha256, staged_path)``; the caller must unlink the staged file.
+    The base directory is opened once; every intermediate component is then opened
+    relative to the *current directory fd* with ``O_NOFOLLOW | O_DIRECTORY`` and the
+    final component with ``O_RDONLY | O_NOFOLLOW``. A symlink planted at ANY path
+    component (including one swapped in after path validation) fails the open, and
+    because no component is ever resolved through the filesystem by name alone, there
+    is no check-then-use window. Returns the open fd of the regular file.
     """
     import os
     import stat as _stat
 
-    fd = os.open(str(source), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    parts = [p for p in Path(raw).parts if p not in (".", "..", "/")]
+    if not parts or any(p == ".." for p in Path(raw).parts):
+        raise ValidationError("manifest path must not contain '..' traversal", path=raw)
+    dir_fd = os.open(
+        str(base_resolved), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        for component in parts[:-1]:
+            nxt = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=dir_fd,
+            )
+            os.close(dir_fd)
+            dir_fd = nxt
+        fd = os.open(parts[-1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+    except OSError as exc:
+        os.close(dir_fd)
+        raise ValidationError(
+            f"manifest path cannot be safely opened (symlink or missing component): {exc.strerror}",
+            path=raw,
+        ) from exc
+    finally:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
+    try:
+        info = os.fstat(fd)
+        if not _stat.S_ISREG(info.st_mode):
+            os.close(fd)
+            raise ValidationError("manifest entry is not a regular file", path=raw)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    return fd
+
+
+def _stage_atomic(data: bytes, name: str, workspace_root: Path) -> Path:
+    """E3: atomic, collision-safe staging — O_EXCL create, fsync, then rename.
+
+    The temporary name is unique per attempt (O_EXCL refuses to clobber an existing
+    file), the payload is fsynced before the atomic ``os.replace`` into the final
+    digest-addressed name, so a crash can never leave a half-written file at the
+    registered path and concurrent batches never overwrite each other's temp files.
+    """
+    import os
+
+    staging_dir = Path(workspace_root) / ".drillintel" / "batch_imports" / "staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(data).hexdigest()
+    staged = staging_dir / f"{digest[:16]}-{name}"
+    tmp = staging_dir / f".{digest[:16]}.{uuid.uuid4().hex[:12]}.partial"
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp.replace(staged)  # atomic rename into the digest-addressed final name
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return staged
+
+
+def _read_verified_entry(
+    source: Path, workspace_root: Path, base_resolved: Path
+) -> tuple[str, Path]:
+    """D2/E2/E3: read an entry exactly once through an fd-traversed safe handle.
+
+    The manifest path is opened via :func:`_open_entry_fd` (fd-based, symlink-safe at
+    every component); the fd is fstat-ed to a regular file and read once, bounded by
+    the per-file limit. The SHA-256 is computed over those exact bytes, which are
+    staged atomically (O_EXCL + fsync + rename) and the staged file is what actually
+    gets registered — so the bytes hashed are the bytes registered.
+    Returns ``(sha256, staged_path)``.
+    """
+    import os
+    import stat as _stat
+
+    fd = _open_entry_fd(
+        base_resolved,
+        str(source.relative_to(base_resolved))
+        if str(source).startswith(str(base_resolved))
+        else str(source),
+    )
     try:
         info = os.fstat(fd)
         if not _stat.S_ISREG(info.st_mode):
@@ -251,12 +344,7 @@ def _read_verified_entry(source: Path, workspace_root: Path) -> tuple[str, Path]
     if data[:5] != _PDF_SIGNATURE:
         raise ValidationError("file does not carry a PDF signature", path=str(source))
     digest = hashlib.sha256(data).hexdigest()
-    staging_dir = Path(workspace_root) / ".drillintel" / "batch_imports" / "staging"
-    staging_dir.mkdir(parents=True, exist_ok=True)
-    staged = staging_dir / f"{digest[:16]}-{Path(source).name}"
-    tmp = staged.with_suffix(staged.suffix + ".partial")
-    tmp.write_bytes(data)
-    tmp.replace(staged)
+    staged = _stage_atomic(data, Path(source).name, workspace_root)
     return digest, staged
 
 
@@ -345,13 +433,19 @@ def import_ddr_batch(
             continue
         result = BatchEntryResult(filename=Path(entry.path).name)
         summary.entries.append(result)
+        # E3: per-entry transaction — a SAVEPOINT wraps each entry so a failed entry
+        # rolls back only its own partial writes; earlier committed entries survive.
+        session = getattr(registry.repository, "session", None)
+        savepoint = session.begin_nested() if session is not None else None
         try:
             source = _validate_entry_path(entry.path, base_resolved)
             if source.suffix.lower() != ".pdf":
                 result.status = "UNSUPPORTED"
                 result.error = "only PDF files are accepted for DDR batch import"
             else:
-                result.sha256, staged = _read_verified_entry(source, Path(workspace_root))
+                result.sha256, staged = _read_verified_entry(
+                    source, Path(workspace_root), base_resolved
+                )
                 size = len(staged.read_bytes())
                 if total_bytes + size > MAX_BATCH_BYTES:
                     result.error = "batch aggregate size limit exceeded"
@@ -410,9 +504,16 @@ def import_ddr_batch(
             else:
                 result.status = "FAILED"
             result.error = str(exc)
+            if savepoint is not None:
+                savepoint.rollback()
         except Exception as exc:  # noqa: BLE001 - batch must survive a single bad entry
             result.status = "FAILED"
             result.error = f"{type(exc).__name__}: {exc}"
+            if savepoint is not None:
+                savepoint.rollback()
+        else:
+            if savepoint is not None:
+                savepoint.commit()
         if result.status in ("FAILED", "UNSUPPORTED"):
             summary.failed += 1
         if on_entry is not None:

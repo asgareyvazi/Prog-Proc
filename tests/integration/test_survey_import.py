@@ -87,3 +87,43 @@ def test_unknown_unit_preserved_not_normalized(workspace):
     with workspace.database.read_only() as session:
         stations = OperationsRepository(session).list_survey_stations(well_id=well.id)
     assert stations[0].md_unit == "furlong"  # source token preserved verbatim
+
+
+# ------------------------------------------------- 2026-11-24B Phase I: byte-level SHA
+import hashlib  # noqa: E402
+
+from drilling_intelligence.operations.survey_import import (  # noqa: E402
+    import_survey_csv_file,
+    read_survey_file_bytes,
+)
+
+
+def test_phase_i_sha_is_over_original_bytes(tmp_path, workspace):
+    raw = GOOD.encode("utf-8") + b"\r\n"  # CRLF on disk must change the digest
+    p = tmp_path / "s.csv"
+    p.write_bytes(raw)
+    _, sha = read_survey_file_bytes(p)
+    assert sha == hashlib.sha256(raw).hexdigest()
+    with workspace.database.unit_of_work() as session:
+        well = WellRepository(session).create_well(name="WB")
+        r = import_survey_csv_file(session, well_id=well.id, source_path=p)
+        assert r.ok and r.sha256 == sha
+
+
+def test_phase_i_bounded_read_before_size_check(tmp_path):
+    from drilling_intelligence.operations.survey_import import MAX_CSV_BYTES
+
+    big = tmp_path / "big.csv"
+    with big.open("wb") as fh:
+        fh.write(b"x" * (MAX_CSV_BYTES + 100))
+    with pytest.raises(ValidationError, match="byte limit"):
+        read_survey_file_bytes(big)
+
+
+def test_phase_i_symlink_source_refused(tmp_path):
+    real = tmp_path / "real.csv"
+    real.write_text(GOOD)
+    link = tmp_path / "link.csv"
+    link.symlink_to(real)
+    with pytest.raises(ValidationError):
+        read_survey_file_bytes(link)

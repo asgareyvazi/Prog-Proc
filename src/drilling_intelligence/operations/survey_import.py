@@ -160,6 +160,76 @@ def parse_survey_csv(text: str) -> tuple[list[dict[str, Any]], str]:
     return stations, sha
 
 
+def read_survey_file_bytes(source_path: Path | str) -> tuple[bytes, str]:
+    """Phase I: bounded read BEFORE the size check, SHA-256 over the ORIGINAL bytes.
+
+    The file is opened once through an fd (``O_NOFOLLOW``) and read with a hard cap of
+    ``MAX_CSV_BYTES + 1``; only then is the size decision made, so an oversize file is
+    refused without ever reading it fully into memory. The digest is computed over the
+    exact original bytes on disk — never over re-encoded text.
+    """
+    import os
+    import stat as _stat
+
+    try:
+        fd = os.open(str(source_path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise ValidationError(
+            f"survey source cannot be safely opened (symlink or inaccessible): {exc.strerror}",
+            path=str(source_path),
+        ) from exc
+    try:
+        info = os.fstat(fd)
+        if not _stat.S_ISREG(info.st_mode):
+            raise ValidationError("survey source is not a regular file", path=str(source_path))
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_CSV_BYTES + 1:
+                raise ValidationError(f"survey CSV exceeds the {MAX_CSV_BYTES}-byte limit")
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+    raw = b"".join(chunks)
+    if len(raw) > MAX_CSV_BYTES:
+        raise ValidationError(f"survey CSV exceeds the {MAX_CSV_BYTES}-byte limit")
+    return raw, hashlib.sha256(raw).hexdigest()
+
+
+def import_survey_csv_file(
+    session: Any,
+    *,
+    well_id: str,
+    source_path: Path | str,
+    run_label: str = "",
+    created_by: str = "survey-import",
+) -> SurveyImportResult:
+    """Phase I: import a survey CSV file with byte-level provenance.
+
+    Reads the original bytes (bounded read before the size check), hashes THOSE bytes,
+    then delegates to :func:`import_survey_csv` with the byte-level digest so the stored
+    SHA-256 always matches the file on disk, not a re-encoding of its text.
+    """
+    raw, sha = read_survey_file_bytes(source_path)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValidationError("survey CSV is not valid UTF-8", path=str(source_path)) from exc
+    return import_survey_csv(
+        session,
+        well_id=well_id,
+        source_path=source_path,
+        text=text,
+        run_label=run_label,
+        created_by=created_by,
+        sha256_override=sha,
+    )
+
+
 def import_survey_csv(
     session: Any,
     *,
@@ -168,6 +238,7 @@ def import_survey_csv(
     text: str,
     run_label: str = "",
     created_by: str = "survey-import",
+    sha256_override: str | None = None,
 ) -> SurveyImportResult:
     """Validate and persist one survey CSV as a CANDIDATE SurveyRun (never approved)."""
     from ..wells.repository import WellRepository
@@ -176,6 +247,8 @@ def import_survey_csv(
     if well is None:
         raise ValidationError("unknown well", well_id=well_id)
     stations, sha = parse_survey_csv(text)
+    if sha256_override is not None:
+        sha = sha256_override
     identity = f"survey-csv:{well_id}:{sha}"
     existing = session.query(SurveyRun).filter(SurveyRun.identity_key == identity).one_or_none()
     result = SurveyImportResult(
