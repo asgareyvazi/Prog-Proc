@@ -217,11 +217,11 @@ def test_phase_g_authorize_gates_require_accepted_required_fields(workspace, tmp
 
 
 def test_phase_h_review_queue_is_candidate_level(workspace, tmp_path):
-    from drilling_intelligence.operations.ddr_batch import review_queue
+    from drilling_intelligence.cli.app import _workspace_row_id
     from drilling_intelligence.documents.registry import DocumentRegistry
     from drilling_intelligence.documents.repository import DocumentRepository
     from drilling_intelligence.extraction.registry import build_default_router
-    from drilling_intelligence.cli.app import _workspace_row_id
+    from drilling_intelligence.operations.ddr_batch import review_queue
 
     version_id = _import_one(workspace, tmp_path)
     service = DdrWorkflowService.for_workspace(workspace)
