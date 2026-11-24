@@ -79,6 +79,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/operations/ddr_batch.py` | 258 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/operations/ddr_batch.py` | 289 | `Exception` | re-raised | atomic rename into the digest-addressed final name |
 | `src/drilling_intelligence/operations/ddr_batch.py` | 509 | `Exception` | reported | batch must survive a single bad entry |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 568 | `Exception` | reported | queue must never fail because of candidate detail |
 | `src/drilling_intelligence/operations/promote.py` | 4273 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4299 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4309 | `Exception` | reported | noqa marker |
@@ -154,5 +155,5 @@ to be found by somebody else.
 | kind | count |
 | --- | --- |
 | re-raised | 17 |
-| reported | 93 |
+| reported | 94 |
 | suppressed | 30 |
