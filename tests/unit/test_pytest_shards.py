@@ -1332,17 +1332,17 @@ def test_xpass_is_not_qualified(tmp_path: Path) -> None:
 
 # ---------------------------------------------------------------- B4: adversarial manifest-contract tests
 from tools.pytest_shard import _mismatch_diagnostic  # noqa: E402
-from tools.pytest_shard_contract import manifest_payload, validate_manifest  # noqa: E402
+from tools.pytest_shard_contract import manifest_payload  # noqa: E402
 
 
 def _base_manifest(**overrides) -> dict:
-    kwargs = dict(
-        head_sha="abc123",
-        run_id="42",
-        run_attempt="1",
-        pytest_version="9.2.0",
-        pytest_config_sha256="cfg",
-    )
+    kwargs = {
+        "head_sha": "abc123",
+        "run_id": "42",
+        "run_attempt": "1",
+        "pytest_version": "9.2.0",
+        "pytest_config_sha256": "cfg",
+    }
     kwargs.update(overrides)
     return manifest_payload(["tests/a.py::test_one", "tests/a.py::test_two"], **kwargs)
 
@@ -1369,12 +1369,8 @@ def test_manifest_changed_node_ids_rejected_with_diagnostic() -> None:
 
     from tools.pytest_shard_contract import canonical as _c
 
-    body = dict(observed)
-    body.pop("manifest_sha256")
-    observed["manifest_sha256"] = _h.sha256(_c(body)).hexdigest()
     observed["nodeids_sha256"] = _h.sha256(_c({"nodeids": observed["nodeids"]})).hexdigest()
-    body = dict(observed)
-    body.pop("manifest_sha256")
+    body = {k: v for k, v in observed.items() if k != "manifest_sha256"}
     observed["manifest_sha256"] = _h.sha256(_c(body)).hexdigest()
     msg = _mismatch_diagnostic(observed, expected)
     assert "different test universe" in msg
@@ -1417,11 +1413,11 @@ def test_manifest_changed_config_digest_changes_digest_and_is_reported() -> None
 def test_manifest_wrong_identity_fields_rejected() -> None:
     m = _base_manifest()
     for kwargs, match in (
-        (dict(expected_sha="deadbeef"), "SHA"),
-        (dict(expected_run_id="43"), "run ID"),
-        (dict(expected_attempt="2"), "attempt"),
-        (dict(expected_repository="other/repo"), "repository"),
-        (dict(expected_workflow="other"), "workflow"),
+        ({"expected_sha": "deadbeef"}, "SHA"),
+        ({"expected_run_id": "43"}, "run ID"),
+        ({"expected_attempt": "2"}, "attempt"),
+        ({"expected_repository": "other/repo"}, "repository"),
+        ({"expected_workflow": "other"}, "workflow"),
     ):
         with pytest.raises(ValueError, match=match):
             validate_manifest(m, **kwargs)
