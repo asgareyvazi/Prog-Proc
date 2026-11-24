@@ -298,9 +298,10 @@ def _current_version_disposition(registry: Any, document_id: str) -> str | None:
     for item in reversed(meta.get("extraction_dispositions") or []):
         if isinstance(item, dict):
             locator = item.get("locator") or {}
-            named = str(locator.get("document_version_id") or "") == current.id or str(
-                item.get("version_id") or ""
-            ) == current.id
+            named = (
+                str(locator.get("document_version_id") or "") == current.id
+                or str(item.get("version_id") or "") == current.id
+            )
             if named:
                 return str(item.get("decision", ""))
     return None
