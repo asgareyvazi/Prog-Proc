@@ -175,6 +175,22 @@ class BatchImportPage(QWidget):
         run_row.addWidget(self.queue_button)
         root.addLayout(run_row)
 
+        # F: real batch history — every previous batch under the workspace is
+        # listed from its persisted manifest + outcome.json and can be reopened.
+        history_row = QHBoxLayout()
+        self.history_combo = QComboBox()
+        self.history_combo.setMinimumWidth(260)
+        self.reopen_button = QPushButton("Reopen batch")
+        self.reopen_button.clicked.connect(self._reopen_selected_batch)
+        self.refresh_history_button = QPushButton("Refresh history")
+        self.refresh_history_button.clicked.connect(self._reload_history)
+        history_row.addWidget(QLabel("Previous batches:"))
+        history_row.addWidget(self.history_combo)
+        history_row.addWidget(self.reopen_button)
+        history_row.addWidget(self.refresh_history_button)
+        root.addLayout(history_row)
+        self._reload_history()
+
         self.progress = QProgressBar()
         self.progress.setRange(0, 1)
         root.addWidget(self.progress)
@@ -322,11 +338,25 @@ class BatchImportPage(QWidget):
             f"Batch done: total={d['total']} imported={d['imported']} "
             f"duplicates={d['skipped_duplicate']} failed={d['failed']} pending_review={d['pending_review']}"
         )
-        # Persist the outcome next to the manifest so the batch can be reopened later.
+        # F: persist the outcome durably (temp file + fsync + atomic rename) next to
+        # the manifest so the batch can be reopened later even after a crash.
+        self._write_durable_outcome(self._staging, d)
+
+    @staticmethod
+    def _write_durable_outcome(staging: Path, payload: dict[str, Any]) -> None:
+        import os
+
+        tmp = staging / f".outcome.{uuid.uuid4().hex[:12]}.tmp"
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            (self._staging / "outcome.json").write_text(json.dumps(d, indent=2, default=str))
-        except (OSError, AttributeError):
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, default=str)
+                handle.flush()
+                os.fsync(handle.fileno())
+            tmp.replace(staging / "outcome.json")
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def _on_batch_failed(self, message: str) -> None:
         self._cleanup_thread()
@@ -357,11 +387,12 @@ class BatchImportPage(QWidget):
     def _retry_failed(self) -> None:
         if self._last_summary is None:
             return
-        retry = [
-            Path(e.filename)
-            for e in self._last_summary.entries
-            if e.status in ("FAILED", "UNSUPPORTED", "CANCELLED")
-        ]
+        retry = []
+        for e in self._last_summary.entries:
+            status = e.get("status") if isinstance(e, dict) else e.status
+            filename = e.get("filename") if isinstance(e, dict) else e.filename
+            if status in ("FAILED", "UNSUPPORTED", "CANCELLED"):
+                retry.append(Path(filename))
         # E4: retry by entry identity (staged name), resolving to the CURRENT
         # original source so a corrected file is what gets re-imported.
         originals = []
@@ -395,6 +426,75 @@ class BatchImportPage(QWidget):
             ]
             for col, value in enumerate(values):
                 self.results_table.setItem(row, col, QTableWidgetItem(str(value)))
+
+    # -- batch history / reopen (Phase F) ------------------------------------
+    def _batches_root(self) -> Path:
+        return self._workspace().root / ".drillintel" / "batch_imports"
+
+    def _reload_history(self) -> None:
+        self.history_combo.clear()
+        try:
+            root = self._batches_root()
+        except DrillingIntelligenceError:
+            return
+        if not root.is_dir():
+            return
+        for child in sorted(root.iterdir(), reverse=True):
+            if child.is_dir() and (child / "manifest.json").is_file():
+                has_outcome = (child / "outcome.json").is_file()
+                label = f"{child.name} ({'done' if has_outcome else 'no outcome'})"
+                self.history_combo.addItem(label, str(child))
+
+    def _reopen_selected_batch(self) -> None:
+        """F: reopen a previous batch from its durable staging + outcome.json."""
+        staging_raw = self.history_combo.currentData()
+        if not staging_raw:
+            self.status_label.setText("No previous batch selected.")
+            return
+        staging = Path(staging_raw)
+        outcome = staging / "outcome.json"
+        if not outcome.is_file():
+            self.status_label.setText("Selected batch has no persisted outcome.json yet.")
+            return
+        try:
+            payload = json.loads(outcome.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self.status_label.setText(f"Cannot reopen batch: {exc}")
+            return
+        self._staging = staging
+        self._manifest = staging / "manifest.json"
+        entries = payload.get("entries") or []
+        self._last_summary = type("ReopenedSummary", (), {"entries": []})()
+        # Render the persisted entries directly.
+        self.results_table.setRowCount(0)
+        self.results_table.setColumnCount(5)
+        self.results_table.setHorizontalHeaderLabels(
+            ["File", "Status", "Classification", "Pending review", "Error"]
+        )
+        for e in entries:
+            row = self.results_table.rowCount()
+            self.results_table.insertRow(row)
+            for col, value in enumerate(
+                [
+                    e.get("filename", ""),
+                    e.get("status", ""),
+                    e.get("classification") or "-",
+                    "yes" if e.get("pending_review") else "no",
+                    e.get("error") or "",
+                ]
+            ):
+                self.results_table.setItem(row, col, QTableWidgetItem(str(value)))
+        self.summary_label.setText(
+            f"Reopened batch {staging.name}: total={payload.get('total')} "
+            f"imported={payload.get('imported')} failed={payload.get('failed')}"
+        )
+        failed_names = {
+            e.get("filename")
+            for e in entries
+            if e.get("status") in ("FAILED", "UNSUPPORTED", "CANCELLED")
+        }
+        self.retry_button.setEnabled(bool(failed_names))
+        self.status_label.setText(f"Reopened batch {staging.name} ({len(entries)} entries).")
 
     def _show_queue(self) -> None:
         try:
