@@ -32,6 +32,10 @@ from ..database.models import SurveyRun, SurveyStation
 #: Required CSV columns (lowercase). Extra columns are preserved in provenance only.
 REQUIRED_COLUMNS = ("md", "md_unit", "inclination", "inclination_unit", "azimuth", "azimuth_unit")
 
+#: Hard ingestion limits (resource bounds, not engineering values).
+MAX_CSV_BYTES = 16 * 1024 * 1024
+MAX_STATIONS = 100_000
+
 
 @dataclass
 class SurveyImportResult:
@@ -62,10 +66,31 @@ def _parse_float(raw: str, *, column: str, row: int) -> float:
 
 
 def parse_survey_csv(text: str) -> tuple[list[dict[str, Any]], str]:
-    """Parse and validate survey CSV text. Returns (stations, sha256)."""
+    """Parse and validate survey CSV text. Returns (stations, sha256).
+
+    Phase I contract: missing/duplicate/unknown headers, ragged or malformed rows,
+    empty files, oversize inputs, excessive station counts, non-finite numbers,
+    duplicate or non-increasing MD, and empty or inconsistent units are all refused
+    with a specific error. Unknown units are preserved verbatim and never silently
+    normalized or converted.
+    """
+    if not isinstance(text, str) or not text.strip():
+        raise ValidationError("survey CSV is empty")
+    if len(text.encode("utf-8")) > MAX_CSV_BYTES:
+        raise ValidationError(f"survey CSV exceeds the {MAX_CSV_BYTES}-byte limit")
     sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    reader = csv.DictReader(io.StringIO(text))
-    header = [h.strip().lower() for h in (reader.fieldnames or [])]
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        raw_header = list(reader.fieldnames or [])
+        rows = list(enumerate(reader, start=2))  # header is line 1
+    except csv.Error as exc:
+        raise ValidationError(f"malformed CSV quoting: {exc}") from exc
+    if not raw_header:
+        raise ValidationError("survey CSV has no header row")
+    header = [h.strip().lower() for h in raw_header]
+    if len(header) != len(set(header)):
+        dupes = sorted({h for h in header if header.count(h) > 1})
+        raise ValidationError("survey CSV has duplicate header columns", duplicates=dupes)
     missing = [c for c in REQUIRED_COLUMNS if c not in header]
     if missing:
         raise ValidationError(
@@ -73,9 +98,22 @@ def parse_survey_csv(text: str) -> tuple[list[dict[str, Any]], str]:
             missing=missing,
             expected=list(REQUIRED_COLUMNS),
         )
+    unknown = [h for h in header if h not in REQUIRED_COLUMNS]
+    if unknown:
+        raise ValidationError(
+            "survey CSV has unknown column(s); refusing to silently ignore them",
+            unknown=unknown,
+        )
     stations: list[dict[str, Any]] = []
     seen_md: set[float] = set()
-    for row_number, row in enumerate(reader, start=2):  # header is line 1
+    md_units: set[str] = set()
+    inc_units: set[str] = set()
+    az_units: set[str] = set()
+    for row_number, row in rows:
+        if row is None or all(not str(v or "").strip() for v in row.values()):
+            continue  # empty rows are skipped, not treated as stations
+        if None in row or any(v is None for v in row.values()):
+            raise ValidationError(f"row {row_number}: ragged row (wrong column count)")
         raw = {k.strip().lower(): v for k, v in row.items() if k}
         md = _parse_float(raw.get("md", ""), column="md", row=row_number)
         md_unit = str(raw.get("md_unit") or "").strip()
@@ -87,6 +125,9 @@ def parse_survey_csv(text: str) -> tuple[list[dict[str, Any]], str]:
             raise ValidationError(
                 f"row {row_number}: units must be explicit; refusing to guess them"
             )
+        md_units.add(md_unit)
+        inc_units.add(inc_unit)
+        az_units.add(az_unit)
         if md in seen_md:
             raise ValidationError(f"row {row_number}: duplicate measured depth {md}")
         seen_md.add(md)
@@ -102,8 +143,17 @@ def parse_survey_csv(text: str) -> tuple[list[dict[str, Any]], str]:
                 "source_row": row_number,
             }
         )
+        if len(stations) > MAX_STATIONS:
+            raise ValidationError(f"survey CSV exceeds the {MAX_STATIONS}-station limit")
     if not stations:
         raise ValidationError("survey CSV contains no station rows")
+    if len(md_units) > 1 or len(inc_units) > 1 or len(az_units) > 1:
+        raise ValidationError(
+            "inconsistent units across rows; refusing to convert or normalize",
+            md_units=sorted(md_units),
+            inclination_units=sorted(inc_units),
+            azimuth_units=sorted(az_units),
+        )
     mds = [s["md"] for s in stations]
     if mds != sorted(mds):
         raise ValidationError("stations must be ordered by increasing measured depth")
