@@ -161,8 +161,6 @@ def _skip_reason(report: Any) -> str:
     return str(longrepr or "")
 
 
-
-
 def _bounded(values: list[str], limit: int = 10) -> list[str]:
     return values[:limit]
 
@@ -178,9 +176,18 @@ def _mismatch_diagnostic(observed: dict[str, Any], expected: dict[str, Any]) -> 
     missing = sorted(set(exp_ids) - set(obs_ids))
     extra = sorted(set(obs_ids) - set(exp_ids))
     fields = [
-        "schema_version", "platform", "platform_system", "platform_machine",
-        "python_version", "implementation", "pytest_version", "pytest_config_sha256",
-        "node_count", "nodeids_sha256", "manifest_sha256", "assignment_algorithm",
+        "schema_version",
+        "platform",
+        "platform_system",
+        "platform_machine",
+        "python_version",
+        "implementation",
+        "pytest_version",
+        "pytest_config_sha256",
+        "node_count",
+        "nodeids_sha256",
+        "manifest_sha256",
+        "assignment_algorithm",
     ]
     diffs = [
         f"{field}: observed={observed.get(field)!r} expected={expected.get(field)!r}"
