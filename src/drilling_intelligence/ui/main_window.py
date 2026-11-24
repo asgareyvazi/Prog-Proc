@@ -86,7 +86,6 @@ from .models import (
     ReviewRecordsModel,
     TableColumn,
 )
-from .survey_page import SurveyImportPage
 from .worker import (
     CalculationWorker,
     ComparisonWorker,
@@ -519,6 +518,9 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.batch_import_page)
 
     def _build_survey_import_page(self) -> None:
+        # Lazy import: keeps this module importable under mocked-Qt test harnesses.
+        from .survey_page import SurveyImportPage
+
         self.survey_import_page = SurveyImportPage(self._current_workspace)
         self.pages.addWidget(self.survey_import_page)
 

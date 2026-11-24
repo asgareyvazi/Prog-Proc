@@ -76,7 +76,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/knowledge/service.py` | 564 | `Exception` | reported | the index is disposable; the registry is not |
 | `src/drilling_intelligence/knowledge/service.py` | 195 | `Exception` | reported | a workspace without a usable sidecar still gets knowledge |
 | `src/drilling_intelligence/knowledge/service.py` | 912 | `Exception` | reported | a broken sidecar must not hide the registry's answer |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 338 | `Exception` | reported | batch must survive a single bad entry |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 413 | `Exception` | reported | batch must survive a single bad entry |
 | `src/drilling_intelligence/operations/promote.py` | 4273 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4299 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4309 | `Exception` | reported | noqa marker |
@@ -134,6 +134,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/wells/workspace.py` | 298 | `Exception` | suppressed | dispose is best-effort during close |
 | `tools/coverage_report.py` | 348 | `Exception` | suppressed | noqa marker |
 | `tools/coverage_report.py` | 446 | `Exception` | suppressed | noqa marker |
+| `tools/pytest_shard.py` | 87 | `Exception` | reported | a digest must never crash collection |
 | `tools/pytest_totals.py` | 223 | `Exception` | suppressed | any import probe failure means not available |
 | `tools/qt_coverage_gate.py` | 618 | `Exception` | reported | any parsing error is a validation error |
 | `tools/qt_coverage_gate.py` | 794 | `Exception` | suppressed | noqa marker |
@@ -150,5 +151,5 @@ to be found by somebody else.
 | kind | count |
 | --- | --- |
 | re-raised | 14 |
-| reported | 92 |
+| reported | 93 |
 | suppressed | 30 |
