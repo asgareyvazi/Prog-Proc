@@ -453,15 +453,12 @@ jobs:
             libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
             libxrender1 libxtst6 libnss3 libsm6 libice6
           sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
-      - name: Install (editable, Qt-enabled, same pinned contract as the shard jobs)
+      - name: Install (editable, Qt-enabled) — shared contract with shard jobs
         # The canonical collection and every shard MUST resolve the identical
-        # dependency set; floating installs here produced a different pytest
-        # plugin universe and a different collection digest (fail-closed shard
-        # rejection). Keep this install byte-for-byte equivalent to the
-        # pytest-shards job install below.
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
+        # dependency set through the SAME script; floating installs produced a
+        # different plugin universe and a different collection digest
+        # (fail-closed shard rejection). Do not diverge the call sites.
+        run: bash tools/ci_install_qt.sh
       - name: Collect complete pytest universe
         run: >-
           xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest --collect-only -q
@@ -525,10 +522,10 @@ jobs:
             libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
             libxrender1 libxtst6 libnss3 libsm6 libice6
           sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
-      - name: Install (editable, Qt-enabled)
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,ui]"
+      - name: Install (editable, Qt-enabled) — shared contract with collection job
+        # MUST be the same script as pytest-shard-collection (tools/ci_install_qt.sh);
+        # tests/unit/test_ci_contract.py enforces this.
+        run: bash tools/ci_install_qt.sh
       - name: Download this run's canonical collection
         # run-id is mandatory: artifact names are not unique across workflow runs,
         # and a name-only download can fetch another run's manifest, which the shard
@@ -1110,8 +1107,11 @@ jobs:
           if-no-files-found: error
 
   historical-shard-replay:
-    name: Replay historical Linux shard evidence (read-only)
+    name: Replay historical Linux shard evidence (read-only, optional)
+    # Optional evidence replay: it must NEVER fail an otherwise-green current-SHA
+    # run, so the job is continue-on-error and downstream jobs must not depend on it.
     if: github.event_name == 'workflow_dispatch' && inputs.replay_historical_shards
+    continue-on-error: true
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
