@@ -50,11 +50,63 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _ini_digest(config: pytest.Config | None) -> str:
-    ini = {} if config is None else dict(config.inicfg)
-    normalized = {
-        str(key): value for key, value in sorted(ini.items(), key=lambda pair: str(pair[0]))
-    }
-    return hashlib.sha256(_canonical({"pytest_ini": normalized})).hexdigest()
+    """Deterministic pytest-configuration digest using only supported APIs.
+
+    ``Config.inicfg`` is deprecated; instead we hash the ini file bytes from
+    ``config.inipath`` plus every ini key declared in that file resolved through
+    the supported ``config.getini`` API. Command-line ``-o`` overrides are
+    included explicitly so two jobs with different overrides cannot share a
+    digest.
+    """
+    if config is None:
+        return hashlib.sha256(_canonical({"pytest_ini": {}, "pytest_ini_file": None})).hexdigest()
+    inipath = getattr(config, "inipath", None)
+    file_bytes = b""
+    file_name = None
+    if inipath is not None:
+        file_name = str(inipath)
+        try:
+            file_bytes = Path(inipath).read_bytes()
+        except OSError:
+            file_bytes = b""
+    declared: dict[str, Any] = {}
+    if file_name and file_name.endswith((".toml", ".cfg", ".ini")):
+        try:
+            if file_name.endswith(".toml"):
+                import tomllib
+
+                raw = tomllib.loads(file_bytes.decode("utf-8", "replace"))
+                declared = dict(raw.get("tool", {}).get("pytest", {}).get("ini_options", {}))
+            else:
+                import configparser
+
+                parser = configparser.ConfigParser()
+                parser.read_string(file_bytes.decode("utf-8", "replace"))
+                section = "pytest" if parser.has_section("pytest") else parser.default_section
+                declared = dict(parser[section]) if parser.has_section(section) else {}
+        except Exception:  # noqa: BLE001 - a digest must never crash collection
+            declared = {}
+    resolved = {}
+    for key in sorted(declared):
+        try:
+            resolved[key] = repr(config.getini(key))
+        except (ValueError, KeyError):
+            resolved[key] = "<unavailable>"
+    overrides = {}
+    override_ini = getattr(getattr(config, "option", None), "override_ini", None)
+    if override_ini:
+        for item in override_ini:
+            name, _, val = str(item).partition("=")
+            overrides[name] = val
+    return hashlib.sha256(
+        _canonical(
+            {
+                "pytest_ini": resolved,
+                "pytest_ini_overrides": overrides,
+                "pytest_ini_file_sha256": hashlib.sha256(file_bytes).hexdigest(),
+            }
+        )
+    ).hexdigest()
 
 
 def _manifest_payload(
@@ -109,6 +161,41 @@ def _skip_reason(report: Any) -> str:
     return str(longrepr or "")
 
 
+
+
+def _bounded(values: list[str], limit: int = 10) -> list[str]:
+    return values[:limit]
+
+
+def _mismatch_diagnostic(observed: dict[str, Any], expected: dict[str, Any]) -> str:
+    """Bounded, secret-free explanation of a collection/configuration mismatch.
+
+    The fail-closed behavior is unchanged; this only makes the rejection
+    diagnosable from job logs and sidecars without exposing any secret.
+    """
+    obs_ids = list(observed.get("nodeids") or [])
+    exp_ids = list(expected.get("nodeids") or [])
+    missing = sorted(set(exp_ids) - set(obs_ids))
+    extra = sorted(set(obs_ids) - set(exp_ids))
+    fields = [
+        "schema_version", "platform", "platform_system", "platform_machine",
+        "python_version", "implementation", "pytest_version", "pytest_config_sha256",
+        "node_count", "nodeids_sha256", "manifest_sha256", "assignment_algorithm",
+    ]
+    diffs = [
+        f"{field}: observed={observed.get(field)!r} expected={expected.get(field)!r}"
+        for field in fields
+        if observed.get(field) != expected.get(field)
+    ]
+    return (
+        "this shard collected a different test universe or configuration; "
+        f"observed node_count={observed.get('node_count')} expected node_count={expected.get('node_count')}; "
+        f"field differences: {'; '.join(diffs) if diffs else 'none'}; "
+        f"missing node IDs (first 10): {_bounded(missing)}; "
+        f"additional node IDs (first 10): {_bounded(extra)}"
+    )
+
+
 class _ShardPlugin:
     def __init__(self, config: pytest.Config) -> None:
         self.config = config
@@ -157,7 +244,7 @@ class _ShardPlugin:
                 manifest["manifest_sha256"] != expected["manifest_sha256"]
                 or manifest["nodeids"] != expected["nodeids"]
             ):
-                raise ValueError("this shard collected a different test universe or configuration")
+                raise ValueError(_mismatch_diagnostic(manifest, expected))
             assigned = assigned_nodeids(nodeids, index, count)
             selected_set = set(assigned)
             selected = [item for item in items if str(item.nodeid) in selected_set]

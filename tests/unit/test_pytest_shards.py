@@ -1328,3 +1328,131 @@ def test_xpass_is_not_qualified(tmp_path: Path) -> None:
     (folder / "pytest-junit.xml").write_text(junit)
     _refresh(fixture, 0)
     assert _run(tmp_path, fixture)["status"] == "FAIL"
+
+
+# ---------------------------------------------------------------- B4: adversarial manifest-contract tests
+from tools.pytest_shard import _mismatch_diagnostic  # noqa: E402
+from tools.pytest_shard_contract import manifest_payload, validate_manifest  # noqa: E402
+
+
+def _base_manifest(**overrides) -> dict:
+    kwargs = dict(
+        head_sha="abc123",
+        run_id="42",
+        run_attempt="1",
+        pytest_version="9.2.0",
+        pytest_config_sha256="cfg",
+    )
+    kwargs.update(overrides)
+    return manifest_payload(["tests/a.py::test_one", "tests/a.py::test_two"], **kwargs)
+
+
+def test_manifest_exact_match_validates() -> None:
+    m = _base_manifest()
+    out = validate_manifest(
+        m,
+        expected_sha="abc123",
+        expected_run_id="42",
+        expected_attempt="1",
+        expected_repository=m["repository"],
+        expected_workflow=m["workflow"],
+    )
+    assert out["manifest_sha256"] == m["manifest_sha256"]
+
+
+def test_manifest_changed_node_ids_rejected_with_diagnostic() -> None:
+    expected = _base_manifest()
+    observed = _base_manifest()
+    observed["nodeids"] = ["tests/a.py::test_one", "tests/a.py::test_three"]
+    # re-sign so only the semantic diff (node IDs) is under test
+    import hashlib as _h
+
+    from tools.pytest_shard_contract import canonical as _c
+
+    body = dict(observed)
+    body.pop("manifest_sha256")
+    observed["manifest_sha256"] = _h.sha256(_c(body)).hexdigest()
+    observed["nodeids_sha256"] = _h.sha256(_c({"nodeids": observed["nodeids"]})).hexdigest()
+    body = dict(observed)
+    body.pop("manifest_sha256")
+    observed["manifest_sha256"] = _h.sha256(_c(body)).hexdigest()
+    msg = _mismatch_diagnostic(observed, expected)
+    assert "different test universe" in msg
+    assert "test_three" in msg and "test_two" in msg
+    assert "observed node_count=2" in msg
+
+
+def test_manifest_missing_and_extra_node_ids_bounded_in_diagnostic() -> None:
+    expected = _base_manifest()
+    observed = manifest_payload(
+        [f"tests/a.py::test_{i}" for i in range(30)],
+        head_sha="abc123",
+        run_id="42",
+        run_attempt="1",
+        pytest_version="9.2.0",
+        pytest_config_sha256="cfg",
+    )
+    msg = _mismatch_diagnostic(observed, expected)
+    assert "first 10" in msg
+    assert "test_29" not in msg  # bounded
+
+
+def test_manifest_changed_pytest_version_changes_digest_and_is_reported() -> None:
+    base = _base_manifest()
+    other = _base_manifest(pytest_version="9.9.9")
+    assert other["manifest_sha256"] != base["manifest_sha256"]
+    validate_manifest(other)  # self-consistent, but never equal to the canonical one
+    msg = _mismatch_diagnostic(other, base)
+    assert "pytest_version" in msg and "9.9.9" in msg
+
+
+def test_manifest_changed_config_digest_changes_digest_and_is_reported() -> None:
+    base = _base_manifest()
+    other = _base_manifest(pytest_config_sha256="other")
+    assert other["manifest_sha256"] != base["manifest_sha256"]
+    msg = _mismatch_diagnostic(other, base)
+    assert "pytest_config_sha256" in msg
+
+
+def test_manifest_wrong_identity_fields_rejected() -> None:
+    m = _base_manifest()
+    for kwargs, match in (
+        (dict(expected_sha="deadbeef"), "SHA"),
+        (dict(expected_run_id="43"), "run ID"),
+        (dict(expected_attempt="2"), "attempt"),
+        (dict(expected_repository="other/repo"), "repository"),
+        (dict(expected_workflow="other"), "workflow"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            validate_manifest(m, **kwargs)
+
+
+def test_manifest_duplicate_node_ids_rejected() -> None:
+    with pytest.raises(ValueError, match="duplicate node IDs"):
+        manifest_payload(
+            ["tests/a.py::test_one", "tests/a.py::test_one"],
+            head_sha="a",
+            run_id="1",
+            run_attempt="1",
+            pytest_version="9",
+            pytest_config_sha256="c",
+        )
+
+
+def test_manifest_corrupt_digest_rejected() -> None:
+    m = _base_manifest()
+    m["manifest_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="digest mismatch"):
+        validate_manifest(m)
+
+
+def test_assignment_is_exact_once_partition() -> None:
+    from tools.pytest_shard_contract import assigned_nodeids, shard_for
+
+    ids = [f"tests/m.py::test_{i}" for i in range(1000)]
+    all_assigned = []
+    for index in range(4):
+        part = assigned_nodeids(ids, index, 4)
+        assert part == [n for n in ids if shard_for(n, 4) == index]
+        all_assigned.extend(part)
+    assert sorted(all_assigned) == sorted(ids)  # exact-once, disjoint, complete

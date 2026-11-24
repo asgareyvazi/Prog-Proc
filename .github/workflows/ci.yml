@@ -453,10 +453,15 @@ jobs:
             libxcomposite1 libxdamage1 libxext6 libxfixes3 libxi6 libxrandr2 \
             libxrender1 libxtst6 libnss3 libsm6 libice6
           sudo apt-get install -y libasound2t64 || sudo apt-get install -y libasound2
-      - name: Install (editable, Qt-enabled)
+      - name: Install (editable, Qt-enabled, same pinned contract as the shard jobs)
+        # The canonical collection and every shard MUST resolve the identical
+        # dependency set; floating installs here produced a different pytest
+        # plugin universe and a different collection digest (fail-closed shard
+        # rejection). Keep this install byte-for-byte equivalent to the
+        # pytest-shards job install below.
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev,ui]"
+          python -m pip install -c constraints/ui.txt -c constraints/build.txt -e ".[dev,ui]"
       - name: Collect complete pytest universe
         run: >-
           xvfb-run -a -s "-screen 0 1280x1024x24" python -m pytest --collect-only -q
