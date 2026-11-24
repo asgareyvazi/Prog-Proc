@@ -328,3 +328,136 @@ def test_d18_manifest_hardening_limits(workspace, tmp_path) -> None:
     summary, _ = _import(workspace, m, base)
     assert summary.entries[0].status == "UNSUPPORTED"
     assert "PDF signature" in summary.entries[0].error
+
+
+# ---------------------------------------------------------------- Phase D (2026-11-24)
+def _manifest(base: Path, files: list[str]) -> Path:
+    m = base / "manifest.json"
+    m.write_text(json.dumps({"format": MANIFEST_FORMAT, "files": [{"path": f} for f in files]}))
+    return m
+
+
+def test_d1_missing_workspace_id_fails_closed(workspace, tmp_path) -> None:
+    base = tmp_path / "b"
+    base.mkdir()
+    (base / "a.pdf").write_bytes(_pdf_bytes(DDR_TEXT))
+    m = _manifest(base, ["a.pdf"])
+    with workspace.database.unit_of_work() as session:
+        registry = _registry(workspace, session)
+        for bad in (None, "", "   "):
+            with pytest.raises(ValidationError, match="workspace_id"):
+                import_ddr_batch(
+                    registry,
+                    manifest_path=m,
+                    base_dir=base,
+                    workspace_root=workspace.root,
+                    workspace_id=bad,
+                )
+
+
+def test_d1_identical_bytes_in_two_workspaces_own_separate_records(
+    workspace, tmp_path, settings
+) -> None:
+    from drilling_intelligence.wells.workspace import Workspace
+
+    other_root = tmp_path / "ws2"
+    from drilling_intelligence.cli.app import main as cli_main
+
+    cli_main(["workspace", "create", str(other_root)])
+    other = Workspace.open(other_root)
+    base = tmp_path / "b"
+    base.mkdir()
+    (base / "a.pdf").write_bytes(_pdf_bytes(DDR_TEXT))
+    m = _manifest(base, ["a.pdf"])
+
+    s1, _ = _import(workspace, m, base)
+    with other.database.unit_of_work() as session:
+        registry = _registry(other, session)
+        s2 = import_ddr_batch(
+            registry,
+            manifest_path=m,
+            base_dir=base,
+            workspace_root=other.root,
+            workspace_id=_workspace_row_id(other),
+        )
+    assert s1.imported == 1 and s2.imported == 1  # NOT a cross-workspace duplicate
+    assert s1.entries[0].document_id != s2.entries[0].document_id
+    # each workspace's queue sees only its own document
+    with workspace.database.read_only() as session:
+        q1 = review_queue(_registry(workspace, session), workspace_id=_workspace_row_id(workspace))
+    with other.database.read_only() as session:
+        q2 = review_queue(_registry(other, session), workspace_id=_workspace_row_id(other))
+    assert {q["document_id"] for q in q1} == {s1.entries[0].document_id}
+    assert {q["document_id"] for q in q2} == {s2.entries[0].document_id}
+
+
+def test_d2_file_replaced_after_validation_cannot_slip_through(
+    workspace, tmp_path, monkeypatch
+) -> None:
+    """TOCTOU: bytes are read once through a safe fd; the hashed bytes are registered."""
+    import drilling_intelligence.operations.ddr_batch as mod
+
+    base = tmp_path / "b"
+    base.mkdir()
+    target = base / "a.pdf"
+    target.write_bytes(_pdf_bytes(DDR_TEXT))
+    m = _manifest(base, ["a.pdf"])
+
+    real_validate = mod._validate_entry_path
+    swapped = False
+
+    def racing_validate(raw, base_resolved):
+        nonlocal swapped
+        path = real_validate(raw, base_resolved)
+        if not swapped:
+            swapped = True
+            # an attacker replaces the file between validation and use
+            target.write_bytes(_pdf_bytes("TOTALLY DIFFERENT CONTENT"))
+        return path
+
+    monkeypatch.setattr(mod, "_validate_entry_path", racing_validate)
+    with workspace.database.unit_of_work() as session:
+        registry = _registry(workspace, session)
+        summary = import_ddr_batch(
+            registry,
+            manifest_path=m,
+            base_dir=base,
+            workspace_root=workspace.root,
+            workspace_id=_workspace_row_id(workspace),
+        )
+    # The registered document must carry the SHA of the bytes actually read post-swap,
+    # and that SHA must match the bytes on the registered (staged) source path.
+    entry = summary.entries[0]
+    assert entry.status == "IMPORTED"
+    with workspace.database.read_only() as session:
+        version = DocumentRepository(session).version(entry.document_version_id)
+        assert version.sha256 == entry.sha256
+        import hashlib
+
+        assert hashlib.sha256(Path(version.source_path).read_bytes()).hexdigest() == version.sha256
+
+
+def test_d7_on_entry_fires_exactly_once_per_entry_and_cancel_counted(workspace, tmp_path) -> None:
+    base = tmp_path / "b"
+    base.mkdir()
+    (base / "a.pdf").write_bytes(_pdf_bytes(DDR_TEXT))
+    (base / "bad.pdf").write_bytes(b"not a pdf at all")
+    m = _manifest(base, ["a.pdf", "bad.pdf", "missing.pdf"])
+    calls: list[str] = []
+    states = iter([False, False, True])  # cancel before the third entry
+    with workspace.database.unit_of_work() as session:
+        registry = _registry(workspace, session)
+        summary = import_ddr_batch(
+            registry,
+            manifest_path=m,
+            base_dir=base,
+            workspace_root=workspace.root,
+            workspace_id=_workspace_row_id(workspace),
+            should_cancel=lambda: next(states),
+            on_entry=lambda r: calls.append(r.status),
+        )
+    assert len(calls) == summary.total == 3  # exactly once per entry
+    assert calls[-1] == "CANCELLED"
+    assert summary.cancelled == 1
+    assert summary.to_dict()["cancelled"] == 1
+    assert summary.imported == 1 and summary.failed == 1

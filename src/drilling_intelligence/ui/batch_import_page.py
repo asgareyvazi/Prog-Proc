@@ -231,17 +231,32 @@ class BatchImportPage(QWidget):
 
     # -- batch run -----------------------------------------------------------
     def _write_manifest(self, staging: Path, files: list[Path]) -> Path:
-        for src in files:
-            shutil.copy2(src, staging / src.name)
+        """E1: collision-resistant deterministic staging names.
+
+        Two sources both named ``DDR.pdf`` from different folders must never
+        overwrite each other; the staged name keeps the original filename after a
+        stable index prefix, and the manifest note preserves the original name and
+        source directory.
+        """
+        manifest_files = []
+        seen: set[str] = set()
+        self._staged_to_original = {}
+        for index, src in enumerate(files):
+            staged_name = f"{index:03d}__{src.name}"
+            if staged_name in seen:
+                raise DrillingIntelligenceError(f"duplicate staged name for {src}")
+            seen.add(staged_name)
+            shutil.copy2(src, staging / staged_name)
+            self._staged_to_original[staged_name] = src
+            manifest_files.append(
+                {
+                    "path": staged_name,
+                    "note": f"original={src.name};from={src.parent.name}",
+                }
+            )
         manifest = staging / "manifest.json"
         manifest.write_text(
-            json.dumps(
-                {
-                    "format": MANIFEST_FORMAT,
-                    "files": [{"path": f.name} for f in files],
-                },
-                indent=2,
-            )
+            json.dumps({"format": MANIFEST_FORMAT, "files": manifest_files}, indent=2)
         )
         return manifest
 
@@ -347,7 +362,15 @@ class BatchImportPage(QWidget):
             for e in self._last_summary.entries
             if e.status in ("FAILED", "UNSUPPORTED", "CANCELLED")
         ]
-        originals = [p for p in self._selected if p.name in {r.name for r in retry}]
+        # E4: retry by entry identity (staged name), resolving to the CURRENT
+        # original source so a corrected file is what gets re-imported.
+        originals = []
+        for r in retry:
+            original = getattr(self, "_staged_to_original", {}).get(r.name)
+            if original is None:
+                original = next((p for p in self._selected if p.name == r.name), None)
+            if original is not None:
+                originals.append(original)
         if originals:
             self._run_batch(originals)
         else:

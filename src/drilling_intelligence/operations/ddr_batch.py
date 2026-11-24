@@ -87,6 +87,7 @@ class BatchImportSummary:
     skipped_duplicate: int = 0
     failed: int = 0
     pending_review: int = 0
+    cancelled: int = 0
     entries: list[BatchEntryResult] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -97,6 +98,7 @@ class BatchImportSummary:
             "skipped_duplicate": self.skipped_duplicate,
             "failed": self.failed,
             "pending_review": self.pending_review,
+            "cancelled": self.cancelled,
             "entries": [e.to_dict() for e in self.entries],
         }
 
@@ -207,6 +209,57 @@ def _has_pdf_signature(path: Path) -> bool:
         return False
 
 
+def _read_verified_entry(source: Path, workspace_root: Path) -> tuple[str, Path]:
+    """D2: read an entry exactly once through a safe handle and stage the verified bytes.
+
+    The path is validated (D-15) and then opened with ``O_NOFOLLOW``; the fd is
+    fstat-ed to a regular file and read once, bounded by the per-file limit. The
+    SHA-256 is computed over those exact bytes, which are staged to a private file
+    that is what actually gets registered — so the bytes hashed are the bytes
+    registered, and a file swapped between validation and use cannot slip through.
+    Returns ``(sha256, staged_path)``; the caller must unlink the staged file.
+    """
+    import os
+    import stat as _stat
+
+    fd = os.open(str(source), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(fd)
+        if not _stat.S_ISREG(info.st_mode):
+            raise ValidationError("manifest entry is not a regular file", path=str(source))
+        if info.st_size > MAX_FILE_BYTES:
+            raise ValidationError(
+                f"file exceeds the per-file size limit ({MAX_FILE_BYTES} bytes)",
+                path=str(source),
+            )
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_FILE_BYTES:
+                raise ValidationError(
+                    f"file exceeds the per-file size limit ({MAX_FILE_BYTES} bytes)",
+                    path=str(source),
+                )
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
+    if data[:5] != _PDF_SIGNATURE:
+        raise ValidationError("file does not carry a PDF signature", path=str(source))
+    digest = hashlib.sha256(data).hexdigest()
+    staging_dir = Path(workspace_root) / ".drillintel" / "batch_imports" / "staging"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    staged = staging_dir / f"{digest[:16]}-{Path(source).name}"
+    tmp = staged.with_suffix(staged.suffix + ".partial")
+    tmp.write_bytes(data)
+    tmp.replace(staged)
+    return digest, staged
+
+
 def _current_version_disposition(registry: Any, document_id: str) -> str | None:
     """D-17: disposition of the exact CURRENT version only, or None if pending.
 
@@ -248,7 +301,7 @@ def import_ddr_batch(
     manifest_path: Path | str,
     base_dir: Path | str,
     workspace_root: Path | str,
-    workspace_id: str | None,
+    workspace_id: str,
     default_well_id: str | None = None,
     should_cancel: Any = None,
     on_entry: Any = None,
@@ -257,7 +310,13 @@ def import_ddr_batch(
 
     Duplicate detection is workspace-scoped (D-16); path containment is enforced
     per entry (D-15); pending-review counting uses the exact current version (D-17).
+    ``workspace_id`` is mandatory (D1): a batch must never run against an absent or
+    false workspace identity, and an unscoped lookup must never match orphaned rows.
+    ``on_entry`` (D7) is a completion-only callback: it fires exactly once per
+    manifest entry with that entry's final result (including CANCELLED).
     """
+    if not isinstance(workspace_id, str) or not workspace_id.strip():
+        raise ValidationError("workspace_id is required; batch import fails closed without it")
     base_resolved = Path(base_dir).resolve()
     # Manifest structure is validated wholesale; each path is validated per entry so
     # one bad path is a FAILED entry, never a whole-batch abort (D-18 partial failure).
@@ -268,28 +327,24 @@ def import_ddr_batch(
         if should_cancel is not None and should_cancel():
             result = BatchEntryResult(filename=Path(entry.path).name, status="CANCELLED")
             summary.entries.append(result)
+            summary.cancelled += 1
+            if on_entry is not None:
+                on_entry(result)  # completion callback fires for cancelled entries too
             continue
         result = BatchEntryResult(filename=Path(entry.path).name)
         summary.entries.append(result)
-        if on_entry is not None:
-            on_entry(result)
         try:
             source = _validate_entry_path(entry.path, base_resolved)
             if source.suffix.lower() != ".pdf":
                 result.status = "UNSUPPORTED"
                 result.error = "only PDF files are accepted for DDR batch import"
-            elif not _has_pdf_signature(source):
-                result.status = "UNSUPPORTED"
-                result.error = "file does not carry a PDF signature"
             else:
-                size = source.stat().st_size
-                if size > MAX_FILE_BYTES:
-                    result.error = f"file exceeds the per-file size limit ({MAX_FILE_BYTES} bytes)"
-                elif total_bytes + size > MAX_BATCH_BYTES:
+                result.sha256, staged = _read_verified_entry(source, Path(workspace_root))
+                size = len(staged.read_bytes())
+                if total_bytes + size > MAX_BATCH_BYTES:
                     result.error = "batch aggregate size limit exceeded"
                 else:
                     total_bytes += size
-                    result.sha256 = _sha256_of(source)
                     # D-16: duplicates are workspace-scoped, never borrowed across workspaces.
                     existing = registry.repository.version_by_sha_in_workspace(
                         result.sha256, workspace_id
@@ -309,11 +364,14 @@ def import_ddr_batch(
                             summary.pending_review += 1
                     else:
                         registered = registry.register(
-                            path=source,
+                            path=staged,
                             workspace_root=workspace_root,
                             workspace_id=workspace_id,
                             well_id=entry.well_id or default_well_id,
+                            precomputed_sha=result.sha256,
                         )
+                        # The staged copy stays: it is the registered source path, so
+                        # later physical-byte re-verification still has a real file.
                         if not registered.ok:
                             result.error = registered.error or "registry refused the file"
                         else:
@@ -333,15 +391,20 @@ def import_ddr_batch(
                             if result.pending_review:
                                 summary.pending_review += 1
         except ValidationError as exc:
-            result.status = "FAILED"
+            # A bad PDF signature or oversize read is an unsupported entry, not a
+            # processing failure; every other validation error fails the entry.
+            if "PDF signature" in str(exc) or "size limit" in str(exc):
+                result.status = "UNSUPPORTED"
+            else:
+                result.status = "FAILED"
             result.error = str(exc)
         except Exception as exc:  # noqa: BLE001 - batch must survive a single bad entry
             result.status = "FAILED"
             result.error = f"{type(exc).__name__}: {exc}"
         if result.status in ("FAILED", "UNSUPPORTED"):
             summary.failed += 1
-        if on_entry is not None and result.status not in ("CANCELLED",):
-            on_entry(result)
+        if on_entry is not None:
+            on_entry(result)  # exactly once per entry, after its final outcome
     return summary
 
 

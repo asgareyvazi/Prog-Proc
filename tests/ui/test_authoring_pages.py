@@ -1219,3 +1219,90 @@ def test_ui_e2e_navigation_covers_new_pages(qt_app, workspace):
         assert window.pages.currentWidget() is window.batch_import_page
     finally:
         window.close()
+
+
+def test_batch_import_same_basename_files_do_not_collide(qt_app, workspace, tmp_path):
+    """E1: two DDR.pdf files from different folders stage without overwrite."""
+    import time as _t
+
+    from PySide6.QtWidgets import QApplication, QListWidgetItem
+    from tests.integration.test_ddr_batch_import import DDR_TEXT, _pdf_bytes
+
+    from drilling_intelligence.ui.controller import ReviewController
+
+    dir_a = tmp_path / "rigA"
+    dir_b = tmp_path / "rigB"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    f1 = dir_a / "DDR.pdf"
+    f2 = dir_b / "DDR.pdf"
+    f1.write_bytes(_pdf_bytes(DDR_TEXT + " Report No. COL-A."))
+    f2.write_bytes(_pdf_bytes(DDR_TEXT + " Report No. COL-B."))
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Batch DDR Import")
+        page = window.batch_import_page
+        page._selected = [f1, f2]
+        for f in (f1, f2):
+            page.file_list.addItem(QListWidgetItem(str(f)))
+        page.start_button.click()
+        for _ in range(400):
+            QApplication.processEvents()
+            _t.sleep(0.02)
+            if page._last_summary is not None:
+                break
+        summary = page._last_summary
+        assert summary is not None and summary.imported == 2, page.status_label.text()
+        assert len({e.sha256 for e in summary.entries}) == 2  # distinct bytes, both kept
+        page._cleanup_thread()
+    finally:
+        window.close()
+
+
+def test_batch_import_retry_after_fix_succeeds_without_reimporting(qt_app, workspace, tmp_path):
+    """E4: a failed entry is retried against a corrected source and succeeds."""
+    import time as _t
+
+    from PySide6.QtWidgets import QApplication, QListWidgetItem
+    from tests.integration.test_ddr_batch_import import DDR_TEXT, _pdf_bytes
+
+    from drilling_intelligence.ui.controller import ReviewController
+
+    good = tmp_path / "good.pdf"
+    good.write_bytes(_pdf_bytes(DDR_TEXT))
+    bad = tmp_path / "fixme.pdf"
+    bad.write_bytes(b"broken bytes")
+
+    controller = ReviewController()
+    window = _open_window(controller, workspace)
+    try:
+        _select_navigation_page(window, "Batch DDR Import")
+        page = window.batch_import_page
+        page._selected = [good, bad]
+        for f in (good, bad):
+            page.file_list.addItem(QListWidgetItem(str(f)))
+        page.start_button.click()
+        for _ in range(400):
+            QApplication.processEvents()
+            _t.sleep(0.02)
+            if page._last_summary is not None:
+                break
+        first = page._last_summary
+        assert first.failed == 1 and first.imported == 1
+
+        # operator replaces the broken source with a valid PDF, then retries only it
+        bad.write_bytes(_pdf_bytes(DDR_TEXT + " Report No. FIXED-1."))
+        page._selected = [bad]
+        page.retry_button.click()
+        for _ in range(400):
+            QApplication.processEvents()
+            _t.sleep(0.02)
+            if page._last_summary is not None and page._last_summary.total == 1:
+                break
+        second = page._last_summary
+        assert second.total == 1 and second.imported == 1, second.to_dict()
+        page._cleanup_thread()
+    finally:
+        window.close()
