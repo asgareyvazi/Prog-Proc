@@ -292,6 +292,17 @@ def _current_version_disposition(registry: Any, document_id: str) -> str | None:
                     locator = item.get("locator") or {}
                     if str(locator.get("document_version_id") or "") == current.id:
                         return str(item.get("decision", ""))
+    # DDR candidate dispositions (Phase F) live in the version's own metadata; they
+    # are equally exact-version-scoped because the events name this version's id.
+    meta = current.metadata_json or {}
+    for item in reversed(meta.get("extraction_dispositions") or []):
+        if isinstance(item, dict):
+            locator = item.get("locator") or {}
+            named = str(locator.get("document_version_id") or "") == current.id or str(
+                item.get("version_id") or ""
+            ) == current.id
+            if named:
+                return str(item.get("decision", ""))
     return None
 
 
