@@ -380,18 +380,18 @@ def _current_version_disposition(registry: Any, document_id: str) -> str | None:
                     locator = item.get("locator") or {}
                     if str(locator.get("document_version_id") or "") == current.id:
                         return str(item.get("decision", ""))
-    # DDR candidate dispositions (Phase F) live in the version's own metadata; they
-    # are equally exact-version-scoped because the events name this version's id.
-    meta = current.metadata_json or {}
-    for item in reversed(meta.get("extraction_dispositions") or []):
-        if isinstance(item, dict):
-            locator = item.get("locator") or {}
-            named = (
-                str(locator.get("document_version_id") or "") == current.id
-                or str(item.get("version_id") or "") == current.id
-            )
-            if named:
-                return str(item.get("decision", ""))
+    # DDR candidate dispositions (Phase G) live in the append-only ddr_disposition
+    # table, scoped to the exact current version id.
+    from ..database.models import DdrDisposition
+
+    rows = (
+        session.query(DdrDisposition)
+        .filter(DdrDisposition.document_version_id == current.id)
+        .order_by(DdrDisposition.created_at.desc(), DdrDisposition.id.desc())
+        .all()
+    )
+    if rows:
+        return str(rows[0].decision)
     return None
 
 

@@ -116,7 +116,7 @@ def test_intake_migration_downgrade_and_upgrade_is_deterministic(workspace: Work
     assert down.mode == "downgraded" and down.current == "0023"
     assert "intake_queue_item" not in inspect(engine).get_table_names()
     up = upgrade(engine)
-    assert up.current == "0029"
+    assert up.current == "0030"
     assert "intake_queue_item" in inspect(engine).get_table_names()
 
 

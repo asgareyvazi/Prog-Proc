@@ -907,6 +907,50 @@ class AuditEvent(Base):
 # query instead of a re-read of forty files.
 
 
+class DdrDisposition(Base, TimestampMixin):
+    """Append-only human disposition of one DDR extraction candidate (2026-11-24B, Phase G).
+
+    This table is the ONLY place dispositions are written. ``DocumentVersion.metadata_json``
+    is immutable evidence and is never mutated for a decision. The database enforces
+    append-only semantics with triggers (migration 0030): UPDATE and DELETE raise.
+    Rows are scoped to the exact document version, so a decision on version 1 can never
+    dispose version 2.
+    """
+
+    __tablename__ = "ddr_disposition"
+    __table_args__ = (
+        Index("ix_ddr_disposition_version", "document_version_id"),
+        Index("ix_ddr_disposition_candidate", "candidate_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_version_id: Mapped[str] = mapped_column(
+        ForeignKey("document_version.id", ondelete="CASCADE"), nullable=False
+    )
+    candidate_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    field: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)  # ACCEPTED|EDITED|REJECTED
+    extracted_value: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    edited_value: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    locator: Mapped[dict[str, Any] | None] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(200), nullable=False)
+
+
+# Append-only enforcement for ddr_disposition (migration 0030 installs the same triggers
+# for upgraded workspaces): no row may ever be updated or deleted.
+for _ddl in (
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_disposition_no_update BEFORE UPDATE ON ddr_disposition "
+    "BEGIN SELECT RAISE(ABORT, 'ddr_disposition is append-only: updates are forbidden'); END",
+    "CREATE TRIGGER IF NOT EXISTS trg_ddr_disposition_no_delete BEFORE DELETE ON ddr_disposition "
+    "BEGIN SELECT RAISE(ABORT, 'ddr_disposition is append-only: deletes are forbidden'); END",
+):
+    event.listen(
+        DdrDisposition.__table__,
+        "after_create",
+        DDL(_ddl).execute_if(dialect="sqlite"),
+    )
+
+
 class DdrReport(Base, TimestampMixin):
     """A daily drilling report as a record, not only as a file (architecture: DDR first-class).
 

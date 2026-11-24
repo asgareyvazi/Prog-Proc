@@ -3594,6 +3594,91 @@ def _add_workspace_command(sub: Any, common: list[argparse.ArgumentParser]) -> N
     restore_archive.set_defaults(handler=command_workspace_restore_archive)
 
 
+def command_ddr_candidates(args: argparse.Namespace) -> int:
+    """``drillintel ddr-candidates``: list/dispose/authorize source-to-DDR candidates (Phase G).
+
+    All three actions go through the same :class:`DdrWorkflowService` the Qt page
+    uses, so terminal, desktop and tests see identical append-only state.
+    """
+    from ..operations.ddr_workflow import DdrWorkflowService
+
+    workspace = _open_workspace(args)
+    service = DdrWorkflowService.for_workspace(workspace)
+    if args.action == "list":
+        payload = service.list_candidates(args.version_id)
+        _emit(
+            {"count": len(payload), "candidates": payload},
+            as_json=args.json,
+            lines=[
+                f"{len(payload)} candidate(s) for version {args.version_id}",
+                *(
+                    _table(
+                        payload,
+                        [("field", 16), ("extracted_value", 16), ("unit", 6), ("status", 12), ("candidate_id", 40)],
+                    )
+                    or ["no candidates: the version has no mappable fields"]
+                ),
+            ],
+        )
+        return 0
+    if args.action == "dispose":
+        event = service.dispose(
+            args.version_id,
+            args.candidate_id,
+            args.decision,
+            actor=args.actor,
+            edited_value=args.edited_value,
+        )
+        _emit(
+            {"ok": True, "event": event},
+            as_json=args.json,
+            lines=[f"disposition appended: {event['decision']} on {event['candidate_id']}"],
+        )
+        return 0
+    if args.action == "authorize":
+        report = service.authorize(args.version_id, well_id=args.well_id, actor=args.actor)
+        _emit(
+            {
+                "ok": True,
+                "report_id": report.id,
+                "status": report.status,
+                "report_number": report.report_number,
+            },
+            as_json=args.json,
+            lines=[
+                f"CANDIDATE report {report.report_number} authorized from version {args.version_id} "
+                f"(stays CANDIDATE until the review lifecycle approves it)"
+            ],
+        )
+        return 0
+    return 2
+
+
+def _add_ddr_candidates_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
+    """Register the 'ddr-candidates' command (Phase G public CLI surface)."""
+    cmd = sub.add_parser(
+        "ddr-candidates",
+        help="source-to-DDR candidates: list, dispose (append-only), authorize a CANDIDATE report",
+        parents=[common],
+    )
+    cmd_sub = cmd.add_subparsers(dest="action", required=True)
+    list_p = cmd_sub.add_parser("list", help="list candidates with page locators and state", parents=[common])
+    list_p.add_argument("--version-id", required=True)
+    list_p.set_defaults(handler=command_ddr_candidates)
+    dispose_p = cmd_sub.add_parser("dispose", help="append one disposition", parents=[common])
+    dispose_p.add_argument("--version-id", required=True)
+    dispose_p.add_argument("--candidate-id", required=True)
+    dispose_p.add_argument("--decision", required=True, choices=["ACCEPTED", "EDITED", "REJECTED"])
+    dispose_p.add_argument("--actor", default="cli")
+    dispose_p.add_argument("--edited-value", default="")
+    dispose_p.set_defaults(handler=command_ddr_candidates)
+    auth_p = cmd_sub.add_parser("authorize", help="authorize a CANDIDATE report from accepted fields", parents=[common])
+    auth_p.add_argument("--version-id", required=True)
+    auth_p.add_argument("--well-id", required=True)
+    auth_p.add_argument("--actor", default="cli")
+    auth_p.set_defaults(handler=command_ddr_candidates)
+
+
 def _add_wells_command(sub: Any, common: list[argparse.ArgumentParser]) -> None:
     """Register the "wells" command and its options."""
     wells = sub.add_parser(
@@ -4510,6 +4595,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ingest_command(sub, common)
     _add_intake_command(sub, common)
     _add_ddr_command(sub, common)
+    _add_ddr_candidates_command(sub, common)
     _add_search_command(sub, common)
     _add_evidence_command(sub, common)
     _add_index_command(sub, common)

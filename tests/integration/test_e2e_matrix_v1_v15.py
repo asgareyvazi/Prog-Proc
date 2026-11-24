@@ -108,7 +108,7 @@ def test_v1_workspace_bootstrap_and_head(workspace) -> None:
     """[SYNTHETIC-WORKFLOW-MECHANICS-ONLY] scenario mechanics."""
     from drilling_intelligence.database.migrations import METADATA_REVISION, current_revision
 
-    assert current_revision(workspace.database.engine) == "0029" == METADATA_REVISION
+    assert current_revision(workspace.database.engine) == "0030" == METADATA_REVISION
 
 
 def test_v2_well_registration_and_sections(workspace) -> None:

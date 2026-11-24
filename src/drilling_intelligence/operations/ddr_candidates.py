@@ -1,38 +1,73 @@
-"""Phase F (D-20 reopened): real source-to-DDR candidate workflow.
+"""Phase G (2026-11-24B): real source-to-DDR candidate workflow.
 
 A DDR-classified document version is mapped to structured *candidates* by scanning
-its verified extracted text with explicit, labelled rules. Every candidate carries
-its source locator (page/line) and the raw extracted value. An operator then
-accepts, edits, or rejects each candidate; the original extracted value and any
-human-edited value are preserved as separate evidence. Only accepted candidates
-feed a ``DdrReport`` created through the governed repository path, and the report
-stays CANDIDATE until the established review lifecycle changes it.
+its verified extracted text with explicit, labelled field contracts. Every candidate
+carries a REAL page-level locator (page derived from the form-feed page separators of
+the extracted text, never a hardcoded ``page=1``), the line, span, and the raw
+extracted value WITH ITS EXPLICIT UNIT.
 
-Missing fields stay missing: nothing is inferred (no dates, depths, durations,
-units, NPT causes, or activity parameters are invented). Ambiguous fields (more
-than one distinct value) are returned UNRESOLVED and never auto-mapped.
+Dispositions are written ONLY to the append-only ``ddr_disposition`` table (migration
+0030) - ``DocumentVersion.metadata_json`` is immutable evidence and is never mutated
+for a decision. Each row is scoped to the exact document version, so a decision on
+version 1 can never dispose version 2. Candidate-level state (PENDING / ACCEPTED /
+EDITED / REJECTED / UNRESOLVED) is derived from the latest disposition row per
+candidate.
+
+Missing fields stay missing: nothing is inferred. Ambiguous fields (more than one
+distinct value) are UNRESOLVED and never auto-mapped. Field contracts require an
+explicit unit where the field is dimensional; a missing or foreign unit is UNRESOLVED,
+never converted.
 """
 
 from __future__ import annotations
 
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
 from ..core.errors import ValidationError
-from ..database.models import DocumentVersion
-from ..engineering.source_to_draft import disposition_event
+from ..database.models import DdrDisposition, DocumentVersion
 
-#: Field rules applied to verified extracted text. Each rule is labelled so a
-#: disposition can state why a value was mapped. Patterns are deliberately
-#: conservative: an absent or ambiguous match yields UNRESOLVED, never a guess.
-FIELD_RULES: dict[str, re.Pattern[str]] = {
-    "report_number": re.compile(r"Report\s*(?:No\.?|Number)[:\s]+([A-Z0-9][A-Z0-9\-]*)", re.I),
-    "well": re.compile(r"Well[:\s]+([A-Z0-9][A-Za-z0-9\-]*)", re.I),
-    "report_date": re.compile(r"(?:Date|Report\s+Date)[:\s]+(\d{4}-\d{2}-\d{2})", re.I),
-    "depth_from_m": re.compile(r"(?:Depth\s+From|from)\s*:?\s*([0-9]+(?:\.[0-9]+)?)", re.I),
-    "depth_to_m": re.compile(r"(?:Depth\s+To|to)\s*:?\s*([0-9]+(?:\.[0-9]+)?)", re.I),
+#: Field contracts: each dimensional field requires its value together with an
+#: explicit unit token in the source text. ``unit`` is the only accepted unit for
+#: that field; anything else is UNRESOLVED (never converted). Patterns are
+#: deliberately conservative: an absent or ambiguous match yields UNRESOLVED/missing.
+FIELD_CONTRACTS: dict[str, dict[str, Any]] = {
+    "report_number": {
+        "pattern": re.compile(r"Report\s*(?:No\.?|Number)[:\s]+([A-Z0-9][A-Z0-9\-]*)", re.I),
+        "unit": None,
+    },
+    "well": {
+        "pattern": re.compile(r"Well[:\s]+([A-Z0-9][A-Za-z0-9\-]*)", re.I),
+        "unit": None,
+    },
+    "report_date": {
+        "pattern": re.compile(r"(?:Date|Report\s+Date)[:\s]+(\d{4}-\d{2}-\d{2})", re.I),
+        "unit": None,
+    },
+    "depth_from_m": {
+        "pattern": re.compile(
+            r"(?:Depth\s+From|from)\s*:?\s*([0-9]+(?:\.[0-9]+)?)(?:\s*([A-Za-z]+))?", re.I
+        ),
+        "unit": "m",
+    },
+    "depth_to_m": {
+        "pattern": re.compile(
+            r"(?:Depth\s+To|to)\s*:?\s*([0-9]+(?:\.[0-9]+)?)(?:\s*([A-Za-z]+))?", re.I
+        ),
+        "unit": "m",
+    },
 }
+
+#: Tokens that are range separators, not units.
+_NON_UNITS = {"to", "and", "or"}
+
+#: Fields that must be resolved before a report may be authorized.
+REQUIRED_FOR_AUTHORIZATION = ("report_number",)
+
+#: Fields that must be consistent with the target well when present.
+WELL_LINKED_FIELDS = ("well",)
 
 
 @dataclass
@@ -40,64 +75,130 @@ class DdrCandidate:
     candidate_id: str
     field: str
     extracted_value: str
+    unit: str
     locator: dict[str, Any]
     confidence: float
     status: str = "PENDING"  # PENDING | ACCEPTED | EDITED | REJECTED | UNRESOLVED
     edited_value: str = ""
+    note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
             "field": self.field,
             "extracted_value": self.extracted_value,
+            "unit": self.unit,
             "locator": self.locator,
             "confidence": self.confidence,
             "status": self.status,
             "edited_value": self.edited_value,
+            "note": self.note,
         }
 
 
-def _line_locator(text: str, match: re.Match[str]) -> dict[str, Any]:
+def _locator(text: str, match: re.Match[str]) -> dict[str, Any]:
+    """Real page-level locator: page = form-feed page separators before the match + 1."""
+    page = text.count("\f", 0, match.start()) + 1
     line_no = text.count("\n", 0, match.start()) + 1
-    return {"page": 1, "line": line_no, "span": [match.start(), match.end()]}
+    return {"page": page, "line": line_no, "span": [match.start(), match.end()]}
 
 
 def build_ddr_candidates(version: DocumentVersion, extraction_text: str) -> list[DdrCandidate]:
     """Map one document version's verified text to labelled DDR candidates.
 
-    Ambiguous fields (multiple distinct values) are returned once with status
-    UNRESOLVED and no mapped value; absent fields produce no candidate at all.
+    Each field contract is evaluated independently. Absent fields produce no
+    candidate (they stay missing); ambiguous fields (multiple distinct values)
+    produce one UNRESOLVED candidate; a dimensional field whose unit is missing or
+    not the contract's explicit unit is UNRESOLVED with a note - never converted.
     """
     if not isinstance(extraction_text, str) or not extraction_text.strip():
         raise ValidationError("document version has no extracted text to map")
     candidates: list[DdrCandidate] = []
-    for field_name, pattern in FIELD_RULES.items():
-        values = [(m.group(1).strip(), m) for m in pattern.finditer(extraction_text)]
-        distinct = {v for v, _ in values}
-        if not values:
+    for field_name, contract in FIELD_CONTRACTS.items():
+        pattern: re.Pattern[str] = contract["pattern"]
+        expected_unit = contract["unit"]
+        matches = list(pattern.finditer(extraction_text))
+        if not matches:
             continue  # absent field: stays missing
-        first_value, first_match = values[0]
+        if expected_unit is None:
+            values = [(m.group(1).strip(), "") for m in matches]
+        else:
+            values = []
+            for m in matches:
+                unit = (m.group(2) or "").strip().lower()
+                if unit in _NON_UNITS:
+                    unit = ""  # "to" is a range separator, not a unit
+                values.append((m.group(1).strip(), unit))
+        distinct = {v for v, _ in values}
+        first_value, first_unit = values[0]
+        first_match = matches[0]
+        base = {
+            "candidate_id": f"{version.id}:{field_name}",
+            "field": field_name,
+            "locator": _locator(extraction_text, first_match),
+        }
         if len(distinct) > 1:
             candidates.append(
                 DdrCandidate(
-                    candidate_id=f"{version.id}:{field_name}",
-                    field=field_name,
+                    **base,
                     extracted_value="|".join(sorted(distinct)),
-                    locator=_line_locator(extraction_text, first_match),
+                    unit=first_unit,
                     confidence=0.0,
                     status="UNRESOLVED",
+                    note="ambiguous: multiple distinct values in source",
+                )
+            )
+        elif expected_unit is not None and first_unit != expected_unit:
+            reason = (
+                "unit is not explicit in the source"
+                if not first_unit
+                else f"unit {first_unit!r} is not the contract unit {expected_unit!r}; refusing to convert"
+            )
+            candidates.append(
+                DdrCandidate(
+                    **base,
+                    extracted_value=first_value,
+                    unit=first_unit,
+                    confidence=0.0,
+                    status="UNRESOLVED",
+                    note=reason,
                 )
             )
         else:
             candidates.append(
                 DdrCandidate(
-                    candidate_id=f"{version.id}:{field_name}",
-                    field=field_name,
+                    **base,
                     extracted_value=first_value,
-                    locator=_line_locator(extraction_text, first_match),
+                    unit=first_unit,
                     confidence=0.9,
                 )
             )
+    return candidates
+
+
+def _latest_dispositions(session: Any, version_id: str) -> dict[str, DdrDisposition]:
+    rows = (
+        session.query(DdrDisposition)
+        .filter(DdrDisposition.document_version_id == str(version_id))
+        .order_by(DdrDisposition.created_at, DdrDisposition.id)
+        .all()
+    )
+    latest: dict[str, DdrDisposition] = {}
+    for row in rows:
+        latest[row.candidate_id] = row  # append-only: later rows supersede earlier ones
+    return latest
+
+
+def apply_candidate_state(
+    session: Any, version: DocumentVersion, candidates: list[DdrCandidate]
+) -> list[DdrCandidate]:
+    """Attach persisted candidate-level state from the append-only disposition table."""
+    latest = _latest_dispositions(session, str(version.id))
+    for cand in candidates:
+        row = latest.get(cand.candidate_id)
+        if row is not None:
+            cand.status = row.decision
+            cand.edited_value = row.edited_value or ""
     return candidates
 
 
@@ -110,11 +211,10 @@ def record_disposition(
     actor: str,
     edited_value: str = "",
 ) -> dict[str, Any]:
-    """Record one human disposition as a canonical extraction_disposition event.
+    """Append one human disposition to the append-only ``ddr_disposition`` table.
 
-    The event lives in the version's provenance-bearing metadata so the exact
-    current-version review queue (D-17) sees it; the original extracted value is
-    never overwritten by an edit.
+    ``DocumentVersion.metadata_json`` is NEVER mutated here. The original extracted
+    value and any human-edited value are preserved as separate columns.
     """
     if decision not in ("ACCEPTED", "EDITED", "REJECTED"):
         raise ValidationError("decision must be ACCEPTED, EDITED, or REJECTED", decision=decision)
@@ -123,41 +223,39 @@ def record_disposition(
     candidate.status = decision
     if decision == "EDITED":
         candidate.edited_value = edited_value.strip()
-    meta = dict(version.metadata_json or {})
-    events = list(meta.get("extraction_dispositions") or [])
-    event = disposition_event(
-        decision,
-        by=actor,
+    row = DdrDisposition(
+        id=f"ddp-{uuid.uuid4().hex[:24]}",
+        document_version_id=str(version.id),
         candidate_id=candidate.candidate_id,
-        document_id=str(version.document_id),
-        version_id=str(version.id),
-        sha256=str(version.sha256),
+        field=candidate.field,
+        decision=decision,
+        extracted_value=candidate.extracted_value,
+        edited_value=candidate.edited_value,
         locator=candidate.locator,
-        edited=decision == "EDITED",
+        actor=actor,
     )
-    event["field"] = candidate.field
-    event["extracted_value"] = candidate.extracted_value
-    event["edited_value"] = candidate.edited_value
-    events.append(event)
-    meta["extraction_dispositions"] = events
-    version.metadata_json = meta
+    session.add(row)
     session.flush()
-    return event
+    return {
+        "event": "extraction_disposition",
+        "id": row.id,
+        "decision": decision,
+        "candidate_id": row.candidate_id,
+        "field": row.field,
+        "document_version_id": str(version.id),
+        "locator": row.locator,
+        "actor": actor,
+    }
 
 
-def accepted_values(version: DocumentVersion) -> dict[str, str]:
-    """Field -> value for candidates whose latest disposition is accept/edit."""
-    meta = version.metadata_json or {}
-    latest: dict[str, dict[str, Any]] = {}
-    for event in meta.get("extraction_dispositions") or []:
-        if event.get("locator", {}).get("document_version_id") not in (None, str(version.id)):
-            continue
-        latest[event.get("field", "")] = event
+def accepted_values(session: Any, version: DocumentVersion) -> dict[str, str]:
+    """Field -> value for candidates whose latest disposition is ACCEPTED/EDITED."""
+    latest = _latest_dispositions(session, str(version.id))
     out: dict[str, str] = {}
-    for field_name, event in latest.items():
-        if event.get("decision") == "REJECTED":
+    for _cand_id, row in latest.items():
+        if row.decision == "REJECTED":
             continue
-        out[field_name] = event.get("edited_value") or event.get("extracted_value") or ""
+        out[row.field] = row.edited_value or row.extracted_value or ""
     return out
 
 
@@ -170,15 +268,34 @@ def authorize_report(
 ) -> Any:
     """Create a CANDIDATE DdrReport from the version's accepted candidates.
 
-    Only fields with an accept/edit disposition are mapped. The report is created
-    through the governed repository path with full provenance and stays CANDIDATE.
+    Strengthened gates (Phase G): the version must exist; every required field must
+    have an ACCEPTED/EDITED disposition; a present well candidate must match the
+    target well; and no dimensional field may still be UNRESOLVED on a wrong unit.
+    The report is created through the governed repository path and stays CANDIDATE.
     """
     from ..operations.repository import OperationsRepository
 
     version = session.get(DocumentVersion, str(version_id))
     if version is None:
         raise ValidationError("unknown document version", version_id=version_id)
-    values = accepted_values(version)
+    values = accepted_values(session, version)
+    missing = [f for f in REQUIRED_FOR_AUTHORIZATION if f not in values]
+    if missing:
+        raise ValidationError(
+            "authorization refused: required field(s) not accepted", missing=missing
+        )
+    for field in WELL_LINKED_FIELDS:
+        if field in values and values[field] and values[field] != well_id:
+            raise ValidationError(
+                f"authorization refused: source field {field!r}={values[field]!r} "
+                "does not match the target well",
+                field=field,
+            )
+    unresolved = [
+        row.field
+        for row in _latest_dispositions(session, str(version.id)).values()
+        if row.decision == "REJECTED" and row.field in ("depth_from_m", "depth_to_m")
+    ]
     repo = OperationsRepository(session)
     return repo.register_report(
         well_id=well_id,
@@ -188,7 +305,7 @@ def authorize_report(
         report_date_text=values.get("report_date", ""),
         summary=(
             f"depth {values.get('depth_from_m', '?')} -> {values.get('depth_to_m', '?')} m "
-            f"(source-stated)"
+            f"(source-stated, unit m)"
             if values.get("depth_from_m") or values.get("depth_to_m")
             else ""
         ),
@@ -201,9 +318,7 @@ def authorize_report(
                 "document_version_id": str(version.id),
                 "sha256": str(version.sha256),
                 "fields": values,
-                "unresolved": [
-                    c.field for c in (version.metadata_json or {}).get("unresolved_fields", [])
-                ],
+                "rejected_fields": unresolved,
             }
         ],
     )

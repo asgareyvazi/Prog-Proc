@@ -107,6 +107,7 @@ _NAVIGATION = (
     "Template Library",
     "Source Extraction",
     "Batch DDR Import",
+    "DDR Candidates",
     "Survey Import",
     "Daily DDR",
     "Decision",
@@ -348,6 +349,7 @@ class MainWindow(QMainWindow):
         self._build_template_library_page()
         self._build_source_extraction_page()
         self._build_batch_import_page()
+        self._build_ddr_candidates_page()
         self._build_survey_import_page()
         self._build_ddr_page()
         self._build_decision_page()
@@ -516,6 +518,12 @@ class MainWindow(QMainWindow):
 
         self.batch_import_page = BatchImportPage(self._current_workspace)
         self.pages.addWidget(self.batch_import_page)
+
+    def _build_ddr_candidates_page(self) -> None:
+        from .ddr_candidates_page import DdrCandidatesPage
+
+        self.ddr_candidates_page = DdrCandidatesPage(self._current_workspace)
+        self.pages.addWidget(self.ddr_candidates_page)
 
     def _build_survey_import_page(self) -> None:
         # Lazy import: keeps this module importable under mocked-Qt test harnesses.

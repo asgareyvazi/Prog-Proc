@@ -117,7 +117,7 @@ def test_0029_round_trip_preserves_schema_and_data(tmp_path) -> None:
 
     # 0028 -> 0029
     upgrade(eng, "head")
-    assert current_revision(eng) == "0029"
+    assert current_revision(eng) == "0030"
     con = sqlite3.connect(db)
     cols = {r[1] for r in con.execute("PRAGMA table_info(procedure_step)")}
     con.close()
@@ -198,7 +198,7 @@ def test_0029_round_trip_preserves_schema_and_data(tmp_path) -> None:
     # 0028 -> 0029 again: contract restored
     eng = _open(tmp_path, "rt.db")
     upgrade(eng, "head")
-    assert current_revision(eng) == "0029"
+    assert current_revision(eng) == "0030"
     con = sqlite3.connect(db)
     cols = {r[1] for r in con.execute("PRAGMA table_info(procedure_step)")}
     trig = {
@@ -217,5 +217,5 @@ def test_0029_repeated_upgrade_is_idempotent(tmp_path) -> None:
     eng = _open(tmp_path, "idem.db")
     upgrade(eng, "head")
     upgrade(eng, "head")  # repeated upgrade must be a no-op
-    assert current_revision(eng) == "0029"
+    assert current_revision(eng) == "0030"
     eng.dispose()

@@ -137,20 +137,23 @@ def test_e4_disposition_on_old_version_never_disposes_current(workspace, tmp_pat
         repo = registry.repository
         doc = repo.get(doc_id)
         v1 = repo.current_version(doc)
-        # record a disposition event against the CURRENT version via metadata append
+        # record a disposition against the CURRENT version via the append-only table
+        from sqlalchemy import select
 
-        meta = dict(v1.metadata_json or {})
-        dispositions = list(meta.get("extraction_dispositions") or [])
-        dispositions.append(
-            {
-                "event": "extraction_disposition",
-                "decision": "ACCEPTED",
-                "locator": {"document_version_id": v1.id},
-            }
+        from drilling_intelligence.database.models import Extraction
+        from drilling_intelligence.operations.ddr_candidates import (
+            build_ddr_candidates,
+            record_disposition,
         )
-        meta["extraction_dispositions"] = dispositions
-        v1.metadata_json = meta
-        session.flush()
+
+        text = " ".join(
+            r.text_blob or ""
+            for r in session.execute(
+                select(Extraction).where(Extraction.document_version_id == v1.id)
+            ).scalars()
+        )
+        cand = build_ddr_candidates(v1, text)[0]
+        record_disposition(session, v1, cand, "ACCEPTED", actor="op-e4")
         q = review_queue(registry, workspace_id=_workspace_row_id(workspace))
         entry = next(x for x in q if x["document_id"] == doc_id)
         assert entry["version_disposition"] == "ACCEPTED"
