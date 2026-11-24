@@ -354,7 +354,7 @@ class BatchImportPage(QWidget):
                 handle.flush()
                 os.fsync(handle.fileno())
             tmp.replace(staging / "outcome.json")
-        except BaseException:
+        except Exception:
             tmp.unlink(missing_ok=True)
             raise
 

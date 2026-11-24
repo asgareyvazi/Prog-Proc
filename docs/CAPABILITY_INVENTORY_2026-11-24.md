@@ -8,7 +8,7 @@ qualified backend. Submission ≠ approval; actor strings ≠ authentication.
 | # | Area | Status | Evidence |
 |---|------|--------|----------|
 | 1 | Workspace lifecycle (create/open/doctor) | DONE | `wells/workspace.py`; `test_workspace_lifecycle.py`, `test_doctor_*` |
-| 2 | Schema migrations (Alembic, head 0029) | DONE | `migrations/versions/*`; `test_migration_0029.py` (round-trip contract) |
+| 2 | Schema migrations (Alembic, head 0030) | DONE | `migrations/versions/*`; `test_migration_0029.py` (round-trip contract); 0030 = append-only ddr_disposition |
 | 3 | 0029 downgrade constraint-preserving rebuild (D-06) | DONE | `test_migration_0029.py` — DDL/FK/index/trigger comparison, FK+integrity check |
 | 4 | Well/project/field hierarchy | DONE | `wells/repository.py`; `test_well_section_contract.py` |
 | 5 | Well sections plan-vs-actual | DONE | `test_section_population.py`, `test_plan_actual_forensics.py` |
@@ -18,6 +18,13 @@ qualified backend. Submission ≠ approval; actor strings ≠ authentication.
 | 9 | Document intake queue + registration | DONE | `review/intake.py`; `test_intake_registration.py`, `test_intake_e2e.py` |
 | 10 | Document registry, immutable versions | DONE | `documents/registry.py`, `documents/repository.py` |
 | 11 | Deterministic classification taxonomy | DONE | `classification/taxonomy.py`, `classification/rules.py` |
+| 12 | 2026-11-24B shared Qt install contract (collection == shards, pinned constraints) | DONE | `tools/ci_install_qt.sh`; `tests/unit/test_ci_contract.py` |
+| 13 | 2026-11-24B optional historical replay cannot fail a green current-SHA run | DONE | `ci.yml` continue-on-error on historical-shard-replay; API-verified inventory of run 43695755434 (10 artifacts, expired=false) |
+| 14 | 2026-11-24B batch import: fd-based openat traversal, atomic O_EXCL staging, per-entry savepoints | DONE | `operations/ddr_batch.py`; `tests/integration/test_ddr_batch_phase_e.py` |
+| 15 | 2026-11-24B survey import: SHA-256 over original bytes, bounded read before size check | DONE | `operations/survey_import.py`; `test_survey_import.py` Phase I tests |
+| 16 | 2026-11-24B Qt batch page: durable outcome.json, real reopen/history, safe thread shutdown | DONE | `ui/batch_import_page.py`; `tests/ui/test_batch_import_page_f.py` |
+| 17 | 2026-11-24B source-to-DDR: append-only disposition table (migration 0030), real page locators, unit contracts, strengthened authorize gates, public Qt+CLI+service | DONE | `operations/ddr_candidates.py`, `operations/ddr_workflow.py`, `ui/ddr_candidates_page.py`, CLI `ddr-candidates`; `test_ddr_candidates.py`, `test_ddr_candidates_page_g.py` |
+| 18 | 2026-11-24B review queue is candidate-level | DONE | `review_queue` carries per-candidate decision+locator; Phase H test |
 | 12 | PDF text extraction (real, hash-verified) | DONE | `extraction/pdf_text.py`; `test_source_extraction_integrity.py` |
 | 13 | XLSX/DOCX/CSV/text extraction | DONE | `extraction/excel.py`, `docx.py`, `text.py` |
 | 14 | Multi-layout PDF extraction golden corpus (D-22) | DONE | `tests/integration/test_multi_layout_corpus.py` — prose/key-value/grid synthetic DDR layouts all classify DDR |

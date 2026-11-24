@@ -48,7 +48,7 @@ LATER_MIGRATION_COLUMNS = (
 )
 #: Tables migrations after this one create.  Listed rather than tolerated, so a parity test still
 #: detects a table that went missing rather than one that merely arrived late.
-LATER_MIGRATION_TABLES = (
+LATER_MIGRATION_TABLES = (  # includes 0030
     "intake_queue_item",  # 0024
     "intake_registration",  # 0025
     "ddr_activity",  # 0026
@@ -58,6 +58,7 @@ LATER_MIGRATION_TABLES = (
     "cement_job",  # 0015
     "well_control_event",  # 0017
     "hse_incident",  # 0018
+    "ddr_disposition",  # 0030
 )
 
 

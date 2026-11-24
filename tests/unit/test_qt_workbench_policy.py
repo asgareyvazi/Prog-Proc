@@ -188,7 +188,9 @@ def test_required_jobs_stay_on_pinned_ubuntu_images_and_actions_are_pinned() -> 
     assert "runs-on: ubuntu-26.04" in workflow
     assert "qt-ubuntu-2604-logs" in workflow
     assert "tools/qt_evidence.py" in workflow
-    assert workflow.count("continue-on-error:") == 1
+    # exactly two: one pre-existing, plus the optional historical replay job
+    # (2026-11-24B Phase C: an optional replay must never fail a green current-SHA run)
+    assert workflow.count("continue-on-error:") == 2
     download_step = workflow.split("name: Download this attempt's full-suite evidence", 1)[1]
     download_step = download_step.split("\n      - ", 1)[0]
     assert "continue-on-error: true" in download_step

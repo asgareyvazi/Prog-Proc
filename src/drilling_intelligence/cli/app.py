@@ -3614,7 +3614,13 @@ def command_ddr_candidates(args: argparse.Namespace) -> int:
                 *(
                     _table(
                         payload,
-                        [("field", 16), ("extracted_value", 16), ("unit", 6), ("status", 12), ("candidate_id", 40)],
+                        [
+                            ("field", 16),
+                            ("extracted_value", 16),
+                            ("unit", 6),
+                            ("status", 12),
+                            ("candidate_id", 40),
+                        ],
                     )
                     or ["no candidates: the version has no mappable fields"]
                 ),
@@ -3662,7 +3668,9 @@ def _add_ddr_candidates_command(sub: Any, common: list[argparse.ArgumentParser])
         parents=[common],
     )
     cmd_sub = cmd.add_subparsers(dest="action", required=True)
-    list_p = cmd_sub.add_parser("list", help="list candidates with page locators and state", parents=[common])
+    list_p = cmd_sub.add_parser(
+        "list", help="list candidates with page locators and state", parents=[common]
+    )
     list_p.add_argument("--version-id", required=True)
     list_p.set_defaults(handler=command_ddr_candidates)
     dispose_p = cmd_sub.add_parser("dispose", help="append one disposition", parents=[common])
@@ -3672,7 +3680,9 @@ def _add_ddr_candidates_command(sub: Any, common: list[argparse.ArgumentParser])
     dispose_p.add_argument("--actor", default="cli")
     dispose_p.add_argument("--edited-value", default="")
     dispose_p.set_defaults(handler=command_ddr_candidates)
-    auth_p = cmd_sub.add_parser("authorize", help="authorize a CANDIDATE report from accepted fields", parents=[common])
+    auth_p = cmd_sub.add_parser(
+        "authorize", help="authorize a CANDIDATE report from accepted fields", parents=[common]
+    )
     auth_p.add_argument("--version-id", required=True)
     auth_p.add_argument("--well-id", required=True)
     auth_p.add_argument("--actor", default="cli")

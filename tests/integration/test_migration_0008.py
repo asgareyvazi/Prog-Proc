@@ -195,6 +195,8 @@ def test_the_upgrade_adds_the_columns_and_leaves_every_existing_value_alone(tmp_
                     "bit_record",
                     "survey_run",
                     "survey_station",
+                    # 0030: append-only DDR candidate dispositions.
+                    "ddr_disposition",
                 )
             ),
             "extra_tables": [],

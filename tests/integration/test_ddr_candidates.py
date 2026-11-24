@@ -214,3 +214,30 @@ def test_phase_g_authorize_gates_require_accepted_required_fields(workspace, tmp
         well = WellRepository(session).create_well(name="CAND-03")
         with pytest.raises(ValidationError, match="required field"):
             service.authorize(version_id, well_id=well.id, actor="op-g")
+
+
+def test_phase_h_review_queue_is_candidate_level(workspace, tmp_path):
+    from drilling_intelligence.operations.ddr_batch import review_queue
+    from drilling_intelligence.documents.registry import DocumentRegistry
+    from drilling_intelligence.documents.repository import DocumentRepository
+    from drilling_intelligence.extraction.registry import build_default_router
+    from drilling_intelligence.cli.app import _workspace_row_id
+
+    version_id = _import_one(workspace, tmp_path)
+    service = DdrWorkflowService.for_workspace(workspace)
+    cands = service.list_candidates(version_id)
+    rn = next(c for c in cands if c["field"] == "report_number")
+    service.dispose(version_id, rn["candidate_id"], "ACCEPTED", actor="op-h")
+    with workspace.database.unit_of_work() as session:
+        registry = DocumentRegistry(
+            DocumentRepository(session),
+            router=build_default_router(workspace.settings),
+            settings=workspace.settings,
+        )
+        queue = review_queue(registry, workspace_id=_workspace_row_id(workspace))
+    entry = next(q for q in queue if q["document_version_id"] == version_id)
+    assert entry["candidates"], "queue entry must carry candidate-level detail"
+    cand = next(c for c in entry["candidates"] if c["field"] == "report_number")
+    assert cand["decision"] == "ACCEPTED"
+    assert cand["locator"]["page"] >= 1
+    assert entry["pending_review"] is False

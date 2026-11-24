@@ -8,8 +8,8 @@ to be found by somebody else.
 
 | file | line | catches | kind | reason |
 | --- | --- | --- | --- | --- |
-| `src/drilling_intelligence/cli/app.py` | 4580 | `Exception` | reported |  |
-| `src/drilling_intelligence/cli/app.py` | 4557 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 4676 | `Exception` | reported |  |
+| `src/drilling_intelligence/cli/app.py` | 4653 | `Exception` | reported |  |
 | `src/drilling_intelligence/core/provenance.py` | 397 | `Exception` | reported | pragma: no cover; defensive, third-party readers |
 | `src/drilling_intelligence/core/provenance.py` | 429 | `Exception` | suppressed | tolerate legacy/corrupt rows rather than fail a whole listing |
 | `src/drilling_intelligence/core/redact.py` | 220 | `Exception` | reported | a diagnostic may not raise, by definition |
@@ -76,7 +76,9 @@ to be found by somebody else.
 | `src/drilling_intelligence/knowledge/service.py` | 564 | `Exception` | reported | the index is disposable; the registry is not |
 | `src/drilling_intelligence/knowledge/service.py` | 195 | `Exception` | reported | a workspace without a usable sidecar still gets knowledge |
 | `src/drilling_intelligence/knowledge/service.py` | 912 | `Exception` | reported | a broken sidecar must not hide the registry's answer |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 413 | `Exception` | reported | batch must survive a single bad entry |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 258 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 289 | `Exception` | re-raised | atomic rename into the digest-addressed final name |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 509 | `Exception` | reported | batch must survive a single bad entry |
 | `src/drilling_intelligence/operations/promote.py` | 4273 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4299 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4309 | `Exception` | reported | noqa marker |
@@ -114,13 +116,14 @@ to be found by somebody else.
 | `src/drilling_intelligence/ui/authoring_pages.py` | 1422 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/authoring_pages.py` | 1540 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/ui/batch_import_page.py` | 103 | `Exception` | reported | surfaced to the UI status line |
+| `src/drilling_intelligence/ui/batch_import_page.py` | 357 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/controller.py` | 105 | `Exception` | re-raised |  |
 | `src/drilling_intelligence/ui/lifetime.py` | 1064 | `Exception` | reported | any release failure must still exit 4 |
-| `src/drilling_intelligence/ui/main_window.py` | 443 | `Exception` | suppressed | dashboard must never break the review view |
-| `src/drilling_intelligence/ui/main_window.py` | 1114 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
-| `src/drilling_intelligence/ui/main_window.py` | 1737 | `Exception` | reported | export must not crash the window |
-| `src/drilling_intelligence/ui/main_window.py` | 2975 | `Exception` | reported | keep selection/read rendering usable |
-| `src/drilling_intelligence/ui/main_window.py` | 3168 | `Exception` | reported | preserve read-side selection on capability errors |
+| `src/drilling_intelligence/ui/main_window.py` | 445 | `Exception` | suppressed | dashboard must never break the review view |
+| `src/drilling_intelligence/ui/main_window.py` | 1122 | `Exception` | reported | # preserve a visible UI boundary for all open failures |
+| `src/drilling_intelligence/ui/main_window.py` | 1745 | `Exception` | reported | export must not crash the window |
+| `src/drilling_intelligence/ui/main_window.py` | 2983 | `Exception` | reported | keep selection/read rendering usable |
+| `src/drilling_intelligence/ui/main_window.py` | 3176 | `Exception` | reported | preserve read-side selection on capability errors |
 | `src/drilling_intelligence/ui/survey_page.py` | 163 | `Exception` | reported | surfaced non-modally |
 | `src/drilling_intelligence/ui/worker.py` | 70 | `Exception` | reported | thread boundary reports failures without hiding them |
 | `src/drilling_intelligence/ui/worker.py` | 130 | `Exception` | reported | report unexpected worker failures to the UI |
@@ -150,6 +153,6 @@ to be found by somebody else.
 
 | kind | count |
 | --- | --- |
-| re-raised | 14 |
+| re-raised | 17 |
 | reported | 93 |
 | suppressed | 30 |

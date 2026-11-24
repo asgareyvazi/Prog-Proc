@@ -589,6 +589,8 @@ def test_the_downgrade_removes_the_domain_and_keeps_the_workspace(tmp_path) -> N
                 # 0027: structured authoring children.
                 "program_section",
                 "procedure_step",
+                # 0030: append-only DDR candidate dispositions.
+                "ddr_disposition",
             )
         ), diff
 

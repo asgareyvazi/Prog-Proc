@@ -286,7 +286,7 @@ def _stage_atomic(data: bytes, name: str, workspace_root: Path) -> Path:
             handle.flush()
             os.fsync(handle.fileno())
         tmp.replace(staged)  # atomic rename into the digest-addressed final name
-    except BaseException:
+    except Exception:
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
@@ -537,6 +537,36 @@ def review_queue(registry: Any, *, workspace_id: str | None = None) -> list[dict
         if current is None:
             continue
         disposition = _current_version_disposition(registry, doc.id)
+        # Phase H: candidate-level integration — the queue entry carries each
+        # candidate's field, latest decision and real page locator, so the review
+        # queue is a candidate-level worklist, not just a version-level flag.
+        candidates: list[dict[str, Any]] = []
+        try:
+            from ..database.models import DdrDisposition
+
+            rows = (
+                registry.repository.session.query(DdrDisposition)
+                .filter(DdrDisposition.document_version_id == current.id)
+                .order_by(DdrDisposition.created_at, DdrDisposition.id)
+                .all()
+            )
+            latest: dict[str, Any] = {}
+            for row in rows:
+                latest[row.candidate_id] = row
+            for row in latest.values():
+                candidates.append(
+                    {
+                        "candidate_id": row.candidate_id,
+                        "field": row.field,
+                        "decision": row.decision,
+                        "extracted_value": row.extracted_value,
+                        "edited_value": row.edited_value,
+                        "locator": row.locator,
+                        "actor": row.actor,
+                    }
+                )
+        except Exception:  # noqa: BLE001 - queue must never fail because of candidate detail
+            candidates = []
         queue.append(
             {
                 "document_id": doc.id,
@@ -547,6 +577,7 @@ def review_queue(registry: Any, *, workspace_id: str | None = None) -> list[dict
                 "version_disposition": disposition or "PENDING_REVIEW",
                 "pending_review": disposition is None,
                 "well_id": doc.well_id,
+                "candidates": candidates,
             }
         )
     return queue
