@@ -12,9 +12,9 @@
 #
 # Verified on CPython 3.11 and 3.14 (Linux and Windows wheels).
 #
-# Generated on 2026-11-23.
+# Generated on 2026-11-24.
 
-packaging==26.3
+packaging==26.4
 setuptools==84.2.1
 wheel==0.48.0
 
