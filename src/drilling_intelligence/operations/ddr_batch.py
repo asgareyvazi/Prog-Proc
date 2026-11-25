@@ -210,6 +210,83 @@ def _has_pdf_signature(path: Path) -> bool:
         return False
 
 
+class _DirFdUnsupported(Exception):
+    """Raised when the platform cannot open relative to a directory fd (Windows)."""
+
+
+def _open_entry_fd_unix(base_resolved: Path, parts: list[str], raw: str) -> int:
+    """Unix path: openat-style fd walk with O_NOFOLLOW at every component."""
+    import os
+
+    try:
+        dir_fd = os.open(
+            str(base_resolved), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        )
+    except OSError as exc:
+        raise ValidationError(
+            f"manifest base cannot be safely opened: {exc.strerror}", path=raw
+        ) from exc
+    try:
+        for component in parts[:-1]:
+            try:
+                nxt = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=dir_fd,
+                )
+            except (NotImplementedError, OSError) as exc:
+                if isinstance(exc, NotImplementedError) or getattr(exc, "errno", None) in (22, 38):
+                    raise _DirFdUnsupported(str(exc)) from exc
+                raise ValidationError(
+                    f"manifest path cannot be safely opened (symlink or missing component): {exc}",
+                    path=raw,
+                ) from exc
+            os.close(dir_fd)
+            dir_fd = nxt
+        try:
+            return os.open(parts[-1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+        except (NotImplementedError, OSError) as exc:
+            if isinstance(exc, NotImplementedError) or getattr(exc, "errno", None) in (22, 38):
+                raise _DirFdUnsupported(str(exc)) from exc
+            raise ValidationError(
+                f"manifest path cannot be safely opened (symlink or missing component): {exc}",
+                path=raw,
+            ) from exc
+    finally:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            pass
+
+
+def _open_entry_fd_portable(base_resolved: Path, parts: list[str], raw: str) -> int:
+    """Fallback for platforms without dir_fd-relative open: lstat-verified walk."""
+    import os
+    import stat as _stat
+
+    current = Path(base_resolved)
+    for component in parts:
+        current = current / component
+        try:
+            info = os.lstat(current)
+        except OSError as exc:
+            raise ValidationError(
+                f"manifest path component missing or inaccessible: {exc.strerror}",
+                path=raw,
+            ) from exc
+        if _stat.S_ISLNK(info.st_mode):
+            raise ValidationError(
+                "manifest path component is a symlink; refusing to follow it", path=raw
+            )
+    try:
+        return os.open(str(current), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise ValidationError(
+            f"manifest path cannot be safely opened (symlink or inaccessible): {exc.strerror}",
+            path=raw,
+        ) from exc
+
+
 def _open_entry_fd(base_resolved: Path, raw: str) -> int:
     """E2: TOCTOU-safe fd-based traversal of a manifest path — not O_NOFOLLOW-only.
 
@@ -226,30 +303,13 @@ def _open_entry_fd(base_resolved: Path, raw: str) -> int:
     parts = [p for p in Path(raw).parts if p not in (".", "..", "/")]
     if not parts or any(p == ".." for p in Path(raw).parts):
         raise ValidationError("manifest path must not contain '..' traversal", path=raw)
-    dir_fd = os.open(
-        str(base_resolved), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-    )
     try:
-        for component in parts[:-1]:
-            nxt = os.open(
-                component,
-                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=dir_fd,
-            )
-            os.close(dir_fd)
-            dir_fd = nxt
-        fd = os.open(parts[-1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
-    except OSError as exc:
-        os.close(dir_fd)
-        raise ValidationError(
-            f"manifest path cannot be safely opened (symlink or missing component): {exc.strerror}",
-            path=raw,
-        ) from exc
-    finally:
-        try:
-            os.close(dir_fd)
-        except OSError:
-            pass
+        fd = _open_entry_fd_unix(base_resolved, parts, raw)
+    except _DirFdUnsupported:
+        # Platforms without dir_fd-relative open (Windows): lstat-verify every
+        # component is never a symlink immediately before opening it, then open the
+        # final component with O_NOFOLLOW. Still no silent symlink following.
+        fd = _open_entry_fd_portable(base_resolved, parts, raw)
     try:
         info = os.fstat(fd)
         if not _stat.S_ISREG(info.st_mode):
