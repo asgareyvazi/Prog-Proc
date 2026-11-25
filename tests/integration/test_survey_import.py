@@ -91,6 +91,7 @@ def test_unknown_unit_preserved_not_normalized(workspace):
 
 # ------------------------------------------------- 2026-11-24B Phase I: byte-level SHA
 import hashlib  # noqa: E402
+import os  # noqa: E402
 
 from drilling_intelligence.operations.survey_import import (  # noqa: E402
     import_survey_csv_file,
@@ -120,6 +121,7 @@ def test_phase_i_bounded_read_before_size_check(tmp_path):
         read_survey_file_bytes(big)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
 def test_phase_i_symlink_source_refused(tmp_path):
     real = tmp_path / "real.csv"
     real.write_text(GOOD)
