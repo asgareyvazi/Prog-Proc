@@ -289,6 +289,24 @@ def _open_entry_fd_portable(base_resolved: Path, parts: list[str], raw: str) -> 
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     msvcrt = ctypes.CDLL("msvcrt")
+    # Explicit signatures: without argtypes ctypes passes Python str as ANSI bytes,
+    # which CreateFileW (a *W function) would misread — set them properly.
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel32.GetFileType.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    msvcrt.open_osfhandle.argtypes = [ctypes.c_long, ctypes.c_int]
+    msvcrt.open_osfhandle.restype = ctypes.c_int
 
     GENERIC_READ = 0x80000000
     FILE_SHARE_READ = 0x00000001
@@ -310,7 +328,7 @@ def _open_entry_fd_portable(base_resolved: Path, parts: list[str], raw: str) -> 
             flags,
             None,
         )
-        if handle == INVALID_HANDLE_VALUE:
+        if not handle or handle == INVALID_HANDLE_VALUE:
             err = ctypes.get_last_error()
             raise ValidationError(
                 f"manifest path component cannot be opened (reparse point or missing): win32 error {err}",
@@ -331,7 +349,7 @@ def _open_entry_fd_portable(base_resolved: Path, parts: list[str], raw: str) -> 
             handles.append(_create(current, is_dir=True))
         final = _create(current + "\\" + parts[-1], is_dir=False)
         handles.append(final)
-        fd = msvcrt.open_osfhandle(final, os.O_RDONLY | os.O_BINARY)
+        fd = msvcrt.open_osfhandle(int(final), os.O_RDONLY | os.O_BINARY)
         handles.remove(final)  # the CRT fd now owns the handle
         return fd
     finally:
