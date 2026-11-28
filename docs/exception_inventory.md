@@ -76,10 +76,10 @@ to be found by somebody else.
 | `src/drilling_intelligence/knowledge/service.py` | 564 | `Exception` | reported | the index is disposable; the registry is not |
 | `src/drilling_intelligence/knowledge/service.py` | 195 | `Exception` | reported | a workspace without a usable sidecar still gets knowledge |
 | `src/drilling_intelligence/knowledge/service.py` | 912 | `Exception` | reported | a broken sidecar must not hide the registry's answer |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 369 | `Exception` | re-raised |  |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 400 | `Exception` | re-raised | atomic rename into the digest-addressed final name |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 620 | `Exception` | reported | batch must survive a single bad entry |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 679 | `Exception` | reported | queue must never fail because of candidate detail |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 387 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 418 | `Exception` | re-raised | atomic rename into the digest-addressed final name |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 638 | `Exception` | reported | batch must survive a single bad entry |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 697 | `Exception` | reported | queue must never fail because of candidate detail |
 | `src/drilling_intelligence/operations/promote.py` | 4273 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4299 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4309 | `Exception` | reported | noqa marker |
