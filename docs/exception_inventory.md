@@ -10,8 +10,8 @@ to be found by somebody else.
 | --- | --- | --- | --- | --- |
 | `src/drilling_intelligence/cli/app.py` | 4676 | `Exception` | reported |  |
 | `src/drilling_intelligence/cli/app.py` | 4653 | `Exception` | reported |  |
-| `src/drilling_intelligence/core/provenance.py` | 397 | `Exception` | reported | pragma: no cover; defensive, third-party readers |
-| `src/drilling_intelligence/core/provenance.py` | 429 | `Exception` | suppressed | tolerate legacy/corrupt rows rather than fail a whole listing |
+| `src/drilling_intelligence/core/provenance.py` | 401 | `Exception` | reported | pragma: no cover; defensive, third-party readers |
+| `src/drilling_intelligence/core/provenance.py` | 433 | `Exception` | suppressed | tolerate legacy/corrupt rows rather than fail a whole listing |
 | `src/drilling_intelligence/core/redact.py` | 220 | `Exception` | reported | a diagnostic may not raise, by definition |
 | `src/drilling_intelligence/core/results.py` | 50 | `Exception` | suppressed | a non-numeric field simply has no quantity |
 | `src/drilling_intelligence/database/migrations.py` | 133 | `Exception` | suppressed | alembic_version may not exist yet |
@@ -40,13 +40,13 @@ to be found by somebody else.
 | `src/drilling_intelligence/extraction/fields.py` | 1149 | `Exception` | suppressed | incomparable units cannot be range-checked |
 | `src/drilling_intelligence/extraction/fields.py` | 914 | `Exception` | suppressed | an unknown unit stays as written, flagged below |
 | `src/drilling_intelligence/extraction/fields.py` | 930 | `Exception` | reported | an unparsable unit is a finding, not a crash |
-| `src/drilling_intelligence/extraction/pdf_text.py` | 413 | `Exception` | suppressed | a document with unreadable metadata has no metadata |
-| `src/drilling_intelligence/extraction/pdf_text.py` | 111 | `Exception` | reported | probing must never raise |
-| `src/drilling_intelligence/extraction/pdf_text.py` | 120 | `Exception` | re-raised | pragma: no cover - dependency failure |
-| `src/drilling_intelligence/extraction/pdf_text.py` | 265 | `Exception` | suppressed | heading detection is best-effort |
-| `src/drilling_intelligence/extraction/pdf_text.py` | 294 | `Exception` | reported | table detection is best-effort; the failure is a diagnostic |
-| `src/drilling_intelligence/extraction/pdf_text.py` | 305 | `Exception` | reported | table extraction is best-effort; the failure is a diagnostic |
-| `src/drilling_intelligence/extraction/pdf_text.py` | 84 | `Exception` | suppressed | a broken table must not kill the probe |
+| `src/drilling_intelligence/extraction/pdf_text.py` | 417 | `Exception` | suppressed | a document with unreadable metadata has no metadata |
+| `src/drilling_intelligence/extraction/pdf_text.py` | 115 | `Exception` | reported | probing must never raise |
+| `src/drilling_intelligence/extraction/pdf_text.py` | 124 | `Exception` | re-raised | pragma: no cover - dependency failure |
+| `src/drilling_intelligence/extraction/pdf_text.py` | 269 | `Exception` | suppressed | heading detection is best-effort |
+| `src/drilling_intelligence/extraction/pdf_text.py` | 298 | `Exception` | reported | table detection is best-effort; the failure is a diagnostic |
+| `src/drilling_intelligence/extraction/pdf_text.py` | 309 | `Exception` | reported | table extraction is best-effort; the failure is a diagnostic |
+| `src/drilling_intelligence/extraction/pdf_text.py` | 88 | `Exception` | suppressed | a broken table must not kill the probe |
 | `src/drilling_intelligence/extraction/registry.py` | 47 | `Exception` | reported | never let discovery break startup |
 | `src/drilling_intelligence/extraction/router.py` | 105 | `Exception` | reported | availability probes never raise |
 | `src/drilling_intelligence/extraction/router.py` | 127 | `Exception` | suppressed | a parser that cannot say whether it supports the file is skipped |
@@ -76,10 +76,10 @@ to be found by somebody else.
 | `src/drilling_intelligence/knowledge/service.py` | 564 | `Exception` | reported | the index is disposable; the registry is not |
 | `src/drilling_intelligence/knowledge/service.py` | 195 | `Exception` | reported | a workspace without a usable sidecar still gets knowledge |
 | `src/drilling_intelligence/knowledge/service.py` | 912 | `Exception` | reported | a broken sidecar must not hide the registry's answer |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 318 | `Exception` | re-raised |  |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 349 | `Exception` | re-raised | atomic rename into the digest-addressed final name |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 569 | `Exception` | reported | batch must survive a single bad entry |
-| `src/drilling_intelligence/operations/ddr_batch.py` | 628 | `Exception` | reported | queue must never fail because of candidate detail |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 369 | `Exception` | re-raised |  |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 400 | `Exception` | re-raised | atomic rename into the digest-addressed final name |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 620 | `Exception` | reported | batch must survive a single bad entry |
+| `src/drilling_intelligence/operations/ddr_batch.py` | 679 | `Exception` | reported | queue must never fail because of candidate detail |
 | `src/drilling_intelligence/operations/promote.py` | 4273 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4299 | `Exception` | reported | noqa marker |
 | `src/drilling_intelligence/operations/promote.py` | 4309 | `Exception` | reported | noqa marker |
@@ -125,7 +125,7 @@ to be found by somebody else.
 | `src/drilling_intelligence/ui/main_window.py` | 1745 | `Exception` | reported | export must not crash the window |
 | `src/drilling_intelligence/ui/main_window.py` | 2983 | `Exception` | reported | keep selection/read rendering usable |
 | `src/drilling_intelligence/ui/main_window.py` | 3176 | `Exception` | reported | preserve read-side selection on capability errors |
-| `src/drilling_intelligence/ui/survey_page.py` | 163 | `Exception` | reported | surfaced non-modally |
+| `src/drilling_intelligence/ui/survey_page.py` | 167 | `Exception` | reported | surfaced non-modally |
 | `src/drilling_intelligence/ui/worker.py` | 70 | `Exception` | reported | thread boundary reports failures without hiding them |
 | `src/drilling_intelligence/ui/worker.py` | 130 | `Exception` | reported | report unexpected worker failures to the UI |
 | `src/drilling_intelligence/ui/worker.py` | 219 | `Exception` | reported | # preserve a visible UI boundary for unexpected failures |

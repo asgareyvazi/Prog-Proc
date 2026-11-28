@@ -36,9 +36,14 @@ class DdrWorkflowService:
             from ..core.errors import ValidationError
 
             raise ValidationError("unknown document version", version_id=version_id)
+        # F1: deterministic page ordering — never rely on database row return order.
+        # Extractions are ordered by persisted creation order and id; the page number
+        # is derived from the form-feed position in that stable sequence.
         rows = (
             session.execute(
-                select(Extraction).where(Extraction.document_version_id == str(version_id))
+                select(Extraction)
+                .where(Extraction.document_version_id == str(version_id))
+                .order_by(Extraction.created_at, Extraction.id)
             )
             .scalars()
             .all()

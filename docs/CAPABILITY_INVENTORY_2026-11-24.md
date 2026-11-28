@@ -13,7 +13,7 @@ qualified backend. Submission ≠ approval; actor strings ≠ authentication.
 | 4 | Well/project/field hierarchy | DONE | `wells/repository.py`; `test_well_section_contract.py` |
 | 5 | Well sections plan-vs-actual | DONE | `test_section_population.py`, `test_plan_actual_forensics.py` |
 | 6 | DDR manual authoring (Qt + service) | DONE | `operations/ddr.py`; `test_ddr_authoring.py`, `test_ddr_cli.py`, UI workbench |
-| 7 | DDR batch PDF import hardened (D-15 containment, D-16 workspace-scoped duplicates, D-17 exact-version queue, D-18 limits) + 2026-11-24: fail-closed workspace identity (D1), TOCTOU-safe single-fd verified staging (D2), once-per-entry progress/cancel contract with cancelled counts (D7) | DONE | `operations/ddr_batch.py`; `test_ddr_batch_import.py` (10 tests) |
+| 7 | DDR batch PDF import hardened (D-15..D-18, D1/D2/D7) + 2026-11-24B fd-based openat traversal, atomic O_EXCL staging, per-entry savepoints | PARTIALLY DONE | `operations/ddr_batch.py`; `test_ddr_batch_phase_e.py`. Linux DONE; Windows secure traversal uses handle-based CreateFileW path (B2), fail-closed elsewhere; Windows exact-SHA CI rerun pending on 39a365b |
 | 8 | DDR revision comparison | DONE | `operations/ddr_comparison.py`; `test_comparison_v76.py` |
 | 9 | Document intake queue + registration | DONE | `review/intake.py`; `test_intake_registration.py`, `test_intake_e2e.py` |
 | 10 | Document registry, immutable versions | DONE | `documents/registry.py`, `documents/repository.py` |
@@ -23,7 +23,7 @@ qualified backend. Submission ≠ approval; actor strings ≠ authentication.
 | 14 | 2026-11-24B batch import: fd-based openat traversal, atomic O_EXCL staging, per-entry savepoints | DONE | `operations/ddr_batch.py`; `tests/integration/test_ddr_batch_phase_e.py` |
 | 15 | 2026-11-24B survey import: SHA-256 over original bytes, bounded read before size check | DONE | `operations/survey_import.py`; `test_survey_import.py` Phase I tests |
 | 16 | 2026-11-24B Qt batch page: durable outcome.json, real reopen/history, safe thread shutdown | DONE | `ui/batch_import_page.py`; `tests/ui/test_batch_import_page_f.py` |
-| 17 | 2026-11-24B source-to-DDR: append-only disposition table (migration 0030), real page locators, unit contracts, strengthened authorize gates, public Qt+CLI+service | DONE | `operations/ddr_candidates.py`, `operations/ddr_workflow.py`, `ui/ddr_candidates_page.py`, CLI `ddr-candidates`; `test_ddr_candidates.py`, `test_ddr_candidates_page_g.py` |
+| 17 | 2026-11-24B source-to-DDR: append-only disposition table (migration 0030), real page locators, unit contracts, strengthened authorize gates, public Qt+CLI+service | PARTIALLY DONE | CLI --json purity bug (PyMuPDF stdout banner) fixed on 39a365b; field catalog is still minimal (5 fields) — Phase F expansion planned | `operations/ddr_candidates.py`, `operations/ddr_workflow.py`, `ui/ddr_candidates_page.py`, CLI `ddr-candidates`; `test_ddr_candidates.py`, `test_ddr_candidates_page_g.py` |
 | 18 | 2026-11-24B review queue is candidate-level | DONE | `review_queue` carries per-candidate decision+locator; Phase H test |
 | 12 | PDF text extraction (real, hash-verified) | DONE | `extraction/pdf_text.py`; `test_source_extraction_integrity.py` |
 | 13 | XLSX/DOCX/CSV/text extraction | DONE | `extraction/excel.py`, `docx.py`, `text.py` |
@@ -68,7 +68,7 @@ qualified backend. Submission ≠ approval; actor strings ≠ authentication.
 | 52 | Full quality suite (unit+integration+UI) | DONE (local) / CI-bound | local full suite 3031 passed; exact-SHA CI runs recorded in the 2026-11-24 mission report |
 | 52b | Shard collection reproducibility (Phase B) | DONE | collection job now installs the same pinned constraints as shard jobs; `config.inicfg` replaced by supported ini-file/getini digest; bounded mismatch diagnostics (field diffs, first-10 missing/extra node IDs); 10 adversarial manifest-contract tests |
 | 53 | Performance evidence (`out/performance.json`) | OWNER-GATED | protected blob, never read/staged by the agent |
-| 54 | Windows run-card / PowerShell acceptance | DONE | `docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1` (head 0030); CI Windows runs |
+| 54 | Windows run-card / PowerShell acceptance | PARTIALLY DONE | `docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1` now declares head `0030`; run-card CI job was failing on 59e10deb (revision mismatch 0029 vs 0030) — fixed on 39a365b, exact-SHA Windows rerun pending |
 | 55 | DDR PDF → record linkage | DONE | `test_ddr_lifecycle.py` — idempotent link, unknown-version refused |
 | 55b | Source-to-DDR candidate workflow (D-20 reopened, Phase F) | DONE | `operations/ddr_candidates.py`: labelled field rules with page/line locators, ambiguous→UNRESOLVED (never guessed), accept/edit/reject dispositions preserving original vs edited values, CANDIDATE-only authorize; `test_ddr_candidates.py` (5 tests) |
 | 56 | Batch import Qt page (D-14) + 2026-11-24: collision-resistant staging names (E1), identity-based retry against corrected sources (E4), monotonic progress | DONE | `ui/batch_import_page.py`; 3 UI batch tests incl. same-basename and retry-after-fix |
