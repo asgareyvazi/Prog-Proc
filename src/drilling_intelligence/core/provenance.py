@@ -292,9 +292,13 @@ def _excel_read(source: Path, locator: ExcelLocator) -> str:
 
 
 def _pdf_read(source: Path, locator: PdfLocator) -> str:
+    import contextlib
+    import sys
+
     import pymupdf  # PyMuPDF
 
-    with pymupdf.open(source) as doc:
+    # keep third-party stdout chatter off a --json data channel
+    with contextlib.redirect_stdout(sys.stderr), pymupdf.open(source) as doc:
         if locator.page is None or locator.page > doc.page_count or locator.page < 1:
             raise ProvenanceError(f"Page {locator.page} out of range", file=str(source))
         page = doc[locator.page - 1]

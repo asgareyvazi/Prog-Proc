@@ -68,7 +68,7 @@ qualified backend. Submission ≠ approval; actor strings ≠ authentication.
 | 52 | Full quality suite (unit+integration+UI) | DONE (local) / CI-bound | local full suite 3031 passed; exact-SHA CI runs recorded in the 2026-11-24 mission report |
 | 52b | Shard collection reproducibility (Phase B) | DONE | collection job now installs the same pinned constraints as shard jobs; `config.inicfg` replaced by supported ini-file/getini digest; bounded mismatch diagnostics (field diffs, first-10 missing/extra node IDs); 10 adversarial manifest-contract tests |
 | 53 | Performance evidence (`out/performance.json`) | OWNER-GATED | protected blob, never read/staged by the agent |
-| 54 | Windows run-card / PowerShell acceptance | DONE | `docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1` (head 0029); CI Windows runs |
+| 54 | Windows run-card / PowerShell acceptance | DONE | `docs/WINDOWS_ACCEPTANCE_RUN_CARD.ps1` (head 0030); CI Windows runs |
 | 55 | DDR PDF → record linkage | DONE | `test_ddr_lifecycle.py` — idempotent link, unknown-version refused |
 | 55b | Source-to-DDR candidate workflow (D-20 reopened, Phase F) | DONE | `operations/ddr_candidates.py`: labelled field rules with page/line locators, ambiguous→UNRESOLVED (never guessed), accept/edit/reject dispositions preserving original vs edited values, CANDIDATE-only authorize; `test_ddr_candidates.py` (5 tests) |
 | 56 | Batch import Qt page (D-14) + 2026-11-24: collision-resistant staging names (E1), identity-based retry against corrected sources (E4), monotonic progress | DONE | `ui/batch_import_page.py`; 3 UI batch tests incl. same-basename and retry-after-fix |

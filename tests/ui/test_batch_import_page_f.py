@@ -108,3 +108,29 @@ def test_batch_page_close_shuts_thread_down_safely(qt_app, workspace) -> None:
         assert page._thread is None
     finally:
         pass
+
+
+def test_survey_page_shows_all_three_unit_columns(qt_app, workspace) -> None:
+    """Phase C: MD, inclination and azimuth units are three separate visible columns."""
+    from drilling_intelligence.ui.controller import ReviewController
+    from drilling_intelligence.ui.main_window import MainWindow
+
+    controller = ReviewController()
+    assert controller.open_workspace(workspace.root, config_path=workspace.settings.source_path)
+    window = MainWindow(controller)
+    try:
+        matches = [
+            row
+            for row in range(window.navigation.count())
+            if window.navigation.item(row).text() == "Survey Import"
+        ]
+        assert len(matches) == 1
+        window.navigation.setCurrentRow(matches[0])
+        page = window.survey_import_page
+        headers = [
+            page.station_table.horizontalHeaderItem(c).text()
+            for c in range(page.station_table.columnCount())
+        ]
+        assert "MD unit" in headers and "Incl unit" in headers and "Az unit" in headers
+    finally:
+        window.close()

@@ -7,7 +7,7 @@
 
 - به‌روزرسانی ۲۰۲۶-۱۰-۲۰ (این اسنپ‌شات): resolved نسخهٔ canonical از طریق pointer (‌`current_version`)؛ schema رویداد واحد ‌`extraction_disposition`‌ برای Program و Procedure با policy تصمیم مجدد؛ پنل منبع واقعی با re-verify هش فیزیکی (‌`read_source_excerpt`‌) در UI؛ تست‌های اجباری مسیر fallback انتشار (renameat2 NOREPLACE / fail-closed)؛ و regression تست manifest شارد run-scoped. tip فعلی ‌`0f72875b28a46acd9007e832a57c8c7b70e30627`‌؛ گزارش مأموریت به فارسی در ‌`docs/mission-reports/`‌ و SHA نهایی CI در گزارش پایانی ثبت می‌شود.
 - Baseline تأییدشدهٔ قبلی: `2dc7ddde7d595729f98e67485449514a277b07fc` — Linux run `44279805151` و Windows run `44279805136` هر دو success (2,951 collected؛ 0 failed)، و historical replay run `44299260397` (job `134784363027`) success با artifact `14425148074`؛ run تاریخی `43695755434` روی `114173a4` همچنان failure ثبت شده است.
-- Migrationهای `0027`، `0028` و `0029` (ستون `completion_state` روی `procedure_step`) در head هستند؛ head Alembic `0029` است.
+- Migrationهای `0027`، `0028` و `0029` (ستون `completion_state` روی `procedure_step`) در head هستند؛ head Alembic `0030` است (جدول append-only `ddr_disposition`).
 - قابلیت‌های headless: authoring service کامل (sections/targets/steps، freshness token، validate، submit/review/decide، revise، compare)، templateهای فقط‌ساختاری، `draft-from-document` (صرفاً لینک ساختاری به سند — استخراج واقعی محتوا نیست)، و export JSON/HTML/DOCX/PDF با watermark DRAFT، fidelity کامل، unitهای ذخیره‌شده، redaction opt-in (`path-redaction-v1`) و انتشار race-safe no-clobber.
 - Qt: صفحات **Program Builder** و **Procedure Builder** کامل شدند (`ui/authoring_pages.py`) — ویرایشگر Program target با همهٔ champها و واحدها و provenance، ویرایشگر کامل step با equipment/preconditions/پارامترهای JSON/expected result/evidence/safety/contingency، و دکمه‌های lifecycle (validate/submit/review/approve/reject/revise/compare) همگی از طریق کنترل‌های Qt؛ ۵ تست offscreen UI + ۳۶ تست workbench سبز هستند. Screenshots فیزیکی به‌علت فقدان libGL در host هنوز NOT RUN است.
 - `out/performance.json` دست‌نخورده (همان blob.tracked remoto؛ بدون تغییر).
@@ -99,7 +99,7 @@ DDR نویسندگی دستی، محصول authoring جدا از ingestion اس�
 
 ## 5. Database، schema و بسته‌بندی
 
-- `METADATA_REVISION` باید برابر تنها Alembic head باشد؛ کد جاری `0029` را اعلام می‌کند.
+- `METADATA_REVISION` باید برابر تنها Alembic head باشد؛ کد جاری `0030` را اعلام می‌کند.
 - Migrationهای جدید باید online و `alembic upgrade head --sql` را در SQLite isolated path پشتیبانی کنند. Offline generation نباید workspace file را تغییر دهد یا ایجاد کند.
 - Migrationهای additive ممکن‌اند؛ downgrade با رکوردهای authored/registered/historical نباید داده را بی‌صدا حذف کند.
 - `schema_diff()` فقط table/column presence را می‌سنجد؛ برای FKها، unique/partial indexها، triggers و رفتار deletion باید آزمون/introspection اختصاصی وجود داشته باشد.

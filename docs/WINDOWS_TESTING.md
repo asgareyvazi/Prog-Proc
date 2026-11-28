@@ -61,7 +61,7 @@ The constraints pin the versions the CI proves. Drop them for a plain
 install; keep them when you want the machine to match the recorded run.
 `python -m mypy` checks the declared boundaries in `pyproject.toml`: core, database, extraction, documents, and review.
 
-`alembic heads` must show exactly one line containing `(head)`, currently `0029` for the current authoring schema. Verify this command against the checkout being qualified.
+`alembic heads` must show exactly one line containing `(head)`, currently `0030` for the current authoring schema (append-only ddr_disposition). Verify this command against the checkout being qualified.
 UI tests skip when PySide6 is not installed. That skip is not a pass. The
 reason is `QtWidgets unavailable`.
 
@@ -354,7 +354,7 @@ happily print an error and carry on.
    `-m ruff check .`, `-m ruff format --check .`, `-m mypy`,
    `-m compileall -q src tests migrations tools`, `-m alembic heads`.
    Pass: the first four exit 0, and `alembic heads` prints exactly one
-   line containing `(head)`, currently `0029`.
+   line containing `(head)`, currently `0030`.
 
 5. **The suite runs, and the skips are named.**
    `.\.venv\Scripts\python.exe -m pytest`.

@@ -89,6 +89,7 @@ def test_cli_ddr_candidates_surface(qt_app, workspace, tmp_path, capsys) -> None
 
     text = "Daily Drilling Report SYNTHETIC. Report No. CLI-1. Well CLIWELL. Date 2026-11-24. Depth from 5 m to 6 m."
     version_id = _import_one(workspace, tmp_path, text)
+    capsys.readouterr()  # drain import-time chatter before the CLI call under test
     rc = main(
         [
             "--workspace",
@@ -100,7 +101,30 @@ def test_cli_ddr_candidates_surface(qt_app, workspace, tmp_path, capsys) -> None
             "--json",
         ]
     )
-    assert rc == 0
-    out = capsys.readouterr().out
-    payload = json.loads(out)
+    captured = capsys.readouterr()
+    assert rc == 0, f"rc={rc} stderr={captured.err[:400]}"
+    # Phase D contract: stdout is EXACTLY one parseable JSON document.
+    try:
+        payload = json.loads(captured.out)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            f"stdout is not one JSON document: {exc}; "
+            f"stdout={captured.out[:400]!r}; stderr={captured.err[:400]!r}"
+        ) from exc
     assert any(c["field"] == "report_number" for c in payload["candidates"])
+    # the error path also emits structured JSON on stdout and a nonzero exit code
+    rc2 = main(
+        [
+            "--workspace",
+            str(workspace.root),
+            "ddr-candidates",
+            "list",
+            "--version-id",
+            "ver-nope",
+            "--json",
+        ]
+    )
+    captured2 = capsys.readouterr()
+    assert rc2 != 0
+    err_payload = json.loads(captured2.out)
+    assert err_payload.get("ok") is False

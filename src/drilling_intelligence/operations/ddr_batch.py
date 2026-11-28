@@ -218,6 +218,11 @@ def _open_entry_fd_unix(base_resolved: Path, parts: list[str], raw: str) -> int:
     """Unix path: openat-style fd walk with O_NOFOLLOW at every component."""
     import os
 
+    # B1: capability detection BEFORE touching platform-specific flags — on Windows
+    # os.O_DIRECTORY does not exist and an AttributeError must never escape; the
+    # portable handle-based path is selected instead.
+    if not hasattr(os, "O_DIRECTORY"):
+        raise _DirFdUnsupported("os.O_DIRECTORY is not available on this platform")
     try:
         dir_fd = os.open(
             str(base_resolved), os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
@@ -260,31 +265,78 @@ def _open_entry_fd_unix(base_resolved: Path, parts: list[str], raw: str) -> int:
 
 
 def _open_entry_fd_portable(base_resolved: Path, parts: list[str], raw: str) -> int:
-    """Fallback for platforms without dir_fd-relative open: lstat-verified walk."""
-    import os
-    import stat as _stat
+    """B2: Windows handle-based safe traversal — NOT a check-then-use lstat walk.
 
-    current = Path(base_resolved)
-    for component in parts:
-        current = current / component
-        try:
-            info = os.lstat(current)
-        except OSError as exc:
-            raise ValidationError(
-                f"manifest path component missing or inaccessible: {exc.strerror}",
-                path=raw,
-            ) from exc
-        if _stat.S_ISLNK(info.st_mode):
-            raise ValidationError(
-                "manifest path component is a symlink; refusing to follow it", path=raw
-            )
-    try:
-        return os.open(str(current), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError as exc:
+    Each component is opened with ``CreateFileW`` using
+    ``FILE_FLAG_BACKUP_SEMANTICS`` (directories) and ``FILE_FLAG_OPEN_REPARSE_POINT``
+    (never follow a symlink/reparse point), and the handle is validated with
+    ``GetFileType`` before use. The final component is opened as a file handle and
+    converted to a CRT fd with ``msvcrt.open_osfhandle``, so the fd the caller reads
+    from is the very handle that was validated — a path swapped between check and use
+    cannot slip through. On any non-Windows platform that lacks dir_fd support this
+    fails closed: secure Batch Import is NOT QUALIFIED there rather than silently
+    downgraded.
+    """
+    import os
+
+    if os.name != "nt":
         raise ValidationError(
-            f"manifest path cannot be safely opened (symlink or inaccessible): {exc.strerror}",
+            "no fd-relative traversal available on this platform; refusing insecure fallback",
             path=raw,
-        ) from exc
+        )
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    msvcrt = ctypes.CDLL("msvcrt")
+
+    GENERIC_READ = 0x80000000
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    OPEN_EXISTING = 3
+    FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+    FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+    FILE_TYPE_DISK = 0x0001
+    INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+
+    def _create(path: str, is_dir: bool) -> int:
+        flags = FILE_FLAG_OPEN_REPARSE_POINT | (FILE_FLAG_BACKUP_SEMANTICS if is_dir else 0)
+        handle = kernel32.CreateFileW(
+            str(path),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            flags,
+            None,
+        )
+        if handle == INVALID_HANDLE_VALUE:
+            err = ctypes.get_last_error()
+            raise ValidationError(
+                f"manifest path component cannot be opened (reparse point or missing): win32 error {err}",
+                path=raw,
+            )
+        if kernel32.GetFileType(handle) != FILE_TYPE_DISK:
+            kernel32.CloseHandle(handle)
+            raise ValidationError(
+                "manifest path component is not a regular disk file/directory", path=raw
+            )
+        return handle
+
+    handles: list[int] = []
+    try:
+        current = str(base_resolved)
+        for component in parts[:-1]:
+            current = current + "\\" + component
+            handles.append(_create(current, is_dir=True))
+        final = _create(current + "\\" + parts[-1], is_dir=False)
+        handles.append(final)
+        fd = msvcrt.open_osfhandle(final, os.O_RDONLY | os.O_BINARY)
+        handles.remove(final)  # the CRT fd now owns the handle
+        return fd
+    finally:
+        for handle in handles:
+            kernel32.CloseHandle(handle)
 
 
 def _open_entry_fd(base_resolved: Path, raw: str) -> int:
@@ -306,9 +358,8 @@ def _open_entry_fd(base_resolved: Path, raw: str) -> int:
     try:
         fd = _open_entry_fd_unix(base_resolved, parts, raw)
     except _DirFdUnsupported:
-        # Platforms without dir_fd-relative open (Windows): lstat-verify every
-        # component is never a symlink immediately before opening it, then open the
-        # final component with O_NOFOLLOW. Still no silent symlink following.
+        # B2: platforms without dir_fd-relative open (Windows) use the handle-based
+        # CreateFileW traversal with reparse-point refusal — not a check-then-use walk.
         fd = _open_entry_fd_portable(base_resolved, parts, raw)
     try:
         info = os.fstat(fd)

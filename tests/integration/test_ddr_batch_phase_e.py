@@ -164,27 +164,26 @@ def test_e4_disposition_on_old_version_never_disposes_current(workspace, tmp_pat
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
 def test_e2_portable_fallback_when_dirfd_unsupported(tmp_path, monkeypatch) -> None:
-    """Windows path: without dir_fd-relative open, the lstat-verified walk still
-    refuses symlinks at any component and opens regular files."""
+    """B2: without dir_fd-relative open, the fallback is handle-based on Windows and
+    FAILS CLOSED on any other platform — never a silent lstat+open downgrade."""
     from drilling_intelligence.operations import ddr_batch
 
     base = tmp_path / "batch"
     (base / "sub").mkdir(parents=True)
     (base / "sub" / "ok.pdf").write_bytes(b"%PDF-1.4 synthetic")
-    secret = tmp_path / "secret.pdf"
-    secret.write_bytes(b"%PDF-1.4 synthetic")
-    (base / "link").symlink_to(secret)
 
     def _no_dirfd(*args, **kwargs):
         raise ddr_batch._DirFdUnsupported("no dir_fd on this platform")
 
     monkeypatch.setattr(ddr_batch, "_open_entry_fd_unix", _no_dirfd)
-    import os as _os
+    if os.name == "nt":
+        import os as _os
 
-    fd = ddr_batch._open_entry_fd(base.resolve(), "sub/ok.pdf")
-    try:
-        assert _os.fstat(fd).st_size > 0
-    finally:
-        _os.close(fd)
-    with pytest.raises(ValidationError, match="symlink"):
-        ddr_batch._open_entry_fd(base.resolve(), "link")
+        fd = ddr_batch._open_entry_fd(base.resolve(), "sub/ok.pdf")
+        try:
+            assert _os.fstat(fd).st_size > 0
+        finally:
+            _os.close(fd)
+    else:
+        with pytest.raises(ValidationError):
+            ddr_batch._open_entry_fd(base.resolve(), "sub/ok.pdf")

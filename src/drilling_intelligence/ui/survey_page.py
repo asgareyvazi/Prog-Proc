@@ -80,8 +80,12 @@ class SurveyImportPage(QWidget):
         root.addWidget(QLabel("Source (read-only):"))
         root.addWidget(self.source_view, 1)
 
-        self.station_table = QTableWidget(0, 6)
-        self.station_table.setHorizontalHeaderLabels(["#", "MD", "unit", "Incl", "Az", "Az unit"])
+        self.station_table = QTableWidget(0, 7)
+        # Phase C: every dimensional column shows its own explicit unit — MD, inclination
+        # and azimuth units are three separate visible columns, never merged or hidden.
+        self.station_table.setHorizontalHeaderLabels(
+            ["#", "MD", "MD unit", "Incl", "Incl unit", "Az", "Az unit"]
+        )
         self.station_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         root.addWidget(QLabel("Normalized stations (persisted, CANDIDATE):"))
         root.addWidget(self.station_table, 2)
@@ -174,6 +178,7 @@ class SurveyImportPage(QWidget):
                     st["md"],
                     st["md_unit"],
                     st["inclination"],
+                    st["inclination_unit"],
                     st["azimuth"],
                     st["azimuth_unit"],
                 ]
@@ -196,6 +201,7 @@ class SurveyImportPage(QWidget):
                         "md": s.md_value,
                         "md_unit": s.md_unit,
                         "inclination": s.inclination_value,
+                        "inclination_unit": s.inclination_unit,
                         "azimuth": s.azimuth_value,
                         "azimuth_unit": s.azimuth_unit,
                     }

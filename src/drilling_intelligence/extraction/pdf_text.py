@@ -10,7 +10,9 @@ scanned.
 
 from __future__ import annotations
 
+import contextlib
 import re
+import sys
 from typing import Any
 
 from .. import EXTRACTION_ENGINE_VERSION
@@ -68,7 +70,9 @@ class PdfTextExtractor:
             import pymupdf
 
             probe_pages = max(1, int_option(context, "pdf_probe_pages", 12))
-            with pymupdf.open(context.path) as doc:
+            # PyMuPDF prints layout-engine suggestions to stdout; a --json CLI stdout is a
+            # data channel, so third-party chatter is rerouted to stderr for the call.
+            with contextlib.redirect_stdout(sys.stderr), pymupdf.open(context.path) as doc:
                 complexity.pages = doc.page_count
                 complexity.encrypted = bool(doc.is_encrypted)
                 table_count = 0
@@ -134,7 +138,7 @@ class PdfTextExtractor:
         max_pages = int_option(context, "pdf_max_pages", 4000)
         want_tables = bool(context.option("pdf_extract_tables", True))
 
-        with pymupdf.open(context.path) as doc:
+        with contextlib.redirect_stdout(sys.stderr), pymupdf.open(context.path) as doc:
             document.metadata.page_count = doc.page_count
             document.metadata.extra["pdf_metadata"] = _pdf_metadata(doc)
             document.metadata.extra["toc_entries"] = len(doc.get_toc())
